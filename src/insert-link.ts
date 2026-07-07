@@ -28,15 +28,14 @@ export interface InsertLinkInEditorOpts {
     to?: EditorPosition;
 }
 
-const V1_ALIAS_POLICY: InsertLinkAliasPolicy = { priority: ['editorSelection'] };
+const SELECTION_ONLY_POLICY: InsertLinkAliasPolicy = { priority: ['editorSelection'] };
+const DEFAULT_ALIAS_POLICY: InsertLinkAliasPolicy = { priority: ['editorSelection', 'searchQuery'] };
 
 export function insertLinkAliasPolicyFromSettings(
-    settings: Pick<SeekSettings, 'insertLinkAliasSource'>,
+    settings: Partial<Pick<SeekSettings, 'insertLinkQueryAlias'>>,
 ): InsertLinkAliasPolicy {
-    if (settings.insertLinkAliasSource === 'searchQuery') {
-        return { priority: ['editorSelection', 'searchQuery'] };
-    }
-    return V1_ALIAS_POLICY;
+    if (settings.insertLinkQueryAlias === false) return SELECTION_ONLY_POLICY;
+    return DEFAULT_ALIAS_POLICY;
 }
 
 export function resolveInsertLinkAlias(

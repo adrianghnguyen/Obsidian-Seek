@@ -33,8 +33,10 @@ import { parsePaneType, openFileAtTarget, openBaseAtTarget, type OpenTarget } fr
 import {
     buildNoteLink,
     headingSubpath,
+    insertLinkAliasPolicyFromSettings,
     insertLinkInEditor,
     isInsertableMarkdownFile,
+    resolveInsertLinkAlias,
 } from './insert-link';
 import { indexBannerSpec, INDEX_STALE_MSG, INDEX_SYNCING_MSG, INDEX_PEER_AHEAD_MSG, type DegradedReason } from './index-notice';
 import { SeekSettingTab } from './settings-tab';
@@ -754,9 +756,13 @@ export default class SeekPlugin extends Plugin {
 
                     const parsedRank = typeof args.rank === 'string' ? parseInt(args.rank, 10) : NaN;
                     const rank = Number.isFinite(parsedRank) && parsedRank > 0 ? parsedRank : 1;
-                    const alias = typeof args.alias === 'string' && args.alias.trim()
+                    const explicitAlias = typeof args.alias === 'string' && args.alias.trim()
                         ? args.alias.trim()
                         : undefined;
+                    const alias = resolveInsertLinkAlias(
+                        { searchQueryText: query, explicitAlias },
+                        insertLinkAliasPolicyFromSettings(this.settings),
+                    );
 
                     try {
                         await this.ensureModelLoaded();

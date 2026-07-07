@@ -22,54 +22,58 @@ describe('headingSubpath', () => {
 });
 
 describe('resolveInsertLinkAlias', () => {
-    const v1Policy: InsertLinkAliasPolicy = { priority: ['editorSelection'] };
-    const queryPolicy: InsertLinkAliasPolicy = { priority: ['editorSelection', 'searchQuery'] };
+    const selectionOnlyPolicy: InsertLinkAliasPolicy = { priority: ['editorSelection'] };
+    const defaultPolicy: InsertLinkAliasPolicy = { priority: ['editorSelection', 'searchQuery'] };
 
     it('prefers explicit alias', () => {
         expect(resolveInsertLinkAlias({
             explicitAlias: 'cli alias',
             editorSelection: 'sel',
             searchQueryText: 'q',
-        }, v1Policy)).toBe('cli alias');
+        }, selectionOnlyPolicy)).toBe('cli alias');
     });
 
-    it('uses editor selection in v1 policy', () => {
+    it('uses editor selection when present', () => {
         expect(resolveInsertLinkAlias({
             editorSelection: 'selected words',
             searchQueryText: 'test',
-        }, v1Policy)).toBe('selected words');
+        }, defaultPolicy)).toBe('selected words');
     });
 
-    it('ignores search query in v1 policy', () => {
+    it('ignores search query when policy is selection-only', () => {
         expect(resolveInsertLinkAlias({
             searchQueryText: 'test',
-        }, v1Policy)).toBeUndefined();
+        }, selectionOnlyPolicy)).toBeUndefined();
     });
 
-    it('falls back to search query when policy includes it', () => {
+    it('falls back to search query in default policy', () => {
         expect(resolveInsertLinkAlias({
             searchQueryText: 'test',
-        }, queryPolicy)).toBe('test');
+        }, defaultPolicy)).toBe('test');
     });
 
-    it('selection wins over search query in combined policy', () => {
+    it('selection wins over search query in default policy', () => {
         expect(resolveInsertLinkAlias({
             editorSelection: 'sel',
             searchQueryText: 'test',
-        }, queryPolicy)).toBe('sel');
+        }, defaultPolicy)).toBe('sel');
     });
 });
 
 describe('insertLinkAliasPolicyFromSettings', () => {
-    it('defaults to selection-only', () => {
-        expect(insertLinkAliasPolicyFromSettings({})).toEqual({ priority: ['editorSelection'] });
-        expect(insertLinkAliasPolicyFromSettings({ insertLinkAliasSource: 'default' }))
-            .toEqual({ priority: ['editorSelection'] });
+    it('defaults to selection + search query', () => {
+        expect(insertLinkAliasPolicyFromSettings({})).toEqual({
+            priority: ['editorSelection', 'searchQuery'],
+        });
+        expect(insertLinkAliasPolicyFromSettings({ insertLinkQueryAlias: true })).toEqual({
+            priority: ['editorSelection', 'searchQuery'],
+        });
     });
 
-    it('includes searchQuery when setting is searchQuery', () => {
-        expect(insertLinkAliasPolicyFromSettings({ insertLinkAliasSource: 'searchQuery' }))
-            .toEqual({ priority: ['editorSelection', 'searchQuery'] });
+    it('is selection-only when toggle is off', () => {
+        expect(insertLinkAliasPolicyFromSettings({ insertLinkQueryAlias: false })).toEqual({
+            priority: ['editorSelection'],
+        });
     });
 });
 

@@ -558,6 +558,11 @@ export class SeekSettingTab extends PluginSettingTab {
             .setName('Keyboard hints bar')
             .setDesc('Displays a keyboard hint bar under results in the results modal.')
             .addToggle(t => t.setValue(this.s.showHotkeyHints).onChange(async v => { this.s.showHotkeyHints = v; await this.save(); }));
+
+        new Setting(containerEl)
+            .setName('Insert link uses search text')
+            .setDesc('When inserting a link (Alt+Enter), use the words you typed in the search field as the link label when no text is selected in the editor.')
+            .addToggle(t => t.setValue(this.s.insertLinkQueryAlias).onChange(async v => { this.s.insertLinkQueryAlias = v; await this.save(); }));
     }
 
     // ---- Model & performance -------------------------------------------------------
