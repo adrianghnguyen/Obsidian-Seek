@@ -61,6 +61,26 @@ function isIndexableFile(f: TFile, indexBases: boolean): boolean {
     return indexBases && f.extension === 'base';
 }
 
+// H1: does the effective (defaults-merged) settings object differ from what was
+// loaded off disk (`raw`)? Used to skip a redundant boot `saveData`. Returns true
+// when `merged` has any key whose value is absent from or unequal to `raw` — i.e.
+// a newly-shipped default key or a diverged value. Per-value JSON compare handles
+// the scalar + small-array/string shape of SeekSettings without key-order pitfalls;
+// exported for unit testing. Conservative by construction: any doubt → returns true
+// → we save (correctness over the micro-optimization).
+export function settingsDifferFromDisk(
+    merged: SeekSettings,
+    raw: Partial<SeekSettings>,
+): boolean {
+    const m = merged as unknown as Record<string, unknown>;
+    const r = raw as unknown as Record<string, unknown>;
+    for (const key of Object.keys(m)) {
+        if (!(key in r)) return true;
+        if (JSON.stringify(m[key]) !== JSON.stringify(r[key])) return true;
+    }
+    return false;
+}
+
 
 // Incremental-indexing debounces. Edits wait out a 5-min idle window after the
 // user leaves a note (so flipping back to keep writing never triggers a flush
@@ -306,8 +326,15 @@ export default class SeekPlugin extends Plugin {
         migrateSettings(raw);
         const settingsMigrated = (raw.settingsRev ?? 1) !== settingsRevBefore;
         Object.assign(this.settings, DEFAULT_SETTINGS, raw);
+        // H1: only persist when the effective settings actually differ from what is
+        // already on disk (`raw`). A migration always changes them; otherwise a save
+        // is needed only when the DEFAULT merge introduced a key absent from `raw`
+        // (a new setting shipped this build) or a value diverged. Skipping the
+        // redundant write removes a synchronous data.json write from every clean
+        // boot — on an Obsidian-Sync vault that write also fans out to every device.
+        const settingsChanged = settingsMigrated || settingsDifferFromDisk(this.settings, raw);
         const saveDataStart = performance.now();
-        await this.saveData(this.settings);
+        if (settingsChanged) await this.saveData(this.settings);
         const saveDataMs = performance.now() - saveDataStart;
         // Scope the index DB per vault. IndexedDB is shared across every vault
         // window (one Electron origin), so an unscoped name means vault A's
