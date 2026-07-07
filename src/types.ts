@@ -214,6 +214,8 @@ export type ChunkMeta = Omit<Chunk, 'content'>;
 // User-tunable settings (persisted via Plugin.saveData). Read live by the
 // orchestrator (it holds the same object ref), so changes take effect on the
 // next search without a rebuild.
+export type InsertLinkAliasSource = 'editorSelection' | 'searchQuery';
+
 export interface SeekSettings {
     // Dense weight in the TM2C2 hybrid: hybrid = w·dense_norm + (1−w)·bm25_norm
     // (ranker.ts hybridFusion over TM2C2-normalized channels). w=1 is pure
@@ -450,10 +452,16 @@ export interface SeekSettings {
 
     // Search-modal footer affordance. ON (default) shows the keyboard-hint bar
     // along the bottom of the modal (↑↓ navigate · ↵ open · ⌘↵ new tab ·
-    // ⌘⌥↵ split · tab fill autosuggest · esc close). OFF removes the whole
-    // footer for a minimal "full results only" modal — just the query field and
-    // Pure presentation; applies to the next time the search modal opens.
+    // ⌘⌥↵ split · ⌥↵ insert link · tab fill autosuggest · esc close). OFF removes
+    // the whole footer for a minimal "full results only" modal — just the query
+    // field and results. Pure presentation; applies to the next time the search
+    // modal opens.
     showHotkeyHints: boolean;
+
+    // Insert-link alias source (no settings UI yet). 'default' = editor selection
+    // only (Omnisearch #425). 'searchQuery' = use free-text query as alias when
+    // no selection ([[note|search words]]). See insert-link.ts.
+    insertLinkAliasSource?: 'default' | 'searchQuery';
 
     // NOTE: the compute backend (WebGPU vs WASM) is deliberately NOT a setting.
     // It is a property of the DEVICE, not the vault, and data.json syncs across
