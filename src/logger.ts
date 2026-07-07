@@ -33,7 +33,7 @@ import type { App } from 'obsidian';
 import type {
     LogEntry, LogMeta, InitEntry, PlatformEntry,
     IndexCompleteEntry, SearchEntry, ErrorEntry,
-    CrashDetectedEntry, LoadEntry,
+    CrashDetectedEntry, LoadEntry, BootEntry, CacheWarmEntry,
 } from './types';
 import { LOG_SCHEMA_VERSION } from './types';
 import { isMobilePlatform } from './platform';
@@ -733,6 +733,45 @@ export class SeekLogger {
             const webgpuNote = errText ? ` · webgpu fell back: \`${errText}\`` : '';
             lines.push(`- Last model load: ${lastLoad.actualDevice} (dtype=${lastLoad.dtype})${lastLoad.glue ? ` · glue ${lastLoad.glue}` : ''}${webgpuNote}`);
         }
+        const boots = filterByType<BootEntry>(d.entries, 'boot');
+        const allLoads = filterByType<LoadEntry>(d.entries, 'load');
+        const cacheWarms = filterByType<CacheWarmEntry>(d.entries, 'cache-warm');
+        const firstSearches = searches.filter(s => s.isFirstSearchOfSession);
+        if (boots.length > 0 || allLoads.length > 0 || firstSearches.length > 0) {
+            lines.push('\n## Startup (boot + cold start)');
+            const bootTotals = boots.map(b => b.totalMs);
+            if (bootTotals.length > 0) {
+                lines.push(`- Blocking onload total: p50 ${fmtMs(percentile(bootTotals, 50))} · p95 ${fmtMs(percentile(bootTotals, 95))} (${bootTotals.length} boot${bootTotals.length === 1 ? '' : 's'})`);
+                const lastBoot = boots[boots.length - 1];
+                lines.push(`- Last boot phases: loadData ${fmtMs(lastBoot.loadDataMs)} · saveData ${fmtMs(lastBoot.saveDataMs)} · IDB open ${fmtMs(lastBoot.storeOpenMs)} · backfill ${fmtMs(lastBoot.backfillMs)} · wire ${fmtMs(lastBoot.wireMs)}`);
+            }
+            const coldStarts = allLoads.map(l => l.coldStartMs);
+            if (coldStarts.length > 0) {
+                lines.push(`- Model cold start: p50 ${fmtMs(percentile(coldStarts, 50))} · p95 ${fmtMs(percentile(coldStarts, 95))}`);
+            }
+            const warmOverlaps = allLoads.filter(l => l.cacheWarmFinishedBeforeModel != null);
+            if (warmOverlaps.length > 0) {
+                const finishedFirst = warmOverlaps.filter(l => l.cacheWarmFinishedBeforeModel).length;
+                lines.push(`- Cache warm finished before model: ${finishedFirst}/${warmOverlaps.length} loads`);
+            }
+            const modelLoadWarms = cacheWarms.filter(c => c.trigger === 'model-load');
+            if (modelLoadWarms.length > 0) {
+                const sources: Record<string, number> = {};
+                for (const c of modelLoadWarms) {
+                    if (c.bm25Source) sources[c.bm25Source] = (sources[c.bm25Source] ?? 0) + 1;
+                }
+                const srcText = Object.entries(sources).map(([k, v]) => `${k}=${v}`).join(', ');
+                lines.push(`- BM25 warm source (model-load): ${srcText || 'none recorded'}`);
+            }
+            const firstTotals = firstSearches.map(s => s.totalMs);
+            if (firstTotals.length > 0) {
+                lines.push(`- First search total: p50 ${fmtMs(percentile(firstTotals, 50))} · p95 ${fmtMs(percentile(firstTotals, 95))}`);
+            }
+            const bootToFirst = firstSearches.map(s => s.sessionBootMs).filter((v): v is number => v != null);
+            if (bootToFirst.length > 0) {
+                lines.push(`- Boot → first search: p50 ${fmtMs(percentile(bootToFirst, 50))} · p95 ${fmtMs(percentile(bootToFirst, 95))}`);
+            }
+        }
         lines.push(`- Searches ${searches.length} · index runs ${indexes.length} · errors ${errors.length} · crashes ${crashes.length}`);
         if (crashes.length > 0) {
             const c = crashes[crashes.length - 1];
@@ -763,4 +802,12 @@ function filterByType<T extends LogEntry>(entries: LogEntry[], type: T['type']):
     return entries.filter((e): e is T => e.type === type);
 }
 
+function percentile(vals: number[], p: number): number | null {
+    if (vals.length === 0) return null;
+    const sorted = [...vals].sort((a, b) => a - b);
+    const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1));
+    return sorted[idx];
+}
+
 function fmtMB(v: number | null): string { return v == null ? 'unknown' : `${v.toFixed(0)} MB`; }
+function fmtMs(v: number | null | undefined): string { return v == null ? 'n/a' : `${v.toFixed(0)} ms`; }

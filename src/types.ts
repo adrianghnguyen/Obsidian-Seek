@@ -46,11 +46,11 @@ export type Dtype = 'q4f16' | 'q4' | 'q8' | 'fp32';
 // then fails ORT's WebGPU init while the report still reads as GPU-capable.
 // Also LoadEntry.glue — which ort-wasm glue variant actually loaded
 // (previously only recoverable from the `checks` strings).
-// v14: IndexCompleteEntry.filesQuarantined / chunksFailedEmbed — embed-failure
-// quarantine accounting (issue #4): files committed WITH a failure marker
-// (deterministically-failing chunks omitted, healthy chunks searchable) vs the
-// old whole-file skip. Additive/forward-only.
-export const LOG_SCHEMA_VERSION = 14;
+// v15: BootEntry (per-phase onload timing), CacheWarmEntry (warmCaches telemetry),
+// SearchEntry cold-start fields (bm25WarmSource, modalOpenMs, modelReadyMs,
+// sessionBootMs, isFirstSearchOfSession), LoadEntry cache-warm overlap fields.
+// Additive/forward-only.
+export const LOG_SCHEMA_VERSION = 15;
 
 // ---- chunk model ----
 
@@ -868,6 +868,52 @@ export interface LoadEntry {
     glue: string | null;
     pass: boolean;
     checks: string[];
+    // Overlap telemetry (H8): when warmCaches('model-load') ran concurrently with
+    // this load, how long the cache warm took and whether it finished before the
+    // model became ready. null = warm did not run or did not complete this session.
+    cacheWarmMs?: number | null;
+    cacheWarmFinishedBeforeModel?: boolean | null;
+}
+
+// Which path populated the resident BM25 cache for a search or warmCaches run.
+export type Bm25WarmSource = 'fit' | 'persisted' | 'cross-device' | 'resident';
+
+// Per-phase blocking onload() timing (app-open budget). Emitted once per plugin
+// load, fire-and-forget — never blocks boot.
+export interface BootEntry {
+    type: 'boot';
+    timestamp: string;
+    schemaVersion: number;
+    loadDataMs: number;
+    saveDataMs: number;
+    storeOpenMs: number;
+    backfillMs: number;
+    forensicsMs: number;
+    wireMs: number;
+    totalMs: number;
+    settingsMigrated: boolean;
+}
+
+// warmCaches() completion — frame + BM25 build/load path and overlap with model
+// load when trigger === 'model-load'.
+export interface CacheWarmEntry {
+    type: 'cache-warm';
+    timestamp: string;
+    trigger: string;
+    durationMs: number;
+    frameMs: number;
+    bm25Ms: number;
+    bm25Source: Bm25WarmSource | null;
+    chunkCount: number;
+    finishedBeforeModelLoad: boolean | null;
+}
+
+// Optional first-search / modal timing injected by SeekPlugin into search().
+export interface SearchTelemetryContext {
+    sessionBootAt?: number;
+    modalOpenedAt?: number;
+    modelReadyAt?: number;
+    isFirstSearchOfSession?: boolean;
 }
 
 export interface IndexProgressEntry {
@@ -1054,6 +1100,12 @@ export interface SearchEntry {
     // generator hot path and the timestamp+query pair is already unique
     // in practice.
     searchId: string;
+    // Cold-start instrumentation (v15). Optional so older logs still parse.
+    bm25WarmSource?: Bm25WarmSource | null;
+    modalOpenMs?: number | null;
+    modelReadyMs?: number | null;
+    sessionBootMs?: number | null;
+    isFirstSearchOfSession?: boolean;
 }
 
 // Emitted when the user clicks a search result. Captures both the chosen
@@ -1380,4 +1432,6 @@ export type LogEntry = (
     | Phase5SmokeEntry
     | WebgpuEventEntry
     | SidecarHydrateEntry
+    | BootEntry
+    | CacheWarmEntry
 ) & LogMeta;

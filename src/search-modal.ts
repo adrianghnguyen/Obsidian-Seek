@@ -8,7 +8,7 @@
 
 import { App, Modal, Notice, Platform, TFile, MarkdownView, MarkdownRenderer, Component } from 'obsidian';
 import type { EditorPosition } from 'obsidian';
-import type { ScoredChunk, SearchEntry, ClickEntry, SeekSettings } from './types';
+import type { ScoredChunk, SearchEntry, ClickEntry, SeekSettings, SearchTelemetryContext } from './types';
 import { MATCH_STRENGTH_MIN_NOTES } from './types';
 import { makeSnippet, sanitizeSnippet, SNIPPET_PREVIEW_LIMITS } from './snippet';
 import type { SearchOrchestrator } from './search';
@@ -258,6 +258,9 @@ export class SeekSearchModal extends Modal {
         // Optional seed from a deep link (obsidian://seek?query=…). Empty for the
         // palette command. Applied in onOpen once the field exists.
         private initialQuery = '',
+        // Shared ref for cold-start timing (modal open → model ready → first result).
+        private searchTelemetry?: SearchTelemetryContext,
+        private onFirstSearchComplete?: () => void,
     ) {
         super(app);
         this.orchestrator = orchestrator;
@@ -604,6 +607,7 @@ export class SeekSearchModal extends Modal {
             // closed while we waited — either way there's nothing left to paint.
             if (id !== this.currentSearch || this.closed) return;
             this.modelReady = true;
+            if (this.searchTelemetry) this.searchTelemetry.modelReadyAt = performance.now();
         }
 
         this.beginInFlight();
@@ -619,6 +623,7 @@ export class SeekSearchModal extends Modal {
             this.latestSearchEntry = entry;
             this.latestResultsShown = results;
             this.latestSearchCompletedAt = performance.now();
+            if (entry.isFirstSearchOfSession) this.onFirstSearchComplete?.();
             this.renderResults(results);
         } catch (e) {
             if (id !== this.currentSearch || this.closed) return;

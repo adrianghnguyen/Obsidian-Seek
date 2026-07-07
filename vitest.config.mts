@@ -13,6 +13,16 @@ export default defineConfig({
     test: {
         setupFiles: [fileURLToPath(new URL('./src/test-stubs/test-setup.mts', import.meta.url))],
     },
+    benchmark: {
+        include: ['src/**/*.bench.ts'],
+        setupFiles: [fileURLToPath(new URL('./src/test-stubs/test-setup.mts', import.meta.url))],
+        pool: 'forks',
+        poolOptions: {
+            forks: {
+                singleFork: true,
+            },
+        },
+    },
     resolve: {
         alias: {
             obsidian: fileURLToPath(new URL('./src/test-stubs/obsidian.ts', import.meta.url)),

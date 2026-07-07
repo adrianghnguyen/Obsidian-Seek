@@ -22,8 +22,8 @@ import { LocalEmbedder, LOCAL_MODEL, LEGACY_ENGLISH_MODEL_ID, EMBEDDING_DIM } fr
 import { activeModelSpec, resolveOverrideSpec, evictStaleModelCaches, deleteModelCaches, probeModelDownloaded } from './model-registry';
 import { pluginIdentity, identityMatches, identityFromMeta } from './identity';
 import { sweepOrphanTmpFiles } from './sidecar';
-import type { SeekSettings, IndexCompleteEntry, ModelDeliveryEntry } from './types';
-import { DEFAULT_SETTINGS, migrateSettings } from './types';
+import type { SeekSettings, IndexCompleteEntry, ModelDeliveryEntry, SearchTelemetryContext } from './types';
+import { DEFAULT_SETTINGS, migrateSettings, LOG_SCHEMA_VERSION } from './types';
 import { IndexStore, indexDbPrefix } from './index-store';
 import { SeekLogger } from './logger';
 import { Forensics } from './forensics';
@@ -136,6 +136,10 @@ export default class SeekPlugin extends Plugin {
     // want to spend 250 MB of RAM on plugin startup if the user never opens
     // the search modal. The first search/reindex invocation triggers it.
     private modelLoadPromise: Promise<void> | null = null;
+    // Startup perf telemetry (v15): session boot anchor + first-search flag.
+    private bootAt = 0;
+    private firstSearchLogged = false;
+    private sessionSearchTelemetry: SearchTelemetryContext = {};
 
     // Async observer handles + global handlers we register on load and
     // explicitly tear down on unload. Without cleanup these leak into the
@@ -268,6 +272,8 @@ export default class SeekPlugin extends Plugin {
     }
 
     async onload() {
+        const bootT0 = performance.now();
+        this.bootAt = bootT0;
         this.logger = new SeekLogger(this.app, this.manifest.id);
         // Sweep any pre-existing root-level seek-log/init/captures files into the
         // hidden LOG_DIR next to the index, THEN tail-truncate this device's log if it
@@ -284,19 +290,25 @@ export default class SeekPlugin extends Plugin {
         // Load persisted settings (merge over defaults so new keys appear).
         // Mutate the existing object in place — the orchestrator holds this
         // same reference.
+        const loadDataStart = performance.now();
         const raw = ((await this.loadData()) ?? {}) as Partial<SeekSettings>;
+        const loadDataMs = performance.now() - loadDataStart;
         // Rev 4 = sidecar path pinned to the literal '.obsidian'. Capture the
         // pre-migration rev HERE — the actual sidecar FILE move runs further below
         // (it needs the old active-override + new literal paths), and migrateSettings
         // is about to overwrite raw.settingsRev, so the flag must be read first.
         const migrateSidecarPath = (raw.settingsRev ?? 1) < 4;
+        const settingsRevBefore = raw.settingsRev ?? 1;
         // Key-level schema migrations (rev 2 denseWeight rescale, rev 5 defaults
         // ratification — see migrateSettings in types.ts, where they're unit-tested).
         // Mutates `raw` and stamps settingsRev; runs BEFORE the Object.assign so the
         // migrated values win over the persisted ones rather than being overridden.
         migrateSettings(raw);
+        const settingsMigrated = (raw.settingsRev ?? 1) !== settingsRevBefore;
         Object.assign(this.settings, DEFAULT_SETTINGS, raw);
+        const saveDataStart = performance.now();
         await this.saveData(this.settings);
+        const saveDataMs = performance.now() - saveDataStart;
         // Scope the index DB per vault. IndexedDB is shared across every vault
         // window (one Electron origin), so an unscoped name means vault A's
         // reindex destroys vault B's index (see index-store.ts LEGACY_DB_NAME).
@@ -309,7 +321,9 @@ export default class SeekPlugin extends Plugin {
         // Scope the DB by PLUGIN id too (indexDbPrefix), not just the vault, so a
         // second Seek build in this vault (e.g. an id 'seek-prototype' dev build)
         // owns a separate database. id 'seek' → 'seek-index:<appId>', unchanged.
+        const storeOpenStart = performance.now();
         await this.store.open(vaultScope, indexDbPrefix(this.manifest.id));
+        const storeOpenMs = performance.now() - storeOpenStart;
 
         // Crash forensics: synchronous localStorage breadcrumbs (vault-scoped
         // like the IDB name — localStorage is origin-shared across vaults on
@@ -318,6 +332,7 @@ export default class SeekPlugin extends Plugin {
         // visible, since async NDJSON appends die with the process. Scoped by
         // plugin id as well, so a co-installed build's breadcrumbs can't be
         // misread as this build's crash.
+        const forensicsStart = performance.now();
         this.forensics = new Forensics(`${this.manifest.id}:${vaultScope}`, this.logger.deviceId, this.logger.sessionId);
         const crash = this.forensics.bootInspect();
         if (crash) {
@@ -339,6 +354,7 @@ export default class SeekPlugin extends Plugin {
                 new Notice('Seek: last session was killed mid-reindex on WebGPU — this device is now on WASM. Re-enable WebGPU in settings to retry.', 8000);
             }
         }
+        const forensicsMs = performance.now() - forensicsStart;
 
         // WebGPU loss diagnostics: the iframe pushes device-created / device-
         // lost / uncaptured-error events from its requestDevice hook. device-
@@ -376,6 +392,7 @@ export default class SeekPlugin extends Plugin {
         // returns 0 immediately). Awaited because the orchestrator's first
         // search assumes the binary index is loadable — but the actual work
         // is ~5 ms for an empty store and ~100 ms for a 5k-chunk vault.
+        const backfillStart = performance.now();
         try {
             await this.store.backfillBinaryIfMissing();
         } catch (e) {
@@ -383,6 +400,7 @@ export default class SeekPlugin extends Plugin {
             // reindex". Log it and continue plugin init.
             await this.logger.appendError('binary-backfill', e);
         }
+        const backfillMs = performance.now() - backfillStart;
 
         // Sidecar index dir. CRITICAL: resolved from a LITERAL config-folder
         // name, not this.manifest.dir — manifest.dir resolves against the
@@ -394,6 +412,7 @@ export default class SeekPlugin extends Plugin {
         // The pre-rev-4 path (active-override-relative). Used only to migrate an
         // existing index off it into the literal path on upgrade.
         const legacySidecarDir = this.manifest.dir ? `${this.manifest.dir}/index` : null;
+        const wireStart = performance.now();
         this.orchestrator = new SearchOrchestrator(this.app, this.store, this.embedder, this.logger, this.settings, this.forensics, sidecarIndexDir);
         // The orchestrator is pull-based; this is its one injected outbound edge — it
         // fires when persistent frame/BM25 drift survives the cooldown, and we drive the
@@ -404,6 +423,21 @@ export default class SeekPlugin extends Plugin {
         // Incremental indexing: live vault-event triggers + the startup catch-up
         // sweep. Wired here, after the orchestrator exists.
         this.wireIncrementalIndexing();
+        const wireMs = performance.now() - wireStart;
+        const totalMs = performance.now() - bootT0;
+        void this.logger.append({
+            type: 'boot',
+            timestamp: new Date().toISOString(),
+            schemaVersion: LOG_SCHEMA_VERSION,
+            loadDataMs: parseFloat(loadDataMs.toFixed(2)),
+            saveDataMs: parseFloat(saveDataMs.toFixed(2)),
+            storeOpenMs: parseFloat(storeOpenMs.toFixed(2)),
+            backfillMs: parseFloat(backfillMs.toFixed(2)),
+            forensicsMs: parseFloat(forensicsMs.toFixed(2)),
+            wireMs: parseFloat(wireMs.toFixed(2)),
+            totalMs: parseFloat(totalMs.toFixed(2)),
+            settingsMigrated,
+        }).catch(() => {});
         // Sidecar restore THEN the mtime-diff sweep, sequenced (not raced): on a
         // cold/evicted device hydrate must finish populating the store before
         // reconcileOnLoad computes its delta, or computeDelta would read the empty
@@ -956,7 +990,7 @@ export default class SeekPlugin extends Plugin {
                 // covered. Self-guarded: `warming` dedups the reconcile 'delta' warm,
                 // and the mobile `!loaded` guard keeps cold mobile a no-op here (the
                 // model isn't loaded yet at this point).
-                void this.orchestrator.warmCaches('model-load');
+                const warmPromise = this.orchestrator.warmCaches('model-load');
                 // q4: equal quality (bake-off NDCG@10 Δ=0.0005) and, on the
                 // pinned v4 runtime, also the fastest + lightest config (20.6
                 // ch/s, ~103 MB heap vs q8 13.2 ch/s, ~380 MB). q4's viability
@@ -1022,12 +1056,17 @@ export default class SeekPlugin extends Plugin {
                 // to 'model-load' instead of reading as idle.
                 this.forensics?.beat('model-load-start', { device: requestedDevice, model: spec.repo });
                 const entry = await this.embedder.load(requestedDevice, LOCAL_MODEL.enabled ? LOCAL_MODEL.dtype : spec.dtype, localBase ?? spec.repo, LOCAL_MODEL.enabled ? null : spec.revision);
+                await warmPromise.catch(() => {});
                 this.forensics?.beat('model-load-done', { device: entry.actualDevice, dtype: entry.dtype, coldStartMs: Math.round(entry.coldStartMs) });
                 // Stamp the backend this load actually resolved to (WebGPU can
                 // fall back to WASM). Read at next boot by maybeDemoteOnCrash to
                 // decide whether an indexing-crash implicates WebGPU.
                 recordActiveBackend(entry.actualDevice);
-                await this.logger.append(entry);
+                await this.logger.append({
+                    ...entry,
+                    cacheWarmMs: this.orchestrator.getLastCacheWarmMs() || null,
+                    cacheWarmFinishedBeforeModel: this.orchestrator.getLastCacheWarmFinishedBeforeModel(),
+                });
                 await this.warnOnModelIndexDrift();
                 // Production model delivery (remote/Cache-API path only — the
                 // LOCAL_MODEL dev path loads from the vault, nothing CDN-cached):
@@ -1661,6 +1700,12 @@ export default class SeekPlugin extends Plugin {
         this.pushTaskContext('search');
         try {
             const wasLoaded = this.embedder.loaded;
+            this.sessionSearchTelemetry = {
+                sessionBootAt: this.bootAt,
+                modalOpenedAt: performance.now(),
+                isFirstSearchOfSession: !this.firstSearchLogged,
+            };
+            this.orchestrator.setSessionTelemetry(this.sessionSearchTelemetry);
             const loadPromise = this.ensureModelLoaded();
             loadPromise.catch(() => { /* logged in ensureModelLoaded */ });
             new SeekSearchModal(
@@ -1673,6 +1718,8 @@ export default class SeekPlugin extends Plugin {
                 (inFlight) => this.onQueryInFlight(inFlight),
                 () => this.indexNotice(),
                 initialQuery,
+                this.sessionSearchTelemetry,
+                () => { this.firstSearchLogged = true; },
             ).open();
         } catch (e) {
             // Synchronous failure path (rare — only if the Modal ctor or

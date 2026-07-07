@@ -8,7 +8,7 @@
 
 import type { App } from 'obsidian';
 import { TFile } from 'obsidian'; // value import: reindexDelta uses `instanceof TFile`
-import type { Chunk, ChunkMeta, ScoredChunk, SearchEntry, IndexCompleteEntry, IndexProgressEntry, ResetEntry, QueryFilters, FilterContext, SeekSettings, MemorySnapshot } from './types';
+import type { Chunk, ChunkMeta, ScoredChunk, SearchEntry, IndexCompleteEntry, IndexProgressEntry, ResetEntry, QueryFilters, FilterContext, SeekSettings, MemorySnapshot, Bm25WarmSource, SearchTelemetryContext } from './types';
 import { snapshotMemory, memoryDelta, distributionStats } from './types';
 import { MarkdownChunker, cyrb53Hex } from './chunker';
 import { cleanDenseText } from './dense-clean';
@@ -219,6 +219,19 @@ export class SearchOrchestrator {
     // full reindex (reindexAllInner) clears the map so it is always retried then.
     private static readonly UNREADABLE_QUARANTINE_MS = 30 * 60 * 1000; // 30 min
     private unreadableQuarantine = new Map<string, number>();
+
+    // First-search telemetry (v15): injected by SeekPlugin per modal session.
+    private sessionTelemetry: SearchTelemetryContext | null = null;
+    private lastBm25WarmSource: Bm25WarmSource | null = null;
+    private lastCacheWarmMs = 0;
+    private lastCacheWarmFinishedBeforeModel: boolean | null = null;
+
+    setSessionTelemetry(ctx: SearchTelemetryContext | null): void {
+        this.sessionTelemetry = ctx;
+    }
+
+    getLastCacheWarmMs(): number { return this.lastCacheWarmMs; }
+    getLastCacheWarmFinishedBeforeModel(): boolean | null { return this.lastCacheWarmFinishedBeforeModel; }
 
     private isQuarantined(path: string): boolean {
         const until = this.unreadableQuarantine.get(path);
@@ -2927,7 +2940,7 @@ export class SearchOrchestrator {
         }));
 
         const totalMs = performance.now() - t0;
-        const entry: SearchEntry = {
+        const entry: SearchEntry = this.finalizeSearchEntry({
             type: 'search',
             timestamp: new Date().toISOString(),
             query, topK,
@@ -2971,7 +2984,7 @@ export class SearchOrchestrator {
             // queries: max(rawBm25)/bm25Bound is the channel's confidence.
             bm25Bound: parseFloat(bm25Bound.toFixed(4)),
             searchId,
-        };
+        });
         await this.logger.append(entry);
 
         // Catch-up is deliberately NOT triggered here. Firing a foreground embed
@@ -3230,7 +3243,10 @@ export class SearchOrchestrator {
             // here.
             this.bm25Cache = new MultiFieldBM25().fit(orderedChunks, bodies,
                 { searchableProperties: propsEnabled, headingsField: headingsEnabled });
+            this.lastBm25WarmSource = 'fit';
             this.stampBm25Cache(orderedChunks.length);
+        } else {
+            this.lastBm25WarmSource = 'resident';
         }
         if (this.settings.synonymExpansion && !this.synonymCache) {
             // O(notes) build, trivially cheap next to fit(); df ceiling reads
@@ -3265,6 +3281,7 @@ export class SearchOrchestrator {
                 searchableProperties: this.settings.searchableProperties,
                 headingsField: this.settings.headingsField || this.settings.boostedBm25,
             });
+            this.lastBm25WarmSource = 'persisted';
             this.stampBm25Cache(orderedChunks.length);
         } catch (e) {
             // Corrupt blob / loadJSON throw → leave cache cold, ensureBm25 refits.
@@ -3320,6 +3337,7 @@ export class SearchOrchestrator {
                     searchableProperties: this.settings.searchableProperties,
                     headingsField: this.settings.headingsField || this.settings.boostedBm25,
                 });
+                this.lastBm25WarmSource = 'cross-device';
                 this.stampBm25Cache(orderedChunks.length);
                 // Adopt locally (no-op on a hydrate-only device; see method comment).
                 void this.persistBm25(orderedChunks);
@@ -3431,6 +3449,11 @@ export class SearchOrchestrator {
     // cold mobile we persist-if-resident and stand down; desktop always warms.
     private warming = false;
     async warmCaches(trigger: string): Promise<void> {
+        const warmStart = performance.now();
+        let frameMs = 0;
+        let bm25Ms = 0;
+        let chunkCount = 0;
+        let bm25Source: Bm25WarmSource | null = null;
         // A warm is already in flight — safe to return. invalidateBm25Cache()
         // bumps dataGeneration BEFORE its paired warmCaches() call (see the delta /
         // hydrate / reindex sites), so the active warm sees the newer generation in
@@ -3459,10 +3482,17 @@ export class SearchOrchestrator {
             // scheduler, so this converges in 1–2 passes under real editing.
             let warmedChunks: ChunkMeta[] | null = null;
             do {
+                const frameStart = performance.now();
                 const frame = await this.ensureFrame();
+                frameMs += performance.now() - frameStart;
                 if (!frame) break;
+                const bm25Start = performance.now();
+                const prevSource = this.lastBm25WarmSource;
                 await this.ensureBm25(frame.orderedChunks);
+                bm25Ms += performance.now() - bm25Start;
+                if (this.lastBm25WarmSource !== prevSource) bm25Source = this.lastBm25WarmSource;
                 warmedChunks = frame.orderedChunks;
+                chunkCount = frame.orderedChunks.length;
             } while (this.bm25CacheGeneration !== this.coord.generation);
             // Persist the converged, warmed BM25 index so the next cold start can
             // skip fit() (fire-and-forget — the serialize + write ride this quiet
@@ -3481,6 +3511,25 @@ export class SearchOrchestrator {
             console.warn('[seek] cache re-warm failed (next search rebuilds lazily)', e);
         } finally {
             this.warming = false;
+            const durationMs = parseFloat((performance.now() - warmStart).toFixed(2));
+            const finishedBeforeModelLoad = trigger === 'model-load'
+                ? !this.embedder.loaded
+                : null;
+            this.lastCacheWarmMs = durationMs;
+            this.lastCacheWarmFinishedBeforeModel = finishedBeforeModelLoad;
+            if (chunkCount > 0 || durationMs > 0) {
+                void this.logger.append({
+                    type: 'cache-warm',
+                    timestamp: new Date().toISOString(),
+                    trigger,
+                    durationMs,
+                    frameMs: parseFloat(frameMs.toFixed(2)),
+                    bm25Ms: parseFloat(bm25Ms.toFixed(2)),
+                    bm25Source,
+                    chunkCount,
+                    finishedBeforeModelLoad,
+                }).catch(() => {});
+            }
         }
     }
 
@@ -3530,7 +3579,7 @@ export class SearchOrchestrator {
         idbReadMs: number,
         totalMs: number,
     ): SearchEntry {
-        return {
+        return this.finalizeSearchEntry({
             type: 'search',
             timestamp: new Date().toISOString(),
             query, topK,
@@ -3556,7 +3605,24 @@ export class SearchOrchestrator {
             recencyWeight: this.settings.recencyEpsilon,
             recencyKey: this.settings.recencyKey,
             searchId,
-        };
+        });
+    }
+
+    private finalizeSearchEntry(entry: SearchEntry): SearchEntry {
+        const t = this.sessionTelemetry;
+        const now = performance.now();
+        entry.bm25WarmSource = this.lastBm25WarmSource;
+        if (t?.modalOpenedAt != null) {
+            entry.modalOpenMs = parseFloat((now - t.modalOpenedAt).toFixed(2));
+        }
+        if (t?.modalOpenedAt != null && t.modelReadyAt != null) {
+            entry.modelReadyMs = parseFloat((t.modelReadyAt - t.modalOpenedAt).toFixed(2));
+        }
+        if (t?.sessionBootAt != null) {
+            entry.sessionBootMs = parseFloat((now - t.sessionBootAt).toFixed(2));
+        }
+        if (t?.isFirstSearchOfSession) entry.isFirstSearchOfSession = true;
+        return entry;
     }
 
     // BM25 cache. Validity is determined by:
