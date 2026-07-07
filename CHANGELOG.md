@@ -2,6 +2,21 @@
 
 All notable changes to Seek are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.0.7
+
+Search-modal workflow release — open results in more places and insert links without leaving the editor.
+
+### Added
+- **Insert link from search** — Alt+Enter in the search modal inserts a wiki link to the selected result at the active editor cursor. Desktop only.
+- **`seek:insert-link` CLI** — search and insert a link to a ranked result headlessly (`query`, optional `rank`, `alias`, and `heading`).
+- **`seek:open` CLI** — search and open a ranked result in the active tab, a new tab, a split pane, or a pop-out window (`paneType=tab|split|window`).
+- **Split-pane open** — ⌘/Ctrl+Alt+Enter (or ⌘/Ctrl+Alt+click) opens the selected result in a split pane while keeping the search modal focused.
+- **Deep-link pane target** — `obsidian://seek?mode=open` now accepts `paneType=tab|split|window`.
+
+### Changed
+- Insert-link alias resolution: editor selection wins when present; otherwise the search field's free text is used as `[[note|alias]]` by default (toggle in Display settings).
+- Insert-link subpath: section heading (`#Section`) is optional and off by default; enable "Insert link includes section heading" in Display settings for `[[Note#Section|…]]` links.
+
 ## 1.0.6
 
 Indexing reliability release, prompted by a community bug report — thank you.
