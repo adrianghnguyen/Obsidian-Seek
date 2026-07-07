@@ -5,6 +5,7 @@ import {
     headingSubpath,
     insertLinkAliasPolicyFromSettings,
     resolveInsertLinkAlias,
+    resolveInsertLinkSubpath,
     type InsertLinkAliasPolicy,
 } from './insert-link';
 
@@ -18,6 +19,24 @@ describe('headingSubpath', () => {
     it('uses the last heading segment', () => {
         expect(headingSubpath(['Agenda', 'Intern pgm'])).toBe('#Intern pgm');
         expect(headingSubpath(['Only'])).toBe('#Only');
+    });
+});
+
+describe('resolveInsertLinkSubpath', () => {
+    const sectionPath = ['Agenda', 'Intern pgm'];
+
+    it('returns empty subpath by default', () => {
+        expect(resolveInsertLinkSubpath(sectionPath, {})).toBe('');
+        expect(resolveInsertLinkSubpath(sectionPath, { insertLinkIncludeHeading: false })).toBe('');
+    });
+
+    it('includes heading when setting is on', () => {
+        expect(resolveInsertLinkSubpath(sectionPath, { insertLinkIncludeHeading: true })).toBe('#Intern pgm');
+    });
+
+    it('returns empty subpath for empty heading paths', () => {
+        expect(resolveInsertLinkSubpath([], { insertLinkIncludeHeading: true })).toBe('');
+        expect(resolveInsertLinkSubpath(null, { insertLinkIncludeHeading: true })).toBe('');
     });
 });
 

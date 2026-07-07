@@ -32,11 +32,11 @@ import { SeekSearchModal, type IndexBanner } from './search-modal';
 import { parsePaneType, openFileAtTarget, openBaseAtTarget, type OpenTarget } from './open-target';
 import {
     buildNoteLink,
-    headingSubpath,
     insertLinkAliasPolicyFromSettings,
     insertLinkInEditor,
     isInsertableMarkdownFile,
     resolveInsertLinkAlias,
+    resolveInsertLinkSubpath,
 } from './insert-link';
 import { indexBannerSpec, INDEX_STALE_MSG, INDEX_SYNCING_MSG, INDEX_PEER_AHEAD_MSG, type DegradedReason } from './index-notice';
 import { SeekSettingTab } from './settings-tab';
@@ -748,6 +748,7 @@ export default class SeekPlugin extends Plugin {
                     query: { value: '<text>', description: 'Search query (supports inline filters: #tag, tag:, path:, [k:v], dates)', required: true },
                     rank: { value: '<n>', description: '1-based result rank to link (default: 1)', required: false },
                     alias: { value: '<text>', description: 'Optional link display text ([[note|alias]])', required: false },
+                    heading: { value: '<true|false>', description: 'Include #heading for section hits (default: setting)', required: false },
                 },
                 async (args: Record<string, string | boolean | undefined>): Promise<string> => {
                     const query = typeof args.query === 'string' ? args.query : '';
@@ -763,6 +764,12 @@ export default class SeekPlugin extends Plugin {
                         { searchQueryText: query, explicitAlias },
                         insertLinkAliasPolicyFromSettings(this.settings),
                     );
+                    const headingArg = args.heading;
+                    const subpathSettings = headingArg === true || headingArg === 'true'
+                        ? { insertLinkIncludeHeading: true as const }
+                        : headingArg === false || headingArg === 'false'
+                            ? { insertLinkIncludeHeading: false as const }
+                            : this.settings;
 
                     try {
                         await this.ensureModelLoaded();
@@ -774,7 +781,7 @@ export default class SeekPlugin extends Plugin {
                             return `Seek error: result is not a markdown note (${hit.note_path})`;
                         }
                         const link = buildNoteLink(this.app, file, {
-                            subpath: headingSubpath(hit.heading_path) ?? '',
+                            subpath: resolveInsertLinkSubpath(hit.heading_path, subpathSettings),
                             alias,
                         });
                         const inserted = insertLinkInEditor(this.app, link);

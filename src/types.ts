@@ -463,6 +463,11 @@ export interface SeekSettings {
     // OFF: editor selection only, else Obsidian default title. See insert-link.ts.
     insertLinkQueryAlias: boolean;
 
+    // Insert-link subpath from section hits (Alt+Enter / seek:insert-link). ON: include
+    // #heading for section results ([[Note#Section|…]]). OFF (default): link to the
+    // note only ([[Note|…]]). See insert-link.ts resolveInsertLinkSubpath.
+    insertLinkIncludeHeading: boolean;
+
     // NOTE: the compute backend (WebGPU vs WASM) is deliberately NOT a setting.
     // It is a property of the DEVICE, not the vault, and data.json syncs across
     // devices (iCloud / Obsidian Sync) — a toggle here would be shared, so the
@@ -553,6 +558,7 @@ export const DEFAULT_SETTINGS: SeekSettings = {
     verboseTrace: false,       // OFF: persist only the top-10 ranking trace per search (what the report shows); ON = full 50-deep tail for offline eval. Diagnostic-only, no UI
     showHotkeyHints: true,     // ON: show the modal footer keyboard-hint bar + result counter; OFF = full-results-only modal
     insertLinkQueryAlias: true, // ON: Alt+Enter uses free-text search as link alias when no editor selection
+    insertLinkIncludeHeading: false, // OFF (default): note-only links; ON adds #heading for section hits
     sidecarEnabled: true,      // ON (hidden) per the 2026-06-19 ratification; vault-file index persistence for iOS-eviction survival + cross-device sync; only Index location stays user-facing; seeds on next reindex — see field comment
     sidecarIndexLocation: 'config', // hidden literal '.obsidian/plugins/seek/index'; 'visible' = vault-root 'Seek Index/' for split-config Obsidian Sync; see field comment
     settingsRev: 8,            // current schema rev; bump alongside a migration in main.ts onload (rev 8 = 2026-06-27 denseWeight 0.80→0.85 re-eval)

@@ -63,6 +63,14 @@ export function headingSubpath(headingPath: string[] | undefined | null): string
     return `#${last}`;
 }
 
+export function resolveInsertLinkSubpath(
+    headingPath: string[] | undefined | null,
+    settings: Partial<Pick<SeekSettings, 'insertLinkIncludeHeading'>>,
+): string {
+    if (settings.insertLinkIncludeHeading !== true) return '';
+    return headingSubpath(headingPath) ?? '';
+}
+
 function noteBasename(file: TFile): string {
     const base = file.path.split('/').pop() ?? file.path;
     return base.replace(/\.md$/i, '');
