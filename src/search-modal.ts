@@ -27,6 +27,7 @@ import {
     resolveInsertLinkAlias,
     resolveInsertLinkSubpath,
 } from './insert-link';
+import { applySearchModalSize } from './search-modal-size';
 import { matchTitleAlias } from './fusion';
 import { dedupeAliasesAgainstBasename, sliceResultAliases } from './result-aliases';
 
@@ -290,6 +291,12 @@ export class SeekSearchModal extends Modal {
         // width back to a centred reading column (see styles.css). Same surface
         // distinction capabilityDefault() uses for the WebGPU allowlist.
         if (Platform.isTablet) this.modalEl.addClass('seek-tablet');
+        applySearchModalSize(
+            this.modalEl,
+            this.settings.searchModalWidth,
+            this.settings.searchModalHeight,
+            { isPhone: Platform.isMobile && !Platform.isTablet, isTablet: Platform.isTablet },
+        );
         // Activate the component now so MarkdownRenderer can register snippet
         // child-renderers against a loaded parent.
         this.markdownComponent.load();

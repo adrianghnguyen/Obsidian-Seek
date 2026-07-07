@@ -477,6 +477,14 @@ export interface SeekSettings {
     // (no truncation). Default 3. Ignored when showResultAliases is OFF.
     resultAliasLimit: number;
 
+    // Search modal width on desktop/tablet (phones keep full-width). Applied on
+    // next open via CSS vars — see search-modal-size.ts.
+    searchModalWidth: SearchModalWidth;
+
+    // Search modal height on desktop (mobile/tablet use keyboard-aware sizing).
+    // Applied on next open via CSS vars — see search-modal-size.ts.
+    searchModalHeight: SearchModalHeight;
+
     // NOTE: the compute backend (WebGPU vs WASM) is deliberately NOT a setting.
     // It is a property of the DEVICE, not the vault, and data.json syncs across
     // devices (iCloud / Obsidian Sync) — a toggle here would be shared, so the
@@ -547,6 +555,10 @@ export type RecencyKeyChoice = 'created' | 'modified';
 // 'visible' = vault-root 'Seek Index/' (the Obsidian-Sync-renamed-config carve-out)
 export type SidecarIndexLocation = 'config' | 'visible';
 
+// Search modal dimension presets — see SeekSettings.searchModalWidth/Height.
+export type SearchModalWidth = 'default' | 'wide' | 'extra-wide';
+export type SearchModalHeight = 'default' | 'tall' | 'extra-tall';
+
 export const DEFAULT_SETTINGS: SeekSettings = {
     denseWeight: 0.85,         // BOUND-NORM scale dense weight; mirrors DEFAULT_RANKING_CONFIG.alpha. Raised 0.80→0.85 (2026-06-27 re-eval): de-franken made BM25 more assertive, so a fixed α=0.80 over-weighted lexical; 0.85 is a cross-corpus win (Example Vault flat-to-+, BEIR +0.01–0.02). Migrated via rev 8. (NOT the 0.92 empirical-max point)
     navTitleBoost: 0.5,        // Title-bonus "Default" stage (segmented 0=Off / 0.5=Default / 0.8=High); softened from the 0.8 swept knee per the 2026-06-19 settings ratification — see field comment
@@ -570,6 +582,8 @@ export const DEFAULT_SETTINGS: SeekSettings = {
     insertLinkIncludeHeading: false, // OFF (default): note-only links; ON adds #heading for section hits
     showResultAliases: true,   // ON: show frontmatter aliases on result rows (truncated per resultAliasLimit)
     resultAliasLimit: 3,       // max aliases before "+N more"; 0 = show all
+    searchModalWidth: 'default',   // desktop/tablet modal width preset
+    searchModalHeight: 'default',  // desktop modal height preset
     sidecarEnabled: true,      // ON (hidden) per the 2026-06-19 ratification; vault-file index persistence for iOS-eviction survival + cross-device sync; only Index location stays user-facing; seeds on next reindex — see field comment
     sidecarIndexLocation: 'config', // hidden literal '.obsidian/plugins/seek/index'; 'visible' = vault-root 'Seek Index/' for split-config Obsidian Sync; see field comment
     settingsRev: 8,            // current schema rev; bump alongside a migration in main.ts onload (rev 8 = 2026-06-27 denseWeight 0.80→0.85 re-eval)
