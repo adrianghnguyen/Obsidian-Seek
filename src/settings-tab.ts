@@ -559,6 +559,33 @@ export class SeekSettingTab extends PluginSettingTab {
             .setDesc('Displays a keyboard hint bar under results in the results modal.')
             .addToggle(t => t.setValue(this.s.showHotkeyHints).onChange(async v => { this.s.showHotkeyHints = v; await this.save(); }));
 
+        const aliasLimitLabels: Record<string, number> = {
+            '1': 1, '2': 2, '3': 3, '5': 5, '10': 10, All: 0,
+        };
+        const aliasLimitLabel = (n: number) => (n === 0 ? 'All' : String(n));
+
+        new Setting(containerEl)
+            .setName('Show aliases in results')
+            .setDesc('Displays frontmatter aliases on each search result row. Use the limit below to truncate long alias lists.')
+            .addToggle(t => t.setValue(this.s.showResultAliases).onChange(async v => {
+                this.s.showResultAliases = v;
+                await this.save();
+                this.rerender();
+            }));
+
+        const aliasLimit = new Setting(containerEl)
+            .setName('Alias display limit')
+            .setDesc('How many aliases to show per result before a "+N more" control. All shows every alias with no truncation.')
+            .addDropdown(dd => dd
+                .addOptions({ '1': '1', '2': '2', '3': '3', '5': '5', '10': '10', All: 'All' })
+                .setValue(aliasLimitLabel(this.s.resultAliasLimit))
+                .onChange(async v => {
+                    this.s.resultAliasLimit = aliasLimitLabels[v] ?? 3;
+                    await this.save();
+                }));
+        aliasLimit.settingEl.toggleClass('is-disabled', !this.s.showResultAliases);
+        aliasLimit.components.forEach(c => { (c as { disabled?: boolean }).disabled = !this.s.showResultAliases; });
+
         new Setting(containerEl)
             .setName('Insert link uses search text')
             .setDesc('When inserting a link (Alt+Enter), use the words you typed in the search field as the link label when no text is selected in the editor.')

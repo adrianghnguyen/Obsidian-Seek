@@ -468,6 +468,15 @@ export interface SeekSettings {
     // note only ([[Note|…]]). See insert-link.ts resolveInsertLinkSubpath.
     insertLinkIncludeHeading: boolean;
 
+    // Search-result alias display. ON (default): show frontmatter aliases on each
+    // result row's meta line, with optional truncation (resultAliasLimit). OFF:
+    // created + tags only. See result-aliases.ts / search-modal applyRow.
+    showResultAliases: boolean;
+
+    // Max aliases shown per result row before a "+N more" control. 0 = show all
+    // (no truncation). Default 3. Ignored when showResultAliases is OFF.
+    resultAliasLimit: number;
+
     // NOTE: the compute backend (WebGPU vs WASM) is deliberately NOT a setting.
     // It is a property of the DEVICE, not the vault, and data.json syncs across
     // devices (iCloud / Obsidian Sync) — a toggle here would be shared, so the
@@ -559,6 +568,8 @@ export const DEFAULT_SETTINGS: SeekSettings = {
     showHotkeyHints: true,     // ON: show the modal footer keyboard-hint bar + result counter; OFF = full-results-only modal
     insertLinkQueryAlias: true, // ON: Alt+Enter uses free-text search as link alias when no editor selection
     insertLinkIncludeHeading: false, // OFF (default): note-only links; ON adds #heading for section hits
+    showResultAliases: true,   // ON: show frontmatter aliases on result rows (truncated per resultAliasLimit)
+    resultAliasLimit: 3,       // max aliases before "+N more"; 0 = show all
     sidecarEnabled: true,      // ON (hidden) per the 2026-06-19 ratification; vault-file index persistence for iOS-eviction survival + cross-device sync; only Index location stays user-facing; seeds on next reindex — see field comment
     sidecarIndexLocation: 'config', // hidden literal '.obsidian/plugins/seek/index'; 'visible' = vault-root 'Seek Index/' for split-config Obsidian Sync; see field comment
     settingsRev: 8,            // current schema rev; bump alongside a migration in main.ts onload (rev 8 = 2026-06-27 denseWeight 0.80→0.85 re-eval)

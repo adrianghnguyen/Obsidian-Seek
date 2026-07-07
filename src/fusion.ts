@@ -379,14 +379,42 @@ function coverage(qTokens: Set<string>, title: string): number {
     return Math.min(1, inter / t.size); // precision
 }
 
-export function titleMatchBoost(query: string, chunks: TitleBoostChunk[], boost = 0.8): Float64Array {
-    const out = new Float64Array(chunks.length);
-    // Gate on content tokens (stopwords dropped, §6.1). If the query is ALL
-    // stopwords ("will", "the it"), fall back to the literal tokens so a note
-    // literally titled "Will"/"It" still earns the boost — that name-as-stopword
-    // class is the deferred §6.2 BM25-channel issue, not something to regress here.
+export interface TitleAliasMatch {
+    basenameCoverage: number;
+    bestAlias: string | null;
+    aliasCoverage: number;
+}
+
+function queryTokensForTitleMatch(query: string): Set<string> {
     let qTokens = tokenSet(query, true);
     if (qTokens.size === 0) qTokens = tokenSet(query, false);
+    return qTokens;
+}
+
+// Best basename + alias coverage for a text query. Shared by titleMatchBoost and
+// the search-modal alias highlight / title-hint UI.
+export function matchTitleAlias(query: string, basename: string, aliases: string[]): TitleAliasMatch {
+    const qTokens = queryTokensForTitleMatch(query);
+    if (qTokens.size === 0) {
+        return { basenameCoverage: 0, bestAlias: null, aliasCoverage: 0 };
+    }
+
+    const basenameCoverage = coverage(qTokens, basename);
+    let bestAlias: string | null = null;
+    let aliasCoverage = 0;
+    for (const alias of aliases) {
+        const c = coverage(qTokens, String(alias));
+        if (c > aliasCoverage) {
+            aliasCoverage = c;
+            bestAlias = String(alias);
+        }
+    }
+    return { basenameCoverage, bestAlias, aliasCoverage };
+}
+
+export function titleMatchBoost(query: string, chunks: TitleBoostChunk[], boost = 0.8): Float64Array {
+    const out = new Float64Array(chunks.length);
+    const qTokens = queryTokensForTitleMatch(query);
     if (qTokens.size === 0) return out;
 
     for (let i = 0; i < chunks.length; i++) {
