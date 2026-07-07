@@ -10,11 +10,11 @@ import { App, Modal, Notice, Platform, TFile, MarkdownView, MarkdownRenderer, Co
 import type { EditorPosition } from 'obsidian';
 import type { ScoredChunk, SearchEntry, ClickEntry, SeekSettings } from './types';
 import { MATCH_STRENGTH_MIN_NOTES } from './types';
+import { makeSnippet, sanitizeSnippet, SNIPPET_PREVIEW_LIMITS } from './snippet';
 import type { SearchOrchestrator } from './search';
 import type { SeekLogger } from './logger';
 import { ENGLISH_STOPWORDS } from './bm25';
 import { buildHighlightRanges } from './highlight';
-import { sanitizeSnippet } from './snippet';
 import { matchStrength } from './dense-stats';
 import { SuggestEngine } from './suggest';
 import { PillQueryField } from './query-field';
@@ -182,6 +182,8 @@ export class SeekSearchModal extends Modal {
     // a page at a time as it scrolls into view. selectedIndex never exceeds
     // shownCount-1 (moveSelection reveals before crossing the edge).
     private shownCount = 0;
+    // Ctrl/Cmd+Shift+E toggles expanded snippet lines (6) for the open session.
+    private snippetExpanded = false;
     private sentinelEl: HTMLElement | null = null;
     private revealObserver: IntersectionObserver | null = null;
     // Set true at the top of onClose, before any teardown. A fresh modal
@@ -324,6 +326,7 @@ export class SeekSearchModal extends Modal {
             onNavigate: dir => this.moveSelection(dir),
             onSubmit: target => this.openSelected(target),
             onInsertLink: () => this.insertSelectedLink(),
+            onToggleSnippetExpand: () => this.toggleSnippetExpand(),
             onDismiss: () => this.close(),
             validateTag: tag => this.tagBinds(tag),
         }, this.settings.recencyEpsilon > 0, dateFieldLabel);
@@ -341,6 +344,8 @@ export class SeekSearchModal extends Modal {
         this.renderIndexBanner();
 
         this.resultsEl = contentEl.createDiv({ cls: 'seek-results' });
+        this.snippetExpanded = false;
+        this.applySnippetLineStyle();
         this.renderEmpty();
 
         // Mobile-only wiring: keyboard-aware modal height + touch-to-dismiss.
@@ -488,8 +493,9 @@ export class SeekSearchModal extends Modal {
     // glyph is a <kbd> cap styled from theme variables.
     private buildFooter(parent: HTMLElement): void {
         const foot = parent.createDiv({ cls: 'seek-foot' });
+        const hints = foot.createDiv({ cls: 'seek-foot-hints' });
         const grp = (build: (g: HTMLElement) => void): void => {
-            const g = foot.createSpan({ cls: 'seek-foot-grp' });
+            const g = hints.createSpan({ cls: 'seek-foot-grp' });
             build(g);
         };
         const kbd = (g: HTMLElement, key: string) => g.createEl('kbd', { text: key });
@@ -504,22 +510,20 @@ export class SeekSearchModal extends Modal {
         }
         grp(g => { kbd(g, 'tab'); g.createSpan({ text: ' fill autosuggest' }); });
         if (Platform.isMacOS) {
+            grp(g => { kbd(g, '⌘'); kbd(g, '⇧'); kbd(g, 'E'); g.createSpan({ text: ' expand snippet' }); });
             grp(g => { kbd(g, '⌥'); kbd(g, '↵'); g.createSpan({ text: ' insert link' }); });
         } else {
+            grp(g => { kbd(g, 'Ctrl'); kbd(g, 'Shift'); kbd(g, 'E'); g.createSpan({ text: ' expand snippet' }); });
             grp(g => { kbd(g, 'Alt'); kbd(g, '↵'); g.createSpan({ text: ' insert link' }); });
         }
-        // Copy a shareable obsidian://seek deep-link for the CURRENT query. The
-        // builder percent-encodes (so a `#tag`/`[k:v]` filter survives the URL
-        // fragment delimiter) — the whole reason this exists, since a hand-typed
-        // link truncates at `#`. A real action, not a hint: the click also serves
-        // as the user gesture the clipboard write needs on mobile WKWebView.
         grp(g => {
             const link = g.createEl('a', { cls: 'seek-foot-link', text: '⧉ copy link' });
             link.setAttr('role', 'button');
             link.addEventListener('click', () => void this.copySearchLink());
         });
-        foot.createSpan({ cls: 'seek-foot-spacer' });
-        grp(g => { kbd(g, 'esc'); g.createSpan({ text: ' close' }); });
+        const closeGrp = foot.createSpan({ cls: 'seek-foot-grp seek-foot-close' });
+        kbd(closeGrp, 'esc');
+        closeGrp.createSpan({ text: ' close' });
     }
 
     // Build + copy an obsidian://seek deep-link for the current query. `vault` is
@@ -1111,9 +1115,12 @@ export class SeekSearchModal extends Modal {
             row.scoreEl.hide();
         }
 
-        const snippet = sanitizeSnippet(r.snippet ?? '');
-        if (snippet === row.lastSnippet) return; // unchanged — skip the markdown re-render
-        row.lastSnippet = snippet;
+        const limits = this.effectiveSnippetLimits();
+        const rawSnippet = makeSnippet(r.content, cleanedQuery, limits.chars);
+        const snippet = sanitizeSnippet(rawSnippet);
+        const snippetKey = `${limits.lines}\x1e${limits.chars}\x1e${snippet}`;
+        if (snippetKey === row.lastSnippet) return; // unchanged — skip the markdown re-render
+        row.lastSnippet = snippetKey;
         row.snippetEl.empty();
         row.snippetEl.toggle(snippet.length > 0);
         if (!snippet) return;
@@ -1124,6 +1131,29 @@ export class SeekSearchModal extends Modal {
         const wrapper = row.snippetEl.createDiv();
         MarkdownRenderer.render(this.app, snippet, wrapper, r.note_path, this.markdownComponent)
             .catch(() => wrapper.setText(snippet));
+    }
+
+    private toggleSnippetExpand(): void {
+        this.snippetExpanded = !this.snippetExpanded;
+        this.applySnippetLineStyle();
+        for (let i = 0; i < this.shownCount; i++) {
+            const row = this.rows[i];
+            if (!row?.data) continue;
+            row.lastSnippet = '\0';
+            this.applyRow(row, row.data, row.rank);
+        }
+        this.applySelection();
+    }
+
+    private effectiveSnippetLimits(): { lines: number; chars: number } {
+        if (this.snippetExpanded) return SNIPPET_PREVIEW_LIMITS.expanded;
+        return SNIPPET_PREVIEW_LIMITS[this.settings.snippetPreview];
+    }
+
+    private applySnippetLineStyle(): void {
+        const { lines } = this.effectiveSnippetLimits();
+        this.resultsEl?.style.setProperty('--seek-snippet-lines', String(lines));
+        this.modalEl.toggleClass('seek-snippet-expanded', this.snippetExpanded);
     }
 
     // ---- keyboard selection model ----

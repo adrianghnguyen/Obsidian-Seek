@@ -90,9 +90,8 @@
 
 /* The footer legend is all physical-keyboard hints (↑↓ / ↵ / ⌘↵ / tab / esc) —
    meaningless with a touch keyboard, and it steals vertical room from results.
-   Drop the hint groups on mobile but keep the "N results" count + the spacer
-   that right-aligns it. */
-.seek-modal.seek-mobile .seek-foot-grp {
+   Drop the hint groups on mobile. */
+.seek-modal.seek-mobile .seek-foot-hints {
     display: none;
 }
 
@@ -497,6 +496,7 @@
     min-height: 0;
     overflow-y: auto;
     padding: 6px;
+    --seek-snippet-lines: 1;
 }
 /* Resting state: the results body is emptied (renderResting), so drop its padding too —
    the modal collapses to just the query field + footer (and the banner slot, which has
@@ -621,30 +621,21 @@
     font-size: inherit;
 }
 
-/* Single-line snippet: force the markdown-rendered blocks inline + clip. */
+/* Snippet: line count from --seek-snippet-lines (set on .seek-results). */
 .seek-result-snippet {
     margin-top: 2px;
     font-size: 13px;
     line-height: 1.4;
-    /* Reserve the single line up front. applyRow() empty()s this block and then
-       fills it via an ASYNC MarkdownRenderer.render — without a floor the block
-       collapses to 0 in between, so every row with a snippet shrinks-then-grows
-       on each search and the rows below it visibly jump (and applySelection's
-       synchronous offsetTop/offsetHeight read lands on collapsed rows). 1.4em
-       == the line-height box, so empty and filled are identical; min-height (not
-       height) lets a rare tall inline span grow rather than clip. Snippet-less
-       rows toggle display:none, so this never reserves a phantom line for them. */
-    min-height: 1.4em;
-    /* Hard one-line ceiling. min-height alone only stops the async-render
-       collapse; it does NOT stop a display:block child (a $$math$$ block, a
-       callout, a blockquote from pasted text) from breaking onto its own line
-       and growing the row. A block child still breaks the line even under
-       nowrap, so max-height + overflow:hidden clips it to a single line —
-       content-type-agnostic, unlike the :is() allowlist below. */
-    max-height: 1.4em;
+    /* Reserve lines up front. applyRow() empty()s this block and then fills it via
+       an ASYNC MarkdownRenderer.render — without a floor the block collapses to 0
+       in between, so every row with a snippet shrinks-then-grows on each search. */
+    min-height: calc(var(--seek-snippet-lines, 1) * 1.4em);
+    max-height: calc(var(--seek-snippet-lines, 1) * 1.4em);
     color: var(--text-muted);
-    white-space: nowrap;
     overflow: hidden;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: var(--seek-snippet-lines, 1);
     text-overflow: ellipsis;
 }
 
@@ -812,13 +803,25 @@
 .seek-foot {
     flex: 0 0 auto;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 14px;
+    justify-content: space-between;
+    gap: 8px 14px;
+    min-width: 0;
     padding: 8px 14px;
     border-top: 1px solid var(--background-modifier-border);
     background: var(--background-secondary);
     font-size: 11.5px;
     color: var(--text-muted);
+}
+
+.seek-foot-hints {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 14px;
+    flex: 1 1 auto;
+    min-width: 0;
 }
 
 .seek-foot-grp {
@@ -828,8 +831,9 @@
     white-space: nowrap;
 }
 
-.seek-foot-spacer {
-    flex: 1 1 auto;
+.seek-foot-close {
+    flex: 0 0 auto;
+    margin-left: auto;
 }
 
 /* "Copy link" footer action — a real button styled as a footer hint. */

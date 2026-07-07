@@ -62,6 +62,8 @@ export interface PillQueryFieldCallbacks {
     onSubmit: (target: OpenTarget) => void;
     // Insert a link to the selected result at the active editor cursor (Alt+Enter).
     onInsertLink: () => void;
+    // Ctrl/Cmd+Shift+E → toggle expanded snippet lines on result rows.
+    onToggleSnippetExpand: () => void;
     // Esc with no dropdown open → close the modal.
     onDismiss: () => void;
     // Does this tag bind to a real vault tag (exact or hierarchical parent)?
@@ -793,6 +795,11 @@ export class PillQueryField {
                 }
                 return;
             }
+            return;
+        }
+        if (e.key === 'E' && e.shiftKey && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            this.cb.onToggleSnippetExpand();
             return;
         }
         if (e.key === 'Tab') {

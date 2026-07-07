@@ -477,6 +477,11 @@ export interface SeekSettings {
     // (no truncation). Default 3. Ignored when showResultAliases is OFF.
     resultAliasLimit: number;
 
+    // Default snippet preview per result row (lines + surrounding-text window).
+    // Ctrl/Cmd+Shift+E toggles the expanded preset while the modal is open.
+    // Applied on next modal open — see snippet.ts.
+    snippetPreview: SnippetPreview;
+
     // Search modal width on desktop/tablet (phones keep full-width). Applied on
     // next open via CSS vars — see search-modal-size.ts.
     searchModalWidth: SearchModalWidth;
@@ -558,6 +563,7 @@ export type SidecarIndexLocation = 'config' | 'visible';
 // Search modal dimension presets — see SeekSettings.searchModalWidth/Height.
 export type SearchModalWidth = 'default' | 'wide' | 'extra-wide';
 export type SearchModalHeight = 'default' | 'tall' | 'extra-tall';
+export type SnippetPreview = 'compact' | 'standard' | 'expanded';
 
 export const DEFAULT_SETTINGS: SeekSettings = {
     denseWeight: 0.85,         // BOUND-NORM scale dense weight; mirrors DEFAULT_RANKING_CONFIG.alpha. Raised 0.80→0.85 (2026-06-27 re-eval): de-franken made BM25 more assertive, so a fixed α=0.80 over-weighted lexical; 0.85 is a cross-corpus win (Example Vault flat-to-+, BEIR +0.01–0.02). Migrated via rev 8. (NOT the 0.92 empirical-max point)
@@ -582,6 +588,7 @@ export const DEFAULT_SETTINGS: SeekSettings = {
     insertLinkIncludeHeading: false, // OFF (default): note-only links; ON adds #heading for section hits
     showResultAliases: true,   // ON: show frontmatter aliases on result rows (truncated per resultAliasLimit)
     resultAliasLimit: 3,       // max aliases before "+N more"; 0 = show all
+    snippetPreview: 'compact', // 1-line / 200-char window; standard=3/400, expanded=6/800
     searchModalWidth: 'default',   // desktop/tablet modal width preset
     searchModalHeight: 'default',  // desktop modal height preset
     sidecarEnabled: true,      // ON (hidden) per the 2026-06-19 ratification; vault-file index persistence for iOS-eviction survival + cross-device sync; only Index location stays user-facing; seeds on next reindex — see field comment

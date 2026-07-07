@@ -17,7 +17,7 @@
 import { App, PluginSettingTab, Setting, Notice, setIcon } from 'obsidian';
 import type SeekPlugin from './main';
 import type { IndexStats, ModelStatus } from './main';
-import type { SidecarIndexLocation, SearchModalHeight, SearchModalWidth } from './types';
+import type { SidecarIndexLocation, SearchModalHeight, SearchModalWidth, SnippetPreview } from './types';
 import { DEFAULT_SETTINGS, MATCH_STRENGTH_MIN_NOTES } from './types';
 import {
     getBackendOverride, setBackendOverride, isWebgpuDemoted, clearWebgpuDemoted,
@@ -588,6 +588,23 @@ export class SeekSettingTab extends PluginSettingTab {
                 .setValue(this.s.searchModalHeight)
                 .onChange(async v => {
                     this.s.searchModalHeight = v as SearchModalHeight;
+                    await this.save();
+                }));
+
+        const snippetLineLabels: Record<SnippetPreview, string> = {
+            compact: 'Compact (1 line)',
+            standard: 'Standard (3 lines)',
+            expanded: 'Expanded (6 lines)',
+        };
+
+        new Setting(containerEl)
+            .setName('Result snippet preview')
+            .setDesc('How much surrounding text to show per result (200 / 400 / 800 characters). Ctrl/Cmd+Shift+E toggles the expanded preset while search is open.')
+            .addDropdown(dd => dd
+                .addOptions(snippetLineLabels)
+                .setValue(this.s.snippetPreview)
+                .onChange(async v => {
+                    this.s.snippetPreview = v as SnippetPreview;
                     await this.save();
                 }));
 
