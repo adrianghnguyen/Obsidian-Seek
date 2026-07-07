@@ -1,0 +1,6 @@
+# Enforce LF line endings across platforms. The atom parser (src/atoms.ts) and
+# the chunking/token-budget code split on '\n'; a CRLF checkout (Git for Windows
+# defaults to core.autocrlf=true) leaves a stray '\r' on each line that breaks
+# fenced-code close detection and the round-trip join, failing the atoms and
+# token-budget test suites. Normalizing to LF keeps the repo working on Windows.
+* text=auto eol=lf
