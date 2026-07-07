@@ -32,14 +32,24 @@ function corpus(n: number): SeededCorpus {
     return c;
 }
 
-// Slow benches: cap iterations so BM25 fit/fromJSON don't OOM the worker.
-const SLOW_BENCH = { iterations: 5, time: 3000 } as const;
+// Heavy benches (BM25 fit/fromJSON, warmCaches) allocate a full 5k-doc MiniSearch
+// per call. Time-based sampling (the vitest default) runs them dozens of times per
+// window and OOMs the worker faster than GC reclaims. Pin them to a fixed, tiny
+// sample count (time:0 ⇒ exactly `iterations` runs) — directional, not deep stats,
+// which is the right trade for a scaling/regression harness at 5k+.
+const SLOW_BENCH = { iterations: 5, time: 0, warmupIterations: 1, warmupTime: 0 } as const;
+const WARM_BENCH = { iterations: 3, time: 0, warmupIterations: 0, warmupTime: 0 } as const;
 
 for (const n of ALL_SIZES) {
     describe(`startup @ ~${n} chunks`, () => {
-        bench('store.open (fresh scoped DB)', async () => {
+        // Reuse ONE fixed DB name and close the connection each iteration: a random
+        // name per iteration leaks a fresh database into fake-indexeddb every sample
+        // (~15k/run) and OOMs the worker. First sample creates the DB; the rest reopen
+        // it — which is the cost we actually want to measure anyway.
+        bench('store.open (reopen existing DB)', async () => {
             const store = new IndexStore();
-            await store.open(`bench-open-${n}-${Math.random().toString(36).slice(2)}`, 'seek-bench');
+            await store.open(`bench-open-${n}`, 'seek-bench');
+            store.close();
         });
 
         bench('listAllMeta', async () => {
@@ -54,15 +64,29 @@ for (const n of ALL_SIZES) {
             await corpus(n).scenario.store.listAllEmbeddings();
         });
 
+        // Bounded: warmCaches fires a fire-and-forget persistBm25 (multi-MB toJSON at
+        // 5k) even on a cache hit, so thousands of time-based samples OOM the worker.
+        // A small fixed count still captures the ~instant resident-hit cost.
         bench('warmCaches (cache hit)', async () => {
             await corpus(n).scenario.orch.warmCaches('bench-hit');
-        });
+        }, { iterations: 20, time: 0, warmupIterations: 0, warmupTime: 0 });
 
-        bench('warmCaches (cold miss)', async () => {
+        // H7 after: a cold-start trigger (model-load class) now loads the persisted
+        // BM25 blob via fromJSON instead of refitting all bodies. Corpus seeds a
+        // stamp-matching blob, so this exercises the fast path end-to-end.
+        bench('warmCaches cold (persisted, H7)', async () => {
             const { orch } = corpus(n).scenario;
             orch.invalidateBm25Cache();
-            await orch.warmCaches('bench-cold');
-        }, SLOW_BENCH);
+            await orch.warmCaches('model-load');
+        }, WARM_BENCH);
+
+        // H7 before: 'full-reindex' deliberately forces the authoritative fit()
+        // rebuild — the baseline the persisted path replaces on cold start.
+        bench('warmCaches cold (forced fit, baseline)', async () => {
+            const { orch } = corpus(n).scenario;
+            orch.invalidateBm25Cache();
+            await orch.warmCaches('full-reindex');
+        }, WARM_BENCH);
 
         bench('computeDelta (reconcileOnLoad diff)', async () => {
             await corpus(n).scenario.orch.computeDelta();

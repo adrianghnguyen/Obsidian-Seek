@@ -10,7 +10,7 @@
         "test": "vitest run",
         "bench": "npm run bench:1000 && npm run bench:5000",
         "bench:1000": "NODE_OPTIONS='--max-old-space-size=4096' SEEK_BENCH_SIZE=1000 vitest bench --run",
-        "bench:5000": "NODE_OPTIONS='--max-old-space-size=4096' SEEK_BENCH_SIZE=5000 vitest bench --run",
+        "bench:5000": "NODE_OPTIONS='--max-old-space-size=8192' SEEK_BENCH_SIZE=5000 vitest bench --run",
         "bench:full": "SEEK_BENCH_FULL=1 NODE_OPTIONS='--max-old-space-size=8192' vitest bench --run",
         "version": "node version-bump.mjs && git add manifest.json versions.json"
     },

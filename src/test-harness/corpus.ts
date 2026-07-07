@@ -7,6 +7,7 @@ import { MODEL_ID, PLUGIN_VERSION } from '../embedder';
 import { CHUNKER_VERSION } from '../chunker';
 import { MultiFieldBM25 } from '../bm25';
 import { DEFAULT_SETTINGS } from '../types';
+import { buildBm25Stamp } from '../search';
 import { Scenario, hashVec } from './scenario';
 
 export interface SeededCorpus {
@@ -23,13 +24,19 @@ export async function seedCorpus(targetChunks: number): Promise<SeededCorpus> {
     await scenario.boot();
 
     const notes = Math.max(1, Math.ceil(targetChunks / 5));
-    const chunks: Chunk[] = [];
-    const vectors: Float32Array[] = [];
     let chunkIdx = 0;
+    const memDbg = process.env.SEEK_BENCH_MEMDBG === '1';
 
     for (let n = 0; n < notes && chunkIdx < targetChunks; n++) {
+        if (memDbg && n % 200 === 0) {
+            const mb = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
+            // eslint-disable-next-line no-console
+            console.log(`[seed] note ${n}/${notes} chunk ${chunkIdx} heapUsed=${mb}MB`);
+        }
         const path = `bench/note-${n}.md`;
         const chunkIds: string[] = [];
+        const chunks: Chunk[] = [];
+        const vectors: Float32Array[] = [];
         for (let s = 0; s < 5 && chunkIdx < targetChunks; s++, chunkIdx++) {
             const title = `Note ${n} > Section ${s}`;
             const content = `Benchmark chunk ${chunkIdx} with enough text for lexical indexing.`;
@@ -55,7 +62,7 @@ export async function seedCorpus(targetChunks: number): Promise<SeededCorpus> {
             vectors.push(hashVec(embedText));
             chunkIds.push(chunkId);
         }
-        await scenario.store.putBatch(chunks.slice(-chunkIds.length), vectors.slice(-chunkIds.length));
+        await scenario.store.putBatch(chunks, vectors);
         await scenario.store.putFileRecord({
             note_path: path,
             mtimeMs: 1_700_000_000 + n,
@@ -73,12 +80,27 @@ export async function seedCorpus(targetChunks: number): Promise<SeededCorpus> {
         revision: PLUGIN_VERSION,
     });
 
+    const dbg = (m: string) => { if (memDbg) { const mb = Math.round(process.memoryUsage().heapUsed / 1024 / 1024); console.log(`[seed] ${m} heapUsed=${mb}MB`); } };
+    dbg('loop done');
     const meta = await scenario.store.listAllMeta();
+    dbg('listAllMeta');
     const bodies = await scenario.store.getBodiesMap(meta.map(c => c.chunk_id));
-    const bm25Json = new MultiFieldBM25().fit(meta, bodies, {
+    dbg('getBodiesMap');
+    const bm25 = new MultiFieldBM25().fit(meta, bodies, {
         searchableProperties: DEFAULT_SETTINGS.searchableProperties,
         headingsField: DEFAULT_SETTINGS.headingsField,
-    }).toJSON();
+    });
+    dbg('fit');
+    const bm25Json = bm25.toJSON();
+    dbg('toJSON');
+
+    // Persist the BM25 blob with a live-matching stamp so tryLoadPersistedBm25
+    // (the H7 fast path) HITS during warmCaches — this is the realistic cold-boot
+    // state: a completed index left a persisted MiniSearch index in IDB.
+    const metaCfg = await scenario.store.getMeta();
+    const stamp = buildBm25Stamp(metaCfg, meta.length, DEFAULT_SETTINGS);
+    await scenario.store.putBm25(bm25Json, stamp);
+    dbg('putBm25');
 
     const counts = await scenario.store.count();
     return {
