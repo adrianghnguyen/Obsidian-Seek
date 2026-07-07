@@ -22,12 +22,19 @@ describe('applySearchModalSize', () => {
             style: {
                 setProperty: (k: string, v: string) => props.set(k, v),
                 getPropertyValue: (k: string) => props.get(k) ?? '',
+                width: '',
+                maxWidth: '',
+                maxHeight: '',
+                marginTop: '',
             },
+            querySelector: () => null,
         } as unknown as HTMLElement;
         applySearchModalSize(el, 'wide', 'tall', { isPhone: false, isTablet: false });
         expect(props.get('--seek-modal-width')).toBe('800px');
         expect(props.get('--seek-modal-max-height')).toBe('82vh');
         expect(props.get('--seek-modal-margin-top')).toBe('6vh');
+        expect(el.style.width).toBe('800px');
+        expect(el.style.maxHeight).toBe('82vh');
     });
 
     it('skips phones (full-width mobile shell)', () => {
@@ -36,7 +43,12 @@ describe('applySearchModalSize', () => {
             style: {
                 setProperty: (k: string, v: string) => props.set(k, v),
                 getPropertyValue: (k: string) => props.get(k) ?? '',
+                width: '',
+                maxWidth: '',
+                maxHeight: '',
+                marginTop: '',
             },
+            querySelector: () => null,
         } as unknown as HTMLElement;
         applySearchModalSize(el, 'extra-wide', 'extra-tall', { isPhone: true, isTablet: false });
         expect(props.size).toBe(0);
