@@ -205,6 +205,34 @@ when a migration ran or the defaults-merge introduced a new/changed key. Removes
 synchronous `data.json` write from every clean boot (which also fans out to every device on
 an Obsidian-Sync vault). Measured via `BootEntry.saveDataMs` on device.
 
+### H5 (partial) — desktop cold-start model prewarm (implemented)
+
+**Why:** cold start (time-to-first-usable-search) is dominated by the lazy model load
+(~250 MB init; on an uncached device also a ~100 MB fetch). Because `warmCaches` already
+overlaps the model load (H8), *everything else is hidden behind it* — so the only lever for
+cold start is the model load itself. The first search pays it in full because the model is
+loaded lazily on modal open.
+
+**Fix:** proactively load the model shortly after boot (`scheduleColdStartPrewarm` →
+`maybeColdStartPrewarm` in `main.ts`), so it's ready — or in flight — before the user opens
+search. `ensureModelLoaded()` also warms the frame + BM25 caches, so a successful prewarm
+makes the first search fully warm (model **and** caches). The decision is a pure,
+unit-tested predicate, `shouldPrewarmModelOnStart`, with hard safety gates:
+
+- **Desktop only** — mobile stays lazy (250 MB on boot risks jetsam, and the mobile
+  idle-unload timer would tear it right back down: pure churn).
+- **Model already cached** — never triggers a boot-time ~100 MB CDN fetch on a metered or
+  first-run connection; only the bounded WASM/GPU init.
+- **Index non-empty** — a brand-new vault loads the model on its first reindex anyway.
+- **Nothing already loading** — coalesces with `reconcileOnLoad`'s load if one started.
+- **User opt-out** — `prewarmModelOnStart` setting (default on; Model & performance toggle,
+  desktop-only in the UI).
+
+Deferred ~3 s past `onload` so it never taxes app-open. **Not Node-benchable** (the fake
+embedder is instant); validated on device via the existing telemetry: `LoadEntry.coldStartMs`
+plus first-search `modelReadyMs` / `sessionBootMs` / `isFirstSearchOfSession` — with prewarm,
+the model is ready before the modal opens, so the first search's model wait ≈ 0.
+
 ### Bench harness hardening (found while scaling to 5k)
 
 Scaling to 5k surfaced three harness OOMs (not product bugs), each fixed:
