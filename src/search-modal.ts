@@ -1,11 +1,13 @@
 // Seek search modal. A plain Modal (not SuggestModal) with a debounced query,
 // manual result rendering, and a keyboard model layered on top: arrow keys move
 // a selectedIndex, Enter opens it, ⌘/Ctrl+Enter (or ⌘/Ctrl+click) opens in a
-// new tab, ⌘/Ctrl+Alt+Enter (or ⌘/Ctrl+Alt+click) opens in a split pane.
+// new tab, ⌘/Ctrl+Alt+Enter (or ⌘/Ctrl+Alt+click) opens in a split pane,
+// Alt+Enter inserts a link to the selection at the active editor cursor.
 // serializes committed operator pills + free text back to the inline-filter
 // query string the search pipeline already parses.
 
 import { App, Modal, Notice, Platform, TFile, MarkdownView, MarkdownRenderer, Component } from 'obsidian';
+import type { EditorPosition } from 'obsidian';
 import type { ScoredChunk, SearchEntry, ClickEntry, SeekSettings } from './types';
 import { MATCH_STRENGTH_MIN_NOTES } from './types';
 import type { SearchOrchestrator } from './search';
@@ -17,6 +19,14 @@ import { matchStrength } from './dense-stats';
 import { SuggestEngine } from './suggest';
 import { PillQueryField } from './query-field';
 import { openBaseAtTarget, openFileAtTarget, resolveOpenTarget, isBackgroundOpen, type OpenTarget } from './open-target';
+import {
+    buildNoteLink,
+    headingSubpath,
+    insertLinkAliasPolicyFromSettings,
+    insertLinkInEditor,
+    isInsertableMarkdownFile,
+    resolveInsertLinkAlias,
+} from './insert-link';
 
 // Search debounce. Mobile gets a longer window: the query embed runs on the
 // render thread (iframe = same event loop) and on iOS the stage-1 binary scan is
@@ -215,6 +225,12 @@ export class SeekSearchModal extends Modal {
     private onQueryInFlight?: (inFlight: boolean) => void;
     private inFlight = 0;
 
+    // Editor state captured at modal open (before the query field steals focus).
+    // Used for insert-link alias + replace-range when the user had text selected.
+    private savedEditorSelection: string | null = null;
+    private savedEditorSelectionFrom: EditorPosition | null = null;
+    private savedEditorSelectionTo: EditorPosition | null = null;
+
     // Debounce for the post-query "settled" signal (separate from the 200 ms search
     // debounce). Reset on every keystroke; fires onSearchActivity(false) on idle.
     private settleTimer: number | null = null;
@@ -280,6 +296,8 @@ export class SeekSearchModal extends Modal {
         this.suggester = new SuggestEngine().build(this.app, this.settings);
         this.vaultTagSet = this.collectVaultTags();
 
+        this.captureEditorSelectionForInsertLink();
+
         // Component 1 — the token/pill query field. The 4th arg gates after:/before:
         // date filters on Recency being ON (a date field exists to key off — D4);
         // numeric-key validation (the red error pill) routes through the shared
@@ -293,6 +311,7 @@ export class SeekSearchModal extends Modal {
             onQueryChange: q => this.scheduleSearch(q),
             onNavigate: dir => this.moveSelection(dir),
             onSubmit: target => this.openSelected(target),
+            onInsertLink: () => this.insertSelectedLink(),
             onDismiss: () => this.close(),
             validateTag: tag => this.tagBinds(tag),
         }, this.settings.recencyEpsilon > 0, dateFieldLabel);
@@ -472,6 +491,11 @@ export class SeekSearchModal extends Modal {
             grp(g => { kbd(g, 'Ctrl'); kbd(g, 'Alt'); kbd(g, '↵'); g.createSpan({ text: ' split' }); });
         }
         grp(g => { kbd(g, 'tab'); g.createSpan({ text: ' fill autosuggest' }); });
+        if (Platform.isMacOS) {
+            grp(g => { kbd(g, '⌥'); kbd(g, '↵'); g.createSpan({ text: ' insert link' }); });
+        } else {
+            grp(g => { kbd(g, 'Alt'); kbd(g, '↵'); g.createSpan({ text: ' insert link' }); });
+        }
         // Copy a shareable obsidian://seek deep-link for the CURRENT query. The
         // builder percent-encodes (so a `#tag`/`[k:v]` filter survives the URL
         // fragment delimiter) — the whole reason this exists, since a hand-typed
@@ -1044,6 +1068,61 @@ export class SeekSearchModal extends Modal {
     private openSelected(target: OpenTarget): void {
         const r = this.currentResults[this.selectedIndex];
         if (r) void this.openResult(r, this.selectedIndex + 1, target);
+    }
+
+    private insertSelectedLink(): void {
+        const r = this.currentResults[this.selectedIndex];
+        if (!r) return;
+
+        const file = this.app.vault.getAbstractFileByPath(r.note_path);
+        if (!(file instanceof TFile) || !isInsertableMarkdownFile(file)) {
+            new Notice('Seek: cannot insert a link to this result');
+            return;
+        }
+
+        const policy = insertLinkAliasPolicyFromSettings(this.settings);
+        const alias = resolveInsertLinkAlias({
+            editorSelection: this.savedEditorSelection,
+            searchQueryText: this.field?.getFreeText() ?? null,
+        }, policy);
+
+        const link = buildNoteLink(this.app, file, {
+            subpath: headingSubpath(r.heading_path) ?? '',
+            alias,
+        });
+
+        const replaceRange = alias === this.savedEditorSelection?.trim()
+            && this.savedEditorSelectionFrom
+            && this.savedEditorSelectionTo
+            ? { from: this.savedEditorSelectionFrom, to: this.savedEditorSelectionTo }
+            : undefined;
+
+        const result = insertLinkInEditor(this.app, link, replaceRange);
+        if (!result.ok) {
+            new Notice('Seek: no active editor');
+            return;
+        }
+        this.close();
+    }
+
+    private captureEditorSelectionForInsertLink(): void {
+        const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+        if (!view?.editor) {
+            this.savedEditorSelection = null;
+            this.savedEditorSelectionFrom = null;
+            this.savedEditorSelectionTo = null;
+            return;
+        }
+        const sel = view.editor.getSelection().trim();
+        if (!sel) {
+            this.savedEditorSelection = null;
+            this.savedEditorSelectionFrom = null;
+            this.savedEditorSelectionTo = null;
+            return;
+        }
+        this.savedEditorSelection = sel;
+        this.savedEditorSelectionFrom = view.editor.getCursor('from');
+        this.savedEditorSelectionTo = view.editor.getCursor('to');
     }
 
     private async openResult(r: ScoredChunk, rank: number, target: OpenTarget): Promise<void> {

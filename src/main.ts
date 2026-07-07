@@ -30,6 +30,12 @@ import { Forensics } from './forensics';
 import { SearchOrchestrator, driftRecoveryDecision, type RecencyOverride } from './search';
 import { SeekSearchModal, type IndexBanner } from './search-modal';
 import { parsePaneType, openFileAtTarget, openBaseAtTarget, type OpenTarget } from './open-target';
+import {
+    buildNoteLink,
+    headingSubpath,
+    insertLinkInEditor,
+    isInsertableMarkdownFile,
+} from './insert-link';
 import { indexBannerSpec, INDEX_STALE_MSG, INDEX_SYNCING_MSG, INDEX_PEER_AHEAD_MSG, type DegradedReason } from './index-notice';
 import { SeekSettingTab } from './settings-tab';
 import { collectPlatformInfo, isMobilePlatform, resolveDevice, recordActiveBackend, maybeDemoteOnCrash } from './platform';
@@ -726,6 +732,48 @@ export default class SeekPlugin extends Plugin {
                         if (!(file instanceof TFile)) return `Seek error: result not on disk (${hit.note_path})`;
                         await this.openIndexedFile(file, hit, target);
                         return hit.note_path;
+                    } catch (err) {
+                        return `Seek error: ${err instanceof Error ? err.message : String(err)}`;
+                    }
+                },
+            );
+
+            registerCliHandler.call(
+                this,
+                'seek:insert-link',
+                'Seek search and insert a link to a result at the active editor cursor',
+                {
+                    query: { value: '<text>', description: 'Search query (supports inline filters: #tag, tag:, path:, [k:v], dates)', required: true },
+                    rank: { value: '<n>', description: '1-based result rank to link (default: 1)', required: false },
+                    alias: { value: '<text>', description: 'Optional link display text ([[note|alias]])', required: false },
+                },
+                async (args: Record<string, string | boolean | undefined>): Promise<string> => {
+                    const query = typeof args.query === 'string' ? args.query : '';
+                    if (!query) return 'Seek error: query is required';
+                    if (!this.orchestrator) return 'Seek error: Seek not initialized — plugin still loading';
+
+                    const parsedRank = typeof args.rank === 'string' ? parseInt(args.rank, 10) : NaN;
+                    const rank = Number.isFinite(parsedRank) && parsedRank > 0 ? parsedRank : 1;
+                    const alias = typeof args.alias === 'string' && args.alias.trim()
+                        ? args.alias.trim()
+                        : undefined;
+
+                    try {
+                        await this.ensureModelLoaded();
+                        const { results } = await this.orchestrator.search(query, rank);
+                        const hit = results[rank - 1];
+                        if (!hit) return `Seek error: no result at rank ${rank} for "${query}"`;
+                        const file = this.app.vault.getAbstractFileByPath(hit.note_path);
+                        if (!(file instanceof TFile) || !isInsertableMarkdownFile(file)) {
+                            return `Seek error: result is not a markdown note (${hit.note_path})`;
+                        }
+                        const link = buildNoteLink(this.app, file, {
+                            subpath: headingSubpath(hit.heading_path) ?? '',
+                            alias,
+                        });
+                        const inserted = insertLinkInEditor(this.app, link);
+                        if (!inserted.ok) return `Seek error: ${inserted.reason}`;
+                        return link;
                     } catch (err) {
                         return `Seek error: ${err instanceof Error ? err.message : String(err)}`;
                     }

@@ -60,6 +60,8 @@ export interface PillQueryFieldCallbacks {
     onNavigate: (dir: 1 | -1) => void;
     // Open the selected result (Enter); OpenTarget from modifier keys (tab/split).
     onSubmit: (target: OpenTarget) => void;
+    // Insert a link to the selected result at the active editor cursor (Alt+Enter).
+    onInsertLink: () => void;
     // Esc with no dropdown open → close the modal.
     onDismiss: () => void;
     // Does this tag bind to a real vault tag (exact or hierarchical parent)?
@@ -335,6 +337,12 @@ export class PillQueryField {
     // `.seek-mag` / `.seek-mag.is-ready` in styles.css for the fade.
     setModelReady(ready: boolean): void {
         this.magEl.toggleClass('is-ready', ready);
+    }
+
+    // Free-text tail of the query field (uncontrolled editable only). Used as a
+    // future insert-link alias candidate — excludes committed pills.
+    getFreeText(): string {
+        return this.readText().trim();
     }
 
     // Seed the field from a raw query string (an obsidian://seek?query= deep
@@ -796,6 +804,12 @@ export class PillQueryField {
                 this.refresh();
                 return;
             }
+            return;
+        }
+        if (e.key === 'Enter' && e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+            if (Platform.isMobile) return;
+            e.preventDefault();
+            this.cb.onInsertLink();
             return;
         }
         if (e.key === 'Enter') {
