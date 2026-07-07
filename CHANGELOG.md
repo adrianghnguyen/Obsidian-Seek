@@ -2,6 +2,22 @@
 
 All notable changes to Seek are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.0.8
+
+Search modal UX release — larger panel, richer result metadata, and configurable snippets.
+
+### Added
+- **Configurable modal size** — Settings → Display → width (default / wide / extra wide) and height (default / tall / extra tall).
+- **Result aliases** — frontmatter aliases on each result row, with per-alias pills, matched-alias highlight, and a configurable display limit.
+- **Snippet preview** — Settings → Display → compact / standard / expanded controls how many lines and characters of surrounding text each result shows.
+- **Expand snippet hotkey** — Ctrl/Cmd+Shift+E toggles the expanded snippet preset for all visible results while search is open.
+
+### Changed
+- Footer keyboard-hint bar uses flex-wrap so shortcuts are not clipped on narrow modals.
+
+### Fixed
+- Modal width/height presets apply reliably on open when theme CSS variables are stale (inline fallback).
+
 ## 1.0.7
 
 Search-modal workflow release — open results in more places and insert links without leaving the editor.
