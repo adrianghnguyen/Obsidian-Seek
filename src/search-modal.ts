@@ -21,11 +21,11 @@ import { PillQueryField } from './query-field';
 import { openBaseAtTarget, openFileAtTarget, resolveOpenTarget, isBackgroundOpen, type OpenTarget } from './open-target';
 import {
     buildNoteLink,
-    headingSubpath,
     insertLinkAliasPolicyFromSettings,
     insertLinkInEditor,
     isInsertableMarkdownFile,
     resolveInsertLinkAlias,
+    resolveInsertLinkSubpath,
 } from './insert-link';
 
 // Search debounce. Mobile gets a longer window: the query embed runs on the
@@ -1087,7 +1087,7 @@ export class SeekSearchModal extends Modal {
         }, policy);
 
         const link = buildNoteLink(this.app, file, {
-            subpath: headingSubpath(r.heading_path) ?? '',
+            subpath: resolveInsertLinkSubpath(r.heading_path, this.settings),
             alias,
         });
 
