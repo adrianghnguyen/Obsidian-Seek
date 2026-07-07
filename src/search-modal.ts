@@ -1047,24 +1047,24 @@ export class SeekSearchModal extends Modal {
 
             if (showAliases && aliasSlice.visible.length > 0) {
                 appendDot();
-                const akaGroup = row.metaEl.createSpan({ cls: 'seek-meta-aka' });
-                akaGroup.createSpan({ cls: 'seek-meta-lbl', text: 'aka' });
+                const akaSeg = row.metaEl.createSpan({ cls: 'seek-meta-aka-seg' });
+                akaSeg.createSpan({ cls: 'seek-meta-lbl', text: 'aka' });
                 for (let ai = 0; ai < aliasSlice.visible.length; ai++) {
                     const isMatched = hasTextQuery && matchedAlias != null && aliasSlice.visible[ai] === matchedAlias;
-                    akaGroup.createSpan({
-                        cls: isMatched ? 'seek-meta-alias seek-meta-alias-matched' : 'seek-meta-alias',
+                    akaSeg.createSpan({
+                        cls: isMatched ? 'seek-meta-alias-pill is-matched' : 'seek-meta-alias-pill',
                         text: aliasSlice.visible[ai],
                     });
                 }
                 if (!row.aliasesExpanded && aliasSlice.hiddenCount > 0) {
-                    const more = akaGroup.createSpan({ cls: 'seek-meta-alias-more', text: `+${aliasSlice.hiddenCount} more` });
+                    const more = akaSeg.createSpan({ cls: 'seek-meta-alias-more', text: `+${aliasSlice.hiddenCount} more` });
                     more.addEventListener('click', e => {
                         e.stopPropagation();
                         row.aliasesExpanded = true;
                         this.applyRow(row, r, rank);
                     });
                 } else if (row.aliasesExpanded && canTruncate) {
-                    const less = akaGroup.createSpan({ cls: 'seek-meta-alias-more', text: 'less' });
+                    const less = akaSeg.createSpan({ cls: 'seek-meta-alias-more', text: 'less' });
                     less.addEventListener('click', e => {
                         e.stopPropagation();
                         row.aliasesExpanded = false;
