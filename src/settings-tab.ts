@@ -17,7 +17,7 @@
 import { App, PluginSettingTab, Setting, Notice, setIcon } from 'obsidian';
 import type SeekPlugin from './main';
 import type { IndexStats, ModelStatus } from './main';
-import type { SidecarIndexLocation } from './types';
+import type { SidecarIndexLocation, SearchModalHeight, SearchModalWidth } from './types';
 import { DEFAULT_SETTINGS, MATCH_STRENGTH_MIN_NOTES } from './types';
 import {
     getBackendOverride, setBackendOverride, isWebgpuDemoted, clearWebgpuDemoted,
@@ -558,6 +558,38 @@ export class SeekSettingTab extends PluginSettingTab {
             .setName('Keyboard hints bar')
             .setDesc('Displays a keyboard hint bar under results in the results modal.')
             .addToggle(t => t.setValue(this.s.showHotkeyHints).onChange(async v => { this.s.showHotkeyHints = v; await this.save(); }));
+
+        const widthLabels: Record<SearchModalWidth, string> = {
+            default: 'Default (640px)',
+            wide: 'Wide (800px)',
+            'extra-wide': 'Extra wide (960px)',
+        };
+        new Setting(containerEl)
+            .setName('Search modal width')
+            .setDesc('Width of the search panel on desktop and tablet. Takes effect the next time you open search.')
+            .addDropdown(dd => dd
+                .addOptions(widthLabels)
+                .setValue(this.s.searchModalWidth)
+                .onChange(async v => {
+                    this.s.searchModalWidth = v as SearchModalWidth;
+                    await this.save();
+                }));
+
+        const heightLabels: Record<SearchModalHeight, string> = {
+            default: 'Default',
+            tall: 'Tall',
+            'extra-tall': 'Extra tall',
+        };
+        new Setting(containerEl)
+            .setName('Search modal height')
+            .setDesc('Height of the search panel on desktop. Mobile uses the available screen above the keyboard.')
+            .addDropdown(dd => dd
+                .addOptions(heightLabels)
+                .setValue(this.s.searchModalHeight)
+                .onChange(async v => {
+                    this.s.searchModalHeight = v as SearchModalHeight;
+                    await this.save();
+                }));
 
         const aliasLimitLabels: Record<string, number> = {
             '1': 1, '2': 2, '3': 3, '5': 5, '10': 10, All: 0,
