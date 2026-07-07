@@ -458,10 +458,10 @@ export interface SeekSettings {
     // modal opens.
     showHotkeyHints: boolean;
 
-    // Insert-link alias source (no settings UI yet). 'default' = editor selection
-    // only (Omnisearch #425). 'searchQuery' = use free-text query as alias when
-    // no selection ([[note|search words]]). See insert-link.ts.
-    insertLinkAliasSource?: 'default' | 'searchQuery';
+    // Insert-link alias from search field free text (Alt+Enter). ON (default): when
+    // no editor selection, use the words typed in the search field as [[note|words]].
+    // OFF: editor selection only, else Obsidian default title. See insert-link.ts.
+    insertLinkQueryAlias: boolean;
 
     // NOTE: the compute backend (WebGPU vs WASM) is deliberately NOT a setting.
     // It is a property of the DEVICE, not the vault, and data.json syncs across
@@ -552,6 +552,7 @@ export const DEFAULT_SETTINGS: SeekSettings = {
     showScores: false,         // OFF by default: per-result score line (Matching % · recency · title); opt-in via Display settings. (Also auto-hidden until the corpus is calibrated — ≥200 notes + full pass.) Default-only flip, no migration: installs that already persisted showScores keep their choice.
     verboseTrace: false,       // OFF: persist only the top-10 ranking trace per search (what the report shows); ON = full 50-deep tail for offline eval. Diagnostic-only, no UI
     showHotkeyHints: true,     // ON: show the modal footer keyboard-hint bar + result counter; OFF = full-results-only modal
+    insertLinkQueryAlias: true, // ON: Alt+Enter uses free-text search as link alias when no editor selection
     sidecarEnabled: true,      // ON (hidden) per the 2026-06-19 ratification; vault-file index persistence for iOS-eviction survival + cross-device sync; only Index location stays user-facing; seeds on next reindex — see field comment
     sidecarIndexLocation: 'config', // hidden literal '.obsidian/plugins/seek/index'; 'visible' = vault-root 'Seek Index/' for split-config Obsidian Sync; see field comment
     settingsRev: 8,            // current schema rev; bump alongside a migration in main.ts onload (rev 8 = 2026-06-27 denseWeight 0.80→0.85 re-eval)
