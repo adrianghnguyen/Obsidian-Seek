@@ -3357,11 +3357,18 @@ export class SearchOrchestrator {
     // never persisted; a failed write just means the next cold start refits.
     private async persistBm25(orderedChunks: ChunkMeta[]): Promise<void> {
         try {
-            if (!this.bm25Cache) return;
+            // Capture the cache reference up front: this runs fire-and-forget, so an
+            // invalidateBm25Cache() (a delta / reindex landing while getMeta() awaits)
+            // can null this.bm25Cache in the gap — the old code then threw NPE on
+            // this.bm25Cache.toJSON(). Snapshotting means we serialize the index that
+            // WAS warm; a superseded generation just persists a slightly-stale blob
+            // the stamp gate will refuse if incompatible (else it's bounded-stale).
+            const cache = this.bm25Cache;
+            if (!cache) return;
             const meta = await this.store.getMeta();
             if (!meta.lastIndexedAt) return;
             const stamp = buildBm25Stamp(meta, orderedChunks.length, this.settings);
-            await this.store.putBm25(this.bm25Cache.toJSON(), stamp);
+            await this.store.putBm25(cache.toJSON(), stamp);
         } catch (e) {
             console.warn('[seek] BM25 persist failed (cold start will refit)', e);
         }
@@ -3488,6 +3495,19 @@ export class SearchOrchestrator {
                 if (!frame) break;
                 const bm25Start = performance.now();
                 const prevSource = this.lastBm25WarmSource;
+                // H7: on a cold-start warm (model-load / hydrate / startup), load the
+                // persisted MiniSearch blob (fromJSON) instead of paying fit() over all
+                // bodies — the SAME fast path the search hot path uses (see search()).
+                // Skipped on 'full-reindex', where a fresh fit is the authoritative
+                // rebuild we then publish (persistBm25 / emitCrossDeviceBm25 below).
+                // bm25StampMatches gates correctness: an incompatible blob is refused
+                // and ensureBm25 falls back to fit, so this can only ever go faster.
+                if (trigger !== 'full-reindex' && !this.bm25CacheValid(frame.orderedChunks)) {
+                    await this.tryLoadPersistedBm25(frame.orderedChunks);
+                    if (!this.bm25CacheValid(frame.orderedChunks)) {
+                        await this.tryLoadCrossDeviceBm25(frame.orderedChunks);
+                    }
+                }
                 await this.ensureBm25(frame.orderedChunks);
                 bm25Ms += performance.now() - bm25Start;
                 if (this.lastBm25WarmSource !== prevSource) bm25Source = this.lastBm25WarmSource;
