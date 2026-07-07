@@ -673,26 +673,25 @@
     color: var(--text-faint);
 }
 
-/* Grouped aka block: one quiet outline around the label + aliases + expand control. */
-.seek-meta-aka {
+/* aka segment: label + per-alias pills + expand link */
+.seek-meta-aka-seg {
     display: inline-flex;
     align-items: center;
     flex-wrap: wrap;
     gap: 4px;
-    padding: 1px 7px;
-    border-radius: 5px;
+}
+
+.seek-meta-alias-pill {
+    display: inline-block;
+    padding: 0 6px;
+    border-radius: 4px;
     border: 1px solid color-mix(in srgb, var(--background-modifier-border) 75%, transparent);
-}
-
-.seek-meta-aka .seek-meta-lbl {
-    margin-right: 1px;
-}
-
-.seek-meta-alias {
     color: var(--text-faint);
+    white-space: nowrap;
 }
 
-.seek-meta-aka .seek-meta-alias-matched {
+.seek-meta-alias-pill.is-matched {
+    border-color: color-mix(in srgb, var(--text-accent) 50%, transparent);
     color: var(--text-accent);
     font-weight: 600;
 }
