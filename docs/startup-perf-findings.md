@@ -2,6 +2,10 @@
 
 Benchmark harness: `npm run bench` (`src/test-harness/startup.bench.ts`, corpus seeded via `putBatch` in `corpus.ts`).
 
+> **Status:** Iteration 1 implemented — H7 (persisted BM25 in the warm path) and H1
+> (skip redundant boot `saveData`). See [Iteration 1](#iteration-1--implemented-fixes-h7--h1) for
+> the fail-fast before/after results.
+
 ## Measurement caveat
 
 These numbers come from **Node + fake-indexeddb + a deterministic fake embedder**. They are excellent for **scaling shape and regression detection**, but they are **not** absolute Obsidian / WKWebView latencies. IndexedDB throughput, main-thread scheduling, and iframe model load differ materially on real devices.
@@ -160,6 +164,63 @@ Production bundle (separate from bench): **`main.js` ≈ 305 KB** minified (`npm
 | **6** | **H5** | Real-device model delivery; use cache/prewarm, not index changes. |
 | **7** | **H4** | One-time parse cost; monitor but don't block H7/H8. |
 | **8** | **H2** | Steady-state backfill no-op < 1 ms in bench; legacy path only. |
+
+---
+
+## Iteration 1 — implemented fixes (H7 + H1)
+
+Approach: **fail fast**. Implement, run the quick 1k bench as a green-light gate,
+then scale to 5k only on green.
+
+### H7 — persisted BM25 in the cold-start warm path (implemented)
+
+**Root gap:** `warmCaches()` called `ensureBm25()` directly, which goes straight to
+`fit()` on a cache miss. Only the *search hot path* first tried `tryLoadPersistedBm25()`.
+So the cold-boot overlap warm (`warmCaches('model-load')`) always paid a full `fit()`
+even when a valid persisted MiniSearch blob existed in IndexedDB.
+
+**Fix:** `warmCaches()` now tries `tryLoadPersistedBm25()` → `tryLoadCrossDeviceBm25()`
+before `ensureBm25()` on every trigger except `full-reindex` (where a fresh authoritative
+`fit()` is the point, then re-published). `bm25StampMatches` still gates correctness, so an
+incompatible blob is refused and falls back to `fit()` — the change can only ever go faster.
+Also hardened `persistBm25()` to snapshot the cache ref (a fire-and-forget `toJSON()` could
+NPE if `invalidateBm25Cache()` nulled the cache across its `await`).
+
+**Result (warmCaches cold-start path, persisted vs forced `fit`):**
+
+| Corpus | Persisted (H7) | Forced `fit` (baseline) | Speedup |
+|-------:|---------------:|------------------------:|--------:|
+| ~1k | ~25 ms (min) | ~224 ms (min) | **~9×** |
+| ~5k | ~113 ms (min) / 257 ms (mean) | ~5,620 ms | **~22–50×** |
+
+Standalone BM25 `fromJSON` vs `fit`: **37× @ 1k**, **188× @ 5k**. **The win grows with
+corpus size** because it removes the super-linear `fit()` from the cold path. Green at both
+scales → proceed.
+
+### H1 — skip redundant boot `saveData` (implemented)
+
+`onload()` unconditionally `await`ed `saveData(settings)` on every app open.
+Now gated by `settingsDifferFromDisk(merged, raw)` (exported from `main.ts`): save only
+when a migration ran or the defaults-merge introduced a new/changed key. Removes a
+synchronous `data.json` write from every clean boot (which also fans out to every device on
+an Obsidian-Sync vault). Measured via `BootEntry.saveDataMs` on device.
+
+### Bench harness hardening (found while scaling to 5k)
+
+Scaling to 5k surfaced three harness OOMs (not product bugs), each fixed:
+
+1. **`store.open` bench** created a new randomly-named IndexedDB every iteration
+   (~15k/run); fake-indexeddb retains every DB → OOM. Now reuses one fixed name and
+   closes the connection.
+2. **Heavy benches** (`BM25 fit`/`fromJSON`, `warmCaches` cold) used time-based sampling,
+   allocating dozens of 5k-doc MiniSearch objects per window faster than GC. Pinned to fixed
+   iteration counts.
+3. **`warmCaches (cache hit)`** fires a fire-and-forget `persistBm25` (multi-MB `toJSON` at
+   5k) on *every* call; thousands of time-based samples OOM'd. Bounded to a fixed count.
+
+Also: benches now run in a `forks` pool with `--max-old-space-size=8192` (the default
+`threads` pool ignores the heap flag), and the corpus seeds a stamp-matching persisted BM25
+blob so the H7 fast path is exercised end-to-end.
 
 ---
 
