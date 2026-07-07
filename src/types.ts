@@ -449,9 +449,9 @@ export interface SeekSettings {
     verboseTrace: boolean;
 
     // Search-modal footer affordance. ON (default) shows the keyboard-hint bar
-    // along the bottom of the modal (↑↓ navigate · ↵ open · ⌘↵ new tab · tab
-    // fill autosuggest · esc close). OFF removes the whole footer for a minimal
-    // "full results only" modal — just the query field and the result list.
+    // along the bottom of the modal (↑↓ navigate · ↵ open · ⌘↵ new tab ·
+    // ⌘⌥↵ split · tab fill autosuggest · esc close). OFF removes the whole
+    // footer for a minimal "full results only" modal — just the query field and
     // Pure presentation; applies to the next time the search modal opens.
     showHotkeyHints: boolean;
 

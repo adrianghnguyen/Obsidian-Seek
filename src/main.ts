@@ -29,6 +29,7 @@ import { SeekLogger } from './logger';
 import { Forensics } from './forensics';
 import { SearchOrchestrator, driftRecoveryDecision, type RecencyOverride } from './search';
 import { SeekSearchModal, type IndexBanner } from './search-modal';
+import { parsePaneType, openFileAtTarget, openBaseAtTarget, type OpenTarget } from './open-target';
 import { indexBannerSpec, INDEX_STALE_MSG, INDEX_SYNCING_MSG, INDEX_PEER_AHEAD_MSG, type DegradedReason } from './index-notice';
 import { SeekSettingTab } from './settings-tab';
 import { collectPlatformInfo, isMobilePlatform, resolveDevice, recordActiveBackend, maybeDemoteOnCrash } from './platform';
@@ -545,7 +546,7 @@ export default class SeekPlugin extends Plugin {
         });
 
         // ---- obsidian://seek deep-link --------------------------------
-        // `obsidian://seek?query=<urlencoded>[&mode=open][&vault=<name>]`.
+        // `obsidian://seek?query=<urlencoded>[&mode=open][&paneType=tab|split|window][&vault=<name>]`.
         // registerObsidianProtocolHandler is a core Plugin API (present on
         // EVERY platform, incl. mobile — unlike the CLI bridge below), so this
         // is the mobile-safe deep-link surface. Two modes:
@@ -563,7 +564,8 @@ export default class SeekPlugin extends Plugin {
             // The producer must encode `#` (URL fragment delimiter AND Seek's
             // own `#tag` sigil) — the modal's "copy link" action does this.
             const query = typeof params.query === 'string' ? params.query : '';
-            if (params.mode === 'open') void this.openTopResult(query);
+            const target = parsePaneType(typeof params.paneType === 'string' ? params.paneType : undefined);
+            if (params.mode === 'open') void this.openTopResult(query, target);
             else this.openSearchModal(query);
         });
 
@@ -693,6 +695,39 @@ export default class SeekPlugin extends Plugin {
                         return lines.join('\n').replace(/\n+$/, '');
                     } catch (err) {
                         return fail(err instanceof Error ? err.message : String(err));
+                    }
+                },
+            );
+
+            registerCliHandler.call(
+                this,
+                'seek:open',
+                'Seek search and open a result in the active tab, new tab, or split pane',
+                {
+                    query: { value: '<text>', description: 'Search query (supports inline filters: #tag, tag:, path:, [k:v], dates)', required: true },
+                    paneType: { value: 'tab|split|window', description: 'Pane to open in (default: active tab)', required: false },
+                    rank: { value: '<n>', description: '1-based result rank to open (default: 1)', required: false },
+                },
+                async (args: Record<string, string | boolean | undefined>): Promise<string> => {
+                    const query = typeof args.query === 'string' ? args.query : '';
+                    if (!query) return 'Seek error: query is required';
+                    if (!this.orchestrator) return 'Seek error: Seek not initialized — plugin still loading';
+
+                    const parsedRank = typeof args.rank === 'string' ? parseInt(args.rank, 10) : NaN;
+                    const rank = Number.isFinite(parsedRank) && parsedRank > 0 ? parsedRank : 1;
+                    const target = parsePaneType(typeof args.paneType === 'string' ? args.paneType : undefined);
+
+                    try {
+                        await this.ensureModelLoaded();
+                        const { results } = await this.orchestrator.search(query, rank);
+                        const hit = results[rank - 1];
+                        if (!hit) return `Seek error: no result at rank ${rank} for "${query}"`;
+                        const file = this.app.vault.getAbstractFileByPath(hit.note_path);
+                        if (!(file instanceof TFile)) return `Seek error: result not on disk (${hit.note_path})`;
+                        await this.openIndexedFile(file, hit, target);
+                        return hit.note_path;
+                    } catch (err) {
+                        return `Seek error: ${err instanceof Error ? err.message : String(err)}`;
                     }
                 },
             );
@@ -1589,28 +1624,25 @@ export default class SeekPlugin extends Plugin {
         }
     }
 
-    // Headless deep-link target (obsidian://seek?query=…&mode=open): load the
-    // model, run the query, and open the top hit's note directly — no modal.
+    // Headless deep-link target (obsidian://seek?query=…&mode=open[&paneType=…]):
+    // load the model, run the query, and open the top hit's note directly — no modal.
     // Mirrors the seek:search CLI handler's model-gating (cold start blocks, so a
     // Notice stands in for the modal's progress UI). An empty query falls back to
     // the normal modal so a malformed link still does something useful.
-    private async openTopResult(query: string): Promise<void> {
+    private async openTopResult(query: string, target: OpenTarget = false): Promise<void> {
         if (!query.trim()) { this.openSearchModal(); return; }
         if (!this.orchestrator) { new Notice('Seek: still loading — try again in a moment'); return; }
         const notice = new Notice(`Seek: searching “${query}”…`, 0);
         this.pushTaskContext('search');
         try {
-            // No modal to overlap the cold-start, so block on the model load
-            // (3–10 s first call) before querying — same as the CLI handler.
             await this.ensureModelLoaded();
-            // topK=1 — we only open the single best hit.
             const { results } = await this.orchestrator.search(query, 1);
             notice.hide();
             const top = results[0];
             if (!top) { new Notice(`Seek: no results for “${query}”`); return; }
             const file = this.app.vault.getAbstractFileByPath(top.note_path);
             if (!(file instanceof TFile)) { new Notice(`Seek: top result not on disk (${top.note_path})`); return; }
-            await this.app.workspace.getLeaf(false).openFile(file);
+            await this.openIndexedFile(file, top, target);
         } catch (e) {
             notice.hide();
             this.logger.appendError('seek:protocol-open', e).catch(() => {});
@@ -1618,6 +1650,20 @@ export default class SeekPlugin extends Plugin {
         } finally {
             this.popTaskContext('search');
         }
+    }
+
+    // Open an indexed hit (markdown or .base) at the requested pane target.
+    // Headless paths (protocol, seek:open CLI) always focus the opened pane.
+    private async openIndexedFile(file: TFile, hit: { heading_path?: string[] }, target: OpenTarget): Promise<void> {
+        if (file.extension === 'base') {
+            const viewName = hit.heading_path?.[hit.heading_path.length - 1];
+            const state: Record<string, unknown> = viewName
+                ? { file: file.path, viewName }
+                : { file: file.path };
+            await openBaseAtTarget(this.app, file, target, state);
+            return;
+        }
+        await openFileAtTarget(this.app, file, target);
     }
 
     // Drain cold-mobile deferred embeds once a search session ends and the model is

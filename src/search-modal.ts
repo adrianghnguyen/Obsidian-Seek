@@ -1,7 +1,7 @@
 // Seek search modal. A plain Modal (not SuggestModal) with a debounced query,
 // manual result rendering, and a keyboard model layered on top: arrow keys move
 // a selectedIndex, Enter opens it, ⌘/Ctrl+Enter (or ⌘/Ctrl+click) opens in a
-// new tab. The query field is a token/pill input (see PillQueryField) that
+// new tab, ⌘/Ctrl+Alt+Enter (or ⌘/Ctrl+Alt+click) opens in a split pane.
 // serializes committed operator pills + free text back to the inline-filter
 // query string the search pipeline already parses.
 
@@ -16,6 +16,7 @@ import { sanitizeSnippet } from './snippet';
 import { matchStrength } from './dense-stats';
 import { SuggestEngine } from './suggest';
 import { PillQueryField } from './query-field';
+import { openBaseAtTarget, openFileAtTarget, resolveOpenTarget, isBackgroundOpen, type OpenTarget } from './open-target';
 
 // Search debounce. Mobile gets a longer window: the query embed runs on the
 // render thread (iframe = same event loop) and on iOS the stage-1 binary scan is
@@ -291,7 +292,7 @@ export class SeekSearchModal extends Modal {
         this.field = new PillQueryField(contentEl, this.suggester, {
             onQueryChange: q => this.scheduleSearch(q),
             onNavigate: dir => this.moveSelection(dir),
-            onSubmit: newTab => this.openSelected(newTab),
+            onSubmit: target => this.openSelected(target),
             onDismiss: () => this.close(),
             validateTag: tag => this.tagBinds(tag),
         }, this.settings.recencyEpsilon > 0, dateFieldLabel);
@@ -463,7 +464,13 @@ export class SeekSearchModal extends Modal {
         const kbd = (g: HTMLElement, key: string) => g.createEl('kbd', { text: key });
         grp(g => { kbd(g, '↑'); kbd(g, '↓'); g.createSpan({ text: ' navigate' }); });
         grp(g => { kbd(g, '↵'); g.createSpan({ text: ' open' }); });
-        grp(g => { kbd(g, '⌘'); kbd(g, '↵'); g.createSpan({ text: ' new tab' }); });
+        if (Platform.isMacOS) {
+            grp(g => { kbd(g, '⌘'); kbd(g, '↵'); g.createSpan({ text: ' new tab' }); });
+            grp(g => { kbd(g, '⌘'); kbd(g, '⌥'); kbd(g, '↵'); g.createSpan({ text: ' split' }); });
+        } else {
+            grp(g => { kbd(g, 'Ctrl'); kbd(g, '↵'); g.createSpan({ text: ' new tab' }); });
+            grp(g => { kbd(g, 'Ctrl'); kbd(g, 'Alt'); kbd(g, '↵'); g.createSpan({ text: ' split' }); });
+        }
         grp(g => { kbd(g, 'tab'); g.createSpan({ text: ' fill autosuggest' }); });
         // Copy a shareable obsidian://seek deep-link for the CURRENT query. The
         // builder percent-encodes (so a `#tag`/`[k:v]` filter survives the URL
@@ -888,7 +895,7 @@ export class SeekSearchModal extends Modal {
         };
         el.addEventListener('click', e => {
             if ((e.target as HTMLElement).closest('a')) return;
-            void this.openResult(row.data, this.rows.indexOf(row) + 1, e.metaKey || e.ctrlKey);
+            void this.openResult(row.data, this.rows.indexOf(row) + 1, resolveOpenTarget(e));
         });
         el.addEventListener('mousemove', () => {
             const idx = this.rows.indexOf(row);
@@ -1034,12 +1041,12 @@ export class SeekSearchModal extends Modal {
         else if (rb > list.scrollTop + list.clientHeight) list.scrollTop = rb - list.clientHeight + 6;
     }
 
-    private openSelected(newTab: boolean): void {
+    private openSelected(target: OpenTarget): void {
         const r = this.currentResults[this.selectedIndex];
-        if (r) void this.openResult(r, this.selectedIndex + 1, newTab);
+        if (r) void this.openResult(r, this.selectedIndex + 1, target);
     }
 
-    private async openResult(r: ScoredChunk, rank: number, newTab: boolean): Promise<void> {
+    private async openResult(r: ScoredChunk, rank: number, target: OpenTarget): Promise<void> {
         // Emit click event BEFORE opening the file — the file-open switches
         // workspace state and might cancel pending work. We don't await the
         // logger write so click latency stays imperceptible.
@@ -1048,26 +1055,22 @@ export class SeekSearchModal extends Modal {
         const file = this.app.vault.getAbstractFileByPath(r.note_path);
         if (!(file instanceof TFile)) return;
 
+        const background = isBackgroundOpen(target);
+
         // A .base is a saved query/view, not editable text. Skip the markdown
         // highlight + scroll path (buildMatchHighlight/scrollLeafToChunk assume a
         // text editor) and drive the Bases view directly: the matched view name
         // rides in heading_path (chunkBase puts it there), so we land on that exact
         // view. A base-level chunk (empty heading_path) has no viewName, so the
         // Bases view opens its default/last-used view. Mirrors the markdown path's
-        // modal semantics: a background new tab keeps the modal open + focused; a
+        // modal semantics: a background open keeps the modal open + focused; a
         // plain open takes the active tab and dismisses.
         if (file.extension === 'base') {
             const viewName = r.heading_path?.[r.heading_path.length - 1];
             const state: Record<string, unknown> = viewName ? { file: file.path, viewName } : { file: file.path };
-            if (newTab) {
-                const leaf = this.app.workspace.getLeaf('tab');
-                await leaf.setViewState({ type: 'bases', active: false, state });
-                this.field?.focus();
-                return;
-            }
-            const leaf = this.app.workspace.getLeaf(false);
-            await leaf.setViewState({ type: 'bases', active: true, state });
-            this.close();
+            await openBaseAtTarget(this.app, file, target, state, { background });
+            if (background) this.field?.focus();
+            else this.close();
             return;
         }
 
@@ -1075,24 +1078,10 @@ export class SeekSearchModal extends Modal {
         // flash core Search uses), passed via ephemeral state on the open call.
         const eState = await this.buildMatchHighlight(file, r);
 
-        if (newTab) {
-            // ⌘/Ctrl+Enter or ⌘/Ctrl+click → open in a BACKGROUND new tab and
-            // KEEP the modal open + focused, so the user can fan out several
-            // results in one session without the modal dismissing on them.
-            // `active: false` is what stops the new leaf from stealing focus
-            // away from the search field.
-            const leaf = this.app.workspace.getLeaf('tab');
-            await leaf.openFile(file, { active: false, eState });
-            this.scrollLeafToChunk(leaf, r);
-            this.field?.focus();
-            return;
-        }
-
-        // Plain open (Enter / click): replace the active tab and dismiss.
-        const leaf = this.app.workspace.getLeaf(false);
-        await leaf.openFile(file, { eState });
+        const leaf = await openFileAtTarget(this.app, file, target, { eState, background });
         this.scrollLeafToChunk(leaf, r);
-        this.close();
+        if (background) this.field?.focus();
+        else this.close();
     }
 
     // Build the ephemeral-state `match` payload Obsidian's view layer uses to
