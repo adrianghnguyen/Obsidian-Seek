@@ -1,5 +1,19 @@
 import { describe, it, expect } from 'vitest';
-import { sanitizeSnippet } from './snippet';
+import { sanitizeSnippet, makeSnippet } from './snippet';
+
+describe('makeSnippet', () => {
+    it('centers the window on the earliest matching query token', () => {
+        const content = 'alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega';
+        const out = makeSnippet(content, 'omega', 50);
+        expect(out).toContain('omega');
+        expect(out.startsWith('…')).toBe(true);
+    });
+
+    it('returns opening text when the query has no token match', () => {
+        const content = 'First sentence here. Second sentence with more words.';
+        expect(makeSnippet(content, 'zzzzz', 30)).toBe('First sentence here. Second se…');
+    });
+});
 
 // The headline case (Inbox/Seek Dense Channel CSLS De-Hubbing.md): a $$…$$
 // formula rendered as a centred MathJax block onto its own line, ballooning the

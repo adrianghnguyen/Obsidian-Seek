@@ -1,6 +1,47 @@
-// Pure snippet sanitation, extracted from search-modal.ts so it can be
-// unit-tested without Obsidian (same reasoning as ./highlight). No runtime
+// Pure snippet helpers, extracted from search-modal.ts / search.ts so they can
+// be unit-tested without Obsidian (same reasoning as ./highlight). No runtime
 // imports — string in, string out.
+
+import type { SnippetPreview } from './types';
+
+/** Lines + character window for each Display → snippet preview preset. */
+export const SNIPPET_PREVIEW_LIMITS: Record<SnippetPreview, { lines: number; chars: number }> = {
+    compact: { lines: 1, chars: 200 },
+    standard: { lines: 3, chars: 400 },
+    expanded: { lines: 6, chars: 800 },
+};
+
+// Project a chunk to the plain text a reader would see, collapsing markdown
+// link/embed syntax to its display text. Run BEFORE the snippet window is
+// chosen so a query term that exists only inside a URL can't drag the window
+// into the URL and slice the link into unreadable fragments.
+function snippetPlainText(md: string): string {
+    return md
+        .replace(/!\[\[[^\]]*?\]\]/g, '')
+        .replace(/!\[[^\]]*?\]\([^)]*?\)/g, '')
+        .replace(/^[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t]*$/gm, '')
+        .replace(/\[\[([^\]]+?)\]\]/g, (_m, inner: string) =>
+            inner.includes('|') ? inner.slice(inner.lastIndexOf('|') + 1) : (inner.split('#')[0] || inner))
+        .replace(/\[([^\]]*?)\]\([^)]*?\)/g, '$1');
+}
+
+/** Pick a query-centered plain-text window from chunk body (search + modal). */
+export function makeSnippet(content: string, query: string, maxLen: number): string {
+    const text = snippetPlainText(content);
+    const lower = text.toLowerCase();
+    const q = query.toLowerCase().split(/\s+/).filter(Boolean);
+    let best = -1;
+    for (const tok of q) {
+        const idx = lower.indexOf(tok);
+        if (idx !== -1 && (best === -1 || idx < best)) best = idx;
+    }
+    const start = best === -1 ? 0 : Math.max(0, best - 40);
+    const end = Math.min(text.length, start + maxLen);
+    let snippet = text.slice(start, end).replace(/\s+/g, ' ').trim();
+    if (start > 0) snippet = '…' + snippet;
+    if (end < text.length) snippet = snippet + '…';
+    return snippet;
+}
 
 // A line that's part of a GFM pipe table: either a normal row that's wrapped in
 // outer pipes (`| a | b |`, incl. the header) or a delimiter row (`|---|:--:|`,
