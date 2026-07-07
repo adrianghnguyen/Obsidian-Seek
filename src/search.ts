@@ -38,6 +38,7 @@ import { IndexCoordinator } from './index-coordinator';
 import { CompositorPacer } from './pacer';
 import { isMobilePlatform, residentInt8Enabled } from './platform';
 import { parseQuery, compileMatcher, excludedNotePaths } from './query-parser';
+import { makeSnippet, SNIPPET_PREVIEW_LIMITS } from './snippet';
 import { enumerateNumberPropertyNames } from './prop-types';
 
 // Indexing batches via PER-BUCKET ROLLING BUFFERS (2026-06-03 redesign).
@@ -2609,7 +2610,8 @@ export class SearchOrchestrator {
                 if (results.length >= topK) break;
             }
             await this.hydrateBodies(results);
-            for (const r of results) r.snippet = makeSnippet(r.content, '', 200);
+            const snippetChars = SNIPPET_PREVIEW_LIMITS[this.settings.snippetPreview].chars;
+            for (const r of results) r.snippet = makeSnippet(r.content, '', snippetChars);
             const entry = this.emptySearchEntry(query, cleanedQuery, filters, topK, searchId, idbReadMs, performance.now() - t0);
             entry.totalChunks = orderedChunks.length;
             entry.candidateUnionSize = matchedChunks.length;
@@ -2893,7 +2895,8 @@ export class SearchOrchestrator {
         }
 
         const snippetStart = performance.now();
-        for (const r of results) r.snippet = makeSnippet(r.content, cleanedQuery, 200);
+        const snippetChars = SNIPPET_PREVIEW_LIMITS[this.settings.snippetPreview].chars;
+        for (const r of results) r.snippet = makeSnippet(r.content, cleanedQuery, snippetChars);
         const snippetMs = performance.now() - snippetStart;
 
         // ---- Telemetry ---------------------------------------------------
@@ -4001,43 +4004,3 @@ function topKByScore(scores: Float64Array, chunks: ChunkMeta[], k: number): Arra
     return indices.slice(0, k).map(i => ({ chunk_id: chunks[i].chunk_id, score: scores[i] }));
 }
 
-// Project a chunk to the plain text a reader would see, collapsing markdown
-// link/embed syntax to its display text. Run BEFORE the snippet window is
-// chosen so a query term that exists only inside a URL (e.g. the `style` in
-// `…/design_asset_style_ab?…`) can't drag the window into the URL and slice the
-// link into unreadable fragments — we fall back to the note's opening prose
-// instead. Snippet-only: the raw content is still what BM25/dense indexed, so a
-// URL-only term keeps the note findable; this just governs what's shown.
-//   ![[img]] / ![alt](url) → ''        (embeds carry no readable text)
-//   --- / *** / ___        → ''        (thematic breaks — this vault puts one
-//                                        under every H1, so top-of-note chunks
-//                                        would otherwise lead with `--- …`)
-//   [[target|alias]]       → alias     (Obsidian's own display rule)
-//   [[target#section]]     → target
-//   [text](url)            → text
-function snippetPlainText(md: string): string {
-    return md
-        .replace(/!\[\[[^\]]*?\]\]/g, '')                       // ![[image]] embed
-        .replace(/!\[[^\]]*?\]\([^)]*?\)/g, '')                 // ![alt](url) image
-        .replace(/^[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t]*$/gm, '') // --- / *** / ___ rule
-        .replace(/\[\[([^\]]+?)\]\]/g, (_m, inner: string) =>
-            inner.includes('|') ? inner.slice(inner.lastIndexOf('|') + 1) : (inner.split('#')[0] || inner))
-        .replace(/\[([^\]]*?)\]\([^)]*?\)/g, '$1');  // [text](url) → text
-}
-
-function makeSnippet(content: string, query: string, maxLen: number): string {
-    const text = snippetPlainText(content);
-    const lower = text.toLowerCase();
-    const q = query.toLowerCase().split(/\s+/).filter(Boolean);
-    let best = -1;
-    for (const tok of q) {
-        const idx = lower.indexOf(tok);
-        if (idx !== -1 && (best === -1 || idx < best)) best = idx;
-    }
-    const start = best === -1 ? 0 : Math.max(0, best - 40);
-    const end = Math.min(text.length, start + maxLen);
-    let snippet = text.slice(start, end).replace(/\s+/g, ' ').trim();
-    if (start > 0) snippet = '…' + snippet;
-    if (end < text.length) snippet = snippet + '…';
-    return snippet;
-}
