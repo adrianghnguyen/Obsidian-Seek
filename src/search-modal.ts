@@ -27,6 +27,8 @@ import {
     resolveInsertLinkAlias,
     resolveInsertLinkSubpath,
 } from './insert-link';
+import { matchTitleAlias } from './fusion';
+import { dedupeAliasesAgainstBasename, sliceResultAliases } from './result-aliases';
 
 // Search debounce. Mobile gets a longer window: the query embed runs on the
 // render thread (iframe = same event loop) and on iOS the stage-1 binary scan is
@@ -112,6 +114,7 @@ export interface ModelStatus {
 interface SeekResultRow {
     el: HTMLElement;
     titleEl: HTMLElement;
+    aliasHintEl: HTMLElement;
     breadcrumbEl: HTMLElement;
     snippetEl: HTMLElement;
     metaEl: HTMLElement;
@@ -124,6 +127,8 @@ interface SeekResultRow {
     // unchanged heading path skips the (async) markdown re-render, mirroring
     // `lastSnippet`.
     lastCrumb: string;
+    aliasesExpanded: boolean;
+    lastAliasSig: string;
 }
 
 // The index-state banner the modal renders between the query field and the results.
@@ -903,6 +908,7 @@ export class SeekSearchModal extends Modal {
         const row: SeekResultRow = {
             el,
             titleEl: top.createDiv({ cls: 'seek-result-title' }),
+            aliasHintEl: top.createSpan({ cls: 'seek-result-alias-hint' }),
             // Breadcrumb is parented to `el` (not `top`) so it drops onto its own
             // line below the title instead of competing for the title's horizontal
             // space and forcing a truncating ellipsis. Created after `top` → sits
@@ -916,9 +922,12 @@ export class SeekSearchModal extends Modal {
             rank: i + 1,
             lastSnippet: '\0', // sentinel ≠ any real snippet so first apply renders
             lastCrumb: '\0',   // same sentinel for the breadcrumb
+            aliasesExpanded: false,
+            lastAliasSig: '\0',
         };
+        row.aliasHintEl.hide();
         el.addEventListener('click', e => {
-            if ((e.target as HTMLElement).closest('a')) return;
+            if ((e.target as HTMLElement).closest('a, .seek-meta-alias-more')) return;
             void this.openResult(row.data, this.rows.indexOf(row) + 1, resolveOpenTarget(e));
         });
         el.addEventListener('mousemove', () => {
@@ -941,6 +950,42 @@ export class SeekSearchModal extends Modal {
 
         const title = noteTitle(r.note_path);
         if (row.titleEl.textContent !== title) row.titleEl.setText(title);
+
+        const showAliases = this.settings.showResultAliases;
+        const cleanedQuery = (this.latestSearchEntry?.cleanedQuery ?? '').trim();
+        const hasTextQuery = cleanedQuery.length > 0;
+
+        const aliasSig = r.note_path + '\x1e' + (r.metadata?.aliases ?? []).join('\x1e');
+        if (aliasSig !== row.lastAliasSig) {
+            row.aliasesExpanded = false;
+            row.lastAliasSig = aliasSig;
+        }
+
+        let matchedAlias: string | null = null;
+        let aliasCoverage = 0;
+        let basenameCoverage = 0;
+        if (showAliases && hasTextQuery) {
+            const m = matchTitleAlias(cleanedQuery, title, r.metadata?.aliases ?? []);
+            basenameCoverage = m.basenameCoverage;
+            aliasCoverage = m.aliasCoverage;
+            matchedAlias = m.aliasCoverage > 0 ? m.bestAlias : null;
+        }
+
+        const allAliases = showAliases
+            ? dedupeAliasesAgainstBasename(r.metadata?.aliases ?? [], title)
+            : [];
+        const aliasLimit = this.settings.resultAliasLimit;
+        const canTruncate = showAliases && aliasLimit > 0 && allAliases.length > aliasLimit;
+        const aliasSlice = showAliases
+            ? sliceResultAliases(r.metadata?.aliases ?? [], title, aliasLimit, row.aliasesExpanded, matchedAlias)
+            : { visible: [], hiddenCount: 0, matchedAlias: null };
+
+        if (showAliases && matchedAlias && aliasCoverage > basenameCoverage) {
+            if (row.aliasHintEl.textContent !== matchedAlias) row.aliasHintEl.setText(matchedAlias);
+            row.aliasHintEl.show();
+        } else {
+            row.aliasHintEl.hide();
+        }
 
         // Heading-path breadcrumb: `› Agenda › Intern pgm` (empty for a
         // whole-note / pre-heading chunk). Rendered as MARKDOWN, not plain text,
@@ -965,21 +1010,68 @@ export class SeekSearchModal extends Modal {
         }
         row.breadcrumbEl.toggle(crumb.length > 0);
 
-        // Meta line: `created <date> · #tag #tag`. Rebuilt only when it changes.
+        // Meta line: `created <date> · aka alias · #tag`. Rebuilt only when it changes.
         const created = fmtCreated(r.metadata?.created ?? null);
         const tags = r.metadata?.tags ?? [];
-        const metaSig = created + '|' + tags.join(',');
+        const metaSig = [
+            created,
+            tags.join(','),
+            aliasSlice.visible.join(','),
+            aliasSlice.hiddenCount,
+            row.aliasesExpanded ? '1' : '0',
+            matchedAlias ?? '',
+            showAliases ? '1' : '0',
+        ].join('|');
         if (row.metaEl.dataset.sig !== metaSig) {
             row.metaEl.dataset.sig = metaSig;
             row.metaEl.empty();
+
+            const appendDot = () => {
+                if (row.metaEl.childElementCount > 0) {
+                    row.metaEl.createSpan({ cls: 'seek-meta-dot', text: '·' });
+                }
+            };
+
             if (created) {
                 const c = row.metaEl.createSpan({ cls: 'seek-meta-created' });
                 c.createSpan({ cls: 'seek-meta-lbl', text: 'created ' });
                 c.appendText(created);
             }
-            if (created && tags.length) row.metaEl.createSpan({ cls: 'seek-meta-dot', text: '·' });
-            for (const t of tags) row.metaEl.createSpan({ cls: 'seek-meta-tag', text: `#${t}` });
-            row.metaEl.toggle(created.length > 0 || tags.length > 0);
+
+            if (showAliases && aliasSlice.visible.length > 0) {
+                appendDot();
+                const akaGroup = row.metaEl.createSpan({ cls: 'seek-meta-aka' });
+                akaGroup.createSpan({ cls: 'seek-meta-lbl', text: 'aka' });
+                for (let ai = 0; ai < aliasSlice.visible.length; ai++) {
+                    const isMatched = hasTextQuery && matchedAlias != null && aliasSlice.visible[ai] === matchedAlias;
+                    akaGroup.createSpan({
+                        cls: isMatched ? 'seek-meta-alias seek-meta-alias-matched' : 'seek-meta-alias',
+                        text: aliasSlice.visible[ai],
+                    });
+                }
+                if (!row.aliasesExpanded && aliasSlice.hiddenCount > 0) {
+                    const more = akaGroup.createSpan({ cls: 'seek-meta-alias-more', text: `+${aliasSlice.hiddenCount} more` });
+                    more.addEventListener('click', e => {
+                        e.stopPropagation();
+                        row.aliasesExpanded = true;
+                        this.applyRow(row, r, rank);
+                    });
+                } else if (row.aliasesExpanded && canTruncate) {
+                    const less = akaGroup.createSpan({ cls: 'seek-meta-alias-more', text: 'less' });
+                    less.addEventListener('click', e => {
+                        e.stopPropagation();
+                        row.aliasesExpanded = false;
+                        this.applyRow(row, r, rank);
+                    });
+                }
+            }
+
+            if (tags.length > 0) {
+                appendDot();
+                for (const t of tags) row.metaEl.createSpan({ cls: 'seek-meta-tag', text: `#${t}` });
+            }
+
+            row.metaEl.toggle(created.length > 0 || tags.length > 0 || aliasSlice.visible.length > 0);
         }
 
         // Score line, gated on the Display scores setting. Shows the calibrated
@@ -991,10 +1083,6 @@ export class SeekSearchModal extends Modal {
             conf, r.ranking_signals.bm25, this.settings.denseWeight, r.lexicalOnly);
         // A filter-only / browse query (no free text) has nothing to "match"
         // against — suppress the score entirely rather than score a non-match.
-        const hasTextQuery = (this.latestSearchEntry?.cleanedQuery ?? '').trim().length > 0;
-        // Below MATCH_STRENGTH_MIN_NOTES notes the dense background is too sparse to
-        // calibrate (the settings toggle is disabled there too). strength == null
-        // means the corpus isn't calibrated yet → hide the line, no rank fallback.
         const scoresMeaningful = this.app.vault.getMarkdownFiles().length >= MATCH_STRENGTH_MIN_NOTES;
         if (this.settings.showScores && scoresMeaningful && hasTextQuery && strength != null) {
             // Title shown as a normalized [0,1] match strength (1 = full known-item

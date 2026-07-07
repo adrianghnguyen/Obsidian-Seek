@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { hybridFusion, titleMatchBoost, theoreticalNormDense, theoreticalNormBm25, browseOrder, recencyDate, computeRecencyScore, parseDateMs } from './fusion';
+import { hybridFusion, titleMatchBoost, matchTitleAlias, theoreticalNormDense, theoreticalNormBm25, browseOrder, recencyDate, computeRecencyScore, parseDateMs } from './fusion';
 
 describe('titleMatchBoost — token coverage (precision-scaled)', () => {
     const chunk = (note_path: string, aliases?: string[]) => ({ note_path, metadata: { aliases } });
@@ -132,6 +132,36 @@ describe('titleMatchBoost — token coverage (precision-scaled)', () => {
         // the full boost.
         const out = titleMatchBoost('coop co op', [chunk('Notes/Co-op.md')], B);
         expect(out[0]).toBeCloseTo(B, 10);
+    });
+});
+
+describe('matchTitleAlias — per-note alias match for result UI', () => {
+    it('returns basename coverage and best alias', () => {
+        const m = matchTitleAlias('aca', 'Creative Assistant', ['Example Creative Assistant', 'ACA']);
+        expect(m.basenameCoverage).toBe(0);
+        expect(m.bestAlias).toBe('ACA');
+        expect(m.aliasCoverage).toBeCloseTo(1, 10);
+    });
+
+    it('basename wins when it matches better than partial alias', () => {
+        const m = matchTitleAlias('eames project', 'Eames Project', ['Eames Project Design']);
+        expect(m.basenameCoverage).toBeCloseTo(1, 10);
+        expect(m.aliasCoverage).toBeCloseTo(2 / 3, 10);
+        expect(m.basenameCoverage).toBeGreaterThan(m.aliasCoverage);
+    });
+
+    it('empty query yields zero coverage', () => {
+        const m = matchTitleAlias('   ', 'Note', ['Alias']);
+        expect(m.basenameCoverage).toBe(0);
+        expect(m.bestAlias).toBeNull();
+        expect(m.aliasCoverage).toBe(0);
+    });
+
+    it('no aliases leaves bestAlias null with zero alias coverage', () => {
+        const m = matchTitleAlias('memgraph', 'MemGraph', []);
+        expect(m.basenameCoverage).toBeCloseTo(1, 10);
+        expect(m.bestAlias).toBeNull();
+        expect(m.aliasCoverage).toBe(0);
     });
 });
 

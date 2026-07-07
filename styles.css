@@ -673,6 +673,52 @@
     color: var(--text-faint);
 }
 
+/* Grouped aka block: one quiet outline around the label + aliases + expand control. */
+.seek-meta-aka {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 1px 7px;
+    border-radius: 5px;
+    border: 1px solid color-mix(in srgb, var(--background-modifier-border) 75%, transparent);
+}
+
+.seek-meta-aka .seek-meta-lbl {
+    margin-right: 1px;
+}
+
+.seek-meta-alias {
+    color: var(--text-faint);
+}
+
+.seek-meta-aka .seek-meta-alias-matched {
+    color: var(--text-accent);
+    font-weight: 600;
+}
+
+.seek-meta-alias-more {
+    color: var(--text-muted);
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-color: transparent;
+}
+
+.seek-meta-alias-more:hover {
+    color: var(--text-normal);
+    text-decoration-color: currentColor;
+}
+
+.seek-result-alias-hint {
+    flex: 0 1 auto;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-faint);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 /* Per-result score line (gated on the Display scores setting): the calibrated
    Matching % plus recency and title-boost bonuses. Faint monospace with tabular
    figures so the numbers don't reflow as rows repaint on each keystroke. */
