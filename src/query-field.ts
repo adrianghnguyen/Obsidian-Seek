@@ -23,6 +23,7 @@ import { Platform, setIcon } from 'obsidian';
 import type { SuggestEngine } from './suggest';
 import { parseDateMs } from './fusion';
 import { parseNum } from './query-parser';
+import { resolveOpenTarget, type OpenTarget } from './open-target';
 
 export type PillOp = 'tag' | 'path' | 'after' | 'before' | 'prop';
 
@@ -57,8 +58,8 @@ export interface PillQueryFieldCallbacks {
     onQueryChange: (query: string) => void;
     // Move result selection by ±1 (arrow keys, when the dropdown is closed).
     onNavigate: (dir: 1 | -1) => void;
-    // Open the selected result (Enter); newTab when ⌘/Ctrl was held.
-    onSubmit: (newTab: boolean) => void;
+    // Open the selected result (Enter); OpenTarget from modifier keys (tab/split).
+    onSubmit: (target: OpenTarget) => void;
     // Esc with no dropdown open → close the modal.
     onDismiss: () => void;
     // Does this tag bind to a real vault tag (exact or hierarchical parent)?
@@ -718,7 +719,8 @@ export class PillQueryField {
         const text = this.readText();
         const last = (text.match(/(\S*)$/)?.[1]) ?? '';
         const openSugg = this.sugg.open && this.sugg.items.length > 0;
-        const accel = e.metaKey || e.ctrlKey;
+        const target = resolveOpenTarget(e);
+        const accel = target !== false;
 
         // While a pill is keyboard-selected, only ←/→ (move) and Backspace/Delete
         // (remove) act on it; the handlers for those live below. ANY other
@@ -813,8 +815,8 @@ export class PillQueryField {
                 this.blur();
                 return;
             }
-            // Accept a highlighted suggestion — but ⌘/Ctrl+Enter always means
-            // "open in new tab", so for a value row it skips straight to submit.
+            // Accept a highlighted suggestion — but ⌘/Ctrl+Enter (or ⌘/Ctrl+Alt)
+            // always means open, so for a value row it skips straight to submit.
             // Op-kind menus additionally require engagement (menuEngaged):
             // otherwise Enter mid-sentence ("what would be↵") would rewrite the
             // field to "what would before:" instead of opening the selection.
@@ -830,7 +832,7 @@ export class PillQueryField {
                 return;
             }
             e.preventDefault();
-            this.cb.onSubmit(accel);
+            this.cb.onSubmit(target);
             return;
         }
         if (e.key === ' ') {

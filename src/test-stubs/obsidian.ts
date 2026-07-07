@@ -14,6 +14,14 @@ export const Platform = {
     isAndroidApp: false,
     isTablet: false,
     isPhone: false,
+    isMacOS: false,
+    isDesktop: true,
+};
+
+export const Keymap = {
+    isModEvent(_evt?: MouseEvent | KeyboardEvent): false | 'tab' | 'split' | 'window' {
+        return false;
+    },
 };
 
 // Minimal runtime stubs for the values search.ts / main.ts read at module load
