@@ -5,7 +5,7 @@
 // the next foreground). These pin the iOS heap-reset behaviour.
 
 import { describe, it, expect } from 'vitest';
-import { shouldUnloadEmbedder, type UnloadGateState } from './embedder-lifecycle';
+import { shouldUnloadEmbedder, shouldPrewarmModelOnStart, type UnloadGateState, type PrewarmGateState } from './embedder-lifecycle';
 
 // A fully-quiescent, loaded embedder — the only state an idle unload may fire in.
 const QUIESCENT: UnloadGateState = {
@@ -39,5 +39,43 @@ describe('shouldUnloadEmbedder', () => {
 
     it('running always beats pending — background still refuses mid-flight work', () => {
         expect(shouldUnloadEmbedder('background', { ...QUIESCENT, running: true, pending: true })).toBe(false);
+    });
+});
+
+// shouldPrewarmModelOnStart gates the desktop cold-start prewarm. The contract:
+// prewarm ONLY on a desktop with an already-cached model and a non-empty index,
+// when nothing is already loading, and only if the user hasn't opted out. Every
+// gate is a hard veto — the conservative default is "don't prewarm".
+const PREWARMABLE: PrewarmGateState = {
+    enabled: true,
+    mobile: false,
+    modelDownloaded: true,
+    indexNonEmpty: true,
+    alreadyLoadedOrLoading: false,
+};
+
+describe('shouldPrewarmModelOnStart', () => {
+    it('prewarms in the fully-eligible desktop state', () => {
+        expect(shouldPrewarmModelOnStart(PREWARMABLE)).toBe(true);
+    });
+
+    it('respects the user opt-out', () => {
+        expect(shouldPrewarmModelOnStart({ ...PREWARMABLE, enabled: false })).toBe(false);
+    });
+
+    it('never prewarms on mobile (jetsam / idle-unload churn)', () => {
+        expect(shouldPrewarmModelOnStart({ ...PREWARMABLE, mobile: true })).toBe(false);
+    });
+
+    it('never triggers a boot-time fetch — requires the model already cached', () => {
+        expect(shouldPrewarmModelOnStart({ ...PREWARMABLE, modelDownloaded: false })).toBe(false);
+    });
+
+    it('skips an empty index (nothing to search yet)', () => {
+        expect(shouldPrewarmModelOnStart({ ...PREWARMABLE, indexNonEmpty: false })).toBe(false);
+    });
+
+    it('skips when a load is already loaded or in flight', () => {
+        expect(shouldPrewarmModelOnStart({ ...PREWARMABLE, alreadyLoadedOrLoading: true })).toBe(false);
     });
 });

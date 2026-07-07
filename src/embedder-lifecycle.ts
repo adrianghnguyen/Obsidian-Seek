@@ -37,3 +37,35 @@ export function shouldUnloadEmbedder(reason: 'idle' | 'background', s: UnloadGat
     if (reason === 'idle' && s.pending) return false;
     return true;
 }
+
+// Pure decision for proactively loading the model shortly after boot, so the first
+// search doesn't pay the full cold model load (the dominant cold-start cost). Kept
+// framework-free + exported so the safety gates are unit-tested in isolation.
+export interface PrewarmGateState {
+    // settings.prewarmModelOnStart — the user opt-out.
+    enabled: boolean;
+    // isMobilePlatform() — mobile is EXCLUDED: loading ~250 MB on boot risks a jetsam
+    // kill, and the mobile idle-unload timer would tear it back down within minutes
+    // (pure churn). Cold start stays intentionally lazy on mobile.
+    mobile: boolean;
+    // The model bytes are ALREADY cached (Cache API / loaded / last-delivery log).
+    // The gate refuses to prewarm otherwise, so boot never triggers a ~100 MB CDN
+    // fetch on a metered/first-run connection — only the bounded WASM/GPU init.
+    modelDownloaded: boolean;
+    // There is something to search (chunks > 0). A brand-new/empty vault will load
+    // the model on its first reindex anyway; prewarming it here would be wasted RAM.
+    indexNonEmpty: boolean;
+    // The model is already loaded, or a load is in flight (modelLoadPromise set) —
+    // e.g. reconcileOnLoad started one. ensureModelLoaded is memoized so a prewarm
+    // would coalesce harmlessly, but skipping keeps the intent explicit.
+    alreadyLoadedOrLoading: boolean;
+}
+
+export function shouldPrewarmModelOnStart(s: PrewarmGateState): boolean {
+    if (!s.enabled) return false;
+    if (s.mobile) return false;
+    if (!s.modelDownloaded) return false;
+    if (!s.indexNonEmpty) return false;
+    if (s.alreadyLoadedOrLoading) return false;
+    return true;
+}

@@ -528,6 +528,16 @@ export interface SeekSettings {
     // device whose config is actually renamed.
     sidecarIndexLocation: SidecarIndexLocation;
 
+    // Proactively load the embedding model shortly after boot (desktop only) so the
+    // first search doesn't pay the full cold model load — the dominant cold-start
+    // cost. Gated hard for safety (see shouldPrewarmModelOnStart / maybeColdStartPrewarm
+    // in main.ts): DESKTOP only (mobile stays lazy — 250 MB on boot risks jetsam and
+    // the idle-unload timer would just tear it back down), only when the model is
+    // ALREADY cached (never triggers a boot-time ~100 MB CDN fetch), and only when the
+    // index is non-empty (nothing to search otherwise). ON by default; a low-RAM
+    // desktop user can turn it off to keep the lazy-load behavior.
+    prewarmModelOnStart: boolean;
+
     // Settings-schema revision, persisted in data.json so onload can run
     // one-time migrations. Rev 2 = the 2026-06-09 bound-norm switch: persisted
     // pre-bound denseWeight values (0.90/0.92, empirical-max scale) are on a
@@ -593,6 +603,7 @@ export const DEFAULT_SETTINGS: SeekSettings = {
     searchModalHeight: 'default',  // desktop modal height preset
     sidecarEnabled: true,      // ON (hidden) per the 2026-06-19 ratification; vault-file index persistence for iOS-eviction survival + cross-device sync; only Index location stays user-facing; seeds on next reindex — see field comment
     sidecarIndexLocation: 'config', // hidden literal '.obsidian/plugins/seek/index'; 'visible' = vault-root 'Seek Index/' for split-config Obsidian Sync; see field comment
+    prewarmModelOnStart: true, // desktop-only proactive model load after boot when already cached + index non-empty; cuts first-search cold start. See field comment
     settingsRev: 8,            // current schema rev; bump alongside a migration in main.ts onload (rev 8 = 2026-06-27 denseWeight 0.80→0.85 re-eval)
 };
 

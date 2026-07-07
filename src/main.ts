@@ -42,7 +42,7 @@ import { indexBannerSpec, INDEX_STALE_MSG, INDEX_SYNCING_MSG, INDEX_PEER_AHEAD_M
 import { SeekSettingTab } from './settings-tab';
 import { collectPlatformInfo, isMobilePlatform, resolveDevice, recordActiveBackend, maybeDemoteOnCrash } from './platform';
 import { CompositorPacer } from './pacer';
-import { shouldUnloadEmbedder, type UnloadGateState } from './embedder-lifecycle';
+import { shouldUnloadEmbedder, shouldPrewarmModelOnStart, type UnloadGateState, type PrewarmGateState } from './embedder-lifecycle';
 import { drainCatchUp, CATCHUP_MAX_FILES_PER_BURST, CATCHUP_BURST_BUDGET_MS } from './catchup';
 import type { LongTaskEntry, MemoryPressureEntry, StorageSnapshotEntry, EvictionSuspectedEntry, AppLocalFetchEntry } from './types';
 
@@ -604,6 +604,12 @@ export default class SeekPlugin extends Plugin {
             });
         }
 
+        // Cold-start prewarm: on desktop, once boot settles, proactively load the
+        // (already-cached) model so the first search skips the dominant cold-start
+        // cost. Heavily gated + deferred — see maybeColdStartPrewarm / the
+        // shouldPrewarmModelOnStart predicate. No-op on mobile and when opted out.
+        this.scheduleColdStartPrewarm();
+
         // ---- Commands ----
 
         this.addCommand({
@@ -993,6 +999,51 @@ export default class SeekPlugin extends Plugin {
         // Synchronous breadcrumb too — the background unload races a possible
         // jetsam kill, and the async log line above can be lost to it.
         this.forensics?.beat(reason === 'idle' ? 'model-unload-idle' : 'model-unload-bg');
+    }
+
+    // One-shot timer for the deferred cold-start prewarm; cleared on unload.
+    private prewarmTimer: number | null = null;
+
+    // Schedule the desktop cold-start prewarm after boot settles. Deferred (not
+    // awaited in onload) so it never taxes app-open; the actual eligibility check
+    // runs inside maybeColdStartPrewarm once the timer fires. Cheap-exits on mobile
+    // or when opted out so we don't even arm a timer there.
+    private scheduleColdStartPrewarm(): void {
+        if (isMobilePlatform() || !this.settings.prewarmModelOnStart) return;
+        // ~3 s past onload: let first paint, the sidecar hydrate/reconcile, and the
+        // iframe init breathe first. registerInterval tracks the id so unload clears
+        // it (clearInterval clears a setTimeout id in the browser id space).
+        this.prewarmTimer = window.setTimeout(() => {
+            this.prewarmTimer = null;
+            void this.maybeColdStartPrewarm();
+        }, 3000);
+        this.registerInterval(this.prewarmTimer);
+    }
+
+    // Proactively load the model iff every safety gate passes (see
+    // shouldPrewarmModelOnStart): desktop, user opted in, model ALREADY cached (no
+    // boot-time CDN fetch), index non-empty, nothing already loading. ensureModelLoaded
+    // also warms the frame + BM25 caches (via warmCaches('model-load')), so a
+    // successful prewarm makes the first search fully warm — model AND caches.
+    private async maybeColdStartPrewarm(): Promise<void> {
+        try {
+            if (!this.orchestrator || this.embedder.loaded || this.modelLoadPromise) return;
+            const status = await this.getModelStatus();
+            const { chunks } = await this.store.count();
+            const gate: PrewarmGateState = {
+                enabled: this.settings.prewarmModelOnStart,
+                mobile: isMobilePlatform(),
+                modelDownloaded: status.downloaded,
+                indexNonEmpty: chunks > 0,
+                alreadyLoadedOrLoading: this.embedder.loaded || this.modelLoadPromise != null,
+            };
+            if (!shouldPrewarmModelOnStart(gate)) return;
+            this.forensics?.beat('cold-start-prewarm');
+            await this.ensureModelLoaded();
+        } catch (e) {
+            // Prewarm is best-effort — the first search reloads on demand. Never throw.
+            await this.logger.appendError('cold-start-prewarm', e).catch(() => {});
+        }
     }
 
     private ensureModelLoaded(): Promise<void> {

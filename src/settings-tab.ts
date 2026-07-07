@@ -21,6 +21,7 @@ import type { SidecarIndexLocation, SearchModalHeight, SearchModalWidth, Snippet
 import { DEFAULT_SETTINGS, MATCH_STRENGTH_MIN_NOTES } from './types';
 import {
     getBackendOverride, setBackendOverride, isWebgpuDemoted, clearWebgpuDemoted,
+    isMobilePlatform,
     type BackendChoice,
 } from './platform';
 import { enumerateDatePropertyNames } from './prop-types';
@@ -671,6 +672,17 @@ export class SeekSettingTab extends PluginSettingTab {
                     new Notice('Seek: WebGPU re-enabled on this device. Takes effect on the next model load.', 6000);
                     this.rerender();
                 }));
+        }
+
+        // Desktop-only: the prewarm never runs on mobile (see shouldPrewarmModelOnStart),
+        // so the toggle would be inert there — hide it to avoid confusion.
+        if (!isMobilePlatform()) {
+            new Setting(containerEl)
+                .setName('Prewarm model on startup')
+                .setDesc('Load the embedding model shortly after Obsidian opens (only when it is already downloaded) so your first search is instant instead of waiting for the model to load. Uses ~250 MB of memory sooner; turn off to load only on first search.')
+                .addToggle(t => t
+                    .setValue(this.s.prewarmModelOnStart)
+                    .onChange(async v => { this.s.prewarmModelOnStart = v; await this.save(); }));
         }
 
         this.renderModelStatus(containerEl);
