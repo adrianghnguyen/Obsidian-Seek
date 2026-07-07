@@ -36,8 +36,18 @@ export function applySearchModalSize(
 
     const widthPx = resolveSearchModalWidthPx(width, opts.isTablet);
     const h = HEIGHT_PRESETS[height] ?? HEIGHT_PRESETS.default;
+    const maxWidth = opts.isTablet ? '90vw' : '94vw';
 
+    // CSS vars for styles.css; inline dimensions too so size settings survive a
+    // stale plugin stylesheet until Obsidian fully reloads CSS on plugin:reload.
     modalEl.style.setProperty('--seek-modal-width', `${widthPx}px`);
     modalEl.style.setProperty('--seek-modal-max-height', h.maxHeight);
     modalEl.style.setProperty('--seek-modal-margin-top', h.marginTop);
+    modalEl.style.width = `${widthPx}px`;
+    modalEl.style.maxWidth = maxWidth;
+    modalEl.style.maxHeight = h.maxHeight;
+    modalEl.style.marginTop = h.marginTop;
+
+    const content = modalEl.querySelector('.modal-content') as HTMLElement | null;
+    if (content) content.style.maxHeight = h.maxHeight;
 }
