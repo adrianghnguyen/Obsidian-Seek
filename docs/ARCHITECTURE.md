@@ -404,7 +404,8 @@ Crash demotion can sticky-force WASM after mobile GPU jetsam.
 | Enter | Open in active pane; close modal |
 | ⌘/Ctrl+Enter | Open in new tab (modal stays open) |
 | ⌘/Ctrl+Alt+Enter | Open in split pane |
-| Alt+Enter | Insert wikilink at editor cursor (desktop) |
+| Alt+Enter | Insert plain wikilink at editor cursor (desktop) |
+| Alt+Shift+Enter | Insert wikilink with search free text as alias (desktop) |
 | ↑/↓ | Navigate results |
 | Esc | Close |
 
@@ -416,7 +417,7 @@ Pills serialize to the same inline syntax the backend parses:
 
 - `tag:value`, `path:folder/*`, `after:YYYY-MM`, `[key:value]`
 
-`SuggestEngine` provides autocomplete from vault tags, paths, and property keys. `getFreeText()` returns non-pill text for insert-link alias resolution.
+`SuggestEngine` provides autocomplete from vault tags, paths, and property keys. `getFreeText()` returns non-pill text used as the link alias on Alt+Shift+Enter.
 
 ### Open targets (`open-target.ts`)
 
@@ -424,10 +425,11 @@ Shared by modal, `obsidian://seek?mode=open`, and `seek:open` CLI. `resolveOpenT
 
 ### Insert link (`insert-link.ts`)
 
+- **Alt+Enter** — plain `[[Note]]` at the active editor cursor (selection untouched)
+- **Alt+Shift+Enter** — `[[Note|search free text]]` when free text is non-empty; otherwise plain link
 - Builds links via `app.fileManager.generateMarkdownLink()`
-- Alias priority: CLI explicit → editor selection → search query text (settings)
 - Subpath (`#heading`) optional via `insertLinkIncludeHeading` setting
-- CLI: `seek:insert-link query=… rank=… alias=… heading=true|false`
+- CLI: `seek:insert-link query=… rank=… alias=… heading=true|false` (plain link unless `alias=` is set)
 
 ---
 
@@ -441,7 +443,7 @@ Shared by modal, `obsidian://seek?mode=open`, and `seek:open` CLI. `resolveOpenT
 |-------|----------|
 | **Ranking** | `denseWeight`, `navTitleBoost`, `recencyEpsilon`, `recencyHalfLifeDays`, `fuzzyEnabled` |
 | **Indexing** | `honorIgnoredFolders`, `indexBases`, `searchableProperties`, `sidecarEnabled`, `sidecarIndexLocation` |
-| **Display** | `showScores`, `showHotkeyHints`, `insertLinkQueryAlias`, `insertLinkIncludeHeading` |
+| **Display** | `showScores`, `showHotkeyHints`, `insertLinkIncludeHeading`, snippet preview, modal size, aliases |
 | **Schema** | `settingsRev` (currently 8) — `migrateSettings()` runs on load |
 
 `this.settings` is a live object shared with `SearchOrchestrator` — ranking changes apply on the next search without reindex.

@@ -214,8 +214,6 @@ export type ChunkMeta = Omit<Chunk, 'content'>;
 // User-tunable settings (persisted via Plugin.saveData). Read live by the
 // orchestrator (it holds the same object ref), so changes take effect on the
 // next search without a rebuild.
-export type InsertLinkAliasSource = 'editorSelection' | 'searchQuery';
-
 export interface SeekSettings {
     // Dense weight in the TM2C2 hybrid: hybrid = w·dense_norm + (1−w)·bm25_norm
     // (ranker.ts hybridFusion over TM2C2-normalized channels). w=1 is pure
@@ -458,13 +456,8 @@ export interface SeekSettings {
     // modal opens.
     showHotkeyHints: boolean;
 
-    // Insert-link alias from search field free text (Alt+Enter). ON (default): when
-    // no editor selection, use the words typed in the search field as [[note|words]].
-    // OFF: editor selection only, else Obsidian default title. See insert-link.ts.
-    insertLinkQueryAlias: boolean;
-
-    // Insert-link subpath from section hits (Alt+Enter / seek:insert-link). ON: include
-    // #heading for section results ([[Note#Section|…]]). OFF (default): link to the
+    // Insert-link subpath from section hits (Alt+Enter / Alt+Shift+Enter / seek:insert-link).
+    // ON: include #heading for section results ([[Note#Section|…]]). OFF (default): link to the
     // note only ([[Note|…]]). See insert-link.ts resolveInsertLinkSubpath.
     insertLinkIncludeHeading: boolean;
 
@@ -584,7 +577,6 @@ export const DEFAULT_SETTINGS: SeekSettings = {
     showScores: false,         // OFF by default: per-result score line (Matching % · recency · title); opt-in via Display settings. (Also auto-hidden until the corpus is calibrated — ≥200 notes + full pass.) Default-only flip, no migration: installs that already persisted showScores keep their choice.
     verboseTrace: false,       // OFF: persist only the top-10 ranking trace per search (what the report shows); ON = full 50-deep tail for offline eval. Diagnostic-only, no UI
     showHotkeyHints: true,     // ON: show the modal footer keyboard-hint bar + result counter; OFF = full-results-only modal
-    insertLinkQueryAlias: true, // ON: Alt+Enter uses free-text search as link alias when no editor selection
     insertLinkIncludeHeading: false, // OFF (default): note-only links; ON adds #heading for section hits
     showResultAliases: true,   // ON: show frontmatter aliases on result rows (truncated per resultAliasLimit)
     resultAliasLimit: 3,       // max aliases before "+N more"; 0 = show all
