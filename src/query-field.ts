@@ -24,6 +24,7 @@ import type { SuggestEngine } from './suggest';
 import { parseDateMs } from './fusion';
 import { parseNum } from './query-parser';
 import { resolveOpenTarget, type OpenTarget } from './open-target';
+import type { InsertLinkMode } from './insert-link';
 
 export type PillOp = 'tag' | 'path' | 'after' | 'before' | 'prop';
 
@@ -60,8 +61,9 @@ export interface PillQueryFieldCallbacks {
     onNavigate: (dir: 1 | -1) => void;
     // Open the selected result (Enter); OpenTarget from modifier keys (tab/split).
     onSubmit: (target: OpenTarget) => void;
-    // Insert a link to the selected result at the active editor cursor (Alt+Enter).
-    onInsertLink: () => void;
+    // Insert a link at the active editor cursor: plain wiki link (Alt+Enter) or
+    // search-field free text as alias (Alt+Shift+Enter).
+    onInsertLink: (mode: InsertLinkMode) => void;
     // Ctrl/Cmd+Shift+E → toggle expanded snippet lines on result rows.
     onToggleSnippetExpand: () => void;
     // Esc with no dropdown open → close the modal.
@@ -813,10 +815,10 @@ export class PillQueryField {
             }
             return;
         }
-        if (e.key === 'Enter' && e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+        if (e.key === 'Enter' && e.altKey && !e.ctrlKey && !e.metaKey) {
             if (Platform.isMobile) return;
             e.preventDefault();
-            this.cb.onInsertLink();
+            this.cb.onInsertLink(e.shiftKey ? 'searchAlias' : 'plain');
             return;
         }
         if (e.key === 'Enter') {

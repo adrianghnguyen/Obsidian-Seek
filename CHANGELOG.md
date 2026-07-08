@@ -2,6 +2,16 @@
 
 All notable changes to Seek are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.0.9
+
+Insert-link hotkey split — plain wiki links vs search-text alias.
+
+### Changed
+- **Alt+Enter** inserts a plain wiki link (`[[Note]]`) at the editor cursor; editor selection is left untouched.
+- **Alt+Shift+Enter** inserts a wiki link with the search field's free text as the alias (`[[Note|words]]`).
+- Removed the "Insert link uses search text" setting — alias behavior is now hotkey-driven.
+- `seek:insert-link` CLI inserts a plain link by default; pass `alias=` for a display label.
+
 ## 1.0.8
 
 Search modal UX release — larger panel, richer result metadata, and configurable snippets.

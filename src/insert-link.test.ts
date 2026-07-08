@@ -3,10 +3,9 @@ import type { App, TFile } from 'obsidian';
 import {
     buildNoteLink,
     headingSubpath,
-    insertLinkAliasPolicyFromSettings,
     resolveInsertLinkAlias,
+    resolveInsertLinkAliasForMode,
     resolveInsertLinkSubpath,
-    type InsertLinkAliasPolicy,
 } from './insert-link';
 
 describe('headingSubpath', () => {
@@ -40,59 +39,31 @@ describe('resolveInsertLinkSubpath', () => {
     });
 });
 
-describe('resolveInsertLinkAlias', () => {
-    const selectionOnlyPolicy: InsertLinkAliasPolicy = { priority: ['editorSelection'] };
-    const defaultPolicy: InsertLinkAliasPolicy = { priority: ['editorSelection', 'searchQuery'] };
-
-    it('prefers explicit alias', () => {
-        expect(resolveInsertLinkAlias({
-            explicitAlias: 'cli alias',
-            editorSelection: 'sel',
-            searchQueryText: 'q',
-        }, selectionOnlyPolicy)).toBe('cli alias');
+describe('resolveInsertLinkAliasForMode', () => {
+    it('returns undefined for plain mode regardless of search text', () => {
+        expect(resolveInsertLinkAliasForMode('plain', 'hello')).toBeUndefined();
+        expect(resolveInsertLinkAliasForMode('plain', null)).toBeUndefined();
     });
 
-    it('uses editor selection when present', () => {
-        expect(resolveInsertLinkAlias({
-            editorSelection: 'selected words',
-            searchQueryText: 'test',
-        }, defaultPolicy)).toBe('selected words');
+    it('uses search free text in searchAlias mode', () => {
+        expect(resolveInsertLinkAliasForMode('searchAlias', 'hello world')).toBe('hello world');
     });
 
-    it('ignores search query when policy is selection-only', () => {
-        expect(resolveInsertLinkAlias({
-            searchQueryText: 'test',
-        }, selectionOnlyPolicy)).toBeUndefined();
-    });
-
-    it('falls back to search query in default policy', () => {
-        expect(resolveInsertLinkAlias({
-            searchQueryText: 'test',
-        }, defaultPolicy)).toBe('test');
-    });
-
-    it('selection wins over search query in default policy', () => {
-        expect(resolveInsertLinkAlias({
-            editorSelection: 'sel',
-            searchQueryText: 'test',
-        }, defaultPolicy)).toBe('sel');
+    it('returns undefined when searchAlias mode has empty free text', () => {
+        expect(resolveInsertLinkAliasForMode('searchAlias', '   ')).toBeUndefined();
+        expect(resolveInsertLinkAliasForMode('searchAlias', null)).toBeUndefined();
     });
 });
 
-describe('insertLinkAliasPolicyFromSettings', () => {
-    it('defaults to selection + search query', () => {
-        expect(insertLinkAliasPolicyFromSettings({})).toEqual({
-            priority: ['editorSelection', 'searchQuery'],
-        });
-        expect(insertLinkAliasPolicyFromSettings({ insertLinkQueryAlias: true })).toEqual({
-            priority: ['editorSelection', 'searchQuery'],
-        });
+describe('resolveInsertLinkAlias', () => {
+    it('returns trimmed explicit alias for CLI', () => {
+        expect(resolveInsertLinkAlias('  cli alias  ')).toBe('cli alias');
     });
 
-    it('is selection-only when toggle is off', () => {
-        expect(insertLinkAliasPolicyFromSettings({ insertLinkQueryAlias: false })).toEqual({
-            priority: ['editorSelection'],
-        });
+    it('returns undefined when no explicit alias', () => {
+        expect(resolveInsertLinkAlias(undefined)).toBeUndefined();
+        expect(resolveInsertLinkAlias('')).toBeUndefined();
+        expect(resolveInsertLinkAlias('   ')).toBeUndefined();
     });
 });
 

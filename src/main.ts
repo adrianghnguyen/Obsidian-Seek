@@ -32,7 +32,6 @@ import { SeekSearchModal, type IndexBanner } from './search-modal';
 import { parsePaneType, openFileAtTarget, openBaseAtTarget, type OpenTarget } from './open-target';
 import {
     buildNoteLink,
-    insertLinkAliasPolicyFromSettings,
     insertLinkInEditor,
     isInsertableMarkdownFile,
     resolveInsertLinkAlias,
@@ -760,10 +759,7 @@ export default class SeekPlugin extends Plugin {
                     const explicitAlias = typeof args.alias === 'string' && args.alias.trim()
                         ? args.alias.trim()
                         : undefined;
-                    const alias = resolveInsertLinkAlias(
-                        { searchQueryText: query, explicitAlias },
-                        insertLinkAliasPolicyFromSettings(this.settings),
-                    );
+                    const alias = resolveInsertLinkAlias(explicitAlias);
                     const headingArg = args.heading;
                     const subpathSettings = headingArg === true || headingArg === 'true'
                         ? { insertLinkIncludeHeading: true as const }

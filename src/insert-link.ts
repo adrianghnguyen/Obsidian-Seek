@@ -1,22 +1,12 @@
 // Link insertion from the search modal and seek:insert-link CLI. Builds vault-
 // respecting links via fileManager.generateMarkdownLink and inserts at the active
-// editor cursor (or over a saved selection when an alias came from editor text).
+// editor cursor.
 
 import { MarkdownView } from 'obsidian';
 import type { App, EditorPosition, TFile } from 'obsidian';
-import type { InsertLinkAliasSource, SeekSettings } from './types';
+import type { SeekSettings } from './types';
 
-export type { InsertLinkAliasSource };
-
-export interface InsertLinkAliasInput {
-    editorSelection?: string | null;
-    searchQueryText?: string | null;
-    explicitAlias?: string | null;
-}
-
-export interface InsertLinkAliasPolicy {
-    priority: readonly InsertLinkAliasSource[];
-}
+export type InsertLinkMode = 'plain' | 'searchAlias';
 
 export interface BuildNoteLinkOpts {
     subpath?: string;
@@ -28,32 +18,20 @@ export interface InsertLinkInEditorOpts {
     to?: EditorPosition;
 }
 
-const SELECTION_ONLY_POLICY: InsertLinkAliasPolicy = { priority: ['editorSelection'] };
-const DEFAULT_ALIAS_POLICY: InsertLinkAliasPolicy = { priority: ['editorSelection', 'searchQuery'] };
-
-export function insertLinkAliasPolicyFromSettings(
-    settings: Partial<Pick<SeekSettings, 'insertLinkQueryAlias'>>,
-): InsertLinkAliasPolicy {
-    if (settings.insertLinkQueryAlias === false) return SELECTION_ONLY_POLICY;
-    return DEFAULT_ALIAS_POLICY;
+/** Alias for modal insert: plain wiki link, or search-field free text when Shift is held. */
+export function resolveInsertLinkAliasForMode(
+    mode: InsertLinkMode,
+    searchQueryText?: string | null,
+): string | undefined {
+    if (mode === 'plain') return undefined;
+    const q = searchQueryText?.trim();
+    return q || undefined;
 }
 
-export function resolveInsertLinkAlias(
-    input: InsertLinkAliasInput,
-    policy: InsertLinkAliasPolicy,
-): string | undefined {
-    if (input.explicitAlias?.trim()) return input.explicitAlias.trim();
-
-    for (const source of policy.priority) {
-        if (source === 'editorSelection') {
-            const sel = input.editorSelection?.trim();
-            if (sel) return sel;
-        } else if (source === 'searchQuery') {
-            const q = input.searchQueryText?.trim();
-            if (q) return q;
-        }
-    }
-    return undefined;
+/** CLI alias: explicit `alias=` param only (default is a plain wiki link). */
+export function resolveInsertLinkAlias(explicitAlias?: string | null): string | undefined {
+    const a = explicitAlias?.trim();
+    return a || undefined;
 }
 
 export function headingSubpath(headingPath: string[] | undefined | null): string | undefined {
