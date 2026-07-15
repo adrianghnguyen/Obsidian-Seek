@@ -2,6 +2,11 @@
 
 All notable changes to Seek are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Changed
+- **Sync index across devices** — Settings → Index advanced exposes the existing sidecar toggle. ON (default) still writes vault index files for Sync/iOS hydrate; OFF keeps search on this device’s IndexedDB only. Index location is disabled while OFF.
+
 ## 1.0.9
 
 Insert-link hotkey split — plain wiki links vs search-text alias.

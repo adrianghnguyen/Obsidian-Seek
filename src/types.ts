@@ -492,15 +492,17 @@ export interface SeekSettings {
     // `experimentalMobileWebgpu` boolean was removed 2026-06-12 for this reason
     // — a stale value persisted in data.json is now an ignored extra key.
 
-    // Persist the vector index to vault files (`<pluginDir>/index/`) so it
-    // survives iOS IndexedDB eviction and flows between devices via iCloud /
-    // Obsidian Sync, which carry vault files but never a WebView's IDB. Desktop
-    // writes a per-device sidecar that an evicted/fresh mobile device hydrates
-    // WITHOUT re-embedding (re-chunk locally + copy the saved vectors). ON by
-    // default as of the 2026-06-19 settings ratification (only Index location stays
-    // user-facing; the sidecar seeds on the next reindex). It writes ~MBs of synced
-    // index files. See sidecar.ts / sidecar-sync.ts. Obsidian Sync users must
-    // also enable "Installed plugins / sync plugin files"; iCloud carries it free.
+    // Persist the vector index to vault files (`<pluginDir>/index/` or vault-root
+    // Seek Index/) so it survives iOS IndexedDB eviction and flows between devices
+    // via iCloud / Obsidian Sync, which carry vault files but never a WebView's IDB.
+    // Desktop writes a per-device sidecar that an evicted/fresh mobile device hydrates
+    // WITHOUT re-embedding (re-chunk locally + copy the saved vectors). Live search
+    // always uses this device's IndexedDB; this flag only controls vault sidecar
+    // write/hydrate. ON by default (Settings → Index advanced → Sync index across
+    // devices). OFF = this device only. Seeds on the next reindex when turned on.
+    // Writes ~MBs of synced index files. See sidecar.ts / sidecar-sync.ts. Obsidian
+    // Sync users must also enable "Installed plugins / sync plugin files"; iCloud
+    // carries it free.
     sidecarEnabled: boolean;
 
     // Where the sidecar index folder lives. 'config' (default) = the LITERAL
@@ -583,7 +585,7 @@ export const DEFAULT_SETTINGS: SeekSettings = {
     snippetPreview: 'compact', // 1-line / 200-char window; standard=3/400, expanded=6/800
     searchModalWidth: 'default',   // desktop/tablet modal width preset
     searchModalHeight: 'default',  // desktop modal height preset
-    sidecarEnabled: true,      // ON (hidden) per the 2026-06-19 ratification; vault-file index persistence for iOS-eviction survival + cross-device sync; only Index location stays user-facing; seeds on next reindex — see field comment
+    sidecarEnabled: true,      // ON by default; user-facing under Index advanced → Sync index across devices; vault-file index for iOS-eviction survival + Sync hydrate; OFF = this device only — see field comment
     sidecarIndexLocation: 'config', // hidden literal '.obsidian/plugins/seek/index'; 'visible' = vault-root 'Seek Index/' for split-config Obsidian Sync; see field comment
     settingsRev: 8,            // current schema rev; bump alongside a migration in main.ts onload (rev 8 = 2026-06-27 denseWeight 0.80→0.85 re-eval)
 };
