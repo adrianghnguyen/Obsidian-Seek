@@ -29,7 +29,7 @@ import {
     PAD_RUN_MIN, MAX_COLLAPSED_CHARS_PER_TOKEN, TOKEN_BUDGET, type CountTokens,
 } from './token-budget';
 import { chunkIdFor } from './chunker';
-import { parseAtoms, type Atom } from './atoms';
+import { parseAtoms, normalizeNewlines, type Atom } from './atoms';
 
 // Original units must appear, in order, somewhere in the emitted stream —
 // overlap may interleave duplicate seam paragraphs, so this is a subsequence
@@ -232,7 +232,7 @@ describe('within-section overlap', () => {
 // the constructed real-markdown set in src/fixtures/.
 describe('enforceTokenBudget — WS3 structural atoms', () => {
     const fx = (name: string): string =>
-        readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8');
+        normalizeNewlines(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8'));
 
     const fenceMarkerLines = (text: string): string[] =>
         text.split('\n').filter(l => /^ {0,3}(`{3,}|~{3,})/.test(l));

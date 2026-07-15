@@ -70,11 +70,23 @@ function isTableStart(line: string, next: string | undefined): boolean {
     return TABLE_DELIM_RE.test(next) && next.includes('|');
 }
 
+// Vault notes on Windows often use CRLF. Splitting on '\n' leaves a trailing
+// '\r' on every line; '.' does not match '\r' and '$' does not assert before
+// it, so fence/table regexes silently fail and structural atoms collapse to
+// paragraphs. Normalize once at the parser boundary (LF-only internally).
+export function normalizeNewlines(text: string): string {
+    return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
+function stripTrailCr(line: string): string {
+    return line.endsWith('\r') ? line.slice(0, -1) : line;
+}
+
 // Parse body text into atoms. Input is section content (already free of the
 // headings the chunker split on), but heading lines are tolerated as prose —
 // the carry/fold path prepends heading words to short-section content.
 export function parseAtoms(text: string): Atom[] {
-    const lines = text.split('\n');
+    const lines = normalizeNewlines(text).split('\n');
     const atoms: Atom[] = [];
     let para: string[] = [];
 
@@ -144,7 +156,9 @@ export function scanHeadings(
     const headings: Array<{ lineNum: number; level: number; text: string }> = [];
     let fence: FenceOpen | null = null;
     for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
+        // Callers typically split on '\n' without normalizing first (chunker,
+        // tests). Strip a trailing CR so fence/heading regexes still match.
+        const line = stripTrailCr(lines[i]);
         if (fence) {
             if (fenceCloses(line, fence)) fence = null;
             continue;
