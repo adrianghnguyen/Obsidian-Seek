@@ -233,32 +233,53 @@ export class SeekSettingTab extends PluginSettingTab {
             .setDesc("Skip files in Obsidian's Settings → Files & Links → Excluded files (e.g. Archive). Takes effect on the next full reindex.")
             .addToggle(t => t.setValue(this.s.honorIgnoredFolders).onChange(async v => { this.s.honorIgnoredFolders = v; await this.save(); }));
 
+        // Live search always uses this device's IndexedDB. The toggle only controls
+        // whether Seek also writes/hydrates vault index files (sidecar) for Sync/iOS.
+        const syncIdx = new Setting(adv).setName('Sync index across devices');
+        syncIdx.descEl.createDiv({ text: 'Search always uses this device’s local index. When on, Seek also writes vault index files (~MBs) so phones and Sync can hydrate without re-embedding. When off, this device only — no vault index writes or hydrate.' });
+        syncIdx.addToggle(t => t
+            .setValue(this.s.sidecarEnabled)
+            .onChange(async v => {
+                this.s.sidecarEnabled = v;
+                await this.save();
+                if (!v) {
+                    new Notice('Seek: sync index off — stops new vault index writes and hydrate on the next ops. Existing index files are left in place.', 8000);
+                }
+                this.rerender();
+            }));
+
         // Built as DOM (intro line · two bullets · footer) rather than a setDesc() string,
         // which renders flat with no line breaks — the two location options read far more
-        // clearly as a short list.
+        // clearly as a short list. Only applies while Sync index across devices is on.
         const indexLoc = new Setting(adv).setName('Index location');
-        indexLoc.descEl.createDiv({ text: 'This is where the synced index folder lives.' });
-        const locList = indexLoc.descEl.createEl('ul', { cls: 'seek-desc-list' });
-        const locHidden = locList.createEl('li');
-        locHidden.createEl('strong', { text: 'Hidden (default): ' });
-        // Literal '.obsidian', NOT vault.configDir: the sidecar index is pinned to
-        // the default config folder so every device resolves the SAME synced path
-        // (see main.ts sidecarConfigDir). Showing vault.configDir would misreport
-        // the index location to a renamed-config user, whose index still lives here.
-        locHidden.createSpan({ text: `inside the hidden .obsidian config folder.` });
-        const locRoot = locList.createEl('li');
-        locRoot.createEl('strong', { text: 'Vault root: ' });
-        locRoot.createSpan({ text: 'a visible "Seek Index" folder will appear in your vault. Choose this only if you use Obsidian Sync with a mobile or tablet override config folder.' });
-        indexLoc.descEl.createDiv({ text: 'Takes effect after reloading Seek.' });
+        indexLoc.descEl.createDiv({ text: this.s.sidecarEnabled
+            ? 'This is where the synced index folder lives.'
+            : 'Applies only when Sync index across devices is on.' });
+        if (this.s.sidecarEnabled) {
+            const locList = indexLoc.descEl.createEl('ul', { cls: 'seek-desc-list' });
+            const locHidden = locList.createEl('li');
+            locHidden.createEl('strong', { text: 'Hidden (default): ' });
+            // Literal '.obsidian', NOT vault.configDir: the sidecar index is pinned to
+            // the default config folder so every device resolves the SAME synced path
+            // (see main.ts sidecarConfigDir). Showing vault.configDir would misreport
+            // the index location to a renamed-config user, whose index still lives here.
+            locHidden.createSpan({ text: `inside the hidden .obsidian config folder.` });
+            const locRoot = locList.createEl('li');
+            locRoot.createEl('strong', { text: 'Vault root: ' });
+            locRoot.createSpan({ text: 'a visible "Seek Index" folder will appear in your vault. Choose this only if you use Obsidian Sync with a mobile or tablet override config folder.' });
+            indexLoc.descEl.createDiv({ text: 'Takes effect after reloading Seek.' });
+        }
         indexLoc.addDropdown(dd => dd
             .addOption('config', `Hidden (.obsidian, recommended)`)
             .addOption('visible', 'Vault root (Seek Index/)')
             .setValue(this.s.sidecarIndexLocation)
+            .setDisabled(!this.s.sidecarEnabled)
             .onChange(async v => {
                 this.s.sidecarIndexLocation = v as SidecarIndexLocation;
                 await this.save();
                 new Notice('Seek: index location changed — reload Seek (or restart Obsidian) for it to take effect.', 8000);
             }));
+        if (!this.s.sidecarEnabled) indexLoc.setDisabled(true);
     }
 
     private renderStatusCard(containerEl: HTMLElement): void {
