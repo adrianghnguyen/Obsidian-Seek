@@ -7,10 +7,10 @@
 // the gate for fence-aware chunking (plugin unit tests, NOT corpus nDCG).
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { parseAtoms, scanHeadings, type Atom } from './atoms';
+import { parseAtoms, scanHeadings, normalizeNewlines, type Atom } from './atoms';
 
 const fx = (name: string): string =>
-    readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8');
+    normalizeNewlines(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8'));
 
 const types = (atoms: Atom[]): string[] => atoms.map(a => a.type);
 
@@ -124,5 +124,24 @@ describe('scanHeadings — fence awareness', () => {
             { lineNum: 0, level: 1, text: 'Top' },
             { lineNum: 6, level: 2, text: 'After' },
         ]);
+    });
+
+    it('still finds headings when lines carry a trailing CR (Windows split)', () => {
+        const lines = '# Shell Setup\r\n\r\n```sh\r\n# not a heading\r\n```\r\n\r\n## Verification\r\n'.split('\n');
+        const headings = scanHeadings(lines);
+        expect(headings.map(h => h.text)).toEqual(['Shell Setup', 'Verification']);
+    });
+});
+
+describe('parseAtoms — CRLF / lone CR input', () => {
+    it('keeps fences/tables/callouts atomic when the note uses CRLF', () => {
+        const lf = fx('mixed-section.md');
+        const crlf = lf.replace(/\n/g, '\r\n');
+        expect(types(parseAtoms(crlf))).toEqual(types(parseAtoms(lf)));
+        expect(parseAtoms(crlf).map(a => a.text)).toEqual(parseAtoms(lf).map(a => a.text));
+    });
+
+    it('normalizeNewlines collapses CR LF and lone CR to LF', () => {
+        expect(normalizeNewlines('a\r\nb\rc')).toBe('a\nb\nc');
     });
 });
