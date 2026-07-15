@@ -2,10 +2,15 @@
 
 All notable changes to Seek are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 1.0.10
+
+Sync index toggle and Windows CRLF atom parsing.
 
 ### Changed
 - **Sync index across devices** — Settings → Index advanced exposes the existing sidecar toggle. ON (default) still writes vault index files for Sync/iOS hydrate; OFF keeps search on this device’s IndexedDB only. Index location is disabled while OFF.
+
+### Fixed
+- Markdown fences and tables parse correctly when note content uses Windows CRLF line endings.
 
 ## 1.0.9
 
