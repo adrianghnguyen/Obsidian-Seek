@@ -2,6 +2,14 @@
 
 All notable changes to Seek are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.1.2
+
+Diagnostics release, improving the logging report users are asked to share when filing an issue. No reindex is needed, since the index format is unchanged.
+
+### Changed
+- **The logging report now redacts note paths, titles, and search queries by default.** The report is the one file users are asked to paste into a public issue, and it carried note paths and query text, so sharing it meant hand-scrubbing it first. Every identifier is now replaced with a token derived from a salt that is generated fresh for each report and never stored, so repeated references to the same note stay correlated (patterns like one file re-embedding every hour remain visible) while the actual names are not disclosed and cannot be recovered or matched across reports. File extensions are kept, and queries are reduced to a length and word count. A new setting turns redaction off for relevance triage, where the query and the notes it matched are the evidence.
+- **Stalls in the report now name the frame responsible and flag periodic patterns.** Long tasks previously recorded a frame attribution field that the browser spec defines as the constant string "unknown", so every stall looked anonymous. The report now records which frame ran the task, and the summary detects stalls recurring on a near-exact fixed period, which separates an external timer's work from Seek's own.
+
 ## 1.1.1
 
 Indexing and sync reliability release. No reindex is needed, since the index format is unchanged.
