@@ -1393,7 +1393,7 @@ export default class SeekPlugin extends Plugin {
     // console + NDJSON as usual.
     async openLoggingReport(): Promise<void> {
         try {
-            const path = await this.logger.writeReport();
+            const path = await this.logger.writeReport(this.settings.redactReport);
             const file = this.app.vault.getAbstractFileByPath(path);
             if (file instanceof TFile) await this.app.workspace.getLeaf(false).openFile(file);
             new Notice(`Seek: report written — ${path} (summary) + seek-report.json (full data)`, 6000);
@@ -2225,14 +2225,35 @@ export default class SeekPlugin extends Plugin {
             this.longTaskObserver = new Ctor(list => {
                 for (const entry of list.getEntries()) {
                     if (entry.duration < LONG_TASK_THRESHOLD_MS) continue;
-                    const attrSrc = entry as unknown as { attribution?: Array<{ name?: string }> };
-                    const attribution = attrSrc.attribution?.[0]?.name ?? null;
+                    // `attribution[0].name` is spec'd to the constant 'unknown' —
+                    // it was the only frame field we recorded, and it answered
+                    // nothing (issue #5: a whole report of hourly 14 s stalls, every
+                    // one reading 'unknown'). The useful pair is one level up:
+                    // `entry.name` says WHICH FRAME ('self' vs a descendant iframe),
+                    // and TaskAttributionTiming's container* fields name that frame.
+                    const attrSrc = entry as unknown as {
+                        attribution?: Array<{
+                            name?: string; containerType?: string;
+                            containerId?: string; containerName?: string; containerSrc?: string;
+                        }>;
+                    };
+                    const attr = attrSrc.attribution?.[0];
                     const logEntry: LongTaskEntry = {
                         type: 'long-task',
                         timestamp: new Date().toISOString(),
                         durationMs: parseFloat(entry.duration.toFixed(2)),
                         startTimeMs: parseFloat(entry.startTime.toFixed(2)),
-                        attribution,
+                        attribution: attr?.name ?? null,
+                        culprit: entry.name || null,
+                        containerType: attr?.containerType || null,
+                        containerId: attr?.containerId || null,
+                        containerName: attr?.containerName || null,
+                        // Cap: an iframe src can be a multi-KB data: URL, and this
+                        // row is written on every stall. The prefix is enough to
+                        // identify the frame. Redacted like any other string when
+                        // the report's privacy toggle is on — a vault-local
+                        // app://local/… src carries the vault path.
+                        containerSrc: attr?.containerSrc?.slice(0, 120) || null,
                         // Attribute by span overlap at TASK time, not delivery
                         // time — the observer fires only after the task ends,
                         // so a top-of-stack read here mislabels every task

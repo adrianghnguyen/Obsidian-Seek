@@ -50,7 +50,14 @@ export type Dtype = 'q4f16' | 'q4' | 'q8' | 'fp32';
 // quarantine accounting (issue #4): files committed WITH a failure marker
 // (deterministically-failing chunks omitted, healthy chunks searchable) vs the
 // old whole-file skip. Additive/forward-only.
-export const LOG_SCHEMA_VERSION = 14;
+// v15: LongTaskEntry.culprit / container* — WHICH FRAME a stall ran in.
+// Issue #5 produced a cluster of 14-15 s stalls on an exact hourly period that
+// no Seek phase overlapped (context 'idle'), and the existing `attribution`
+// field could not narrow it: it read TaskAttributionTiming.name, which the spec
+// hard-codes to the literal 'unknown'. The discriminating fields were one level
+// up all along. Additive/forward-only; `attribution` is retained so pre-v15
+// rows still parse (they carry 'unknown' and nothing else).
+export const LOG_SCHEMA_VERSION = 15;
 
 // ---- chunk model ----
 
@@ -459,6 +466,16 @@ export interface SeekSettings {
     // 50-deep tail for offline pandas/eval. Bounds the size of the append-only log.
     verboseTrace: boolean;
 
+    // Replace note paths, note titles, and query text in the generated diagnostic
+    // report with salted tokens (see redact.ts). ON by default: the report exists
+    // to be pasted into a public GitHub issue, and the safe default for a file
+    // whose purpose is to be shared is the one that doesn't disclose a user's
+    // folder tree. Correlation survives redaction, so the diagnostics that matter
+    // for crashes, stalls, and indexing all still read; turn it OFF when
+    // investigating a RELEVANCE problem, where the actual query and the notes it
+    // matched are the evidence.
+    redactReport: boolean;
+
     // Search-modal footer affordance. ON (default) shows the keyboard-hint bar
     // along the bottom of the modal (↑↓ navigate · ↵ open · ⌘↵ new tab · tab
     // fill autosuggest · esc close). OFF removes the whole footer for a minimal
@@ -572,6 +589,7 @@ export const DEFAULT_SETTINGS: SeekSettings = {
     indexBases: true,          // ON: index .base files (Obsidian Bases) as synthetic docs; preserves the feature's unconditional pre-toggle behavior
     showScores: false,         // OFF by default: per-result score line (Matching % · recency · title); opt-in via Display settings. (Also auto-hidden until the corpus is calibrated — ≥200 notes + full pass.) Default-only flip, no migration: installs that already persisted showScores keep their choice.
     verboseTrace: false,       // OFF: persist only the top-10 ranking trace per search (what the report shows); ON = full 50-deep tail for offline eval. Diagnostic-only, no UI
+    redactReport: true,        // ON: salted tokens for paths/titles/queries in the generated report — the share-safe default for a file made to be pasted into a public issue; see field comment
     showHotkeyHints: true,     // ON: show the modal footer keyboard-hint bar + result counter; OFF = full-results-only modal
     altOpenLocation: 'tab',    // ⌘/Ctrl open target (tab/split/window); 'tab' preserves the historical background-new-tab fan-out. New key, no migration: Object.assign backfills
     sidecarEnabled: true,      // ON (hidden) per the 2026-06-19 ratification; vault-file index persistence for iOS-eviction survival + cross-device sync; only Index location stays user-facing; seeds on next reindex — see field comment
@@ -1124,7 +1142,27 @@ export interface LongTaskEntry {
     timestamp: string;
     durationMs: number;
     startTimeMs: number;
-    attribution: string | null; // PerformanceLongTaskTiming.attribution[0].name when available
+    // HISTORICAL (v14 and earlier): TaskAttributionTiming.name, which the Long
+    // Tasks spec defines as the constant string 'unknown'. It never carried
+    // information. Kept so old rows parse; read `culprit` instead.
+    attribution: string | null;
+    // WHICH FRAME ran the task — PerformanceLongTaskTiming.name: 'self' (this
+    // window, i.e. Obsidian core, another plugin, or Seek's own main-thread
+    // work), 'same-origin-descendant' / 'cross-origin-descendant' (an iframe —
+    // Seek's embedder is one, but so are Obsidian's PDF and embed frames), or
+    // 'multiple-contexts' / 'unknown'. This is the field that separates "Seek's
+    // model is stalling the app" from "something else in this window is", which
+    // is precisely what issue #5's hourly 'idle' stalls needed and no report
+    // could answer.
+    culprit?: string | null;
+    // The containing element of a descendant-frame task, when the platform
+    // exposes it (same-origin frames only; cross-origin ones report empty).
+    // containerSrc names the guilty iframe outright — a third-party plugin's
+    // frame shows up here under its own URL.
+    containerType?: string | null;
+    containerId?: string | null;
+    containerName?: string | null;
+    containerSrc?: string | null;
     // Which plugin phase the task overlapped (span attribution — task-context.ts):
     // 'search' | 'indexing' | 'catchup' | 'model-load' | 'bm25-warm' | 'reconcile',
     // or 'idle' = genuinely no Seek phase was running (pre-1.0.7 reports labeled

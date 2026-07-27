@@ -725,8 +725,18 @@ export class SeekSettingTab extends PluginSettingTab {
         new Setting(containerEl).setName('Diagnostics').setHeading();
         new Setting(containerEl)
             .setName('Logging report')
-            .setDesc('Write a diagnostic report (seek-report.md) of indexing, searches, model loads, and any errors — generate and share it when reporting an issue. Review before sharing: it includes your recent queries and matching note paths (but not note contents).')
+            .setDesc('Write a diagnostic report (seek-report.md) of indexing, searches, model loads, and any errors — generate and share it when reporting an issue. Never includes note contents.')
             .addButton(b => b.setButtonText('Generate logging report').onClick(() => void this.plugin.openLoggingReport()));
+
+        // Placed directly under the button that produces the file it governs, so
+        // the choice is in front of the user at the moment it applies.
+        new Setting(containerEl)
+            .setName('Redact report')
+            .setDesc('Replace note paths, titles, and query text in the report with anonymous tokens. The same note keeps the same token, so timings and errors still make sense. Turn this off only when reporting a search-relevance problem, where the actual query and results are the evidence.')
+            .addToggle(t => t.setValue(this.s.redactReport).onChange(async v => {
+                this.s.redactReport = v;
+                await this.save();
+            }));
 
         new Setting(containerEl).setName('Reset').setHeading();
         if (this.resetConfirm) {
