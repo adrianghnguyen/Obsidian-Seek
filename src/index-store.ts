@@ -543,7 +543,7 @@ function collectByKeyJump<T>(
 // Project a Chunk to its metadata (everything except the body) for the
 // chunk_meta store; the body is stored separately in chunk_body. The rest-
 // capture tracks Chunk automatically as fields are added.
-function stripContent(c: Chunk): ChunkMeta {
+export function stripContent(c: Chunk): ChunkMeta {
     const { content, ...meta } = c;
     void content;
     return meta;
@@ -806,6 +806,37 @@ export class IndexStore {
         tx.objectStore(STORE_FILES).delete(notePath);
         await awaitTx(tx);
         return rec.chunk_ids;
+    }
+
+    // Chunk-diff commit (issue #5): the stored metadata of specific chunks, for
+    // the stable-id drift classification (an id-stable chunk can still carry
+    // changed note-level metadata — tags, properties, line numbers). Missing ids
+    // are simply absent from the map (the caller re-embeds those defensively).
+    async getChunkMetasByIds(ids: string[]): Promise<Map<string, ChunkMeta>> {
+        const out = new Map<string, ChunkMeta>();
+        if (ids.length === 0) return out;
+        const db = this.requireDb();
+        const tx = db.transaction(STORE_CHUNK_META, 'readonly');
+        const store = tx.objectStore(STORE_CHUNK_META);
+        const reads = ids.map(id => awaitRequest(store.get(id)) as Promise<ChunkMeta | undefined>);
+        const metas = await Promise.all(reads);
+        for (let i = 0; i < ids.length; i++) {
+            const m = metas[i];
+            if (m) out.set(ids[i], m);
+        }
+        return out;
+    }
+
+    // Chunk-diff commit (issue #5): refresh the metadata rows of id-stable chunks
+    // whose note-level metadata drifted (body/embedding/binary rows untouched —
+    // the content-addressed id guarantees those bytes are still exact).
+    async putChunkMetas(metas: ChunkMeta[]): Promise<void> {
+        if (metas.length === 0) return;
+        const db = this.requireDb();
+        const tx = db.transaction(STORE_CHUNK_META, 'readwrite');
+        const store = tx.objectStore(STORE_CHUNK_META);
+        for (const m of metas) store.put(m);
+        await awaitTx(tx);
     }
 
     // Full-corpus metadata read (v8 frame-lite): every chunk's metadata, WITHOUT

@@ -75,6 +75,17 @@ export class CompositorPacer {
     // Resolve at the next moment the compositor is quiet, returning the idle
     // deadline when available so pace() can meter the slice's remaining budget.
     private nextSlice(): Promise<IdleDeadline | null> {
+        // Hidden window (issue #5): there is NO compositor to defer to — a
+        // hidden renderer produces no frames, so rIC never fires naturally and
+        // every pace stalls on the IDLE_TIMEOUT_MS guard (measured in the
+        // field: a 56-chunk hidden commit's ~1.5 s of embed compute stretched
+        // to 92.8 s wall at ~3 s per batch). The cheap continuation yield keeps
+        // hidden commits at full speed while still yielding the thread each
+        // batch — and scheduler.yield continuations are exempt from hidden-tab
+        // timer throttling, unlike the setTimeout fallback rIC degrades to.
+        if (typeof activeDocument !== 'undefined' && activeDocument.hidden) {
+            return cheapYield().then(() => null);
+        }
         if (typeof requestIdleCallback === 'function') {
             return new Promise<IdleDeadline | null>(resolve =>
                 requestIdleCallback(deadline => resolve(deadline), { timeout: IDLE_TIMEOUT_MS }),

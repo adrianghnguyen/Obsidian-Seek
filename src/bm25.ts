@@ -506,6 +506,11 @@ export class MultiFieldBM25 {
     // vacuum) so the bound always reflects live postings; a fresh search-based
     // recompute then honors discard() tombstones synchronously, no vacuum needed.
     private termUpperBounds = new Map<string, number>();
+    // Cumulative 'version_conflict' warnings from MiniSearch (see the logger in
+    // buildMiniOptions): a removeExact() whose reconstructed doc disagreed with
+    // what was indexed. removeExact snapshots this around mini.remove() to report
+    // a per-call mismatch verdict.
+    private removalMismatchCount = 0;
     // Index-shape opts the live index was built with (searchableProperties /
     // headingsField). Stored so incremental add() rebuilds each doc with exactly
     // the same field set fit()/fromJSON() used — a field-set mismatch would index
@@ -589,6 +594,27 @@ export class MultiFieldBM25 {
         };
     }
 
+    // Chunk-diff commit (issue #5): would two metadata snapshots of the SAME
+    // content-addressed chunk produce the same indexed document? A stable
+    // chunk_id pins note_path + title + content + denseSuffix, but NOT the
+    // note-level metadata this doc derives fields from (an inline #tag in a
+    // different section changes every chunk's tags; a wikilink-target swap
+    // behind an alias changes link_terms with identical rendered content).
+    // Compares via the SAME extractors buildDoc uses, so it can never drift
+    // from the doc builder. Conservative on index shape: properties/headings
+    // compare even when not currently indexed — a false "changed" only costs
+    // an unnecessary remove+add with a reused vector, never a wrong index.
+    // The content field's body half is id-pinned, so only link_terms (its
+    // appended suffix — see buildDoc) needs comparing here.
+    static docFieldsEqual(a: ChunkMeta, b: ChunkMeta): boolean {
+        return extractNoteName(a) === extractNoteName(b)
+            && extractAliasesText(a) === extractAliasesText(b)
+            && extractTagsText(a) === extractTagsText(b)
+            && (a.link_terms ?? '') === (b.link_terms ?? '')
+            && extractPropertiesText(a) === extractPropertiesText(b)
+            && extractHeadingsText(a) === extractHeadingsText(b);
+    }
+
     // The MiniSearch constructor options — SHARED by fit() and fromJSON() so the
     // analyzer a persisted index is loaded with can never drift from the one it
     // was built with. MiniSearch.loadJSON re-supplies these from the options arg
@@ -606,6 +632,27 @@ export class MultiFieldBM25 {
             // Saves memory on a 15k-chunk vault.
             storeFields: [],
             idField: 'chunk_id',
+            // Seek owns vacuum scheduling (search.ts runs it off the write mutex,
+            // gated on dirtCount). MiniSearch's default auto-vacuum would fire its
+            // own UNAWAITED vacuum inside discard() — invisible to the mutex and
+            // to telemetry — so it must stay off. (At vault scale it never met its
+            // dirtFactor≥0.1 condition anyway; this pins the behavior explicitly.)
+            autoVacuum: false,
+            // removeExact() removes by re-tokenizing the reconstructed original
+            // doc. If reconstruction ever mismatches what was indexed, MiniSearch
+            // warns per missing term with code 'version_conflict' — count it (the
+            // caller's signal to fall back to a full refit) and keep the console
+            // visible but capped (a whole mismatched doc would warn per term).
+            logger: (level: string, message: string, code?: string) => {
+                if (code === 'version_conflict') {
+                    this.removalMismatchCount++;
+                    if (this.removalMismatchCount <= 3) console.warn(message);
+                    return;
+                }
+                if (level === 'warn') console.warn(message);
+                else if (level === 'error') console.error(message);
+                else console.info(message);
+            },
             // English stopword analyzer (+ lowercasing). Applied at index AND
             // query time by MiniSearch; see ENGLISH_STOPWORDS above.
             processTerm,
@@ -1031,12 +1078,63 @@ export class MultiFieldBM25 {
         this.termUpperBounds.clear();
     }
 
-    // Reclaim tombstoned postings so `_index` sizes equal live df again — REQUIRED
-    // after a remove burst before the next getQueryBound/termDocFraction, or the
-    // bound reads a stale (too-large) df → idf too small → bound too small →
-    // TM2C2 fused scores can exceed 1. MiniSearch's vacuum() is async (it batches
-    // postings cleanup across setTimeout), so callers MUST await it inside the
-    // delta's critical section before re-stamping the cache generation.
+    // Exact synchronous removal (issue #5): remove a chunk's postings IMMEDIATELY
+    // by re-tokenizing its reconstructed original document, instead of discard()'s
+    // tombstone-until-vacuum. Zero dirt, zero deferred cleanup — and it closes the
+    // discard window where a term's postings still carry the dead doc, which
+    // inflates that term's df for live docs on the FIRST search that walks the
+    // tombstone late in posting order (measured: enough same-vocabulary tombstones
+    // can push df past documentCount and flip BM25 idf NEGATIVE). Reconstruction
+    // is exact by construction: chunk ids are content hashes, so the body fetched
+    // for a removed id is byte-identical to what add() indexed, and the caller
+    // passes the frame row's meta — the meta as last committed. buildDoc is the
+    // single shared builder, so the remove-side doc can't drift from the add-side.
+    //
+    // Returns:
+    //   'removed'  — clean exact removal, no residue.
+    //   'mismatch' — MiniSearch warned 'version_conflict' (reconstructed doc ≠
+    //                indexed doc). The doc is gone from results either way, but
+    //                unknown postings may remain as self-healing dirt-like residue
+    //                and field-length bookkeeping may have drifted → the caller
+    //                should abandon the patch and full-refit ("slow, never wrong").
+    //   'noop'     — id not live (parity with remove()'s tolerance): absent from
+    //                idToIdx, or present there but missing from the postings (a
+    //                tolerantly-loaded blob that predates the chunk).
+    removeExact(chunk: ChunkMeta, body: string): 'removed' | 'mismatch' | 'noop' {
+        const id = chunk.chunk_id;
+        if (!this.mini || !this.idToIdx.has(id)) return 'noop';
+        this.idToIdx.delete(id);
+        this.termUpperBounds.clear();
+        // The blob-missing tolerance (see remove()): an id tracked by the live
+        // row space but absent from a tolerantly-loaded blob's postings. Checked
+        // EXPLICITLY rather than via catch — MiniSearch only throws before
+        // touching postings for its two id guards; a throw anywhere later
+        // (tokenizer, per-term removal) happens MID-mutation, and reporting that
+        // as a clean 'noop' would let the caller commit a half-removed index.
+        if (!this.mini.has(id)) return 'noop';
+        const before = this.removalMismatchCount;
+        try {
+            this.mini.remove(this.buildDoc(chunk, body));
+        } catch (e) {
+            console.warn('[seek] removeExact threw mid-removal — postings may be partially mutated', e);
+            return 'mismatch';   // caller abandons the patch and rebuilds from IDB truth
+        }
+        return this.removalMismatchCount === before ? 'removed' : 'mismatch';
+    }
+
+    // Reclaim tombstoned postings left by discard()-path removals. NO LONGER on
+    // any production path: removeExact() is the delta's removal primitive (zero
+    // dirt), and the ghost-dirt valve (search.ts reconcileGhostDirt) reclaims
+    // pathological discard accumulation via a full refit instead — MiniSearch's
+    // vacuum holds a live radix-tree iterator across its timer yields, so a
+    // vacuum overlapping add/remove/search-time cleanup can be invalidated
+    // mid-walk, and a REJECTED vacuum never resets _currentVacuum (every later
+    // vacuum on the instance then returns the same rejection). Callers must
+    // guarantee NOTHING mutates or searches this index until the promise
+    // settles. Kept for tests and as API completeness. (Historical note: the
+    // old "vacuum before the next getQueryBound or the bound reads stale df"
+    // contract died with the search-based MaxScore bound — the incremental
+    // tests assert bound exactness pre-vacuum.)
     async vacuum(): Promise<void> {
         if (!this.mini) return;
         await this.mini.vacuum();

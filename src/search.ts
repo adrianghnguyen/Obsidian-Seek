@@ -8,7 +8,7 @@
 
 import type { App } from 'obsidian';
 import { Notice, TFile } from 'obsidian'; // value imports: reindexDelta uses `instanceof TFile`; the quota gate toasts
-import type { Chunk, ChunkMeta, ScoredChunk, SearchEntry, IndexCompleteEntry, IndexProgressEntry, ResetEntry, QueryFilters, FilterContext, SeekSettings, MemorySnapshot } from './types';
+import type { Chunk, ChunkMeta, ScoredChunk, SearchEntry, IndexCompleteEntry, IndexProgressEntry, ResetEntry, DeltaApplyEntry, QueryFilters, FilterContext, SeekSettings, MemorySnapshot } from './types';
 import { snapshotMemory, memoryDelta, distributionStats } from './types';
 import { MarkdownChunker, cyrb53Hex } from './chunker';
 import { cleanDenseText } from './dense-clean';
@@ -18,7 +18,7 @@ import { buildSynonymMap, chunkDeclaresAlias, SYNONYM_WEIGHT, type SynonymMap } 
 import { TaskContextTracker } from './task-context';
 import { rank, cosineScores, DEFAULT_RANKING_CONFIG } from './ranker';
 import { browseOrder, recencyDate } from './fusion';
-import { IndexStore, nukeDatabase, classifyFileDelta, findOrphanChunkIds, isStoreClosedError, isQuotaError, META_SCHEMA_VERSION, type MetaConfig, type FileRecord } from './index-store';
+import { IndexStore, nukeDatabase, classifyFileDelta, findOrphanChunkIds, isStoreClosedError, isQuotaError, stripContent, META_SCHEMA_VERSION, type MetaConfig, type FileRecord } from './index-store';
 import { INDEX_QUOTA_MSG } from './index-notice';
 import { LocalEmbedder, EMBEDDING_DIM, LEGACY_ENGLISH_MODEL_ID, MODEL_ID, PLUGIN_VERSION } from './embedder';
 import { SeekLogger } from './logger';
@@ -307,6 +307,12 @@ export class SearchOrchestrator {
     dispose(): void {
         this.disposed = true;
         this.binaryWorker.dispose();
+        // A pending idle-deferred persist would otherwise run its 200-630 ms
+        // toJSON against this zombie orchestrator after unload (issue #5 fix E).
+        if (this.pendingPersistIdle !== null && typeof cancelIdleCallback === 'function') {
+            cancelIdleCallback(this.pendingPersistIdle);
+            this.pendingPersistIdle = null;
+        }
     }
 
     // The cache-generation counter (bumped on every index mutation; see
@@ -597,8 +603,18 @@ export class SearchOrchestrator {
         // committed chunks, so a fresh count() would read non-empty on a cold build
         // that hydrated some files and mis-decide sawWholeCorpus. One snapshot, one
         // source. Omitted (reindexAll) = false, harmless since mode==='full' dominates.
-        budget: { budgetMs?: number; shouldContinue?: () => boolean; addsSink?: DeltaAdd[]; storeWasEmpty?: boolean } = {},
-    ): Promise<{ entry: IndexCompleteEntry; sidecarJob: SidecarFlushJob | null }> {
+        // removedSink / removedBodiesSink / metaPatchSink (chunk-diff commit,
+        // issue #5): present only on the incremental delta path. Their presence
+        // ENABLES the per-file diff-against-record (the delta's pre-delete is
+        // gone — the engine now owns stale-row deletion), and they surface the
+        // applied removals (ids + reconstruction bodies) and in-place metadata
+        // patches for applyDelta, exactly like addsSink surfaces the commits.
+        budget: {
+            budgetMs?: number; shouldContinue?: () => boolean; addsSink?: DeltaAdd[]; storeWasEmpty?: boolean;
+            removedSink?: string[]; removedBodiesSink?: Map<string, string>;
+            metaPatchSink?: Array<{ id: string; meta: ChunkMeta }>;
+        } = {},
+    ): Promise<{ entry: IndexCompleteEntry; sidecarJob: SidecarFlushJob | null; quarantineUnwound: number }> {
         // Per-bucket rolling-buffer embed. Each chunk lands in the buffer for
         // its own seq bucket; a buffer flushes as one warmed per-bucket-sized
         // dispatch the instant it fills, carrying the remainder across files.
@@ -606,9 +622,15 @@ export class SearchOrchestrator {
         // ROLLING_BUDGET comment above for the why (45%→85% padding efficiency,
         // overflow-safe warmed shapes, budgeted per-bucket flush to cap stalls).
         let totalChunks = 0;
+        // Chunks reconciled WITHOUT embedding (chunk-diff, issue #5): id-stable
+        // rows a diff kept (untouched / meta-patch / reindex-row). A pure
+        // metadata pass commits files with totalChunks 0 — a legitimate success
+        // the pass gate below must not read as "no chunks produced".
+        let chunksReconciled = 0;
         let totalVectors = 0;
         let chunkMs = 0;
         let embedMs = 0;
+        let paceWaitMs = 0;   // cumulative pacer waits between dispatches (v16, issue #5)
         let commitMs = 0;
         let filesSkippedError = 0;
         let filesSkippedQuota = 0;   // subset of filesSkippedError: commit hit QuotaExceededError (disk full)
@@ -737,6 +759,15 @@ export class SearchOrchestrator {
             // cyrb53 of the bytes we read — stored in the file-record so the next
             // computeDelta can tell a real edit from a mtime-only re-stamp.
             contentHash: string;
+            // Chunk-diff commit (issue #5): when a diff plan ran, `chunks` holds
+            // only the ids that need EMBEDDING, while the file-record must list
+            // every live chunk. allChunkIds = the full post-budget id list in
+            // document order; keepIds = the id-stable subset whose rows stayed in
+            // IDB. commitFile writes record ids = allChunkIds ∩ (keepIds ∪
+            // committed) so a failed embed still drops out of the record exactly
+            // as it does on the no-diff path.
+            allChunkIds?: string[];
+            keepIds?: Set<string>;
         }
         // A chunk waiting in a bucket buffer: where to write its vector back.
         // tokens = the chunk's exact token count (from enforceTokenBudget) —
@@ -805,8 +836,13 @@ export class SearchOrchestrator {
             embedBatchLatencyMs.push(result.iframeLatencyMs);
             // Pace against compositor pressure between dispatches — the rIC yield
             // keeps duty cycle capped (see "Seek System Bog-Down Diagnosis.md"
-            // §PR #1). Degrades to setTimeout(0) on iOS (no rIC).
+            // §PR #1). Degrades to setTimeout(0) on iOS (no rIC); takes the cheap
+            // yield when hidden (no compositor — pacer.ts, issue #5). The wait is
+            // timed into paceWaitMs so a pacing inversion (compute dwarfed by
+            // pace waits) is visible in the field instead of hiding in embed time.
+            const paceStart = performance.now();
             await pacer.pace();
+            paceWaitMs += performance.now() - paceStart;
             return result.vectors;
         };
 
@@ -849,6 +885,15 @@ export class SearchOrchestrator {
                 reservoir.add(v);
             }
             const derived = fp32.map(v => ({ q: quantizeInt8(v), bin: packSignBits(v) }));
+            // Chunk-diff commit (issue #5): a diffed file's record lists every
+            // live id (stable rows kept in IDB + the embeds that landed), in the
+            // document order allChunkIds preserved; without a plan this reduces
+            // to the historic chunks.map. Either way a failed embed's id is
+            // absent, so the quarantine-marker semantics are unchanged.
+            const committedIds = new Set(chunks.map(c => c.chunk_id));
+            const recordIds = fs.allChunkIds && fs.keepIds
+                ? fs.allChunkIds.filter(id => fs.keepIds!.has(id) || committedIds.has(id))
+                : chunks.map(c => c.chunk_id);
             await this.store.putBatchQuantized(chunks, derived, {
                 note_path: fs.file.path,
                 // Read-time snapshot, NOT fs.file.stat.mtime (which may have
@@ -856,7 +901,7 @@ export class SearchOrchestrator {
                 // FileState.mtimeMs). Recording the content's true mtime keeps
                 // computeDelta able to detect a mid-index edit on the next pass.
                 mtimeMs: fs.mtimeMs,
-                chunk_ids: chunks.map(c => c.chunk_id),
+                chunk_ids: recordIds,
                 contentHash: fs.contentHash,
                 ...(failed > 0 ? { embedFailedChunks: failed, embedFailPluginVersion: PLUGIN_VERSION } : {}),
             });
@@ -1043,10 +1088,12 @@ export class SearchOrchestrator {
             } catch (e) {
                 // Read error (e.g. an undownloaded iCloud placeholder that throws
                 // on every attempt) — skip this file (it never entered a buffer).
-                // Quarantine it so the NEXT computeDelta doesn't immediately
-                // re-report it dirty forever (its record was already dropped by
-                // the caller before this pass ran) — see the quarantine field
-                // comment for why that would otherwise wedge reconcileIdentityInPlace.
+                // Its previous record and rows SURVIVE (the delta's wholesale
+                // pre-delete is gone — chunk-diff, issue #5), so the last-indexed
+                // version stays searchable; the stale-mtime record would still
+                // re-report it dirty on every computeDelta, so quarantine it —
+                // see the quarantine field comment for why that loop would
+                // otherwise wedge reconcileIdentityInPlace.
                 filesSkippedError++;
                 await this.logger.appendError(`indexFile:${file.path}`, e);
                 this.quarantineUnreadable(file.path);
@@ -1067,7 +1114,19 @@ export class SearchOrchestrator {
                 continue;
             }
 
-            if (fileChunks.length === 0) { chunksPerFile.push(0); continue; } // empty / all below min_chunk_chars
+            if (fileChunks.length === 0) {
+                chunksPerFile.push(0); // empty / all below min_chunk_chars
+                // Chunk-diff commit (issue #5): the delta's wholesale pre-delete is
+                // gone, so an edit that EMPTIED the note must drop its stale rows +
+                // record here or the pre-edit content ghosts in the index and the
+                // stale-mtime record re-flags the file dirty forever. Bodies are
+                // captured first so applyDelta can remove the rows exactly.
+                if (mode === 'incremental' && budget.removedSink) {
+                    if (budget.removedBodiesSink) await this.captureRemovalBodies(file.path, budget.removedBodiesSink);
+                    budget.removedSink.push(...await this.store.deleteFile(file.path));
+                }
+                continue;
+            }
 
             // WS2.3 token-budget enforcement: re-pack any chunk whose embed
             // input exceeds the 512-token window (counted by the model's own
@@ -1089,23 +1148,103 @@ export class SearchOrchestrator {
             tokenBudgetOverBudget += budgeted.overBudget;
             chunksPerFile.push(fileChunks.length);
 
+            // Chunk-diff commit (issue #5): content-hash ids make "what actually
+            // changed" computable — diff the post-budget ids against the stored
+            // file record instead of the old delete-all + re-embed-all. Unchanged
+            // chunks keep their IDB rows AND their vectors (a stable id pins the
+            // embed text by construction); a one-paragraph edit of a 91-chunk
+            // note embeds ~3 chunks, and the untouched chunks stay searchable
+            // through the whole pass (the pre-delete made the file vanish until
+            // its re-commit). Incremental-only: a full reindex nuked the DB, so
+            // there is no record to diff against.
+            let embedChunks = fileChunks;
+            let embedCounts = budgeted.counts;
+            let keepIds: Set<string> | undefined;
+            const allChunkIds = fileChunks.map(c => c.chunk_id);
+            // All THREE sinks gate the diff — a partially-wired caller would
+            // refresh IDB meta while silently dropping the frame-row patches,
+            // the exact frame↔IDB divergence the lanes exist to prevent.
+            if (mode === 'incremental' && budget.removedSink && budget.removedBodiesSink && budget.metaPatchSink) {
+                try {
+                    const plan = await this.diffFileAgainstStore(file.path, fileChunks, {
+                        addsSink: budget.addsSink,
+                        removedSink: budget.removedSink,
+                        removedBodiesSink: budget.removedBodiesSink,
+                        metaPatchSink: budget.metaPatchSink,
+                    });
+                    if (plan) {
+                        keepIds = plan.keepIds;
+                        chunksReconciled += plan.keepIds.size;
+                        const nextChunks: Chunk[] = [];
+                        const nextCounts: number[] = [];
+                        for (let i = 0; i < fileChunks.length; i++) {
+                            if (plan.embedIds.has(fileChunks[i].chunk_id)) {
+                                nextChunks.push(fileChunks[i]);
+                                nextCounts.push(budgeted.counts[i]);
+                            }
+                        }
+                        embedChunks = nextChunks;
+                        embedCounts = nextCounts;
+                    }
+                } catch (e) {
+                    // The diff is an optimization; on failure restore the pre-diff
+                    // contract exactly: drop the file's old rows wholesale (or its
+                    // un-diffed stale ids would orphan into ghost results) and
+                    // re-embed everything. Bodies were possibly not captured →
+                    // applyDelta declines into the full rebuild. Slow, never wrong.
+                    // Dedup against what the diff applied before it threw: its
+                    // deleteChunksByIds ids are already in the sink, and the
+                    // still-unrewritten record deleteFile reads lists them too —
+                    // double entries would inflate DeltaApplyEntry.removed.
+                    await this.logger.appendError(`chunkDiff:${file.path}`, e);
+                    const alreadyRemoved = new Set(budget.removedSink);
+                    const dropped = await this.store.deleteFile(file.path).catch(() => [] as string[]);
+                    budget.removedSink.push(...dropped.filter(id => !alreadyRemoved.has(id)));
+                    embedChunks = fileChunks;
+                    embedCounts = budgeted.counts;
+                    keepIds = undefined;
+                }
+            }
+
+            // Everything id-stable: the whole edit was metadata/line drift (or a
+            // no-op). commitFile only runs when a buffered chunk resolves, so the
+            // record must be written here or the file re-flags dirty forever.
+            if (keepIds && embedChunks.length === 0) {
+                try {
+                    await this.store.putBatchQuantized([], [], {
+                        note_path: file.path, mtimeMs,
+                        chunk_ids: allChunkIds.filter(id => keepIds.has(id)),
+                        contentHash,
+                    });
+                    filesCommitted++;
+                    committedFilePaths.push(file.path);
+                    perFileWallMs.push(performance.now() - fileStart);
+                } catch (e) {
+                    // No record advance → the file stays dirty and retries next
+                    // pass (same self-healing contract as a failed commitFile).
+                    await this.logger.appendError(`recordOnlyCommit:${file.path}`, e);
+                }
+                continue;
+            }
+
             const fs: FileState = {
-                file, chunks: fileChunks,
-                vectors: new Array<Float32Array | null>(fileChunks.length).fill(null),
-                remaining: fileChunks.length, hadError: false, fileStart,
+                file, chunks: embedChunks,
+                vectors: new Array<Float32Array | null>(embedChunks.length).fill(null),
+                remaining: embedChunks.length, hadError: false, fileStart,
                 mtimeMs, contentHash,
+                ...(keepIds ? { allChunkIds, keepIds } : {}),
             };
-            for (let slot = 0; slot < fileChunks.length; slot++) {
-                const c = fileChunks[slot];
+            for (let slot = 0; slot < embedChunks.length; slot++) {
+                const c = embedChunks[slot];
                 const input = embedInput(c);
                 // Token-exact routing: the bucket is the smallest warmed rung
                 // ≥ the input's REAL token count, so truncation cannot fire
                 // (enforceTokenBudget guarantees count ≤ 512 except for the
                 // counted-and-logged oversize-title pathology).
-                const bucket = selectIndexBucket(budgeted.counts[slot]);
+                const bucket = selectIndexBucket(embedCounts[slot]);
                 let buf = buffers.get(bucket);
                 if (!buf) { buf = []; buffers.set(bucket, buf); }
-                buf.push({ fs, slot, input, tokens: budgeted.counts[slot] });
+                buf.push({ fs, slot, input, tokens: embedCounts[slot] });
                 if (buf.length >= rollingBatchFor(bucket)) await flushBucket(bucket);
             }
 
@@ -1158,6 +1297,7 @@ export class SearchOrchestrator {
         // threshold with an absolute floor so a single bad file in a small
         // vault still quarantines.
         const quarantineCap = Math.max(3, Math.ceil(files.length * 0.02));
+        let quarantineUnwound = 0;
         if (filesQuarantined > quarantineCap) {
             const unwoundPaths = new Set(quarantined.map(q => q.path));
             for (const q of quarantined) {
@@ -1177,6 +1317,7 @@ export class SearchOrchestrator {
                 if (unwoundPaths.has(committedFilePaths[i])) committedFilePaths.splice(i, 1);
             }
             filesQuarantined -= unwoundPaths.size;
+            quarantineUnwound = unwoundPaths.size;
             checksExtra.push(`⚠️ mass embed failure (${quarantined.length} files > cap ${quarantineCap}) — environmental, not content: unwound ${unwoundPaths.size} quarantine record(s); files stay dirty and retry on the next pass`);
         }
         // Quota gate (S2): commits failed because device storage is FULL — an
@@ -1314,7 +1455,7 @@ export class SearchOrchestrator {
         // its duration is no longer inside commitDurationMs — the queued count is
         // the entry's honest record of what this pass handed the flush chain.
         if (sidecarJob) checks.push(`ℹ️ sidecar: ${sidecarJob.pending.length} tier record(s) queued for off-mutex flush`);
-        if (totalChunks === 0) checks.push('⚠️ no chunks produced — vault may be empty or all files below min_chunk_chars');
+        if (totalChunks === 0 && chunksReconciled === 0) checks.push('⚠️ no chunks produced — vault may be empty or all files below min_chunk_chars');
         // WS2.3 invariant surface: splits are normal (every >512-token chunk
         // re-packs); a nonzero overBudget means some input still truncates
         // (unsplittable window-filling title) — warn, don't fail.
@@ -1382,7 +1523,8 @@ export class SearchOrchestrator {
             perFileWallMs: distributionStats(perFileWallMs),
             chunksPerFile: distributionStats(chunksPerFile),
             embedBatchLatencyMs: distributionStats(embedBatchLatencyMs),
-            pass: totalChunks > 0 && skipRate <= SKIP_RATE_FAIL,
+            paceWaitMs: parseFloat(paceWaitMs.toFixed(2)),
+            pass: (totalChunks > 0 || chunksReconciled > 0) && skipRate <= SKIP_RATE_FAIL,
             checks,
         };
         // Completion beat closes the indexing window: a death AFTER this reads
@@ -1392,7 +1534,7 @@ export class SearchOrchestrator {
             dispatches: fDispatches, paddedTokens: fPaddedTokens,
         });
         await this.logger.append(entry);
-        return { entry, sidecarJob };
+        return { entry, sidecarJob, quarantineUnwound };
     }
 
     // The single index-membership predicate, shared by full reindex (the scan
@@ -1617,7 +1759,13 @@ export class SearchOrchestrator {
         // meta stamp) throws — parity with the old inline flush, which had
         // already completed by then.
         let sidecarJob: SidecarFlushJob | null = null;
+        // v16 (issue #5): the incremental-patch outcome, appended as a
+        // 'delta-apply' entry after the mutex releases. Built inside the
+        // critical section (it owns the counters), mutexHoldMs stamped in the
+        // finally so it covers the WHOLE hold searches can wait on.
+        let deltaTelemetry: Omit<DeltaApplyEntry, 'type' | 'timestamp'> | null = null;
         const result = await this.coord.runExclusive(async () => {
+            const mutexStart = performance.now();
             let release!: () => void;
             this.coord.currentDelta = new Promise<void>(r => { release = r; });
             try {
@@ -1638,14 +1786,33 @@ export class SearchOrchestrator {
                 if (wantCarryOver) await this.harvestCarryOverInto(carryOver, deletedPaths);
 
                 // The change-set the incremental cache path consumes: ids removed
-                // (Phase 1 deletes + Phase 2 stale-drops) and chunks committed
-                // (filled by commitFile via addsSink). Both are ACTUALLY-applied
-                // sets, so they stay consistent with IDB even on a mid-burst abort.
+                // and chunks committed (filled by commitFile via addsSink). Three
+                // removal sources: Phase-1 deletes, the engine diff's stale-row
+                // drops (both IDB-applied), and the diff's REINDEX-ROW lane —
+                // ids whose IDB rows deliberately REMAIN (metadata refreshed in
+                // place) and ride the change-set only as a cache-level remove +
+                // re-add with the stored vector. So `removedIds` is "rows the
+                // CACHES must drop", not "rows gone from IDB", and
+                // DeltaApplyEntry.removed counts both kinds (reindex-rows appear
+                // symmetrically in `added`, so removed≈added reads as churn).
                 const removedIds: string[] = [];
                 const adds: DeltaAdd[] = [];
+                // Bodies of the chunks about to be deleted, captured BEFORE
+                // deleteFile drops them from IDB: applyDelta's removeExact()
+                // reconstructs each removed doc (frame meta + content-addressed
+                // body) to clean its postings synchronously. Capture is skipped
+                // when the resident caches are absent — that pass falls back to
+                // a full rebuild which never consults removal docs.
+                const removedBodies = new Map<string, string>();
+                const wantRemovalBodies = !!(this.frameCache && this.bm25Cache);
+                // In-place metadata patches from the engine's chunk-diff: id-stable
+                // chunks whose BM25-irrelevant metadata drifted (line numbers,
+                // dates). applyDelta swaps the frame rows; IDB was already updated.
+                const metaPatches: Array<{ id: string; meta: ChunkMeta }> = [];
                 // Phase 1: structural drops (no model).
                 let deletedChunks = 0;
                 for (const path of deletedPaths) {
+                    if (wantRemovalBodies) await this.captureRemovalBodies(path, removedBodies);
                     const ids = await this.store.deleteFile(path);
                     deletedChunks += ids.length;
                     removedIds.push(...ids);
@@ -1657,6 +1824,7 @@ export class SearchOrchestrator {
                 let deferredEmbed = 0;
                 let sidecarHydrated = 0;
                 let carriedOver = 0;
+                let engineUnwound = 0;
                 // Paths this burst actually committed (now non-dirty). Drives the
                 // catch-up drain's advance-by-real-progress (see the computation after
                 // the embed block, and drainCatchUp).
@@ -1687,22 +1855,27 @@ export class SearchOrchestrator {
                     // maxFiles (desktop / flushDirty / reindexAll) = the whole set.
                     allDirty.sort((a, b) => b.stat.mtime - a.stat.mtime);
                     const toEmbed = opts.maxFiles !== undefined ? allDirty.slice(0, opts.maxFiles) : allDirty;
-                    // F13: harvest the dirty files' OWN stale tiers too (a same-path
-                    // no-op re-flush reuses them; an edit's changed chunks simply miss).
-                    if (wantCarryOver) await this.harvestCarryOverInto(carryOver, toEmbed.map(f => f.path));
-                    // Drop each file's stale chunks before re-embedding: chunk_ids are
-                    // content hashes, so edited content yields new ids and the old
-                    // chunks would otherwise linger as orphans.
-                    for (const f of toEmbed) removedIds.push(...await this.store.deleteFile(f.path));
-                    // F13 carry-over: reuse identical vectors (moves / no-op re-flush)
-                    // verbatim before falling back to sidecar dedup and the model.
+                    // The dirty-path F13 harvest is GONE (chunk-diff commit, issue
+                    // #5): a same-path edit's stable ids never re-embed now (the
+                    // engine diffs against the file record and reuses stored
+                    // vectors directly), so harvesting a recorded file's tiers on
+                    // every commit was pure IDB tax on exactly the hot-note path
+                    // this fix targets. Move sources were harvested above via
+                    // deletedPaths — carry-over keeps its headline win (folder
+                    // reorgs re-key for free). The one case that regresses is a
+                    // whitespace-only same-path edit (every raw id changes, every
+                    // embed text survives): it re-embeds once instead of carrying
+                    // over. NOTE: the wholesale pre-delete is gone too — stale-row
+                    // deletion now happens per-file at the point of truth (the
+                    // engine's diff, carryOverHydrate, dedupViaSidecar), so a
+                    // dirty file's old chunks stay searchable until replaced.
                     const afterCarry = await this.carryOverHydrate(toEmbed, carryOver);
                     carriedOver = toEmbed.length - afterCarry.length;
                     // Dedup-before-embed: hydrate the files the sidecar already covers
                     // (a peer device embedded this exact content) rather than
-                    // re-embedding. Stale chunks were just dropped so the engine sees
-                    // each edited file as needing fill.
-                    const remaining = await this.dedupViaSidecar(afterCarry, adds);
+                    // re-embedding. Passes the removal sinks so it can drop + surface
+                    // the stale rows the hydrated chunk set no longer references.
+                    const remaining = await this.dedupViaSidecar(afterCarry, adds, removedIds, removedBodies, metaPatches);
                     sidecarHydrated = afterCarry.length - remaining.length;
                     remaining.sort((a, b) => b.stat.mtime - a.stat.mtime);
                     if (remaining.length > 0) {
@@ -1715,10 +1888,16 @@ export class SearchOrchestrator {
                             // Pass the PASS-START emptiness (captured above, before carry-over
                             // + sidecar hydration committed any chunk) so the engine's identity
                             // stamp + background recompute use the same cold-build signal as the
-                            // meta stamp below — not a count() taken after hydration.
-                            { budgetMs: opts.budgetMs, shouldContinue: opts.shouldContinue, addsSink: adds, storeWasEmpty });
+                            // meta stamp below — not a count() taken after hydration. The three
+                            // diff sinks enable the per-file chunk-diff (issue #5) and surface
+                            // its removals / meta patches into this delta's change-set.
+                            {
+                                budgetMs: opts.budgetMs, shouldContinue: opts.shouldContinue, addsSink: adds, storeWasEmpty,
+                                removedSink: removedIds, removedBodiesSink: removedBodies, metaPatchSink: metaPatches,
+                            });
                         embedded = engineOut.entry;
                         sidecarJob = engineOut.sidecarJob;
+                        engineUnwound = engineOut.quarantineUnwound;
                     }
                     // Paths this burst actually committed (now non-dirty), so the catch-up
                     // drain advances by REAL progress instead of by maxFiles: carry-over
@@ -1743,9 +1922,9 @@ export class SearchOrchestrator {
                 }
 
                 // Any store mutation must reach the in-memory caches. Prefer the
-                // incremental patch (applyDelta mutates BM25 + the frame in place,
-                // vacuums, and re-stamps the generation under THIS mutex); fall back
-                // to a full invalidate+rebuild when the patch can't safely apply
+                // incremental patch (applyDelta mutates BM25 + the frame in place
+                // and re-stamps the generation under THIS mutex); fall back to a
+                // full invalidate+rebuild when the patch can't safely apply
                 // (cold caches, index-shape flip, dim change, drift, or a due
                 // compaction). Sidecar-hydrated chunks are in `adds` too, so a dedup
                 // delta is incremental. Either way the next search sees a correct cache.
@@ -1756,8 +1935,31 @@ export class SearchOrchestrator {
                     // carried any vector over can't be patched incrementally — force
                     // the full invalidate+rebuild. The expensive re-embed is still
                     // avoided; only the cheaper in-memory cache fit is re-paid.
-                    appliedIncrementally = carriedOver === 0 && await this.applyDelta(adds, removedIds);
+                    // A mass-failure quarantine UNWIND likewise bypasses the change-set
+                    // (its deleteFile drops rows the addsSink already surfaced, and —
+                    // under the chunk-diff — stable rows applyDelta would keep), so an
+                    // unwound pass rebuilds from IDB truth too.
+                    const skippedBecause = carriedOver > 0 ? 'carry-over'
+                        : engineUnwound > 0 ? 'quarantine-unwind' : undefined;
+                    let applyDeltaMs: number | undefined;
+                    this.lastDeltaFallbackReason = null;
+                    if (!skippedBecause) {
+                        const applyStart = performance.now();
+                        appliedIncrementally = await this.applyDelta(adds, removedIds, removedBodies, metaPatches);
+                        applyDeltaMs = performance.now() - applyStart;
+                    }
                     if (!appliedIncrementally) this.invalidateBm25Cache();
+                    deltaTelemetry = {
+                        appliedIncrementally,
+                        ...(skippedBecause ? { skippedBecause } : {}),
+                        ...(!skippedBecause && !appliedIncrementally && this.lastDeltaFallbackReason
+                            ? { fallbackReason: this.lastDeltaFallbackReason } : {}),
+                        removed: removedIds.length,
+                        added: adds.length,
+                        metaPatches: metaPatches.length,
+                        ...(applyDeltaMs !== undefined ? { applyDeltaMs: parseFloat(applyDeltaMs.toFixed(2)) } : {}),
+                        mutexHoldMs: 0,   // stamped in the finally (whole hold)
+                    };
                 }
                 // Stamp meta ONLY when the corpus actually changed. A no-op delta (an
                 // embed:false reconcile pass, or a computeDelta that found nothing)
@@ -1804,6 +2006,7 @@ export class SearchOrchestrator {
                 //   needs no separate return field.)
                 return { deletedPaths: deletedPaths.length, deletedChunks, embedded, deferredEmbed, sidecarHydrated, carriedOver, committedPaths };
             } finally {
+                if (deltaTelemetry) deltaTelemetry.mutexHoldMs = parseFloat((performance.now() - mutexStart).toFixed(2));
                 release();
                 this.coord.currentDelta = null;
             }
@@ -1813,6 +2016,15 @@ export class SearchOrchestrator {
             // "delta resolved ⇒ sidecar flushed". flushSidecarAfterPass never
             // rejects, so this can't mask the critical section's own error.
             this.flushSidecarAfterPass(sidecarJob));
+        // v16 (issue #5): persist the patch outcome. Off the mutex,
+        // fire-and-forget — telemetry never delays the pass. (Local copy: the
+        // closure assignment above defeats TS's narrowing on the outer let.)
+        const patchOutcome: Omit<DeltaApplyEntry, 'type' | 'timestamp'> | null = deltaTelemetry;
+        if (patchOutcome !== null) {
+            const entry: DeltaApplyEntry = Object.assign(
+                { type: 'delta-apply' as const, timestamp: new Date().toISOString() }, patchOutcome);
+            void this.logger.append(entry).catch(() => {});
+        }
         // Re-warm only when we did NOT patch incrementally (the patch is the warm).
         // Fire-and-forget, off the mutex — the moment the flush scheduler already
         // judged quiet enough for embed work, so the rebuild lands here rather than
@@ -1826,9 +2038,148 @@ export class SearchOrchestrator {
             // no rebuild to do — but historically it also skipped persistBm25, leaving
             // the disk blob stale until a full rebuild. Re-persist (throttled, embed-
             // free) so the next cold start loads a near-fresh blob instead of refitting.
-            this.maybePersistResidentBm25();
+            // Ghost-discard dirt past the threshold instead takes the ordinary
+            // rebuild (see reconcileGhostDirt) — the rebuild's own warm re-persists.
+            if (!this.reconcileGhostDirt()) this.maybePersistResidentBm25();
         }
         return result;
+    }
+
+    // Ghost-dirt safety valve (issue #5). The only discard-path tombstones left
+    // are the ghost guards (tolerant-load divergence) — a handful of postings
+    // whose df effect self-heals per queried term (searches clean dirty
+    // postings as they walk them). Small dirt is deliberately LEFT ALONE:
+    // MiniSearch's vacuum() holds a live radix-tree iterator across its timer
+    // yields, so a vacuum overlapping commits or search-time cleanup can have
+    // its iterator invalidated mid-walk — and a REJECTED vacuum never resets
+    // MiniSearch's _currentVacuum, permanently wedging every later vacuum on
+    // that instance (2026-07-30 review; the off-mutex vacuum valve that
+    // briefly lived here was retired for exactly this). Past the threshold —
+    // pathological ghost accumulation — the safe reclaim is the ordinary
+    // invalidate + rebuild: a fresh fit, no vacuum involved, built by the same
+    // machinery every other fallback uses. Returns true when a rebuild was
+    // kicked (the caller skips its own persist — the warm re-persists).
+    private static readonly GHOST_DIRT_REFIT_THRESHOLD = 64;
+    private reconcileGhostDirt(): boolean {
+        const bm = this.bm25Cache;
+        if (!bm) return false;
+        const dirt = bm.dirtCount;
+        if (dirt === 0) return false;
+        this.forensics?.beat('ghost-dirt', { dirt, refit: dirt >= SearchOrchestrator.GHOST_DIRT_REFIT_THRESHOLD });
+        if (dirt < SearchOrchestrator.GHOST_DIRT_REFIT_THRESHOLD) return false;
+        this.invalidateBm25Cache();
+        void this.warmCaches('ghost-dirt');
+        return true;
+    }
+
+    // Capture a file's chunk bodies BEFORE deleteFile() drops them from IDB, so
+    // applyDelta can reconstruct each removed doc for removeExact(). Chunk ids
+    // are content hashes, so a captured body is byte-identical to what add()
+    // indexed. Read failures degrade silently: a missing body makes applyDelta
+    // decline into the ordinary full-rebuild fallback ("slow, never wrong").
+    private async captureRemovalBodies(path: string, sink: Map<string, string>): Promise<void> {
+        try {
+            const rec = await this.store.getFileRecord(path);
+            if (!rec || rec.chunk_ids.length === 0) return;
+            for (const [id, body] of await this.store.getBodiesMap(rec.chunk_ids)) sink.set(id, body);
+        } catch { /* handled at applyDelta as 'removal-body-missing' */ }
+    }
+
+    // Chunk-diff plan for one dirty file (issue #5). Returns null when there is
+    // no stored record (new file) — the caller embeds everything. On a plan:
+    // stale rows are deleted (bodies captured first for the exact-removal
+    // patch), id-stable chunks are classified untouched / meta-patch /
+    // reindex-row, and only genuinely-new ids remain to embed:
+    //   - untouched: byte-identical ChunkMeta → nothing anywhere.
+    //   - meta-patch: metadata drifted but none of it is BM25-indexed (line
+    //     numbers after an edit above the chunk, created/modified dates) → IDB
+    //     meta row refreshed here, frame row swapped in place by applyDelta.
+    //   - reindex-row: BM25-indexed metadata drifted while the id held (an
+    //     inline #tag in another section, a wikilink-target swap, a shape-junk
+    //     property) → IDB meta refreshed here; the row rides the change-set as
+    //     remove + re-add with its STORED tiers — no model forward pass.
+    // Vector reuse is licensed by an EXPLICIT embed-text comparison, not by id
+    // equality: on the v10 chunker "same id ⟹ same embed text" is provable
+    // (embedInput consumes a strict subset of the id hash), but chunker lines
+    // where the two compositions diverge (v11's per-chunk keyed suffix reads
+    // metadata the note-level id hash summarizes lossily — e.g. a property KEY
+    // rename moves the embed text but not the id) would silently reuse a stale
+    // vector. Comparing the real embedInput old-vs-new makes the license hold
+    // under ANY composition; a divergent chunk simply re-embeds.
+    // Any read failure throws to the caller, whose fallback restores the
+    // pre-diff wholesale delete + full re-embed.
+    private async diffFileAgainstStore(
+        path: string,
+        fileChunks: Chunk[],
+        budget: { addsSink?: DeltaAdd[]; removedSink: string[]; removedBodiesSink: Map<string, string>; metaPatchSink: Array<{ id: string; meta: ChunkMeta }> },
+    ): Promise<{ keepIds: Set<string>; embedIds: Set<string> } | null> {
+        const rec = await this.store.getFileRecord(path);
+        if (!rec || rec.chunk_ids.length === 0) return null;
+        const newIds = new Set(fileChunks.map(c => c.chunk_id));
+        const staleIds = rec.chunk_ids.filter(id => !newIds.has(id));
+        const oldIdSet = new Set(rec.chunk_ids);
+        // Stale rows: capture bodies for removeExact, then delete. The sink gets
+        // the ids AFTER the IDB delete so the change-set only holds applied rows.
+        if (staleIds.length > 0) {
+            for (const [id, body] of await this.store.getBodiesMap(staleIds)) budget.removedBodiesSink.set(id, body);
+            await this.store.deleteChunksByIds(staleIds);
+            budget.removedSink.push(...staleIds);
+        }
+        const keepIds = new Set<string>();
+        const embedIds = new Set<string>();
+        const stable: Chunk[] = [];
+        for (const c of fileChunks) {
+            if (oldIdSet.has(c.chunk_id)) stable.push(c);
+            else embedIds.add(c.chunk_id);
+        }
+        if (stable.length > 0) {
+            const oldMetas = await this.store.getChunkMetasByIds(stable.map(c => c.chunk_id));
+            const metaPuts: ChunkMeta[] = [];
+            // Pass 1: classify. Reindex-row candidates are collected so their
+            // tier read is ONE batched transaction, not one per chunk — the
+            // whole-note tag edit puts ~every chunk in this lane, and N serial
+            // 4-store transactions inside the write mutex is exactly the
+            // per-commit IDB tax this fix exists to remove.
+            const reindexRows: Chunk[] = [];
+            for (const c of stable) {
+                const old = oldMetas.get(c.chunk_id);
+                if (!old) { embedIds.add(c.chunk_id); continue; }   // meta row missing (torn IDB) — re-embed heals
+                // The vector-reuse license (see the method comment): identical
+                // bodies are id-guaranteed, so old embed text reconstructs from
+                // the stored meta + this body.
+                if (embedInput({ ...old, content: c.content ?? '' }) !== embedInput(c)) {
+                    embedIds.add(c.chunk_id);
+                    continue;
+                }
+                const next = stripContent(c);
+                if (chunkMetaEqual(old, next)) { keepIds.add(c.chunk_id); continue; }
+                if (MultiFieldBM25.docFieldsEqual(old, next)) {
+                    metaPuts.push(next);
+                    budget.metaPatchSink.push({ id: c.chunk_id, meta: next });
+                    keepIds.add(c.chunk_id);
+                } else {
+                    reindexRows.push(c);
+                }
+            }
+            // Pass 2: the batched tier read + the change-set entries.
+            if (reindexRows.length > 0) {
+                const tiers = await this.store.getTiersByIds(reindexRows.map(c => c.chunk_id));
+                for (let i = 0; i < reindexRows.length; i++) {
+                    const c = reindexRows[i];
+                    const tier = tiers[i];
+                    if (!tier) { embedIds.add(c.chunk_id); continue; }   // vector row missing — re-embed heals
+                    // Removal reconstruction uses the OLD meta (the frame row) +
+                    // this body — identical bytes by content-addressing.
+                    metaPuts.push(stripContent(c));
+                    budget.removedBodiesSink.set(c.chunk_id, c.content ?? '');
+                    budget.removedSink.push(c.chunk_id);
+                    budget.addsSink?.push({ chunk: c, q: tier.q, bin: tier.sign });
+                    keepIds.add(c.chunk_id);
+                }
+            }
+            if (metaPuts.length > 0) await this.store.putChunkMetas(metaPuts);
+        }
+        return { keepIds, embedIds };
     }
 
     // Incremental cache maintenance (Seek scaling A1). Mutate the live BM25 index +
@@ -1837,14 +2188,22 @@ export class SearchOrchestrator {
     // terms). Returns true on a clean patch; false means the caller must fall back
     // to invalidateBm25Cache() + warmCaches (a full rebuild). Correctness NEVER
     // depends on the incremental path: every "can't safely apply" condition (cold
-    // caches, index-shape flip, sidecar hydrate, dim change, post-patch drift, due
-    // compaction) returns false and degrades to "slow", never "wrong".
+    // caches, index-shape flip, sidecar hydrate, dim change, missing/mismatched
+    // removal doc, post-patch drift, due compaction) returns false and degrades
+    // to "slow", never "wrong".
     //
-    // MUST run inside reindexDelta's runExclusive critical section: it awaits
-    // vacuum() and re-stamps the generation atomically, so a concurrent search
+    // MUST run inside reindexDelta's runExclusive critical section: it mutates
+    // both caches and re-stamps the generation atomically, so a concurrent search
     // (which waits on coord.currentDelta in ensureFrame) sees either the old cache
-    // or the fully-patched one, never a half-mutated frame.
-    private async applyDelta(adds: DeltaAdd[], removedIds: string[]): Promise<boolean> {
+    // or the fully-patched one, never a half-mutated frame. Since removals became
+    // exact (removeExact) there is no in-mutex vacuum — the whole patch is
+    // O(delta), never O(index), so the mutex hold no longer scales with the vault.
+    private async applyDelta(
+        adds: DeltaAdd[],
+        removedIds: string[],
+        removedBodies: ReadonlyMap<string, string>,
+        metaPatches: ReadonlyArray<{ id: string; meta: ChunkMeta }> = [],
+    ): Promise<boolean> {
         const frame = this.frameCache;
         const bm = this.bm25Cache;
         if (!frame || !bm) return this.deltaFallback('cold caches');
@@ -1865,12 +2224,26 @@ export class SearchOrchestrator {
             return this.deltaFallback('embedding dim mismatch');
         }
 
+        // Resolve each removal to its reconstruction doc BEFORE mutating anything:
+        // a missing body (capture skipped or failed in captureRemovalBodies)
+        // declines the patch with the caches completely untouched — the cheapest
+        // possible fallback. Ids with no live row are already gone (the historic
+        // remove(id) tolerance for IDB↔cache divergence) and are skipped.
+        const removals: Array<{ row: number; meta: ChunkMeta; body: string }> = [];
+        for (const id of removedIds) {
+            const row = bm.rowOf(id);
+            if (row === undefined) continue;
+            const body = removedBodies.get(id);
+            if (body === undefined) return this.deltaFallback('removal-body-missing');
+            removals.push({ row, meta: frame.orderedChunks[row], body });
+        }
+
         // Removes first, then adds: an edit re-commits the SAME content-hash id only
-        // after its stale chunk was dropped, so discard-before-add means mini.add()
-        // never collides with a live duplicate. Capture each removed row BEFORE
-        // bm.remove() drops it from idToIdx, so the frame tombstones the right hole.
-        // Wrapped in try/catch for exception safety: a throw mid-patch leaves the
-        // in-place mutation half-applied, so degrade to a full rebuild (the caller
+        // after its stale chunk was dropped, so remove-before-add means mini.add()
+        // never collides with a live duplicate. Rows were captured above BEFORE
+        // removeExact() drops them from idToIdx, so the frame tombstones the right
+        // holes. Wrapped in try/catch for exception safety: a throw mid-patch leaves
+        // the in-place mutation half-applied, so degrade to a full rebuild (the caller
         // invalidates the suspect caches on a false return and re-warms from IDB,
         // the source of truth) rather than letting it escape — "slow, never wrong",
         // and never the crash-loop a thrown bm.add() caused on 2026-06-18.
@@ -1885,14 +2258,16 @@ export class SearchOrchestrator {
         let aliasDictDirty = false;
         try {
             const removeRows: number[] = [];
-            for (const id of removedIds) {
-                const row = bm.rowOf(id);
-                if (row !== undefined) {
-                    removeRows.push(row);
-                    // Read the row's metadata BEFORE tombstoneFrameRows drops it.
-                    if (chunkDeclaresAlias(frame.orderedChunks[row])) aliasDictDirty = true;
-                }
-                bm.remove(id);
+            for (const r of removals) {
+                removeRows.push(r.row);
+                if (chunkDeclaresAlias(r.meta)) aliasDictDirty = true;
+                // Exact synchronous removal: postings cleaned NOW from the doc as
+                // indexed (content-addressed body + as-committed frame meta) — no
+                // discard tombstones, no vacuum debt, no first-search df drift. A
+                // 'mismatch' means that reconstruction contract broke; the half-
+                // removed doc makes the whole patch suspect, so decline and let
+                // the caller rebuild from IDB truth.
+                if (bm.removeExact(r.meta, r.body) === 'mismatch') return this.deltaFallback('removal-mismatch');
             }
             tombstoneFrameRows(frame, removeRows);
             // Drop adds whose id is already live in the row space (a hydrate-sourced
@@ -1903,9 +2278,16 @@ export class SearchOrchestrator {
             if (!aliasDictDirty) aliasDictDirty = fresh.some(a => chunkDeclaresAlias(a.chunk));
             for (const a of fresh) bm.add(a.chunk, a.chunk.content ?? '');
             appendFrameRows(frame, fresh);
-            // Async: reclaims tombstoned postings so getQueryBound reads exact df (the
-            // TM2C2 clip-at-1 legality invariant). Awaited inside the mutex.
-            await bm.vacuum();
+            // Meta-patches (chunk-diff, issue #5): id-stable chunks whose
+            // BM25-irrelevant metadata drifted (line numbers after an edit above
+            // them, dates). In-place frame row swap — same id, same row, same
+            // vector; BM25 untouched (docFieldsEqual gated upstream). A missing
+            // row means the frame diverged from the engine's view — decline.
+            for (const p of metaPatches) {
+                const row = bm.rowOf(p.id);
+                if (row === undefined) return this.deltaFallback('meta-patch-row-missing');
+                frame.orderedChunks[row] = p.meta;
+            }
         } catch (e) {
             // console.* is invisible on mobile (no devtools) — write the NDJSON device
             // log too, so a recurring patch-throw stays field-observable. That exact
@@ -1971,7 +2353,12 @@ export class SearchOrchestrator {
     // ("slow, never wrong").
     // `reason` must be a STABLE slug — it keys deltaFallbackCounts, so per-call
     // values (counts, sizes) go in `detail`, which rides the beat payload only.
+    // The most recent decline's slug, for the delta-apply entry (v16) — the
+    // per-reason counts above ride heartbeats, but wlo2's reports showed those
+    // don't surface the REASON of a specific pass's fallback.
+    private lastDeltaFallbackReason: string | null = null;
     private deltaFallback(reason: string, detail?: Record<string, unknown>): false {
+        this.lastDeltaFallbackReason = reason;
         const n = (this.deltaFallbackCounts.get(reason) ?? 0) + 1;
         this.deltaFallbackCounts.set(reason, n);
         // console.* is invisible on mobile; the beat is the field-observable channel.
@@ -2639,10 +3026,21 @@ export class SearchOrchestrator {
 
     // Dedup-before-embed: hydrate the dirty files the sidecar already covers
     // (another device embedded the same content) instead of re-embedding them,
-    // and return the files that still need the model. MUST be called with the
-    // dirty files' STALE chunks already dropped (so existingIds doesn't report
-    // the pre-edit ids as present). Pure optimization — a miss just embeds.
-    private async dedupViaSidecar(files: TFile[], addsSink?: DeltaAdd[]): Promise<TFile[]> {
+    // and return the files that still need the model. Pure optimization — a
+    // miss just embeds. Stale rows are handled HERE now (chunk-diff, issue #5:
+    // the delta's wholesale pre-delete is gone): after a note hydrates, any
+    // old-record id its new chunk set no longer references is deleted + surfaced
+    // through the removal sinks, exactly like the engine's diff. Pre-edit ids
+    // lingering in existingIds are harmless — coverage is judged against the
+    // NEW chunk ids, and a still-present id just means "nothing to hydrate"
+    // (which now correctly skips re-writing rows a revert already has).
+    private async dedupViaSidecar(
+        files: TFile[],
+        addsSink?: DeltaAdd[],
+        removedSink?: string[],
+        removedBodiesSink?: Map<string, string>,
+        metaPatchSink?: Array<{ id: string; meta: ChunkMeta }>,
+    ): Promise<TFile[]> {
         if (!this.coord.sidecarOn() || files.length === 0) return files;
         // Same chunk_id-reproduction requirement as reChunkLive: apply the
         // token-budget split so split notes match the sidecar (without it this
@@ -2673,9 +3071,69 @@ export class SearchOrchestrator {
         // directly (NOT hydrateSidecar, which would re-enter the mutex). addsSink
         // (when the delta path supplies it) surfaces the hydrated chunks into the
         // change-set so applyDelta can apply them incrementally.
+        // Old records AND old metas of id-stable chunks read BEFORE the hydrate
+        // overwrites them — the stale-row cleanup and the id-stable metadata
+        // reconciliation below both diff against pre-hydrate state.
+        const oldRecs = new Map<string, FileRecord>();
+        const oldStableMetas = new Map<string, ChunkMeta>();
+        for (const n of notes) {
+            const rec = await this.store.getFileRecord(n.notePath).catch(() => null);
+            if (!rec) continue;
+            oldRecs.set(n.notePath, rec);
+            const newIdSet = new Set(n.chunks.map(c => c.chunk_id));
+            const stableIds = rec.chunk_ids.filter(id => newIdSet.has(id));
+            if (stableIds.length > 0) {
+                try {
+                    for (const [id, m] of await this.store.getChunkMetasByIds(stableIds)) oldStableMetas.set(id, m);
+                } catch { /* classification degrades to nothing; the engine path heals on the next edit */ }
+            }
+        }
         const res = await hydrateFromSidecar(this.hydrateDeps(async () => notes, addsSink));
         this._peerAhead = res.peerAhead; // refresh the "newer index exists" signal per scan
         const done = new Set(res.hydratedNotePaths);
+        // Reconciliation for hydrated notes (chunk-diff, issue #5). The hydrate
+        // rewrote EVERY chunk's IDB rows and pushed them all into addsSink, but
+        // applyDelta's freshDeltaAdds drops the ones whose id is still LIVE in
+        // the row space — so without the lanes below, an id-stable chunk whose
+        // note-level metadata drifted (inline #tag in another section) would
+        // have fresh IDB meta and a stale frame/BM25 doc FOREVER (the next
+        // diff compares IDB-old vs new, sees them equal, and never patches).
+        //   - stale ids (dropped from the note): delete + exact-removal entries.
+        //   - id-stable, meta drifted, BM25-irrelevant: metaPatchSink (frame swap).
+        //   - id-stable, BM25-relevant drift: removal entry; the hydrate's OWN
+        //     addsSink entry then survives freshDeltaAdds (row freed) and
+        //     re-adds the doc with fresh meta — no extra add needed here.
+        const newChunksByPath = new Map(notes.map(n => [n.notePath, n.chunks]));
+        for (const p of res.hydratedNotePaths) {
+            const rec = oldRecs.get(p);
+            const newChunks = newChunksByPath.get(p);
+            if (!rec || !newChunks) continue;
+            const newIdSet = new Set(newChunks.map(c => c.chunk_id));
+            const stale = rec.chunk_ids.filter(id => !newIdSet.has(id));
+            try {
+                if (stale.length > 0) {
+                    if (removedBodiesSink) {
+                        for (const [id, body] of await this.store.getBodiesMap(stale)) removedBodiesSink.set(id, body);
+                    }
+                    await this.store.deleteChunksByIds(stale);
+                    removedSink?.push(...stale);
+                }
+                for (const c of newChunks) {
+                    const old = oldStableMetas.get(c.chunk_id);
+                    if (!old) continue;                       // genuinely new — hydrate's add covers it
+                    const next = stripContent(c);
+                    if (chunkMetaEqual(old, next)) continue;  // untouched
+                    if (MultiFieldBM25.docFieldsEqual(old, next)) {
+                        metaPatchSink?.push({ id: c.chunk_id, meta: next });
+                    } else if (removedSink && removedBodiesSink) {
+                        removedBodiesSink.set(c.chunk_id, c.content ?? '');
+                        removedSink.push(c.chunk_id);
+                    }
+                }
+            } catch (e) {
+                await this.logger.appendError(`sidecarDedup-stale-cleanup:${p}`, e);
+            }
+        }
         return files.filter(f => !done.has(f.path));
     }
 
@@ -2739,6 +3197,13 @@ export class SearchOrchestrator {
             if (chunks.length === 0) continue;
             const tiers = chunks.map(c => carryOver.get(embedInput(c)));
             if (tiers.some(t => t === undefined)) continue;   // not fully covered → embed normally
+            // The delta no longer pre-deletes a dirty file's rows (chunk-diff,
+            // issue #5), so the old record — read BEFORE the overwrite below —
+            // tells us which rows the hydrated chunk set no longer references.
+            // They must be dropped or they orphan into ghost results on the next
+            // cold frame rebuild. No change-set entries needed: a carry-over
+            // delta always takes the full-rebuild path (carriedOver > 0).
+            const oldRec = await this.store.getFileRecord(f.path).catch(() => null);
             // One atomic tx for chunks + record (S1), same as commitFile.
             try {
                 await this.store.putBatchQuantized(chunks, tiers.map(t => ({ q: t!.q, bin: t!.sign })),
@@ -2750,6 +3215,14 @@ export class SearchOrchestrator {
                 // (S2) and keeps the file dirty for catch-up.
                 await this.logger.appendError(`carryOver-commit:${f.path}`, e);
                 continue;
+            }
+            if (oldRec) {
+                const newIdSet = new Set(chunks.map(c => c.chunk_id));
+                const stale = oldRec.chunk_ids.filter(id => !newIdSet.has(id));
+                if (stale.length > 0) {
+                    await this.store.deleteChunksByIds(stale)
+                        .catch(e => this.logger.appendError(`carryOver-stale-cleanup:${f.path}`, e));
+                }
             }
             done.add(f.path);
         }
@@ -3770,8 +4243,33 @@ export class SearchOrchestrator {
         const now = performance.now();
         if (now - this.lastBm25PersistMs < SearchOrchestrator.BM25_PERSIST_THROTTLE_MS) return;
         this.lastBm25PersistMs = now;
-        void this.persistBm25(rf.orderedChunks);
+        // Issue #5 (fix E): toJSON is a single ~200-630 ms synchronous block at
+        // vault scale (O(index), independent of the delta size) — now that the
+        // patch itself is ~1 ms, this is essentially ALL of the remaining
+        // per-save main-thread cost (the reporter's trailing 'idle' long-tasks
+        // after commits). Defer it into an idle slot when a compositor exists;
+        // hidden windows run immediately (no frames to jank, and rIC would
+        // only fire via its timeout there). The guards above ran at SCHEDULE
+        // time — up to 5 s stale by run time — so the deferred callback
+        // re-checks disposal and the live generation itself (persistBm25's own
+        // gates are thinner: a non-null cache + a stamped index). At most one
+        // callback is pending (the 30 s throttle gates entry), and dispose()
+        // cancels it so a plugin unload / hot-reload can't run the serialize
+        // against a zombie orchestrator.
+        const run = (): void => {
+            this.pendingPersistIdle = null;
+            if (this.disposed) return;
+            const live = this.frameCache;
+            if (!live || live.generation !== this.coord.generation) return;
+            void this.persistBm25(live.orderedChunks);
+        };
+        if (typeof activeDocument === 'undefined' || activeDocument.hidden || typeof requestIdleCallback !== 'function') {
+            run();
+            return;
+        }
+        this.pendingPersistIdle = requestIdleCallback(() => run(), { timeout: 5000 });
     }
+    private pendingPersistIdle: number | null = null;
 
     // Eager cache re-warm. Every index mutation invalidates all four query-path
     // caches (frame, binary index, BM25, synonym dict), and rebuilding them
@@ -3818,6 +4316,11 @@ export class SearchOrchestrator {
             return;
         }
         this.warming = true;
+        // v16 (issue #5): name the trigger. The one unexplained artifact in
+        // wlo2's full report was a mid-session 1.63 s bm25-warm refit whose
+        // cause the logs couldn't attribute — this beat answers "what asked
+        // for the rebuild" the next time it happens.
+        this.forensics?.beat('bm25-warm-start', { trigger });
         try {
             // Rebuild until the cache matches the LIVE generation. ensureFrame()
             // awaits IDB, so an invalidation can land mid-build and bump
@@ -4078,6 +4581,15 @@ export interface DeltaAdd {
 // (model-embedded, derived = quantizeInt8/packSignBits) and the sidecar hydrate
 // (bytes copied from a peer's shard, tiers = {q, bin}). chunks[i] aligns with
 // tiers[i].
+// Chunk-diff commit (issue #5): full ChunkMeta equality — the "untouched" gate.
+// JSON compare is sound here because both sides come off the same construction
+// pipeline (the chunker for the new side; the chunker → structured-clone round
+// trip through IDB for the old side), which preserves property insertion order.
+// A false "changed" only costs a cheap meta-patch, never a wrong index.
+export function chunkMetaEqual(a: ChunkMeta, b: ChunkMeta): boolean {
+    return JSON.stringify(a) === JSON.stringify(b);
+}
+
 export function pushDeltaAdds(sink: DeltaAdd[], chunks: Chunk[], tiers: { q: QuantVec; bin: Uint8Array }[]): void {
     for (let i = 0; i < chunks.length; i++) {
         sink.push({ chunk: chunks[i], q: tiers[i].q, bin: tiers[i].bin });

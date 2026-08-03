@@ -57,7 +57,9 @@ export type Dtype = 'q4f16' | 'q4' | 'q8' | 'fp32';
 // hard-codes to the literal 'unknown'. The discriminating fields were one level
 // up all along. Additive/forward-only; `attribution` is retained so pre-v15
 // rows still parse (they carry 'unknown' and nothing else).
-export const LOG_SCHEMA_VERSION = 15;
+// v16 (issue #5): + delta-apply entry (incremental-patch outcome: fallback
+// reason, patch cost, mutex hold), + IndexCompleteEntry.paceWaitMs.
+export const LOG_SCHEMA_VERSION = 16;
 
 // ---- chunk model ----
 
@@ -968,8 +970,44 @@ export interface IndexCompleteEntry {
     chunksPerFile: DistributionStats | null;
     // Per-embed-batch latency as reported by transformers.js inside the iframe.
     embedBatchLatencyMs: DistributionStats | null;
+    // Cumulative wall-clock this pass spent awaiting the compositor pacer
+    // between embed dispatches (v16, issue #5). The field-visible signature of
+    // the hidden-window pacing inversion: ~1.5 s of embed compute arriving as
+    // 92.8 s wall was invisible until this split pace-wait out of embed time.
+    paceWaitMs?: number;
     pass: boolean;
     checks: string[];
+}
+
+// Issue #5 (v16): the incremental-patch outcome of one reindexDelta pass,
+// written AFTER the write mutex releases — index-complete is the ENGINE's
+// entry and predates applyDelta, so it cannot carry this. Closes the
+// field-observability gap that made the hot-note cascade require live vault
+// probes: whether the cheap in-place patch ran, why it declined when it
+// didn't (each decline is a full O(corpus) cache rebuild), what the patch
+// cost, and how long the write mutex was held (searches wait on that mutex
+// inside ensureFrame — their idbReadMs includes it).
+export interface DeltaApplyEntry {
+    type: 'delta-apply';
+    timestamp: string;
+    appliedIncrementally: boolean;
+    // deltaFallback slug ('cold caches', 'compaction due', 'removal-mismatch',
+    // …) when the patch was attempted and declined. Absent on success and on
+    // not-attempted passes.
+    fallbackReason?: string;
+    // Why the patch was not attempted at all: 'carry-over' (F13 vectors bypass
+    // the change-set) or 'quarantine-unwind' (its deleteFile bypasses it).
+    skippedBecause?: string;
+    // NOTE: `removed` counts cache-level removals — IDB-applied deletions AND
+    // the diff's reindex-row lane (rows whose IDB data remains; they appear in
+    // `added` too). removed ≈ added on a metadata-drift pass is churn, not loss.
+    removed: number;
+    added: number;
+    metaPatches: number;
+    // Time inside applyDelta itself (absent when the patch was not attempted).
+    applyDeltaMs?: number;
+    // Wall-clock the write mutex was held for the WHOLE critical section.
+    mutexHoldMs: number;
 }
 
 export interface SearchEntry {
@@ -1434,4 +1472,5 @@ export type LogEntry = (
     | Phase5SmokeEntry
     | WebgpuEventEntry
     | SidecarHydrateEntry
+    | DeltaApplyEntry
 ) & LogMeta;

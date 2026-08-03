@@ -33,7 +33,7 @@ import type { App } from 'obsidian';
 import type {
     LogEntry, LogMeta, InitEntry, PlatformEntry,
     IndexCompleteEntry, SearchEntry, ErrorEntry,
-    CrashDetectedEntry, LoadEntry, LongTaskEntry,
+    CrashDetectedEntry, DeltaApplyEntry, LoadEntry, LongTaskEntry,
 } from './types';
 import { LOG_SCHEMA_VERSION } from './types';
 import { isMobilePlatform } from './platform';
@@ -73,6 +73,7 @@ const REPORT_CAPS: Record<string, number> = {
     error: 300,
     'index-progress': 50,
     'index-complete': 100,
+    'delta-apply': 100,
     'sidecar-hydrate': 50,
     'memory-pressure': 100,
     'long-task': 100,
@@ -798,6 +799,30 @@ export class SeekLogger {
             // derive by hand from startTimeMs (issue #5 — see stall-pattern.ts).
             const periodic = detectPeriodicStalls(longTasks);
             if (periodic) lines.push(`- ${describePeriodicStalls(periodic)}`);
+        }
+        // Incremental-patch rollup (v16, issue #5): whether each delta rode the
+        // cheap in-place patch, why the ones that didn't fell back (each decline
+        // is a full O(corpus) cache rebuild), and how long the write mutex was
+        // held — the wait a search issued mid-commit sits behind. This was the
+        // triage question the wlo2 reports could not answer without live probes.
+        const deltas = filterByType<DeltaApplyEntry>(d.entries, 'delta-apply');
+        if (deltas.length > 0) {
+            const applied = deltas.filter(x => x.appliedIncrementally).length;
+            const byReason = new Map<string, number>();
+            for (const x of deltas) {
+                const r = x.fallbackReason ?? x.skippedBecause;
+                if (!x.appliedIncrementally && r) byReason.set(r, (byReason.get(r) ?? 0) + 1);
+            }
+            const holds = deltas.map(x => x.mutexHoldMs).sort((a, b) => a - b);
+            const maxHold = holds[holds.length - 1];
+            const p95Hold = holds[Math.min(holds.length - 1, Math.floor(holds.length * 0.95))];
+            lines.push('\n## Incremental Patches (delta-apply)');
+            lines.push(`- ${applied}/${deltas.length} applied in place · mutex hold p95 ${p95Hold.toFixed(0)} ms · max ${maxHold.toFixed(0)} ms`);
+            if (byReason.size > 0) {
+                const parts = [...byReason.entries()].sort((a, b) => b[1] - a[1])
+                    .map(([r, n]) => `\`${r}\` ${n}×`).join(', ');
+                lines.push(`- fallbacks (full cache rebuild): ${parts}`);
+            }
         }
         if (crashes.length > 0) {
             const c = crashes[crashes.length - 1];
