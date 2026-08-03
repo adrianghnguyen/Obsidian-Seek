@@ -2,6 +2,17 @@
 
 All notable changes to Seek are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.1.3
+
+Performance release for editing notes in a large vault, prompted by a community bug report and the diagnostics shared with it. Thank you! No reindex is needed, since the index format is unchanged.
+
+### Changed
+- **Saving a note now only re-indexes the parts of it that changed.** Every save re-embedded the whole note and rewrote all of its entries in the keyword index, so editing one paragraph of a long note did the work of indexing that note from scratch, repeatedly, for any note you keep open and edit through the day. Seek now compares the new version against what it already has and touches only what actually differs, usually a chunk or two out of dozens. The note also stays searchable throughout, since nothing is removed until its replacement is ready.
+- **Searching while a note is being indexed no longer waits.** Removing entries from the keyword index left bookkeeping behind that was reclaimed by a pass over every term in the index, and that pass ran while the index was locked, so a search issued at that moment queued behind it. Removals are now exact and leave nothing to reclaim, and the pass is gone. On a heavily edited note in a large vault, the locked portion of a save went from roughly 2 to 7 seconds down to under a tenth of a second.
+- **A pause after saving is gone.** Seek periodically writes a snapshot of the keyword index to disk, and that write happened in a single uninterruptible step that grew with vault size, up to two thirds of a second. It now waits for an idle moment, and only runs immediately when the window is hidden, where there is no interface to hold up.
+- **Indexing in a hidden window no longer crawls.** Indexing paces itself between batches by waiting for the screen to be ready for more work, but a hidden window never reports that, so the wait fell back to a timeout on every batch. A run that takes a minute in the foreground could stretch to many times that with Obsidian in the background, keeping the CPU busy the whole time. Hidden windows now pace without waiting on the screen.
+- The logging report now records whether each index update was applied incrementally, the reason when one wasn't, and how long the index was held, so a slow vault can be diagnosed from the report alone.
+
 ## 1.1.2
 
 Diagnostics release, improving the logging report users are asked to share when filing an issue. No reindex is needed, since the index format is unchanged.
