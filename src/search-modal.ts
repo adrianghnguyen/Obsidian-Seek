@@ -1225,7 +1225,8 @@ export class SeekSearchModal extends Modal {
         // Emit click event BEFORE opening the file — the file-open switches
         // workspace state and might cancel pending work. We don't await the
         // logger write so click latency stays imperceptible.
-        this.emitClick(r, rank);
+        const titleNav = titleNavCoverage(r, this.settings.navTitleBoost) >= TITLE_NAV_COVERAGE_MIN;
+        this.emitClick(r, rank, titleNav);
 
         const file = this.app.vault.getAbstractFileByPath(r.note_path);
         if (!(file instanceof TFile)) return;
@@ -1316,7 +1317,7 @@ export class SeekSearchModal extends Modal {
         }
     }
 
-    private emitClick(r: ScoredChunk, rank: number): void {
+    private emitClick(r: ScoredChunk, rank: number, titleNavOpen: boolean): void {
         const entry = this.latestSearchEntry;
         if (!entry) return; // stale render or no search context — drop
         const dwellMs = this.latestSearchCompletedAt > 0
@@ -1335,6 +1336,7 @@ export class SeekSearchModal extends Modal {
             bm25: r.ranking_signals.bm25,
             recency: r.ranking_signals.recency,
             title_boost: r.ranking_signals.title_boost,
+            titleNavOpen,
             dwellMs: parseFloat(dwellMs.toFixed(0)),
             shownTop10: this.latestResultsShown.slice(0, 10).map(c => c.chunk_id),
         };
