@@ -74,26 +74,46 @@ function buildPair(chunks: Chunk[]): { frame: ResidentFrame; bm: MultiFieldBM25 
 }
 
 // applyDelta's exact mutation core (minus the engine's generation re-stamp): the
-// real functions, the real order — removes first (tombstone the captured rows),
-// then adds, then await vacuum() for bound exactness.
+// real functions, the real order — resolve removal docs first (a missing body
+// declines with the caches untouched), then exact removes (tombstone the captured
+// rows), then adds. No vacuum: removeExact() cleans postings synchronously, so
+// the patch is O(delta) and the only remaining vacuum is the engine's off-mutex
+// ghost-dirt safety valve.
 // Mirrors production applyDelta's mutation core INCLUDING its try/catch contract:
-// returns true on a clean patch, false on a mid-patch throw (the deltaFallback the
-// engine routes through invalidate+rebuild). Filters already-live / within-batch
-// duplicate adds through the SHARED freshDeltaAdds (NOT a copy), then feeds the SAME
-// list to both sinks so the row spaces stay aligned. Runs after the removes.
-async function simulateApplyDelta(frame: ResidentFrame, bm: MultiFieldBM25, adds: DeltaAdd[], removedIds: string[]): Promise<boolean> {
+// returns true on a clean patch, false on a decline (missing body, removal
+// mismatch) or a mid-patch throw (the deltaFallback the engine routes through
+// invalidate+rebuild). Filters already-live / within-batch duplicate adds through
+// the SHARED freshDeltaAdds (NOT a copy), then feeds the SAME list to both sinks
+// so the row spaces stay aligned. Runs after the removes.
+async function simulateApplyDelta(frame: ResidentFrame, bm: MultiFieldBM25, adds: DeltaAdd[], removedIds: string[], removedBodies: ReadonlyMap<string, string>): Promise<boolean> {
+    const removals: Array<{ row: number; meta: ChunkMeta; body: string }> = [];
+    for (const id of removedIds) {
+        const row = bm.rowOf(id);
+        if (row === undefined) continue;
+        const body = removedBodies.get(id);
+        if (body === undefined) return false;   // deltaFallback('removal-body-missing')
+        removals.push({ row, meta: frame.orderedChunks[row], body });
+    }
     try {
         const removeRows: number[] = [];
-        for (const id of removedIds) { const r = bm.rowOf(id); if (r !== undefined) removeRows.push(r); bm.remove(id); }
+        for (const r of removals) {
+            removeRows.push(r.row);
+            if (bm.removeExact(r.meta, r.body) === 'mismatch') return false;   // deltaFallback('removal-mismatch')
+        }
         tombstoneFrameRows(frame, removeRows);
         const fresh = freshDeltaAdds(adds, id => bm.rowOf(id) !== undefined);
         for (const a of fresh) bm.add(a.chunk, a.chunk.content);
         appendFrameRows(frame, fresh);
-        await bm.vacuum();
         return true;
     } catch {
         return false;   // applyDelta's catch → deltaFallback('exception during patch')
     }
+}
+
+// Removal bodies for a set of CORPUS-style chunks — what reindexDelta's
+// captureRemovalBodies snapshots before deleteFile.
+function bodiesFor(chunks: Chunk[], ids: string[]): Map<string, string> {
+    return new Map(chunks.filter(c => ids.includes(c.chunk_id)).map(c => [c.chunk_id, c.content]));
 }
 
 function scoresById(bm: MultiFieldBM25, query: string, ids: string[]): Map<string, number> {
@@ -131,7 +151,7 @@ describe('frameBm25Coherent — drift detector (test 8)', () => {
 
     it('accepts a coherent pair after incremental add + remove', async () => {
         const { frame, bm } = buildPair(CORPUS());
-        await simulateApplyDelta(frame, bm, [addOf(chunk('c9', 'november oscar'))], ['c3']);
+        await simulateApplyDelta(frame, bm, [addOf(chunk('c9', 'november oscar'))], ['c3'], bodiesFor(CORPUS(), ['c3']));
         expect(frameBm25Coherent(frame, bm, true)).toBe(true);
     });
 
@@ -172,7 +192,7 @@ describe('incremental == fresh cold rebuild, by chunk_id (test 4)', () => {
         const { frame, bm } = buildPair(CORPUS());
         // change c2 (remove old id, add new id) + add c9 + delete c5.
         const c2b = chunk('c2b', 'alpha bravo delta papa quebec');
-        await simulateApplyDelta(frame, bm, [addOf(c2b), addOf(chunk('c9', 'november oscar alpha'))], ['c2', 'c5']);
+        await simulateApplyDelta(frame, bm, [addOf(c2b), addOf(chunk('c9', 'november oscar alpha'))], ['c2', 'c5'], bodiesFor(CORPUS(), ['c2', 'c5']));
 
         expect(frameBm25Coherent(frame, bm, true)).toBe(true);
         const liveIds = ['c1', 'c2b', 'c3', 'c4', 'c6', 'c7', 'c8', 'c9'];
@@ -192,7 +212,7 @@ describe('incremental == fresh cold rebuild, by chunk_id (test 4)', () => {
 
     it('delete-only (model-drift data path, test 5) applies and matches', async () => {
         const { frame, bm } = buildPair(CORPUS());
-        await simulateApplyDelta(frame, bm, [], ['c1', 'c4']);   // adds empty (drift defers embeds)
+        await simulateApplyDelta(frame, bm, [], ['c1', 'c4'], bodiesFor(CORPUS(), ['c1', 'c4']));   // adds empty (drift defers embeds)
         expect(frameBm25Coherent(frame, bm, true)).toBe(true);
 
         const liveIds = ['c2', 'c3', 'c5', 'c6', 'c7', 'c8'];
@@ -206,7 +226,7 @@ describe('incremental == fresh cold rebuild, by chunk_id (test 4)', () => {
     it('crossing the tombstone threshold is detectable, and a dense rebuild (compaction) matches', async () => {
         const { frame, bm } = buildPair(CORPUS());
         // Remove 3 of 8 = 0.375 > 0.25 → compaction is due.
-        await simulateApplyDelta(frame, bm, [], ['c1', 'c2', 'c3']);
+        await simulateApplyDelta(frame, bm, [], ['c1', 'c2', 'c3'], bodiesFor(CORPUS(), ['c1', 'c2', 'c3']));
         const tombFraction = frame.tombstoneCount / frame.orderedChunks.length;
         expect(tombFraction).toBeGreaterThanOrEqual(COMPACTION_TOMBSTONE_FRACTION);
 
@@ -254,7 +274,7 @@ describe('pushDeltaAdds — both commit paths surface the same change-set shape'
         const hydratedSink: DeltaAdd[] = [];
         const reHydrated = chunk('c3', 'alpha echo foxtrot');   // unchanged content, same id
         pushDeltaAdds(hydratedSink, [reHydrated], [{ q: qvOf('c3'), bin: binOf('c3') }]);
-        await simulateApplyDelta(frame, bm, hydratedSink, ['c3']);
+        await simulateApplyDelta(frame, bm, hydratedSink, ['c3'], bodiesFor(CORPUS(), ['c3']));
 
         expect(frameBm25Coherent(frame, bm, true)).toBe(true);
         const allIds = CORPUS().map(c => c.chunk_id);
@@ -307,7 +327,7 @@ describe('hydrate duplicate-id is absorbed, not thrown (the meltdown regression)
         // — deleteFile found nothing in IDB to drop), yet c5 is still live in `bm`.
         const sink: DeltaAdd[] = [];
         pushDeltaAdds(sink, [chunk('c5', 'charlie india juliet')], [{ q: qvOf('c5'), bin: binOf('c5') }]);
-        await expect(simulateApplyDelta(frame, bm, sink, [])).resolves.toBe(true);   // applied, no throw
+        await expect(simulateApplyDelta(frame, bm, sink, [], new Map())).resolves.toBe(true);   // applied, no throw
 
         expect(frameBm25Coherent(frame, bm, true)).toBe(true);
         const allIds = CORPUS().map(c => c.chunk_id);
@@ -323,31 +343,67 @@ describe('hydrate duplicate-id is absorbed, not thrown (the meltdown regression)
         pushDeltaAdds(sink,
             [chunk('c2', 'alpha bravo delta'), chunk('c9', 'november oscar')],   // c2 live, c9 new
             [{ q: qvOf('c2'), bin: binOf('c2') }, { q: qvOf('c9'), bin: binOf('c9') }]);
-        await simulateApplyDelta(frame, bm, sink, []);
+        await simulateApplyDelta(frame, bm, sink, [], new Map());
         expect(frameBm25Coherent(frame, bm, true)).toBe(true);
         expect(bm.rowOf('c9')).toBeDefined();             // the new add landed
         expect(bm.liveCount).toBe(CORPUS().length + 1);   // +c9 only (c2 dup absorbed)
     });
 });
 
-// L2 — exception safety. A throw PAST the L1 filter (e.g. a vacuum/IDB hiccup)
+// L2 — exception safety. A throw PAST the L1 filter (e.g. an add() hiccup)
 // must degrade to the fallback (false → caller invalidates + rebuilds from IDB),
 // never escape and strand a half-mutated cache. simulateApplyDelta mirrors the
 // production try/catch → boolean contract.
 describe('applyDelta exception safety (L2)', () => {
     it('a throw mid-patch degrades to the fallback (false), not an escape', async () => {
         const { frame, bm } = buildPair(CORPUS());
-        // vacuum() runs after the adds land; force it to reject to model an
-        // unexpected mid-patch failure the L1 filter cannot prevent.
-        const spy = vi.spyOn(bm, 'vacuum').mockRejectedValueOnce(new Error('simulated vacuum failure'));
-        const applied = await simulateApplyDelta(frame, bm, [addOf(chunk('c9', 'november oscar'))], []);
+        // Force an unexpected mid-patch failure the L1 filter cannot prevent
+        // (vacuum left the patch with removeExact, so add() is the model here).
+        const spy = vi.spyOn(bm, 'add').mockImplementationOnce(() => { throw new Error('simulated add failure'); });
+        const applied = await simulateApplyDelta(frame, bm, [addOf(chunk('c9', 'november oscar'))], [], new Map());
         expect(applied).toBe(false);   // deltaFallback contract — exception caught, not thrown
         spy.mockRestore();
     });
 
     it('a clean patch returns true (the contract the fallback is the negative of)', async () => {
         const { frame, bm } = buildPair(CORPUS());
-        const applied = await simulateApplyDelta(frame, bm, [addOf(chunk('c9', 'november oscar'))], ['c3']);
+        const applied = await simulateApplyDelta(frame, bm, [addOf(chunk('c9', 'november oscar'))], ['c3'], bodiesFor(CORPUS(), ['c3']));
+        expect(applied).toBe(true);
+        expect(frameBm25Coherent(frame, bm, true)).toBe(true);
+    });
+});
+
+// L2b — the exact-removal declines. A removal whose reconstruction doc is
+// unavailable or disagrees with the indexed doc must decline into the fallback,
+// and the missing-body case must decline BEFORE any mutation (caches untouched,
+// so the rebuild it triggers starts from a still-coherent pair).
+describe('applyDelta exact-removal declines (L2b)', () => {
+    it('a missing removal body declines with the caches untouched', async () => {
+        const { frame, bm } = buildPair(CORPUS());
+        const applied = await simulateApplyDelta(frame, bm, [], ['c3'], new Map());   // body never captured
+        expect(applied).toBe(false);                    // deltaFallback('removal-body-missing')
+        expect(bm.rowOf('c3')).toBeDefined();           // nothing was removed
+        expect(frame.tombstoneCount).toBe(0);           // nothing was tombstoned
+        expect(frameBm25Coherent(frame, bm, true)).toBe(true);
+    });
+
+    it('a reconstruction mismatch declines into the fallback', async () => {
+        const { frame, bm } = buildPair(CORPUS());
+        // Tamper the frame meta so the reconstructed doc disagrees with what was
+        // indexed (the contract removeExact exists to police).
+        const row = bm.rowOf('c3');
+        expect(row).toBeDefined();
+        frame.orderedChunks[row as number] = metaOf(chunk('c3', 'alpha echo foxtrot'));
+        frame.orderedChunks[row as number].metadata = { tags: ['drifted'], aliases: [], created: null, modified: null, properties: {} };
+        const applied = await simulateApplyDelta(frame, bm, [], ['c3'], bodiesFor(CORPUS(), ['c3']));
+        expect(applied).toBe(false);                    // deltaFallback('removal-mismatch')
+    });
+
+    it('removals of ids with no live row are skipped without needing a body', async () => {
+        const { frame, bm } = buildPair(CORPUS());
+        // An id absent from the row space (IDB↔cache divergence) — the historic
+        // remove(id) tolerance — must not demand a body or decline the patch.
+        const applied = await simulateApplyDelta(frame, bm, [addOf(chunk('c9', 'november oscar'))], ['never-lived'], new Map());
         expect(applied).toBe(true);
         expect(frameBm25Coherent(frame, bm, true)).toBe(true);
     });

@@ -33,10 +33,12 @@ import type { App } from 'obsidian';
 import type {
     LogEntry, LogMeta, InitEntry, PlatformEntry,
     IndexCompleteEntry, SearchEntry, ErrorEntry,
-    CrashDetectedEntry, LoadEntry,
+    CrashDetectedEntry, DeltaApplyEntry, LoadEntry, LongTaskEntry,
 } from './types';
 import { LOG_SCHEMA_VERSION } from './types';
 import { isMobilePlatform } from './platform';
+import { redactEntries } from './redact';
+import { detectPeriodicStalls, describePeriodicStalls } from './stall-pattern';
 
 // Hidden home for the machine-written data streams, alongside the index sidecar.
 // Pinned to the LITERAL '.obsidian' (not vault.configDir, the per-device active
@@ -71,6 +73,7 @@ const REPORT_CAPS: Record<string, number> = {
     error: 300,
     'index-progress': 50,
     'index-complete': 100,
+    'delta-apply': 100,
     'sidecar-hydrate': 50,
     'memory-pressure': 100,
     'long-task': 100,
@@ -182,6 +185,11 @@ interface ReportData {
     lastTimestamp: string | null;
     devices: Array<{ id: string; count: number }>;
     caps: Record<string, number>;
+    // Whether note paths, queries, and titles were replaced by salted tokens
+    // (see redact.ts). Recorded so a reader knows whether `note-3f9a21c4.md` is
+    // a redaction or a genuinely odd filename, and so a reporter can prove which
+    // mode they shared in.
+    redacted: boolean;
     entries: LogEntry[];
 }
 
@@ -638,7 +646,7 @@ export class SeekLogger {
         return null;
     }
 
-    async buildReportData(): Promise<ReportData> {
+    async buildReportData(redact = false): Promise<ReportData> {
         await this.flushErrorAggregates();   // surface any in-flight suppressed-error tails
         const entries = await this.readAllDevices();
         const byDevice = new Map<string, number>();
@@ -665,6 +673,12 @@ export class SeekLogger {
             const s = e as SearchEntry;
             return s.fusedTop50 && s.fusedTop50.length > 10 ? { ...s, fusedTop50: s.fusedTop50.slice(0, 10) } : e;
         });
+        // Redact LAST, over the already-capped set, and only into the report copy —
+        // the on-disk NDJSON keeps its real paths, because the local log is the
+        // user's own diagnostic and hashing it would break every future report.
+        // A fresh salt per report: tokens correlate within this file and nowhere
+        // else, so two reports from the same vault can't be cross-matched.
+        const reported = redact ? redactEntries(trimmed, randId()) : trimmed;
         return {
             generated: new Date().toISOString(),
             schemaVersion: LOG_SCHEMA_VERSION,
@@ -676,7 +690,8 @@ export class SeekLogger {
             lastTimestamp: entries.at(-1)?.timestamp ?? null,
             devices: [...byDevice.entries()].sort((a, b) => b[1] - a[1]).map(([id, count]) => ({ id, count })),
             caps: REPORT_CAPS,
-            entries: trimmed,
+            redacted: redact,
+            entries: reported,
         };
     }
 
@@ -699,7 +714,14 @@ export class SeekLogger {
         const lastPlatform = filterByType<PlatformEntry>(d.entries, 'platform').at(-1);
         const lastLoad = filterByType<LoadEntry>(d.entries, 'load').at(-1);
 
-        lines.push('\n> [!warning] Review before sharing — this report includes your recent search queries and matching note paths (but **not** note contents).');
+        // The share-safety banner is the first thing a reporter reads, so it has to
+        // state which mode actually produced the file rather than describe the
+        // feature in the abstract. Redacted mode still says "review" — the sweep is
+        // thorough but it is not a promise, and a user pasting into a public issue
+        // deserves to be told to look.
+        lines.push(d.redacted
+            ? '\n> [!info] Redacted report — note paths, titles, and query text were replaced by salted tokens (`note-3f9a21c4.md`). Identical tokens mean the identical note, so the diagnostics still read. Please still skim before sharing.'
+            : '\n> [!warning] Review before sharing — this report includes your recent search queries and matching note paths (but **not** note contents). Turn on **Redact report** in Seek settings to replace them with anonymous tokens.');
         lines.push(`\n**Full data:** \`${REPORT_JSON_PATH}\` — parse that for analysis; this \`.md\` is a human summary.`);
         lines.push('\n## At a Glance');
         lines.push(`- This device: \`${d.thisDevice}\` · session \`${d.thisSession}\``);
@@ -731,9 +753,77 @@ export class SeekLogger {
             // and corrupt the rest of the section.
             const errText = lastLoad.webgpuError ? lastLoad.webgpuError.replace(/[`\n\r]/g, ' ').slice(0, 300) : null;
             const webgpuNote = errText ? ` · webgpu fell back: \`${errText}\`` : '';
-            lines.push(`- Last model load: ${lastLoad.actualDevice} (dtype=${lastLoad.dtype})${lastLoad.glue ? ` · glue ${lastLoad.glue}` : ''}${webgpuNote}`);
+            // === true guards: rows written by older plugin versions predate the
+            // proxy fields, and undefined must read as "not attempted", not falsy-false.
+            const proxyNote = lastLoad.proxy === true ? ' · proxy worker'
+                : (lastLoad.proxyAttempted === true ? ' · ⚠️ proxy fell back to main thread' : '');
+            lines.push(`- Last model load: ${lastLoad.actualDevice} (dtype=${lastLoad.dtype})${lastLoad.glue ? ` · glue ${lastLoad.glue}` : ''}${proxyNote}${webgpuNote}`);
         }
         lines.push(`- Searches ${searches.length} · index runs ${indexes.length} · errors ${errors.length} · crashes ${crashes.length}`);
+        // Main-thread stall rollup by phase (issue #5): the question every jank
+        // triage starts with — WHAT was Seek doing during the stalls — answered
+        // in the summary instead of via hand-grepping the JSON. 'idle' here
+        // means genuinely outside every Seek phase (pre-1.0.7 rows: unknown).
+        const longTasks = filterByType<LongTaskEntry>(d.entries, 'long-task');
+        if (longTasks.length > 0) {
+            const byCtx = new Map<string, { n: number; totalMs: number; maxMs: number }>();
+            for (const t of longTasks) {
+                const s = byCtx.get(t.context) ?? { n: 0, totalMs: 0, maxMs: 0 };
+                s.n++; s.totalMs += t.durationMs; s.maxMs = Math.max(s.maxMs, t.durationMs);
+                byCtx.set(t.context, s);
+            }
+            const parts = [...byCtx.entries()]
+                .sort((a, b) => b[1].totalMs - a[1].totalMs)
+                .map(([ctx, s]) => `\`${ctx}\` ${s.n}× (${(s.totalMs / 1000).toFixed(1)} s total · max ${(s.maxMs / 1000).toFixed(1)} s)`);
+            lines.push('\n## Main-Thread Stalls (long tasks ≥250 ms, capped sample)');
+            for (const p of parts) lines.push(`- ${p}`);
+
+            // WHICH FRAME ran the unattributed stalls. 'idle' means no Seek phase
+            // overlapped them, which by itself only says "not us, probably" — the
+            // culprit split says whether they ran in this window or in an iframe,
+            // and that is the difference between a Seek bug and a bystander one.
+            // Absent on pre-v15 rows, so the whole block is conditional.
+            const idle = longTasks.filter(t => t.context === 'idle' && t.culprit);
+            if (idle.length > 0) {
+                const byFrame = new Map<string, number>();
+                for (const t of idle) {
+                    const frame = t.containerSrc || t.containerId || t.containerName || t.culprit || 'unknown';
+                    byFrame.set(frame, (byFrame.get(frame) ?? 0) + 1);
+                }
+                const split = [...byFrame.entries()].sort((a, b) => b[1] - a[1])
+                    .map(([f, n]) => `\`${f}\` ${n}×`).join(', ');
+                lines.push(`- ↳ unattributed (\`idle\`) stalls by frame: ${split} — \`self\` = this window (Obsidian core, another plugin, or Seek's own main thread), a descendant = an iframe.`);
+            }
+
+            // Turn the raw rows into the inference a human would otherwise have to
+            // derive by hand from startTimeMs (issue #5 — see stall-pattern.ts).
+            const periodic = detectPeriodicStalls(longTasks);
+            if (periodic) lines.push(`- ${describePeriodicStalls(periodic)}`);
+        }
+        // Incremental-patch rollup (v16, issue #5): whether each delta rode the
+        // cheap in-place patch, why the ones that didn't fell back (each decline
+        // is a full O(corpus) cache rebuild), and how long the write mutex was
+        // held — the wait a search issued mid-commit sits behind. This was the
+        // triage question the wlo2 reports could not answer without live probes.
+        const deltas = filterByType<DeltaApplyEntry>(d.entries, 'delta-apply');
+        if (deltas.length > 0) {
+            const applied = deltas.filter(x => x.appliedIncrementally).length;
+            const byReason = new Map<string, number>();
+            for (const x of deltas) {
+                const r = x.fallbackReason ?? x.skippedBecause;
+                if (!x.appliedIncrementally && r) byReason.set(r, (byReason.get(r) ?? 0) + 1);
+            }
+            const holds = deltas.map(x => x.mutexHoldMs).sort((a, b) => a - b);
+            const maxHold = holds[holds.length - 1];
+            const p95Hold = holds[Math.min(holds.length - 1, Math.floor(holds.length * 0.95))];
+            lines.push('\n## Incremental Patches (delta-apply)');
+            lines.push(`- ${applied}/${deltas.length} applied in place · mutex hold p95 ${p95Hold.toFixed(0)} ms · max ${maxHold.toFixed(0)} ms`);
+            if (byReason.size > 0) {
+                const parts = [...byReason.entries()].sort((a, b) => b[1] - a[1])
+                    .map(([r, n]) => `\`${r}\` ${n}×`).join(', ');
+                lines.push(`- fallbacks (full cache rebuild): ${parts}`);
+            }
+        }
         if (crashes.length > 0) {
             const c = crashes[crashes.length - 1];
             lines.push('\n## ⚠️ Last Crash');
@@ -750,9 +840,9 @@ export class SeekLogger {
     // structured seek-report.json (the parse target) and a short seek-report.md human
     // summary. Returns the .md path — that's what opens in Obsidian, and it points the
     // reader at the .json.
-    async writeReport(): Promise<string> {
+    async writeReport(redact = false): Promise<string> {
         const adapter = this.app.vault.adapter;
-        const data = await this.buildReportData();
+        const data = await this.buildReportData(redact);
         await adapter.write(REPORT_JSON_PATH, JSON.stringify(data, null, 2));
         await adapter.write(REPORT_PATH, this.summarize(data));
         return REPORT_PATH;

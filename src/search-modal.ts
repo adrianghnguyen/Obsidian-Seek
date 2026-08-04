@@ -56,6 +56,14 @@ const MAX_RESULTS = 50;
 // view, so the rows are already painted by the time the user reaches them.
 const REVEAL_MARGIN_PX = 300;
 
+// Title-nav gate shared with tests / headless paths. Coverage recovers the raw
+// [0,1] title match from the weighted contribution in ranking_signals.
+export const TITLE_NAV_COVERAGE_MIN = 0.5;
+
+export function titleNavCoverage(r: ScoredChunk, navTitleBoost: number): number {
+    return navTitleBoost > 0 ? r.ranking_signals.title_boost / navTitleBoost : 0;
+}
+
 // (sanitizeSnippet lives in ./snippet, and maskNonBodyText / escapeRegExp / the
 // word-boundary range builder in ./highlight, so they can be unit-tested without
 // Obsidian — see buildMatchHighlight + the snippet render in applyRow.)

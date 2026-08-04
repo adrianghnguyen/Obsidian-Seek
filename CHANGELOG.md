@@ -2,6 +2,61 @@
 
 All notable changes to Seek are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.1.3
+
+Performance release for editing notes in a large vault, prompted by a community bug report and the diagnostics shared with it. Thank you! No reindex is needed, since the index format is unchanged.
+
+### Changed
+- **Saving a note now only re-indexes the parts of it that changed.** Every save re-embedded the whole note and rewrote all of its entries in the keyword index, so editing one paragraph of a long note did the work of indexing that note from scratch, repeatedly, for any note you keep open and edit through the day. Seek now compares the new version against what it already has and touches only what actually differs, usually a chunk or two out of dozens. The note also stays searchable throughout, since nothing is removed until its replacement is ready.
+- **Searching while a note is being indexed no longer waits.** Removing entries from the keyword index left bookkeeping behind that was reclaimed by a pass over every term in the index, and that pass ran while the index was locked, so a search issued at that moment queued behind it. Removals are now exact and leave nothing to reclaim, and the pass is gone. On a heavily edited note in a large vault, the locked portion of a save went from roughly 2 to 7 seconds down to under a tenth of a second.
+- **A pause after saving is gone.** Seek periodically writes a snapshot of the keyword index to disk, and that write happened in a single uninterruptible step that grew with vault size, up to two thirds of a second. It now waits for an idle moment, and only runs immediately when the window is hidden, where there is no interface to hold up.
+- **Indexing in a hidden window no longer crawls.** Indexing paces itself between batches by waiting for the screen to be ready for more work, but a hidden window never reports that, so the wait fell back to a timeout on every batch. A run that takes a minute in the foreground could stretch to many times that with Obsidian in the background, keeping the CPU busy the whole time. Hidden windows now pace without waiting on the screen.
+- The logging report now records whether each index update was applied incrementally, the reason when one wasn't, and how long the index was held, so a slow vault can be diagnosed from the report alone.
+
+## 1.1.2
+
+Diagnostics release, improving the logging report users are asked to share when filing an issue. No reindex is needed, since the index format is unchanged.
+
+### Changed
+- **The logging report now redacts note paths, titles, and search queries by default.** The report is the one file users are asked to paste into a public issue, and it carried note paths and query text, so sharing it meant hand-scrubbing it first. Every identifier is now replaced with a token derived from a salt that is generated fresh for each report and never stored, so repeated references to the same note stay correlated (patterns like one file re-embedding every hour remain visible) while the actual names are not disclosed and cannot be recovered or matched across reports. File extensions are kept, and queries are reduced to a length and word count. A new setting turns redaction off for relevance triage, where the query and the notes it matched are the evidence.
+- **Stalls in the report now name the frame responsible and flag periodic patterns.** Long tasks previously recorded a frame attribution field that the browser spec defines as the constant string "unknown", so every stall looked anonymous. The report now records which frame ran the task, and the summary detects stalls recurring on a near-exact fixed period, which separates an external timer's work from Seek's own.
+
+## 1.1.1
+
+Indexing and sync reliability release. No reindex is needed, since the index format is unchanged.
+
+### Changed
+- **Editing a note no longer rewrites a large sync file.** Cross-device sync previously merged every change into an active shard file, so a small edit near a full 4 MB shard read and rewrote the whole file, and services like iCloud re-uploaded all of it. Each change now lands in a small fresh file, and a background pass folds accumulated small files back into dense ones, so file counts stay low at rest.
+- **Searching during a full rebuild pauses indexing instead of competing with it.** A full reindex now yields between files while a query is in flight and resumes where it left off, so searches stay responsive during an initial build without cancelling any indexing work.
+- **Searches no longer wait for sync files to finish writing.** At the end of an indexing pass, the sync data was written while the index was still locked, so a search issued at that moment queued behind file IO. The write now happens after the index is released.
+- **Running out of storage shows one clear notice.** If the device's storage quota fills mid-index, affected files are skipped with a single "storage full" notice instead of failing quietly on every file, and they are picked up automatically once space frees.
+- **A file's index entry now commits in one transaction.** A file's chunks and its bookkeeping record used to be written separately, so an interruption at the wrong moment could leave a file half-indexed. That window is closed.
+- Diagnostics now record why an incremental update fell back to a full pass, to guide future tuning.
+
+## 1.1.0
+
+The first feature release since launch! A big thanks to everyone on the reddit thread with feedback and suggestions! No reindex is needed, since the index format is unchanged.
+
+### Added
+- **Recent searches.** The last three searches now appear in the modal's resting state, under the query field. Only searches where you opened a result, or closed the modal while results were showing are shown, and this history is not synced across devices.
+- **Insert a link to a result without leaving the modal.** Shift+Enter, or Shift+click, inserts a wikilink to the highlighted result at your cursor. The link mirrors what opening the result would do: when your query strongly matches the note's title it inserts `[[Note]]`, and otherwise it links the section the match was found in, `[[Note#Section]]`. Ported from [@adrianghnguyen](https://github.com/adrianghnguyen)'s fork, thank you!
+- **A setting for where Cmd/Ctrl opens a result** (Display → "Open results with Cmd/Ctrl in"): a new tab (the previous behavior, still the default), a split, or a window (desktop only). A plain click or Enter still opens in the current tab.
+
+### Changed
+- **Improvements to Snippets**
+    - Seek previously anchored the snippet on the earliest raw text match of any query word including stopwords, and without respecting word boundaries. So "bread not rising" would anchor on the "not" inside "cannot". A result matched on meaning rather than wording often fell back to showing the start of the section with nothing marked. Snippets are now chosen by scoring candidate sentences and returning the best-matching window, similar to Lucene's highlighter.
+- **A strong title match now opens the note at the top**
+    - Queries where all search terms are in the title of a note are treated more like a note look up, rather than a passage search. Queries carrying terms beyond the title still jump to the best matched section within that note.
+- **Indexing is quieter.** A large sync could leave a live-updating progress notice on screen for the entire embedding run, which could be many minutes. Indexing now shows one notice when it starts and a summary when it finishes. Live progress still streams to the inline display in settings.
+- **Embedding runs off the main thread wherever WebGPU isn't in use**
+    - Using a webworker on iPhone and Android, desktop with "Force CPU", and desktop when WebGPU falls back. Which keeps the interface responsive while the index builds. Results are unchanged: same model, same vectors, same throughput, only a different thread. Any failure falls back to the previous behavior.
+- **The footer hint bar drops hints it can't fit** instead of overflowing the modal on narrow windows.
+- **Recency "High" more strongly favors recent notes.** High now uses a 90-day half-life, so an episodic vault queried by series name ("standup", "1x1", "session") surfaces the recent entries.
+- **The relevance readout no longer reports a recency score while the recency bonus is Off.** With "Show scores" enabled, the recency figure was computed and displayed even when it was being multiplied by zero and contributing nothing to the ranking.
+- **A search from the CLI or an `obsidian://seek` link no longer waits for indexing to finish.** These paths didn't signal that a query was in flight, so a search could queue behind an entire indexing pass. On a cold install, a first search could wait out the full initial build. They now interrupt indexing the way a search from the modal always has.
+- **A file Seek could never finish re-reading no longer makes the app unresponsive every few minutes.** Index compaction re-ran its whole-vault pass on every poll when a file was persistently unreadable — an iCloud file whose contents were never downloaded, for example. The pass now yields as it works and stops retrying after a few attempts.
+- On mobile, releasing the model while idle could interrupt index compaction mid-pass, manufacturing the incomplete-pass retries above.
+
 ## 1.0.10
 
 Sync index toggle and Windows CRLF atom parsing.

@@ -134,6 +134,13 @@ export const STORE_NOT_OPENED = 'IndexStore not opened';
 export function isStoreClosedError(e: unknown): boolean {
     return e instanceof Error && e.message === STORE_NOT_OPENED;
 }
+// Recognize the browser's storage-quota error (disk/IDB quota exhausted). IndexedDB
+// surfaces it as a DOMException named 'QuotaExceededError' on the failed write.
+// Matched by name, not instanceof: the error may originate in another realm
+// (iframe/worker), where instanceof DOMException is false for the same error.
+export function isQuotaError(e: unknown): boolean {
+    return typeof e === 'object' && e !== null && (e as { name?: unknown }).name === 'QuotaExceededError';
+}
 const STORE_CHUNKS = 'chunks';        // legacy (pre-v8) — only deleted on upgrade now
 const STORE_CHUNK_META = 'chunk_meta'; // v8: Chunk minus `content`, keyed by chunk_id
 const STORE_CHUNK_BODY = 'chunk_body'; // v8: chunk_id -> content string (out-of-line)
@@ -536,7 +543,7 @@ function collectByKeyJump<T>(
 // Project a Chunk to its metadata (everything except the body) for the
 // chunk_meta store; the body is stored separately in chunk_body. The rest-
 // capture tracks Chunk automatically as fields are added.
-function stripContent(c: Chunk): ChunkMeta {
+export function stripContent(c: Chunk): ChunkMeta {
     const { content, ...meta } = c;
     void content;
     return meta;
@@ -667,23 +674,36 @@ export class IndexStore {
     // fp32-sign-fidelity invariant putBatch enforces (binary packed from TRUE
     // fp32) is preserved transitively: the producer derived these bytes from its
     // fp32 vector at commit time and we copy them unchanged.
-    async putBatchQuantized(chunks: Chunk[], tiers: { q: QuantVec; bin: Uint8Array }[]): Promise<void> {
-        if (chunks.length === 0) return;
+    //
+    // When `fileRecord` is present it joins the SAME transaction (all five
+    // stores), making the per-file commit fully atomic: chunks can no longer land
+    // without their file record — the orphan window sweepOrphanChunks exists to
+    // repair — and one transaction per file replaces the old two (S1). A record
+    // with ZERO chunks is legal (a fully-quarantined file commits no chunks but
+    // must still pin its failure-marker record) and writes just the FILES store.
+    async putBatchQuantized(chunks: Chunk[], tiers: { q: QuantVec; bin: Uint8Array }[], fileRecord?: FileRecord): Promise<void> {
+        if (chunks.length === 0 && fileRecord === undefined) return;
         if (chunks.length !== tiers.length) {
             throw new Error(`chunks/tiers length mismatch: ${chunks.length} vs ${tiers.length}`);
         }
         const db = this.requireDb();
-        const tx = db.transaction([STORE_CHUNK_META, STORE_CHUNK_BODY, STORE_EMBEDDINGS, STORE_BINARY], 'readwrite');
-        const metaStore = tx.objectStore(STORE_CHUNK_META);
-        const bodyStore = tx.objectStore(STORE_CHUNK_BODY);
-        const embStore = tx.objectStore(STORE_EMBEDDINGS);
-        const binStore = tx.objectStore(STORE_BINARY);
-        for (let i = 0; i < chunks.length; i++) {
-            metaStore.put(stripContent(chunks[i]));
-            bodyStore.put(chunks[i].content ?? '', chunks[i].chunk_id);
-            binStore.put(tiers[i].bin, chunks[i].chunk_id);
-            embStore.put(tiers[i].q, chunks[i].chunk_id);
+        const scope = chunks.length > 0
+            ? [STORE_CHUNK_META, STORE_CHUNK_BODY, STORE_EMBEDDINGS, STORE_BINARY, ...(fileRecord ? [STORE_FILES] : [])]
+            : [STORE_FILES];
+        const tx = db.transaction(scope, 'readwrite');
+        if (chunks.length > 0) {
+            const metaStore = tx.objectStore(STORE_CHUNK_META);
+            const bodyStore = tx.objectStore(STORE_CHUNK_BODY);
+            const embStore = tx.objectStore(STORE_EMBEDDINGS);
+            const binStore = tx.objectStore(STORE_BINARY);
+            for (let i = 0; i < chunks.length; i++) {
+                metaStore.put(stripContent(chunks[i]));
+                bodyStore.put(chunks[i].content ?? '', chunks[i].chunk_id);
+                binStore.put(tiers[i].bin, chunks[i].chunk_id);
+                embStore.put(tiers[i].q, chunks[i].chunk_id);
+            }
         }
+        if (fileRecord) tx.objectStore(STORE_FILES).put(fileRecord);
         await awaitTx(tx);
     }
 
@@ -786,6 +806,37 @@ export class IndexStore {
         tx.objectStore(STORE_FILES).delete(notePath);
         await awaitTx(tx);
         return rec.chunk_ids;
+    }
+
+    // Chunk-diff commit (issue #5): the stored metadata of specific chunks, for
+    // the stable-id drift classification (an id-stable chunk can still carry
+    // changed note-level metadata — tags, properties, line numbers). Missing ids
+    // are simply absent from the map (the caller re-embeds those defensively).
+    async getChunkMetasByIds(ids: string[]): Promise<Map<string, ChunkMeta>> {
+        const out = new Map<string, ChunkMeta>();
+        if (ids.length === 0) return out;
+        const db = this.requireDb();
+        const tx = db.transaction(STORE_CHUNK_META, 'readonly');
+        const store = tx.objectStore(STORE_CHUNK_META);
+        const reads = ids.map(id => awaitRequest(store.get(id)) as Promise<ChunkMeta | undefined>);
+        const metas = await Promise.all(reads);
+        for (let i = 0; i < ids.length; i++) {
+            const m = metas[i];
+            if (m) out.set(ids[i], m);
+        }
+        return out;
+    }
+
+    // Chunk-diff commit (issue #5): refresh the metadata rows of id-stable chunks
+    // whose note-level metadata drifted (body/embedding/binary rows untouched —
+    // the content-addressed id guarantees those bytes are still exact).
+    async putChunkMetas(metas: ChunkMeta[]): Promise<void> {
+        if (metas.length === 0) return;
+        const db = this.requireDb();
+        const tx = db.transaction(STORE_CHUNK_META, 'readwrite');
+        const store = tx.objectStore(STORE_CHUNK_META);
+        for (const m of metas) store.put(m);
+        await awaitTx(tx);
     }
 
     // Full-corpus metadata read (v8 frame-lite): every chunk's metadata, WITHOUT

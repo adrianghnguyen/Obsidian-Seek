@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { App, DataAdapter } from 'obsidian';
 import { SeekLogger } from './logger';
-import type { InitEntry, ErrorEntry } from './types';
+import type { InitEntry, ErrorEntry, LongTaskEntry, LogEntry } from './types';
 
 // ---- in-memory DataAdapter fake (mirrors sidecar.test.ts's FakeAdapter) ----
 
@@ -284,5 +284,70 @@ describe('SeekLogger cloned-device deviceId collision detection', () => {
         await pubReload.writeInit(initEntry());
         const pubErrors = (await pubReload.readAll()).filter(e => e.type === 'error') as ErrorEntry[];
         expect(pubErrors.some(e => e.context === 'device-clone-detected')).toBe(false);
+    });
+});
+
+// ---- report rendering: the sections issue #5 needed --------------------------
+
+describe('report generation', () => {
+    beforeEach(() => installLocalStorage());
+
+    // The hourly cluster from issue #5, as it would land in the log.
+    function hourlyStalls(): LongTaskEntry[] {
+        return [0, 1, 2, 3, 4].map(i => ({
+            type: 'long-task',
+            timestamp: new Date(Date.UTC(2026, 6, 22, i, 42, 36)).toISOString(),
+            durationMs: 14400 + i,
+            startTimeMs: 169201615 + i * 3_600_000,
+            attribution: 'unknown',
+            culprit: 'self',
+            containerType: null, containerId: null, containerName: null, containerSrc: null,
+            context: 'idle',
+        }));
+    }
+
+    it('surfaces the periodic-stall inference and the frame split', async () => {
+        const adapter = new FakeAdapter();
+        const logger = new SeekLogger(makeApp(adapter), 'seek');
+        for (const e of hourlyStalls()) await logger.append(e);
+
+        await logger.writeReport();
+        const md = adapter.files.get('seek-report.md')!;
+        expect(md).toContain('Periodic stall detected');
+        expect(md).toContain('60.0 min');
+        expect(md).toContain('`self` 5×');       // this window, not Seek's iframe
+    });
+
+    it('redacts paths and queries when asked, and says so', async () => {
+        const adapter = new FakeAdapter();
+        const logger = new SeekLogger(makeApp(adapter), 'seek');
+        await logger.append({
+            type: 'click', timestamp: new Date().toISOString(), searchId: 's1',
+            query: 'tax return', chunk_id: 'c1', note_path: 'Money/Taxes 2025.md',
+            rank: 1, score: 1, dense: 1, bm25: 1, recency: 0, title_boost: 0,
+            titleNavOpen: false, dwellMs: 10, shownTop10: ['c1'],
+        } as LogEntry);
+
+        await logger.writeReport(true);
+        const json = adapter.files.get('seek-report.json')!;
+        expect(json).not.toContain('Taxes 2025');
+        expect(json).not.toContain('tax return');
+        expect(JSON.parse(json).redacted).toBe(true);
+        expect(adapter.files.get('seek-report.md')!).toContain('Redacted report');
+    });
+
+    it('leaves paths intact when redaction is off (relevance triage)', async () => {
+        const adapter = new FakeAdapter();
+        const logger = new SeekLogger(makeApp(adapter), 'seek');
+        await logger.append({
+            type: 'click', timestamp: new Date().toISOString(), searchId: 's1',
+            query: 'tax return', chunk_id: 'c1', note_path: 'Money/Taxes 2025.md',
+            rank: 1, score: 1, dense: 1, bm25: 1, recency: 0, title_boost: 0,
+            titleNavOpen: false, dwellMs: 10, shownTop10: ['c1'],
+        } as LogEntry);
+
+        await logger.writeReport(false);
+        expect(adapter.files.get('seek-report.json')!).toContain('Money/Taxes 2025.md');
+        expect(adapter.files.get('seek-report.md')!).toContain('Review before sharing');
     });
 });

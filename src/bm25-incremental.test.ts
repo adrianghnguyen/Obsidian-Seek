@@ -8,8 +8,11 @@
 // avgFieldLength) differs ~1e-12..1e-9. So parity here is asserted BY chunk_id
 // (row order also differs: fresh = dense, incremental = tombstone holes) with an
 // epsilon. getQueryBound, by contrast, is pure df/n/idf arithmetic over integers
-// and is exact once vacuum() has restored postings==df — which is the whole point
-// of test 2 (the bound is wrong BETWEEN discard and vacuum).
+// and — since the search-based MaxScore bound landed — exact even BETWEEN a
+// discard and its vacuum (the pre-vacuum test below asserts exactly that; the
+// bound flipped from "wrong until vacuum" to exact when it became search-driven).
+// removeExact() goes further: postings are cleaned synchronously from the
+// reconstructed doc, so there is no discard window at all and no vacuum debt.
 
 import { describe, it, expect } from 'vitest';
 import { MultiFieldBM25 } from './bm25';
@@ -153,6 +156,94 @@ describe('MultiFieldBM25 incremental — getQueryBound is exact immediately, eve
         await incremental.vacuum();
         expect(incremental.getQueryBound(q)).toBeCloseTo(freshMinusY, 9);
         expect(incremental.dirtCount).toBe(0);
+    });
+});
+
+describe('MultiFieldBM25 incremental — removeExact() (issue #5: no discard window, no vacuum debt)', () => {
+    it('fit(C) + removeExact(y) ranks identically to fit(C-y), zero dirt, no vacuum', () => {
+        const all = CORPUS();
+        const y = all[0]; // c1
+        const liveIds = ALL_IDS.filter(id => id !== y.chunk_id);
+        const freshMinusY = fit(all.filter(c => c.chunk_id !== y.chunk_id));
+
+        const incremental = fit(all);
+        expect(incremental.removeExact(y, y.content)).toBe('removed');
+
+        // Postings cleaned synchronously: no tombstone debt at all.
+        expect(incremental.dirtCount).toBe(0);
+        expect(incremental.size).toBe(5);          // row space still monotonic (hole kept)
+        expect(incremental.liveCount).toBe(4);
+        expect(incremental.rowOf(y.chunk_id)).toBeUndefined();
+
+        for (const q of QUERIES) {
+            expectScoresClose(scoresById(incremental, q, liveIds), scoresById(freshMinusY, q, liveIds));
+            expect(incremental.getQueryBound(q)).toBeCloseTo(freshMinusY.getQueryBound(q), 9);
+        }
+    });
+
+    it('kills the discard-window df drift: late-posting removals score exactly on the FIRST search', () => {
+        // The adversarial order for discard(): docs added AFTER the corpus sit at
+        // the END of each term's posting list, so discarding them leaves tombstones
+        // that the first search walks LAST — live docs score with inflated df (with
+        // enough vocabulary overlap, df can exceed documentCount and flip idf
+        // negative). This is precisely a hot note's re-commit shape: commit 1
+        // appended its chunks, commit 2 removes them. removeExact must be immune.
+        const all = CORPUS();
+        const incremental = fit(all);
+        const extras = [
+            makeChunk('x1', 'Alpha Copy', 'alpha bravo charlie delta echo'),
+            makeChunk('x2', 'Charlie Copy', 'alpha echo foxtrot golf hotel india'),
+        ];
+        for (const c of extras) incremental.add(c, c.content);
+        for (const c of extras) expect(incremental.removeExact(c, c.content)).toBe('removed');
+
+        const fresh = fit(all);
+        expect(incremental.dirtCount).toBe(0);
+        for (const q of QUERIES) {
+            // First search after the removals — with discard() this is where the
+            // drift lived; with removeExact it must already be fresh-fit-exact.
+            expectScoresClose(scoresById(incremental, q, ALL_IDS), scoresById(fresh, q, ALL_IDS));
+            expect(incremental.getQueryBound(q)).toBeCloseTo(fresh.getQueryBound(q), 9);
+        }
+    });
+
+    it('reports a reconstruction mismatch instead of silently corrupting', () => {
+        const all = CORPUS();
+        const incremental = fit(all);
+        // Tamper with the reconstruction: same id, different indexed fields (the
+        // hazard removeExact exists to detect — meta drifted since add()).
+        const tampered = makeChunk('c1', 'Alpha Note', 'alpha bravo charlie delta echo', ['tag-added-later']);
+        expect(incremental.removeExact(tampered, tampered.content)).toBe('mismatch');
+        // The doc is still gone from results (id bookkeeping is unconditional).
+        expect(incremental.rowOf('c1')).toBeUndefined();
+    });
+
+    it('is tolerant like remove(): unknown / already-removed ids are noops', () => {
+        const all = CORPUS();
+        const incremental = fit(all);
+        const y = all[0];
+        expect(incremental.removeExact(y, y.content)).toBe('removed');
+        expect(incremental.removeExact(y, y.content)).toBe('noop');       // already gone
+        expect(incremental.removeExact(makeChunk('nope', 'X', 'y'), 'y')).toBe('noop');
+        expect(incremental.liveCount).toBe(4);
+    });
+
+    it('edit cycle (removeExact old + add new) matches a fresh fit with no vacuum', () => {
+        const all = CORPUS();
+        const c2 = all[1];
+        const c2b = makeChunk('c2b', 'Bravo Note', 'alpha bravo foxtrot kilo lima');
+        const fresh = fit([all[0], c2b, all[2], all[3], all[4]]);
+
+        const incremental = fit(all);
+        expect(incremental.removeExact(c2, c2.content)).toBe('removed');
+        incremental.add(c2b, c2b.content);
+
+        expect(incremental.dirtCount).toBe(0);
+        const ids = ['c1', 'c2b', 'c3', 'c4', 'c5'];
+        for (const q of [...QUERIES, 'kilo lima', 'bravo foxtrot']) {
+            expectScoresClose(scoresById(incremental, q, ids), scoresById(fresh, q, ids));
+            expect(incremental.getQueryBound(q)).toBeCloseTo(fresh.getQueryBound(q), 9);
+        }
     });
 });
 
