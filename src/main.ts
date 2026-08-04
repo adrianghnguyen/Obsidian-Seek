@@ -27,6 +27,7 @@ import { DEFAULT_SETTINGS, migrateSettings } from './types';
 import { IndexStore, indexDbPrefix } from './index-store';
 import { SeekLogger } from './logger';
 import { Forensics } from './forensics';
+import { RecentSearches } from './recents';
 import { SearchOrchestrator, driftRecoveryDecision, type RecencyOverride } from './search';
 import { SeekSearchModal, type IndexBanner } from './search-modal';
 import { parsePaneType, openFileAtTarget, openBaseAtTarget, type OpenTarget } from './open-target';
@@ -184,6 +185,9 @@ export default class SeekPlugin extends Plugin {
     // Crash forensics (see forensics.ts). Created in onload once the vault
     // scope (appId) is known; null only during the first lines of onload.
     private forensics: Forensics | null = null;
+    // Recent searches (see recents.ts) — per-device localStorage, same
+    // manifest-id + vault scoping as forensics. Null only during early onload.
+    private recents: RecentSearches | null = null;
 
     // Incremental indexing state (see wireIncrementalIndexing). The queues hold
     // paths touched THIS session; the durable dirty signal is always on-disk
@@ -351,6 +355,10 @@ export default class SeekPlugin extends Plugin {
         // plugin id as well, so a co-installed build's breadcrumbs can't be
         // misread as this build's crash.
         this.forensics = new Forensics(`${this.manifest.id}:${vaultScope}`, this.logger.deviceId, this.logger.sessionId);
+        // Recent searches share the forensics scope: plugin id keeps a
+        // co-installed build's history separate, vault scope keeps two vaults
+        // on one iOS origin from bleeding queries into each other.
+        this.recents = new RecentSearches(`${this.manifest.id}:${vaultScope}`);
         const crash = this.forensics.bootInspect();
         if (crash) {
             // Forensics: always persist the classified crash to the per-device
@@ -1802,6 +1810,7 @@ export default class SeekPlugin extends Plugin {
                 (inFlight) => this.onQueryInFlight(inFlight),
                 () => this.indexNotice(),
                 initialQuery,
+                this.recents,
             ).open();
         } catch (e) {
             // Synchronous failure path (rare — only if the Modal ctor or

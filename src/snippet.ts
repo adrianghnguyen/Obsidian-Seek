@@ -3,6 +3,7 @@
 // imports — string in, string out.
 
 import type { SnippetPreview } from './types';
+import { passageWindow, type PassageTerm } from './passage';
 
 /** Lines + character window for each Display → snippet preview preset. */
 export const SNIPPET_PREVIEW_LIMITS: Record<SnippetPreview, { lines: number; chars: number }> = {
@@ -25,9 +26,17 @@ function snippetPlainText(md: string): string {
         .replace(/\[([^\]]*?)\]\([^)]*?\)/g, '$1');
 }
 
-/** Pick a query-centered plain-text window from chunk body (search + modal). */
-export function makeSnippet(content: string, query: string, maxLen: number): string {
+/** Pick a snippet window from chunk body (search + modal). */
+export function makeSnippet(content: string, queryOrTerms: string | PassageTerm[], maxLen: number): string {
     const text = snippetPlainText(content);
+    if (Array.isArray(queryOrTerms)) {
+        const { start, end } = passageWindow(text, queryOrTerms, maxLen);
+        let snippet = text.slice(start, end).replace(/\s+/g, ' ').trim();
+        if (start > 0) snippet = '…' + snippet;
+        if (end < text.length) snippet = snippet + '…';
+        return snippet;
+    }
+    const query = queryOrTerms;
     const lower = text.toLowerCase();
     const q = query.toLowerCase().split(/\s+/).filter(Boolean);
     let best = -1;

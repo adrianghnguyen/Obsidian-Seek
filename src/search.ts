@@ -41,6 +41,7 @@ import { CompositorPacer, cheapYield } from './pacer';
 import { isMobilePlatform, residentInt8Enabled } from './platform';
 import { parseQuery, compileMatcher, excludedNotePaths } from './query-parser';
 import { makeSnippet, SNIPPET_PREVIEW_LIMITS } from './snippet';
+import { buildPassageTerms } from './passage';
 import { enumerateNumberPropertyNames } from './prop-types';
 
 // Indexing batches via PER-BUCKET ROLLING BUFFERS (2026-06-03 redesign).
@@ -3433,7 +3434,7 @@ export class SearchOrchestrator {
             }
             await this.hydrateBodies(results);
             const snippetChars = SNIPPET_PREVIEW_LIMITS[this.settings.snippetPreview].chars;
-            for (const r of results) r.snippet = makeSnippet(r.content, '', snippetChars);
+            for (const r of results) r.snippet = makeSnippet(r.content, [], snippetChars);
             const entry = this.emptySearchEntry(query, cleanedQuery, filters, topK, searchId, idbReadMs, performance.now() - t0);
             entry.totalChunks = orderedChunks.length;
             entry.candidateUnionSize = matchedChunks.length;
@@ -3718,7 +3719,9 @@ export class SearchOrchestrator {
 
         const snippetStart = performance.now();
         const snippetChars = SNIPPET_PREVIEW_LIMITS[this.settings.snippetPreview].chars;
-        for (const r of results) r.snippet = makeSnippet(r.content, cleanedQuery, snippetChars);
+        const passageTerms = buildPassageTerms(
+            cleanedQuery, t => this.bm25Cache?.termDocFraction(t) ?? 0);
+        for (const r of results) r.snippet = makeSnippet(r.content, passageTerms, snippetChars);
         const snippetMs = performance.now() - snippetStart;
 
         // ---- Telemetry ---------------------------------------------------

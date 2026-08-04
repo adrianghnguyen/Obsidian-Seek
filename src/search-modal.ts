@@ -6,7 +6,7 @@
 // serializes committed operator pills + free text back to the inline-filter
 // query string the search pipeline already parses.
 
-import { App, Modal, Notice, Platform, TFile, MarkdownView, MarkdownRenderer, Component } from 'obsidian';
+import { App, Modal, Notice, Platform, TFile, MarkdownView, MarkdownRenderer, Component, setIcon } from 'obsidian';
 import type { ScoredChunk, SearchEntry, ClickEntry, SeekSettings } from './types';
 import { MATCH_STRENGTH_MIN_NOTES } from './types';
 import { makeSnippet, sanitizeSnippet, SNIPPET_PREVIEW_LIMITS } from './snippet';
@@ -14,6 +14,7 @@ import type { SearchOrchestrator } from './search';
 import type { SeekLogger } from './logger';
 import { ENGLISH_STOPWORDS } from './bm25';
 import { buildHighlightRanges } from './highlight';
+import { buildPassageTerms, markPattern } from './passage';
 import { matchStrength } from './dense-stats';
 import { SuggestEngine } from './suggest';
 import { PillQueryField } from './query-field';
@@ -29,6 +30,7 @@ import {
 import { applySearchModalSize } from './search-modal-size';
 import { matchTitleAlias } from './fusion';
 import { dedupeAliasesAgainstBasename, sliceResultAliases } from './result-aliases';
+import type { RecentSearches } from './recents';
 
 // Search debounce. Mobile gets a longer window: the query embed runs on the
 // render thread (iframe = same event loop) and on iOS the stage-1 binary scan is
@@ -101,6 +103,37 @@ function fmtCreated(iso: string | null): string {
 function noteTitle(notePath: string): string {
     const base = notePath.split('/').pop() ?? notePath;
     return base.replace(/\.md$/i, '');
+}
+
+// Wrap passage-term hits in <mark> after MarkdownRenderer runs. `re` matches
+// over LOWERCASED text (markPattern contract); offsets transfer back because
+// toLowerCase is length-preserving for vault scripts (same bet as highlight.ts).
+function decorateSnippetMarks(root: HTMLElement, re: RegExp): void {
+    const doc = root.ownerDocument;
+    const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const textNodes: Text[] = [];
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) textNodes.push(n as Text);
+    for (const node of textNodes) {
+        const s = node.nodeValue ?? '';
+        const lower = s.toLowerCase();
+        re.lastIndex = 0;
+        let m: RegExpExecArray | null;
+        let last = 0;
+        let frag: DocumentFragment | null = null;
+        while ((m = re.exec(lower)) !== null) {
+            frag ??= doc.createDocumentFragment();
+            if (m.index > last) frag.appendChild(doc.createTextNode(s.slice(last, m.index)));
+            const mark = doc.createElement('mark');
+            mark.className = 'seek-snippet-mark';
+            mark.textContent = s.slice(m.index, m.index + m[0].length);
+            frag.appendChild(mark);
+            last = m.index + m[0].length;
+        }
+        if (frag) {
+            if (last < s.length) frag.appendChild(doc.createTextNode(s.slice(last)));
+            node.parentNode?.replaceChild(frag, node);
+        }
+    }
 }
 
 // Status of the embedder model at the time the modal opens. `ready=true` is
@@ -191,6 +224,8 @@ export class SeekSearchModal extends Modal {
     private shownCount = 0;
     // Ctrl/Cmd+Shift+E toggles expanded snippet lines (6) for the open session.
     private snippetExpanded = false;
+    // Cached mark matcher for the current query (see snippetMarkRe).
+    private snippetMarkCache: { query: string; re: RegExp | null } | null = null;
     private sentinelEl: HTMLElement | null = null;
     private revealObserver: IntersectionObserver | null = null;
     // Set true at the top of onClose, before any teardown. A fresh modal
@@ -259,6 +294,10 @@ export class SeekSearchModal extends Modal {
         // Optional seed from a deep link (obsidian://seek?query=…). Empty for the
         // palette command. Applied in onOpen once the field exists.
         private initialQuery = '',
+        // Recent-searches store (per-device localStorage; see recents.ts).
+        // Optional (absent in tests / headless) — null disables both capture
+        // and the resting-state rows.
+        private recents: RecentSearches | null = null,
     ) {
         super(app);
         this.orchestrator = orchestrator;
@@ -419,6 +458,8 @@ export class SeekSearchModal extends Modal {
         // guard this flag feeds) assumes "closed" is already visible to any
         // async completion that races this call.
         this.closed = true;
+        // Closing with results showing counts as a committed search (see captureRecent).
+        if (this.currentResults.length > 0) this.captureRecent();
         if (this.timer != null) window.clearTimeout(this.timer);
         if (this.settleTimer != null) { window.clearTimeout(this.settleTimer); this.settleTimer = null; }
         // Session ended — trigger the catch-up drain (the backup window to the
@@ -661,6 +702,33 @@ export class SeekSearchModal extends Modal {
         this.clearRows();
         this.currentResults = [];
         this.resultsEl.removeClass('is-loading');
+        this.renderRecents();
+    }
+
+    // Recent searches, painted only into the resting state (an active query's
+    // clearRows/renderSkeleton wipes them, so they never sit under results).
+    private renderRecents(): void {
+        const items = this.recents?.list() ?? [];
+        if (!this.resultsEl || items.length === 0) return;
+        const box = this.resultsEl.createDiv({ cls: 'seek-recents' });
+        for (const q of items) {
+            const row = box.createDiv({ cls: 'seek-recent' });
+            setIcon(row.createSpan({ cls: 'seek-recent-icon' }), 'history');
+            row.createSpan({ cls: 'seek-recent-text', text: q });
+            const remove = row.createSpan({ cls: 'seek-recent-remove' });
+            setIcon(remove, 'x');
+            remove.setAttr('aria-label', 'Remove from recent searches');
+            remove.addEventListener('click', e => {
+                e.stopPropagation();
+                this.recents?.remove(q);
+                this.renderResting();
+                this.field?.focus();
+            });
+            row.addEventListener('click', () => {
+                this.field?.focus();
+                this.field?.setQuery(q);
+            });
+        }
     }
 
     // Full-replace the results area with a single status line. Resets the row
@@ -1117,7 +1185,12 @@ export class SeekSearchModal extends Modal {
         }
 
         const limits = this.effectiveSnippetLimits();
-        const rawSnippet = makeSnippet(r.content, cleanedQuery, limits.chars);
+        const passageTerms = hasTextQuery
+            ? buildPassageTerms(cleanedQuery, () => 0)
+            : [];
+        const rawSnippet = hasTextQuery
+            ? makeSnippet(r.content, passageTerms, limits.chars)
+            : makeSnippet(r.content, '', limits.chars);
         const snippet = sanitizeSnippet(rawSnippet);
         const snippetKey = `${limits.lines}\x1e${limits.chars}\x1e${snippet}`;
         if (snippetKey === row.lastSnippet) return; // unchanged — skip the markdown re-render
@@ -1131,7 +1204,23 @@ export class SeekSearchModal extends Modal {
         // wrapper absorbs any late async append, so results never interleave.
         const wrapper = row.snippetEl.createDiv();
         MarkdownRenderer.render(this.app, snippet, wrapper, r.note_path, this.markdownComponent)
+            .then(() => {
+                const re = this.snippetMarkRe();
+                if (re) decorateSnippetMarks(wrapper, re);
+            })
             .catch(() => wrapper.setText(snippet));
+    }
+
+    // The mark matcher for the current query (see snippetMarkCache).
+    private snippetMarkRe(): RegExp | null {
+        const query = this.latestSearchEntry?.cleanedQuery ?? '';
+        if (this.snippetMarkCache?.query !== query) {
+            this.snippetMarkCache = {
+                query,
+                re: query.trim() ? markPattern(buildPassageTerms(query, () => 0)) : null,
+            };
+        }
+        return this.snippetMarkCache.re;
     }
 
     private toggleSnippetExpand(): void {
@@ -1225,8 +1314,9 @@ export class SeekSearchModal extends Modal {
         // Emit click event BEFORE opening the file — the file-open switches
         // workspace state and might cancel pending work. We don't await the
         // logger write so click latency stays imperceptible.
-        const titleNav = titleNavCoverage(r, this.settings.navTitleBoost) >= TITLE_NAV_COVERAGE_MIN;
+        const titleNav = this.titleCoverage(r) >= TITLE_NAV_COVERAGE_MIN;
         this.emitClick(r, rank, titleNav);
+        this.captureRecent();
 
         const file = this.app.vault.getAbstractFileByPath(r.note_path);
         if (!(file instanceof TFile)) return;
@@ -1252,10 +1342,12 @@ export class SeekSearchModal extends Modal {
 
         // Native search-style highlight of the matched terms (same transient
         // flash core Search uses), passed via ephemeral state on the open call.
-        const eState = await this.buildMatchHighlight(file, r);
+        // Title-nav hits open at the top — skip chunk highlight/scroll.
+        const eState = titleNav ? undefined : await this.buildMatchHighlight(file, r);
 
         const leaf = await openFileAtTarget(this.app, file, target, { eState, background });
-        this.scrollLeafToChunk(leaf, r);
+        if (titleNav) this.scrollLeafToTop(leaf);
+        else this.scrollLeafToChunk(leaf, r);
         if (background) this.field?.focus();
         else this.close();
     }
@@ -1305,6 +1397,15 @@ export class SeekSearchModal extends Modal {
     // Move the leaf's editor cursor to the matched chunk's start line and scroll
     // it into view. Works on a background (active: false) leaf too, so a fanned-
     // out new tab still lands on the right chunk.
+    private scrollLeafToTop(leaf: { view: unknown }): void {
+        const view = leaf.view;
+        if (view instanceof MarkdownView) {
+            const editor = view.editor;
+            editor.setCursor({ line: 0, ch: 0 });
+            editor.scrollIntoView({ from: { line: 0, ch: 0 }, to: { line: 0, ch: 0 } }, true);
+        }
+    }
+
     private scrollLeafToChunk(leaf: { view: unknown }, r: ScoredChunk): void {
         const view = leaf.view;
         if (view instanceof MarkdownView && r.start_line > 0) {
@@ -1315,6 +1416,15 @@ export class SeekSearchModal extends Modal {
                 to: { line: r.end_line, ch: 0 },
             }, true);
         }
+    }
+
+    private captureRecent(): void {
+        const q = this.lastQuery.trim();
+        if (q) this.recents?.push(q);
+    }
+
+    private titleCoverage(r: ScoredChunk): number {
+        return titleNavCoverage(r, this.settings.navTitleBoost);
     }
 
     private emitClick(r: ScoredChunk, rank: number, titleNavOpen: boolean): void {
