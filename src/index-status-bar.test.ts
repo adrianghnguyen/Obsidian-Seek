@@ -128,6 +128,22 @@ describe('IndexStatusBar', () => {
         bar.update(1, 5);
         bar.hide();
         expect(root.querySelector('.seek-status-bar-label')?.textContent).toBe('Seek');
+        expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-good');
+    });
+
+    it('paints idle from getHealth after the job ends, not the in-flight indexing state', () => {
+        let busy = true;
+        const root = stubEl();
+        const bar = new IndexStatusBar();
+        bar.mount(root as unknown as HTMLElement, {
+            ...hooks,
+            getHealth: () => busy ? 'indexing' : 'ok',
+        });
+        bar.show(5, 'Seek: indexing…');
+        busy = false;
+        bar.hide();
+        expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-good');
+        expect(root.querySelector('.seek-dot')?.className).not.toContain('seek-dot-accent');
     });
 });
 

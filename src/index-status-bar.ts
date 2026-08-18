@@ -1,7 +1,7 @@
 // Desktop status-bar widget for index inventory + in-flight pass percent.
 // Replaces the sticky Indexing Notice: no show-delay, no min-visible, no Notice.
 
-import { Platform } from 'obsidian';
+import { Platform, setTooltip } from 'obsidian';
 import {
     renderIndexStatusCard,
     INDEX_STATUS_HEALTH,
@@ -119,7 +119,7 @@ export class IndexStatusBar {
             this.progressEl.value = pct;
         }
         this.setDot('indexing');
-        this.root.setAttr('aria-label', `${this.label} ${pct}%`);
+        this.setStatusLabel(`${this.label} ${pct}%`);
     }
 
     private paintIdle(): void {
@@ -128,7 +128,13 @@ export class IndexStatusBar {
         this.progressEl?.addClass('is-hidden');
         const health = this.hooks?.getHealth() ?? 'ok';
         this.setDot(health);
-        this.root.setAttr('aria-label', `Seek: ${INDEX_STATUS_HEALTH[health].label}`);
+        this.setStatusLabel(`Seek: ${INDEX_STATUS_HEALTH[health].label}`);
+    }
+
+    private setStatusLabel(text: string): void {
+        if (!this.root) return;
+        this.root.setAttr('aria-label', text);
+        setTooltip(this.root, text);
     }
 
     private setDot(health: IndexStatusHealth): void {

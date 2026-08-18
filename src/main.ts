@@ -1716,9 +1716,9 @@ export default class SeekPlugin extends Plugin {
         } catch (e) {
             await this.logger.appendError('flushDirty', e).catch(() => {});
         } finally {
-            if (bulkProgress) this.indexProgress.hide();
             this.popTaskContext('indexing');
             this.flushing = false;
+            if (bulkProgress) this.indexProgress.hide();
         }
     }
 
@@ -2007,9 +2007,9 @@ export default class SeekPlugin extends Plugin {
                 await this.logger.appendError('runCatchUp', e).catch(() => {});
                 this.catchUpPending = true;  // unknown state — let a later trigger retry
             } finally {
-                if (shown) this.indexProgress.hide();
                 this.popTaskContext('catchup');
                 this.catchUpRunning = false;
+                if (shown) this.indexProgress.hide();
             }
         })();
     }
@@ -2209,8 +2209,8 @@ export default class SeekPlugin extends Plugin {
             new Notice('Seek reindex: ❌ failed — see the logging report (Settings → Seek).', 10000);
             return false;
         } finally {
-            this.indexProgress.hide();
             this.popTaskContext('indexing');
+            this.indexProgress.hide();
         }
     }
 
