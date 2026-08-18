@@ -19,6 +19,7 @@ import type SeekPlugin from './main';
 import type { IndexStats, ModelStatus } from './main';
 import type { SidecarIndexLocation, SearchModalHeight, SearchModalWidth, SnippetPreview } from './types';
 import { DEFAULT_SETTINGS, MATCH_STRENGTH_MIN_NOTES } from './types';
+import { renderIndexStatusCard } from './index-status-card';
 import {
     getBackendOverride, setBackendOverride, isWebgpuDemoted, clearWebgpuDemoted,
     type BackendChoice,
@@ -35,16 +36,6 @@ const DOCS_URL = 'https://publish.obsidian.md/rmm/Seek+Documentation/About+Seek'
 // we draw the glyph ourselves instead (see brandLink). Filled (fill=currentColor)
 // so it inherits the icon button's colour like the Lucide icons do.
 const X_LOGO_PATH = 'M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z';
-
-// ISO-8601 local stamp (YYYY-MM-DD HH:MM) for the status card — the vault's date
-// convention, replacing the locale "6/19/2026, 8:10:32 PM" the card showed before.
-// Local components (not toISOString's UTC) so the time matches the user's clock;
-// seconds are dropped as noise for a "last index" marker.
-function fmtStamp(iso: string): string {
-    const d = new Date(iso);
-    const p = (n: number) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
 
 // (The date-property picker enumerator moved to prop-types.ts, shared with the
 // typed-value inline filters — see enumerateDatePropertyNames import above.)
@@ -313,58 +304,7 @@ export class SeekSettingTab extends PluginSettingTab {
     }
 
     private renderStatusCard(containerEl: HTMLElement): void {
-        const card = containerEl.createDiv({ cls: 'seek-status-card' });
-
-        const STATE: Record<string, { tone: string; label: string }> = {
-            none: { tone: 'mid', label: 'No index' },
-            ok: { tone: 'good', label: 'Up to date' },
-            indexing: { tone: 'accent', label: 'Indexing…' },
-            error: { tone: 'bad', label: 'Index error' },
-        };
-        const st = STATE[this.statusState()];
-
-        const health = card.createDiv({ cls: 'seek-status-health' });
-        health.createSpan({ cls: `seek-dot seek-dot-${st.tone}` });
-        health.createSpan({ cls: 'seek-status-label', text: st.label });
-
-        card.createDiv({ cls: 'seek-status-sep' });
-
-        const metric = (value: string, label: string) => {
-            const m = card.createDiv({ cls: 'seek-status-metric' });
-            m.createDiv({ cls: 'seek-status-value', text: value });
-            m.createDiv({ cls: 'seek-status-mlabel', text: label });
-        };
-        const n = (x: number) => x.toLocaleString();
-        if (this.stats) {
-            metric(n(this.stats.files), 'files');
-            metric(n(this.stats.chunks), 'chunks');
-            // Storage figures intentionally omitted from this card: index size isn't shown
-            // in settings anymore (the seek:indexsize CLI still reports it for diagnostics),
-            // and the model's on-disk size now lives in the Model & performance section.
-            const last = card.createDiv({ cls: 'seek-status-metric seek-status-last' });
-            if (this.stats.lastFullAt) {
-                // Real full reindex: stamp + duration from the same run.
-                const dur = this.stats.lastFullDurationMs != null
-                    ? ` · ${(this.stats.lastFullDurationMs / 1000).toFixed(1)}s` : '';
-                last.createDiv({ cls: 'seek-status-mlabel', text: 'last full index' });
-                last.createDiv({ cls: 'seek-status-value seek-status-stamp', text: `${fmtStamp(this.stats.lastFullAt)}${dur}` });
-                // A catch-up has run since the full reindex → show it faintly so the full
-                // stamp is never confused with an incremental update.
-                if (this.stats.lastUpdatedAt && this.stats.lastUpdatedAt > this.stats.lastFullAt) {
-                    last.createDiv({ cls: 'seek-status-updated', text: `updated ${fmtStamp(this.stats.lastUpdatedAt)}` });
-                }
-            } else if (this.stats.lastUpdatedAt) {
-                // No full reindex survives in the log — show the last update, no duration
-                // (a catch-up's duration isn't meaningful to surface on its own).
-                last.createDiv({ cls: 'seek-status-mlabel', text: 'last updated' });
-                last.createDiv({ cls: 'seek-status-value seek-status-stamp', text: fmtStamp(this.stats.lastUpdatedAt) });
-            } else {
-                last.createDiv({ cls: 'seek-status-mlabel', text: 'last full index' });
-                last.createDiv({ cls: 'seek-status-value seek-status-stamp', text: 'never' });
-            }
-        } else {
-            metric('…', 'loading');
-        }
+        renderIndexStatusCard(containerEl, { health: this.statusState(), stats: this.stats });
     }
 
     private renderReindexRow(containerEl: HTMLElement): void {
