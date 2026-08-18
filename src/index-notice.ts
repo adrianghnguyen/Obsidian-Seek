@@ -75,3 +75,110 @@ export function indexBannerSpec(health: IndexHealth, reason: DegradedReason, pee
     // version-stale index: silent (the degraded stale banner re-asserts on the next poll).
     return null;
 }
+
+export const INDEX_HYDRATING_MSG = 'Restoring the search index from another device…';
+export const INDEX_BUILDING_MSG = 'Seek is still indexing your notes…';
+export const INDEX_NO_INDEX_LABEL = 'No index';
+export const INDEX_NOT_READY_LABEL = 'Index not ready';
+export const INDEX_SYNCING_LABEL = 'Syncing…';
+export const INDEX_ERROR_LABEL = 'Index error';
+export const INDEX_INDEXING_LABEL = 'Indexing…';
+export const INDEX_UP_TO_DATE_LABEL = 'Up to date';
+
+export type IndexLoadPhase = 'hydrating' | 'indexing' | 'idle';
+export type IndexLoadKind = 'resting' | 'hydrating' | 'indexing' | 'onboarding';
+export type IndexFooterKind = 'syncing' | 'error' | 'indexing' | 'not-ready' | 'no-index' | 'up-to-date';
+export type IndexFooterTone = 'accent' | 'bad' | 'warn' | 'mid' | 'good';
+
+export interface IndexLoadFlags {
+    hydrating: boolean;
+    catchUpPending: boolean;
+    catchUpRunning: boolean;
+    flushing: boolean;
+    writing: boolean;
+}
+
+export interface IndexLoadInput {
+    chunks: number | null;
+    phase: IndexLoadPhase;
+    catchUpPending?: boolean;
+    waitingForSidecar?: boolean;
+}
+
+export interface IndexLoadSpec {
+    kind: IndexLoadKind;
+    message?: string;
+    showAction: boolean;
+}
+
+// Snapshot the search-modal footer reads on each poll. Health/reason/peer are
+// the same signals the version-stale banner uses; phase/waitingForSidecar are
+// the hydrate/index wait path. `indexLoadSpec.kind` stays 'resting' once any
+// chunks exist, so the footer also looks at phase (a populated index can still
+// be hydrating or indexing).
+export interface IndexLoadState {
+    phase: IndexLoadPhase;
+    catchUpPending?: boolean;
+    waitingForSidecar?: boolean;
+    health?: IndexHealth;
+    reason?: DegradedReason;
+    peerSyncPending?: boolean;
+}
+
+export interface IndexFooterInput {
+    kind: IndexLoadKind;
+    modelReady: boolean;
+    phase?: IndexLoadPhase;
+    health?: IndexHealth;
+    reason?: DegradedReason;
+    peerSyncPending?: boolean;
+}
+
+export interface IndexFooterStatus {
+    kind: IndexFooterKind;
+    label: string;
+    icon: string;
+    tone: IndexFooterTone;
+}
+
+// Hydrate holds the write mutex, so `writing` must not win over an explicit hydrating
+// flag — otherwise the modal would say "indexing" during an embed-free restore.
+export function resolveIndexLoadPhase(flags: IndexLoadFlags): IndexLoadPhase {
+    if (flags.hydrating) return 'hydrating';
+    if (flags.catchUpPending || flags.catchUpRunning || flags.flushing || flags.writing) return 'indexing';
+    return 'idle';
+}
+
+export function indexLoadSpec(input: IndexLoadInput): IndexLoadSpec {
+    if (input.chunks == null || input.chunks > 0) return { kind: 'resting', showAction: false };
+    if (input.phase === 'hydrating' || input.waitingForSidecar) {
+        return { kind: 'hydrating', message: INDEX_HYDRATING_MSG, showAction: false };
+    }
+    if (input.phase === 'indexing' || input.catchUpPending) {
+        return { kind: 'indexing', message: INDEX_BUILDING_MSG, showAction: false };
+    }
+    return { kind: 'onboarding', showAction: true };
+}
+
+// Search-modal footer status: always-visible icon + short label. Priority is
+// syncing > error > indexing > model-not-ready > no-index > up-to-date, so a
+// populated index with a cold model never claims "Up to date".
+export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
+    const hydrating = input.kind === 'hydrating' || input.phase === 'hydrating';
+    if (hydrating || input.peerSyncPending) {
+        return { kind: 'syncing', label: INDEX_SYNCING_LABEL, icon: 'refresh-cw', tone: 'accent' };
+    }
+    if (input.health === 'degraded' || input.reason === 'peer-ahead') {
+        return { kind: 'error', label: INDEX_ERROR_LABEL, icon: 'alert-triangle', tone: 'bad' };
+    }
+    if (input.kind === 'indexing' || input.phase === 'indexing' || input.health === 'recovering') {
+        return { kind: 'indexing', label: INDEX_INDEXING_LABEL, icon: 'refresh-cw', tone: 'accent' };
+    }
+    if (!input.modelReady) {
+        return { kind: 'not-ready', label: INDEX_NOT_READY_LABEL, icon: 'alert-triangle', tone: 'warn' };
+    }
+    if (input.kind === 'onboarding') {
+        return { kind: 'no-index', label: INDEX_NO_INDEX_LABEL, icon: 'circle-off', tone: 'mid' };
+    }
+    return { kind: 'up-to-date', label: INDEX_UP_TO_DATE_LABEL, icon: 'check', tone: 'good' };
+}

@@ -31,12 +31,14 @@ import { applySearchModalSize } from './search-modal-size';
 import { matchTitleAlias } from './fusion';
 import { dedupeAliasesAgainstBasename, sliceResultAliases } from './result-aliases';
 import type { RecentSearches } from './recents';
+import { indexLoadSpec, indexFooterStatus, INDEX_HYDRATING_MSG, INDEX_BUILDING_MSG, type IndexLoadKind, type IndexLoadState } from './index-notice';
 
 // Search debounce. Mobile gets a longer window: the query embed runs on the
 // render thread (iframe = same event loop) and on iOS the stage-1 binary scan is
 // synchronous too, so every fired search is costly. A wider debounce drops the
 // count of wasted in-flight embeds while the user is still typing.
 const DEBOUNCE_MS = Platform.isMobile ? 400 : 200;
+const INDEX_LOAD_POLL_MS = 750;
 
 // How long after the last keystroke (with results showing) we consider the query
 // "settled" and signal the plugin to drain catch-up indexing — the safest mobile
@@ -250,6 +252,14 @@ export class SeekSearchModal extends Modal {
     // build the index rather than facing a silent dead end. Stays false on an
     // unreadable store, so a still-warming index is never mislabeled "not indexed".
     private indexEmpty = false;
+    private lastChunkCount: number | null = null;
+    private loadKind: IndexLoadKind = 'resting';
+    private loadPoll: number | null = null;
+    // Footer index-status cluster (always present, left of esc). Null until
+    // buildFooter; cleared in onClose so a late poll can't paint detached DOM.
+    private footStatusEl: HTMLElement | null = null;
+    private footStatusIconEl: HTMLElement | null = null;
+    private footStatusLabelEl: HTMLElement | null = null;
 
     // Model-load decoupling. When `modelReady` is false, `runSearch` awaits
     // `modelReadyPromise` before calling the orchestrator. The existing
@@ -291,6 +301,7 @@ export class SeekSearchModal extends Modal {
         // Re-evaluated on open and after the Reindex action, so a heal that landed
         // between opens clears the banner. Optional (absent in tests / headless).
         private getIndexNotice?: () => IndexBanner | null,
+        private getIndexLoadState?: () => IndexLoadState,
         // Optional seed from a deep link (obsidian://seek?query=…). Empty for the
         // palette command. Applied in onOpen once the field exists.
         private initialQuery = '',
@@ -389,9 +400,9 @@ export class SeekSearchModal extends Modal {
         // Mobile-only wiring: keyboard-aware modal height + touch-to-dismiss.
         if (Platform.isMobile) this.setupMobile();
 
-        // Component 3 — the footer hotkey bar. Gated on showHotkeyHints: OFF
-        // gives a minimal "full results only" modal (just field + results).
-        if (this.settings.showHotkeyHints) this.buildFooter(contentEl);
+        // Component 3 — the footer. Hint groups are gated on showHotkeyHints;
+        // the index-status + esc cluster is always present.
+        this.buildFooter(contentEl);
 
         // Observe the in-flight model load (no-op on the warm path). On the cold
         // path: when the model resolves, refresh the empty-state copy so the
@@ -403,6 +414,7 @@ export class SeekSearchModal extends Modal {
         // is ready. Warm opens set it on now (synchronous → no animation); cold
         // opens fade it in when the promise resolves. Input stays live throughout.
         this.field.setModelReady(this.modelReady);
+        this.syncFooterStatus();
         if (!this.modelReady) {
             this.modelReadyPromise.then(() => {
                 // The modal may have closed while the model was still loading
@@ -411,6 +423,7 @@ export class SeekSearchModal extends Modal {
                 if (this.closed) return;
                 this.modelReady = true;
                 this.field?.setModelReady(true);
+                this.syncFooterStatus();
                 if (!this.lastQuery.trim()) this.renderEmpty();
             }).catch(err => {
                 if (this.closed) return;
@@ -432,6 +445,7 @@ export class SeekSearchModal extends Modal {
         // Cold-start onboarding: probe the store off the critical path. If nothing is
         // indexed, swap the resting copy for "your vault isn't indexed yet" guidance.
         void this.checkIndexState();
+        this.loadPoll = window.setInterval(() => void this.checkIndexState(), INDEX_LOAD_POLL_MS);
 
         // A live query session is now fully set up — pause any in-flight catch-up
         // drain so the foreground embed never competes with what the user is about
@@ -458,6 +472,7 @@ export class SeekSearchModal extends Modal {
         // guard this flag feeds) assumes "closed" is already visible to any
         // async completion that races this call.
         this.closed = true;
+        if (this.loadPoll != null) { window.clearInterval(this.loadPoll); this.loadPoll = null; }
         // Closing with results showing counts as a committed search (see captureRecent).
         if (this.currentResults.length > 0) this.captureRecent();
         if (this.timer != null) window.clearTimeout(this.timer);
@@ -481,6 +496,9 @@ export class SeekSearchModal extends Modal {
         // stray renderIndexBanner call can never touch an orphaned node. (The banner is a
         // pure signpost now; it's only painted in onOpen, so this is belt-and-suspenders.)
         this.bannerSlot = null;
+        this.footStatusEl = null;
+        this.footStatusIconEl = null;
+        this.footStatusLabelEl = null;
         this.contentEl.empty();
     }
 
@@ -529,43 +547,67 @@ export class SeekSearchModal extends Modal {
         };
     }
 
-    // The footer legend: keyboard hints on the left, esc on the right. Each
-    // glyph is a <kbd> cap styled from theme variables.
+    // The footer legend: keyboard hints on the left (gated on showHotkeyHints),
+    // index status + esc on the right. Each glyph is a <kbd> cap styled from
+    // theme variables. Status is always built so a hints-off modal still shows
+    // whether the index is ready.
     private buildFooter(parent: HTMLElement): void {
         const foot = parent.createDiv({ cls: 'seek-foot' });
-        const hints = foot.createDiv({ cls: 'seek-foot-hints' });
-        const grp = (build: (g: HTMLElement) => void): void => {
-            const g = hints.createSpan({ cls: 'seek-foot-grp' });
-            build(g);
-        };
         const kbd = (g: HTMLElement, key: string) => g.createEl('kbd', { text: key });
-        grp(g => { kbd(g, '↑'); kbd(g, '↓'); g.createSpan({ text: ' navigate' }); });
-        grp(g => { kbd(g, '↵'); g.createSpan({ text: ' open' }); });
-        if (Platform.isMacOS) {
-            grp(g => { kbd(g, '⌘'); kbd(g, '↵'); g.createSpan({ text: ' new tab' }); });
-            grp(g => { kbd(g, '⌘'); kbd(g, '⌥'); kbd(g, '↵'); g.createSpan({ text: ' split' }); });
-        } else {
-            grp(g => { kbd(g, 'Ctrl'); kbd(g, '↵'); g.createSpan({ text: ' new tab' }); });
-            grp(g => { kbd(g, 'Ctrl'); kbd(g, 'Alt'); kbd(g, '↵'); g.createSpan({ text: ' split' }); });
+        if (this.settings.showHotkeyHints) {
+            const hints = foot.createDiv({ cls: 'seek-foot-hints' });
+            const grp = (build: (g: HTMLElement) => void): void => {
+                const g = hints.createSpan({ cls: 'seek-foot-grp' });
+                build(g);
+            };
+            grp(g => { kbd(g, '↑'); kbd(g, '↓'); g.createSpan({ text: ' navigate' }); });
+            grp(g => { kbd(g, '↵'); g.createSpan({ text: ' open' }); });
+            if (Platform.isMacOS) {
+                grp(g => { kbd(g, '⌘'); kbd(g, '↵'); g.createSpan({ text: ' new tab' }); });
+                grp(g => { kbd(g, '⌘'); kbd(g, '⌥'); kbd(g, '↵'); g.createSpan({ text: ' split' }); });
+            } else {
+                grp(g => { kbd(g, 'Ctrl'); kbd(g, '↵'); g.createSpan({ text: ' new tab' }); });
+                grp(g => { kbd(g, 'Ctrl'); kbd(g, 'Alt'); kbd(g, '↵'); g.createSpan({ text: ' split' }); });
+            }
+            grp(g => { kbd(g, 'tab'); g.createSpan({ text: ' fill autosuggest' }); });
+            if (Platform.isMacOS) {
+                grp(g => { kbd(g, '⌘'); kbd(g, '⇧'); kbd(g, 'E'); g.createSpan({ text: ' expand snippet' }); });
+                grp(g => { kbd(g, '⌥'); kbd(g, '↵'); g.createSpan({ text: ' insert link' }); });
+                grp(g => { kbd(g, '⌥'); kbd(g, '⇧'); kbd(g, '↵'); g.createSpan({ text: ' link with alias' }); });
+            } else {
+                grp(g => { kbd(g, 'Ctrl'); kbd(g, 'Shift'); kbd(g, 'E'); g.createSpan({ text: ' expand snippet' }); });
+                grp(g => { kbd(g, 'Alt'); kbd(g, '↵'); g.createSpan({ text: ' insert link' }); });
+                grp(g => { kbd(g, 'Alt'); kbd(g, 'Shift'); kbd(g, '↵'); g.createSpan({ text: ' link with alias' }); });
+            }
+            grp(g => {
+                const link = g.createEl('a', { cls: 'seek-foot-link', text: '⧉ copy link' });
+                link.setAttr('role', 'button');
+                link.addEventListener('click', () => void this.copySearchLink());
+            });
         }
-        grp(g => { kbd(g, 'tab'); g.createSpan({ text: ' fill autosuggest' }); });
-        if (Platform.isMacOS) {
-            grp(g => { kbd(g, '⌘'); kbd(g, '⇧'); kbd(g, 'E'); g.createSpan({ text: ' expand snippet' }); });
-            grp(g => { kbd(g, '⌥'); kbd(g, '↵'); g.createSpan({ text: ' insert link' }); });
-            grp(g => { kbd(g, '⌥'); kbd(g, '⇧'); kbd(g, '↵'); g.createSpan({ text: ' link with alias' }); });
-        } else {
-            grp(g => { kbd(g, 'Ctrl'); kbd(g, 'Shift'); kbd(g, 'E'); g.createSpan({ text: ' expand snippet' }); });
-            grp(g => { kbd(g, 'Alt'); kbd(g, '↵'); g.createSpan({ text: ' insert link' }); });
-            grp(g => { kbd(g, 'Alt'); kbd(g, 'Shift'); kbd(g, '↵'); g.createSpan({ text: ' link with alias' }); });
-        }
-        grp(g => {
-            const link = g.createEl('a', { cls: 'seek-foot-link', text: '⧉ copy link' });
-            link.setAttr('role', 'button');
-            link.addEventListener('click', () => void this.copySearchLink());
-        });
         const closeGrp = foot.createSpan({ cls: 'seek-foot-grp seek-foot-close' });
+        this.footStatusEl = closeGrp.createSpan({ cls: 'seek-foot-status' });
+        this.footStatusEl.setAttr('role', 'status');
+        this.footStatusIconEl = this.footStatusEl.createSpan({ cls: 'seek-foot-status-icon' });
+        this.footStatusLabelEl = this.footStatusEl.createSpan({ cls: 'seek-foot-status-label' });
         kbd(closeGrp, 'esc');
         closeGrp.createSpan({ text: ' close' });
+    }
+
+    private syncFooterStatus(): void {
+        if (!this.footStatusEl || !this.footStatusIconEl || !this.footStatusLabelEl) return;
+        const load = this.getIndexLoadState?.() ?? { phase: 'idle' as const };
+        const spec = indexFooterStatus({
+            kind: this.currentLoadSpec().kind,
+            modelReady: this.modelReady,
+            phase: load.phase,
+            health: load.health,
+            reason: load.reason,
+            peerSyncPending: load.peerSyncPending,
+        });
+        this.footStatusEl.className = `seek-foot-status is-${spec.tone}`;
+        this.footStatusLabelEl.setText(spec.label);
+        setIcon(this.footStatusIconEl, spec.icon);
     }
 
     // Build + copy an obsidian://seek deep-link for the current query. `vault` is
@@ -682,15 +724,20 @@ export class SeekSearchModal extends Modal {
     }
 
     private renderEmpty(): void {
-        if (this.indexEmpty) { this.renderNoIndex(); return; }
-        // Resting state (no active query, index present): collapse the lower section to
-        // nothing so the modal is just the search bar (+ the version-stale banner, if
-        // any). The field placeholder ("Search your vault…") already says what to do, so
-        // a "Type to search…" box is redundant chrome — and a tall idle body pushed the
-        // mobile keyboard-aware layout around. Active-query feedback ("No notes match.",
-        // "Searching…", errors) and the empty-index onboarding still render via their own
-        // paths (renderResults / renderNoIndex); only this idle placeholder is dropped.
+        const spec = this.currentLoadSpec();
+        if (spec.kind === 'onboarding') { this.renderNoIndex(); return; }
+        if (spec.kind === 'hydrating' || spec.kind === 'indexing') { this.renderIndexWait(spec.kind); return; }
         this.renderResting();
+    }
+
+    private currentLoadSpec() {
+        const load = this.getIndexLoadState?.() ?? { phase: 'idle' as const };
+        return indexLoadSpec({
+            chunks: this.lastChunkCount,
+            phase: load.phase,
+            catchUpPending: load.catchUpPending,
+            waitingForSidecar: load.waitingForSidecar,
+        });
     }
 
     // Empty the results body without painting a status line — the modal collapses to the
@@ -749,14 +796,16 @@ export class SeekSearchModal extends Modal {
     // query is left to the next keystroke's search, never stomped here.
     private async checkIndexState(): Promise<void> {
         const chunks = await this.orchestrator.indexedChunkCount();
-        // The modal can close while this off-critical-path probe is still in
-        // flight (it's kicked off fire-and-forget from onOpen) — don't repaint
-        // a resting copy into a modal that's gone.
-        if (chunks == null || this.closed) return;
-        const wasEmpty = this.indexEmpty;
-        this.indexEmpty = chunks === 0;
-        if (this.indexEmpty === wasEmpty) return;            // verdict unchanged → nothing to repaint
-        if (!this.lastQuery.trim()) this.renderEmpty();      // flip (usually empty→populated) → refresh resting copy
+        if (this.closed) return;
+        if (chunks != null) this.lastChunkCount = chunks;
+        const spec = this.currentLoadSpec();
+        const prevKind = this.loadKind;
+        this.loadKind = spec.kind;
+        this.indexEmpty = spec.kind === 'onboarding';
+        this.syncFooterStatus();
+        if (spec.kind === prevKind) return;
+        if (!this.lastQuery.trim()) this.renderEmpty();
+        else if (this.currentResults.length === 0) this.renderEmptyQuery(spec.kind);
     }
 
     // Cold-start onboarding state: the index is empty (fresh install, or an evicted /
@@ -770,8 +819,36 @@ export class SeekSearchModal extends Modal {
         const box = this.resultsEl.createDiv({ cls: 'seek-empty seek-noindex' });
         box.createDiv({ cls: 'seek-noindex-title', text: 'Your vault isn’t indexed yet' });
         box.createDiv({ cls: 'seek-empty-sub', text: 'Seek needs to build a search index before it can find anything.' });
-        box.createEl('button', { cls: 'seek-noindex-btn mod-cta', text: 'Open Seek settings to index' })
-            .addEventListener('click', () => this.openSeekSettings());
+        if (!this.getIndexNotice?.()) {
+            box.createEl('button', { cls: 'seek-noindex-btn mod-cta', text: 'Open Seek settings to index' })
+                .addEventListener('click', () => this.openSeekSettings());
+        }
+    }
+
+    private renderIndexWait(kind: 'hydrating' | 'indexing'): void {
+        if (!this.resultsEl) return;
+        this.clearRows();
+        this.currentResults = [];
+        this.resultsEl.removeClass('is-loading');
+        const box = this.resultsEl.createDiv({ cls: 'seek-empty seek-noindex' });
+        box.createDiv({
+            cls: 'seek-noindex-title',
+            text: kind === 'hydrating' ? 'Restoring the search index' : 'Indexing your notes',
+        });
+        box.createDiv({
+            cls: 'seek-empty-sub',
+            text: kind === 'hydrating' ? INDEX_HYDRATING_MSG : INDEX_BUILDING_MSG,
+        });
+    }
+
+    private renderEmptyQuery(kind: IndexLoadKind): void {
+        if (kind === 'onboarding') { this.renderNoIndex(); return; }
+        if (kind === 'hydrating' || kind === 'indexing') { this.renderIndexWait(kind); return; }
+        if (!this.resultsEl) return;
+        this.clearRows();
+        const empty = this.resultsEl.createDiv({ cls: 'seek-empty' });
+        empty.createDiv({ text: 'No notes match.' });
+        empty.createDiv({ cls: 'seek-empty-sub', text: 'Try removing a filter.' });
     }
 
     // Open Obsidian's settings straight to the Seek tab. `app.setting` isn't in the
@@ -886,19 +963,20 @@ export class SeekSearchModal extends Modal {
 
         if (results.length === 0) {
             this.clearRows();
-            // An empty index can't match anything — show the onboarding state, not the
-            // misleading "Try removing a filter." that assumes a populated index. Re-probe
-            // off the critical path so a since-populated index drops the flag (and the
-            // screen, on the next render) instead of latching "not indexed" all session.
-            if (this.indexEmpty) { this.renderNoIndex(); void this.checkIndexState(); return; }
+            const spec = this.currentLoadSpec();
+            if (spec.kind !== 'resting') {
+                this.renderEmptyQuery(spec.kind);
+                void this.checkIndexState();
+                return;
+            }
             const empty = container.createDiv({ cls: 'seek-empty' });
             empty.createDiv({ text: 'No notes match.' });
             empty.createDiv({ cls: 'seek-empty-sub', text: 'Try removing a filter.' });
             return;
         }
-        // A result-bearing search is definitive proof the index is populated — clear any
-        // stale cold-start flag so the onboarding screen can't reappear this session.
         this.indexEmpty = false;
+        this.loadKind = 'resting';
+        if (this.lastChunkCount === 0) this.lastChunkCount = results.length;
 
         // Drop a status/empty placeholder (coming from a cold search) without
         // disturbing real rows we may be about to reuse.

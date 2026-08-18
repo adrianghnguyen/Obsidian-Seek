@@ -294,4 +294,18 @@ describe('drainCatchUp', () => {
         expect(pending).toBe(false);
         expect(applied).toBe(2);                  // both deletes applied
     });
+
+    it('forwards onProgress into each reindexDelta burst', async () => {
+        const seen: string[] = [];
+        const h = harness({ initialDirty: 4, maxFiles: 3 });
+        h.deps.onProgress = (msg) => seen.push(msg);
+        const orig = h.deps.reindexDelta;
+        h.deps.reindexDelta = async (burst, del, opts) => {
+            opts.onProgress?.('Indexed 1 files · 1 chunks');
+            return orig(burst, del, opts);
+        };
+        await drainCatchUp(h.deps);
+        expect(seen.length).toBeGreaterThan(0);
+        expect(seen[0]).toMatch(/Indexed 1 files/);
+    });
 });

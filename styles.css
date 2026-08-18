@@ -911,6 +911,37 @@
 .seek-foot-close {
     flex: 0 0 auto;
     margin-left: auto;
+    gap: 6px;
+}
+
+/* Always-visible index status, immediately left of esc close. */
+.seek-foot-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-right: 4px;
+    color: var(--text-muted);
+    cursor: default;
+}
+.seek-foot-status-icon {
+    display: flex;
+    width: 14px;
+    height: 14px;
+}
+.seek-foot-status-icon svg {
+    width: 14px;
+    height: 14px;
+}
+.seek-foot-status.is-accent { color: var(--interactive-accent); }
+.seek-foot-status.is-bad { color: var(--text-error); }
+.seek-foot-status.is-warn { color: var(--text-warning); }
+.seek-foot-status.is-mid,
+.seek-foot-status.is-good { color: var(--text-muted); }
+.seek-foot-status.is-accent .seek-foot-status-icon svg {
+    animation: seek-foot-spin 1s linear infinite;
+}
+@keyframes seek-foot-spin {
+    to { transform: rotate(360deg); }
 }
 
 /* Hint shedding, lowest priority first. navigate/open, copy link (a real
@@ -965,6 +996,9 @@
     .seek-results.is-loading {
         transition: none;
     }
+    .seek-foot-status-icon svg {
+        animation: none;
+    }
 }
 
 /* ============================================================================
@@ -1004,86 +1038,116 @@
 }
 
 /* status dots — five health tones from theme status colors, with a soft halo */
-.seek-settings .seek-dot {
+.seek-dot {
     width: 8px;
     height: 8px;
     border-radius: 50%;
     flex: 0 0 auto;
     display: inline-block;
 }
-.seek-settings .seek-dot-good {
+.seek-dot-good {
     background: var(--color-green);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-green) 22%, transparent);
 }
-.seek-settings .seek-dot-mid {
+.seek-dot-mid {
     background: var(--text-muted);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--text-muted) 20%, transparent);
 }
-.seek-settings .seek-dot-accent {
+.seek-dot-accent {
     background: var(--interactive-accent);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--interactive-accent) 22%, transparent);
 }
-.seek-settings .seek-dot-bad {
+.seek-dot-bad {
     background: var(--color-red);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-red) 22%, transparent);
 }
 
-/* ---- Index: status card ---- */
-.seek-settings .seek-status-card {
+/* ---- Index: status card (settings + status-bar hover) ---- */
+.seek-status-card {
     display: flex;
     align-items: center;
     gap: 18px;
     flex-wrap: wrap;
     padding: 12px 16px;
-    margin: 8px 0 16px;
     background: var(--background-secondary);
     border: 1px solid var(--background-modifier-border);
     border-radius: 10px;
 }
-.seek-settings .seek-status-health {
+.seek-settings .seek-status-card {
+    margin: 8px 0 16px;
+}
+.seek-status-health {
     display: flex;
     align-items: center;
     gap: 7px;
 }
-.seek-settings .seek-status-label {
+.seek-status-label {
     font-weight: 600;
     font-size: 13px;
     color: var(--text-normal);
 }
-.seek-settings .seek-status-sep {
+.seek-status-sep {
     width: 1px;
     align-self: stretch;
     background: var(--background-modifier-border);
 }
-.seek-settings .seek-status-metric {
+.seek-status-metric {
     display: flex;
     flex-direction: column;
     gap: 1px;
 }
-.seek-settings .seek-status-value {
+.seek-status-value {
     font-size: 15px;
     font-weight: 600;
     color: var(--text-normal);
     font-variant-numeric: tabular-nums;
 }
-.seek-settings .seek-status-mlabel {
+.seek-status-mlabel {
     font-size: 11px;
     color: var(--text-muted);
 }
-.seek-settings .seek-status-last {
+.seek-status-last {
     margin-left: auto;
     text-align: right;
 }
-.seek-settings .seek-status-stamp {
+.seek-status-stamp {
     font-size: 12.5px;
     font-weight: 500;
 }
 /* faint secondary line: a catch-up that ran after the last full reindex */
-.seek-settings .seek-status-updated {
+.seek-status-updated {
     font-size: 11px;
     color: var(--text-faint);
     margin-top: 2px;
 }
+
+/* Desktop status-bar item + hover panel (replaces the indexing Notice toast). */
+.seek-status-bar {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    position: relative;
+    cursor: pointer;
+}
+.seek-status-bar-label {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+.seek-status-bar-progress {
+    width: 48px;
+    height: 6px;
+}
+.seek-status-bar-progress.is-hidden { display: none; }
+.seek-index-hover {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    right: 0;
+    z-index: 200;
+    min-width: 280px;
+    box-shadow: var(--shadow-l);
+}
+.seek-index-hover.is-hidden { display: none; }
+.seek-index-hover .seek-status-card { margin: 0; }
 
 /* ---- Index: reindex progress ---- */
 .seek-settings .seek-progress-row {

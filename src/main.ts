@@ -38,7 +38,8 @@ import {
     resolveInsertLinkAlias,
     resolveInsertLinkSubpath,
 } from './insert-link';
-import { indexBannerSpec, INDEX_STALE_MSG, INDEX_SYNCING_MSG, INDEX_PEER_AHEAD_MSG, type DegradedReason } from './index-notice';
+import { indexBannerSpec, resolveIndexLoadPhase, INDEX_STALE_MSG, INDEX_SYNCING_MSG, INDEX_PEER_AHEAD_MSG, type DegradedReason, type IndexLoadState } from './index-notice';
+import { IndexStatusBar, parseIndexedProgress } from './index-status-bar';
 import { SeekSettingTab } from './settings-tab';
 import { collectPlatformInfo, isMobilePlatform, resolveDevice, recordActiveBackend, maybeDemoteOnCrash } from './platform';
 import { CompositorPacer } from './pacer';
@@ -202,6 +203,12 @@ export default class SeekPlugin extends Plugin {
     private flushing = false;                    // flushDirty re-entrancy guard
     private catchUpPending = false;              // cold-mobile deferred an embed
     private catchUpRunning = false;              // runCatchUp re-entrancy guard
+    // True from construct until the onload sidecar/reconcile IIFE finishes, so the
+    // search modal cannot latch "isn't indexed yet" on an empty store mid-hydrate.
+    private indexBootPending = true;
+    private sidecarHydrating = false;
+    private waitingForSidecar = false;
+    private readonly indexProgress = new IndexStatusBar();
     // Drift auto-recovery (sibling of catch-up). The orchestrator detects persistent
     // frame/BM25 row-space drift and fires onPersistentDrift; we run a bounded,
     // embed-free recovery ladder (warm → sidecar hydrate → verify). Re-escalation is
@@ -270,6 +277,21 @@ export default class SeekPlugin extends Plugin {
     // private; this is the read-only surface the settings Index status card reads
     // (on open and while polling a live reindex) to show its "Indexing…" state.
     get isIndexing(): boolean { return this.currentTaskContext === 'indexing'; }
+
+    private statusBarHealth(): 'none' | 'ok' | 'indexing' | 'error' {
+        if (this.catchUpRunning || this.flushing || this.currentTaskContext === 'indexing') return 'indexing';
+        if (this.indexHealth === 'degraded') return 'error';
+        if (this.indexHealth === 'recovering') return 'indexing';
+        return 'ok';
+    }
+
+    private openSeekSettings(): void {
+        const setting = (this.app as unknown as {
+            setting?: { open(): void; openTabById(id: string): void };
+        }).setting;
+        setting?.open();
+        setting?.openTabById('seek');
+    }
     private searchActiveTimestamp: number | null = null;   // null = no live query session; else the ms timestamp of the last activity ping (modal open / keystroke) — pauses the catch-up drain so embedding never competes with the user's search
     private static readonly SEARCH_ACTIVE_MAX_AGE_MS = 60_000;
     // Count of query embeds/searches actually running right now (onQueryInFlight).
@@ -440,6 +462,11 @@ export default class SeekPlugin extends Plugin {
         // embed-free recovery ladder from the plugin (which owns scheduling + gating).
         this.orchestrator.setPersistentDriftHandler(() => this.onPersistentDrift());
         this.addSettingTab(new SeekSettingTab(this.app, this));
+        this.indexProgress.mount(this.addStatusBarItem(), {
+            getStats: () => this.getIndexStats(),
+            getHealth: () => this.statusBarHealth(),
+            onOpenSettings: () => this.openSeekSettings(),
+        });
 
         // Incremental indexing: live vault-event triggers + the startup catch-up
         // sweep. Wired here, after the orchestrator exists.
@@ -451,7 +478,9 @@ export default class SeekPlugin extends Plugin {
         // already holds. All off the load path (fire-and-forget IIFE) so plugin
         // load never blocks. sweepOrphanTmpFiles first cleans any crashed atomic
         // write. Each step is gated/no-op when the sidecar is disabled.
+        this.sidecarHydrating = true;
         void (async () => {
+            try {
             let identityHandled = false;
             try {
                 // One-time rev-3→4 migration: move an index written under the
@@ -477,7 +506,8 @@ export default class SeekPlugin extends Plugin {
                     // crash-relaunch with an unchanged vault skip the whole-vault
                     // re-chunk (the iOS 1fps loop), while an empty/evicted store
                     // still forces the recovery sweep.
-                    await this.orchestrator.reconcileSidecarIfChanged();
+                    const hydrated = await this.orchestrator.reconcileSidecarIfChanged();
+                    this.applySidecarWait(hydrated);
                     // Sidecar just scanned → raise the "update Seek" banner if a peer's index
                     // is newer than this build (and gate the mobile catch-up below off it).
                     this.applyPeerAheadBanner();
@@ -510,6 +540,10 @@ export default class SeekPlugin extends Plugin {
             // moved into ensureModelLoaded ('model-load') so it overlaps the model
             // load instead of taxing app-open. reconcileOnLoad still warms ('delta')
             // when its diff finds changes; warmCaches's `warming` guard dedups the two.
+        } finally {
+            this.sidecarHydrating = false;
+            this.indexBootPending = false;
+        }
         })();
 
         // Periodic sidecar reconcile: remote arrivals don't fire vault events for
@@ -859,6 +893,7 @@ export default class SeekPlugin extends Plugin {
         // First thing, synchronously: a session whose record isn't closed at
         // next boot reads as a crash. Reload/disable/quit all pass through here.
         this.forensics?.markCleanEnd();
+        this.indexProgress.hide();
         this.embedder.teardown();
         this.orchestrator?.dispose();
         this.store.close();
@@ -1591,6 +1626,7 @@ export default class SeekPlugin extends Plugin {
         }
         if (this.dirtyQueue.size === 0 && this.deletedQueue.size === 0) return;
         this.flushing = true;
+        let bulkProgress = false;
         // Span the whole drain: the incremental path was the biggest un-wrapped
         // jank source (issue #5 — all its long tasks logged as 'idle').
         this.pushTaskContext('indexing');
@@ -1627,17 +1663,17 @@ export default class SeekPlugin extends Plugin {
             if (!deferEmbed) await this.ensureModelLoaded();
 
             if (bulk) {
-                // Mini-reindex path. One toast at the start, one summary at the end
-                // — no live-updating sticky Notice (progress is watchable from the
-                // settings Index status card; deferred embeds have nothing to show).
-                // A live query preempts the embed (shouldContinue → break within one
-                // file, releasing the write mutex so the query runs); the interrupted
-                // or deferred remainder keeps its old searchable chunks and stays
-                // dirty (no file-record advance) for the drain to reconcile.
-                if (!deferEmbed) new Notice(`Seek: indexing ${dirty.length} changed notes…`, 4000);
+                // Mini-reindex path. Status-bar percent; skipped when the
+                // embed is deferred (nothing to count). A live query aborts the burst
+                // (shouldContinue); hide the bar so it can reopen on the drain.
+                if (!deferEmbed) {
+                    this.indexProgress.show(dirty.length, `Seek: indexing ${dirty.length} changed notes…`);
+                    bulkProgress = true;
+                }
                 const result = await orchestrator.reindexDelta(dirty, deleted, {
                     embed: !deferEmbed,
                     shouldContinue: () => !this.indexingBlocked,
+                    onProgress: deferEmbed ? undefined : (msg) => this.indexProgress.updateFromProgress(msg),
                 });
                 // Summary counts what actually committed — an embed preempted by a
                 // query reports the partial total honestly; the drain finishes the
@@ -1680,6 +1716,7 @@ export default class SeekPlugin extends Plugin {
         } catch (e) {
             await this.logger.appendError('flushDirty', e).catch(() => {});
         } finally {
+            if (bulkProgress) this.indexProgress.hide();
             this.popTaskContext('indexing');
             this.flushing = false;
         }
@@ -1768,6 +1805,35 @@ export default class SeekPlugin extends Plugin {
         return indexBannerSpec(this.indexHealth, this.degradedReason, this.peerSyncPending);
     }
 
+    private indexLoadState(): IndexLoadState {
+        return {
+            phase: resolveIndexLoadPhase({
+                hydrating: this.indexBootPending || this.sidecarHydrating,
+                catchUpPending: this.catchUpPending,
+                catchUpRunning: this.catchUpRunning,
+                flushing: this.flushing,
+                writing: this.orchestrator?.isWriting() ?? false,
+            }),
+            catchUpPending: this.catchUpPending,
+            waitingForSidecar: this.waitingForSidecar,
+            health: this.indexHealth,
+            reason: this.degradedReason,
+            peerSyncPending: this.peerSyncPending,
+        };
+    }
+
+    private applySidecarWait(result: { hydrated: number; acceptedProducers: number } | null): void {
+        if (!result) return;
+        if (result.hydrated > 0) this.waitingForSidecar = false;
+        else if (result.acceptedProducers > 0) this.waitingForSidecar = true;
+    }
+
+    private indexableNoteCount(): number {
+        let n = this.app.vault.getMarkdownFiles().length;
+        if (this.settings.indexBases) n += this.app.vault.getFiles().filter(f => f.extension === 'base').length;
+        return n;
+    }
+
     // Translate the orchestrator's peer-ahead signal (a sidecar refused for being at a
     // NEWER chunkerVersion than this build) into the banner state. This is the MIRROR of
     // enforceIndexIdentity: there the LOCAL index is stale vs the local build; here the
@@ -1809,6 +1875,7 @@ export default class SeekPlugin extends Plugin {
                 (active) => this.onSearchActivity(active),
                 (inFlight) => this.onQueryInFlight(inFlight),
                 () => this.indexNotice(),
+                () => this.indexLoadState(),
                 initialQuery,
                 this.recents,
             ).open();
@@ -1894,10 +1961,41 @@ export default class SeekPlugin extends Plugin {
         const pacer = new CompositorPacer();
         void (async () => {
             this.pushTaskContext('catchup');
+            let shown = false;
+            let passTotal = 0;
+            let committed = 0;
             try {
                 const { pending } = await drainCatchUp({
-                    computeDelta: () => orchestrator.computeDelta(),
-                    reindexDelta: (d, del, opts) => orchestrator.reindexDelta(d, del, opts),
+                    computeDelta: async () => {
+                        const d = await orchestrator.computeDelta();
+                        if (!shown && d.dirty.length > 0) {
+                            passTotal = d.dirty.length;
+                            this.indexProgress.show(passTotal, `Seek: indexing ${passTotal} notes…`);
+                            shown = true;
+                        }
+                        return d;
+                    },
+                    reindexDelta: async (d, del, opts) => {
+                        const r = await orchestrator.reindexDelta(d, del, {
+                            ...opts,
+                            onProgress: (msg) => {
+                                const p = parseIndexedProgress(msg);
+                                this.indexProgress.update(
+                                    committed + (p?.files ?? 0),
+                                    passTotal || d.length,
+                                    msg,
+                                );
+                            },
+                        });
+                        committed += r.committedPaths.length;
+                        if (shown) {
+                            const label = this.indexingBlocked
+                                ? `Seek: indexing paused · ${committed} / ${passTotal}`
+                                : `Seek: indexing ${committed} / ${passTotal} notes…`;
+                            this.indexProgress.update(committed, passTotal, label);
+                        }
+                        return r;
+                    },
                     isHidden: () => activeDocument.hidden,
                     isSearchActive: () => this.indexingBlocked,
                     pace: () => pacer.pace(),
@@ -1909,6 +2007,7 @@ export default class SeekPlugin extends Plugin {
                 await this.logger.appendError('runCatchUp', e).catch(() => {});
                 this.catchUpPending = true;  // unknown state — let a later trigger retry
             } finally {
+                if (shown) this.indexProgress.hide();
                 this.popTaskContext('catchup');
                 this.catchUpRunning = false;
             }
@@ -2065,15 +2164,16 @@ export default class SeekPlugin extends Plugin {
             }
         }
 
-        // Start toast + end summary only — no live-updating sticky Notice. Live
-        // progress still streams to opts.onProgress (the settings tab's reindex
-        // button renders it inline; that's where "watch it go" lives).
-        new Notice('Seek: full reindex starting…', 4000);
+        // Status-bar percent for this pass; settings still gets opts.onProgress.
+        this.indexProgress.show(this.indexableNoteCount(), 'Seek: indexing…');
         this.pushTaskContext('indexing');
         try {
             await this.ensureModelLoaded();
             this.orchestrator.invalidateBm25Cache();
-            const result = await this.orchestrator.reindexAll(opts?.onProgress, {
+            const result = await this.orchestrator.reindexAll((msg) => {
+                opts?.onProgress?.(msg);
+                this.indexProgress.updateFromProgress(msg);
+            }, {
                 // 3A soft preempt: the full pass pauses between files while the user
                 // types / a query embed is in flight — the same indexingBlocked
                 // signal every other indexing path honours — then resumes. It never
@@ -2109,6 +2209,7 @@ export default class SeekPlugin extends Plugin {
             new Notice('Seek reindex: ❌ failed — see the logging report (Settings → Seek).', 10000);
             return false;
         } finally {
+            this.indexProgress.hide();
             this.popTaskContext('indexing');
         }
     }
