@@ -220,7 +220,11 @@ describe('iframe init coalescing (startup deferral)', () => {
     it('teardown() resets the tokenizer latch so ensureTokenizer re-loads on the fresh runner', async () => {
         const e = new LocalEmbedder();
         let tokLoads = 0;
-        const fr = { loadTokenizer: async () => { tokLoads++; }, dispose: () => {} };
+        const fr = {
+            init: async () => ({ ready: true, error: null, initMs: 0 }),
+            loadTokenizer: async () => { tokLoads++; },
+            dispose: () => {},
+        };
         (e as unknown as { runner: unknown }).runner = fr;
 
         await e.ensureTokenizer();
@@ -235,6 +239,20 @@ describe('iframe init coalescing (startup deferral)', () => {
         (e as unknown as { runner: unknown }).runner = fr;   // re-stub the fresh runner
         await e.ensureTokenizer();
         expect(tokLoads).toBe(2);              // re-loaded, not short-circuited
+    });
+
+    it('a failed initialization does not latch tokenizer-ready', async () => {
+        const e = new LocalEmbedder();
+        let tokLoads = 0;
+        const fr = {
+            init: async () => ({ ready: false, error: 'dead iframe', initMs: 1 }),
+            loadTokenizer: async () => { tokLoads++; },
+            dispose: () => {},
+        };
+        (e as unknown as { runner: unknown }).runner = fr;
+        await expect(e.ensureTokenizer()).rejects.toThrow(/dead iframe|iframe init failed/);
+        expect(tokLoads).toBe(0);
+        expect((e as unknown as { _tokenizerLoaded: boolean })._tokenizerLoaded).toBe(false);
     });
 });
 

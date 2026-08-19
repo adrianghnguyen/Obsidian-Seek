@@ -4,7 +4,14 @@ import {
     parseIndexedProgress,
     quantizePercent,
 } from './index-status-bar';
-import { renderIndexStatusCard } from './index-status-card';
+import {
+    renderIndexStatusCard,
+    renderIndexStatusBadge,
+    indexWaitCardModel,
+    jobRemaining,
+    INDEX_STATUS_BADGE_CLS,
+    INDEX_STATUS_DOT_CLS,
+} from './index-status-card';
 
 interface StubEl {
     tagName: string;
@@ -107,17 +114,28 @@ describe('IndexStatusBar', () => {
         onOpenSettings: () => {},
     };
 
-    it('paints quantized percent and skips same-bucket updates', () => {
+    it('paints remaining files as the numbered badge and skips same-remaining updates', () => {
         const root = stubEl();
         const bar = new IndexStatusBar();
         bar.mount(root as unknown as HTMLElement, hooks);
         bar.show(5, 'Seek: indexing…');
         bar.update(1, 5);
-        expect(root.querySelector('.seek-status-bar-label')?.textContent).toBe('Seek 20%');
+        expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)?.textContent).toBe('4');
         bar.update(1, 5);
-        expect(root.querySelector('.seek-status-bar-label')?.textContent).toBe('Seek 20%');
+        expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)?.textContent).toBe('4');
         bar.update(2, 5);
-        expect(root.querySelector('.seek-status-bar-label')?.textContent).toBe('Seek 40%');
+        expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)?.textContent).toBe('3');
+    });
+
+    it('uses Seek: Indexing as the tooltip while a pass is in flight', () => {
+        const labels: string[] = [];
+        const root = stubEl();
+        root.setAttr = (key, value) => { if (key === 'aria-label') labels.push(value); };
+        const bar = new IndexStatusBar();
+        bar.mount(root as unknown as HTMLElement, hooks);
+        bar.show(15, 'Seek: indexing 15 notes…');
+        expect(labels.at(-1)).toBe('Seek: Indexing');
+        expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)?.textContent).toBe('15');
     });
 
     it('returns to idle Seek on hide', () => {
@@ -129,6 +147,7 @@ describe('IndexStatusBar', () => {
         bar.hide();
         expect(root.querySelector('.seek-status-bar-label')?.textContent).toBe('Seek');
         expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-good');
+        expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)).toBeNull();
     });
 
     it('paints idle from getHealth after the job ends, not the in-flight indexing state', () => {
@@ -143,21 +162,99 @@ describe('IndexStatusBar', () => {
         busy = false;
         bar.hide();
         expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-good');
-        expect(root.querySelector('.seek-dot')?.className).not.toContain('seek-dot-accent');
+        expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)).toBeNull();
     });
 
-    it('refreshIdle repaints the dot when health changes outside a job', () => {
+    it('refreshIdle repaints chrome when health changes outside a job', () => {
         let health: 'indexing' | 'ok' | 'starting' = 'indexing';
         const root = stubEl();
         const bar = new IndexStatusBar();
         bar.mount(root as unknown as HTMLElement, { ...hooks, getHealth: () => health });
-        expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-accent');
+        expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)?.textContent).toBe('…');
+        expect(root.querySelector('.seek-dot')).toBeNull();
         health = 'ok';
         bar.refreshIdle();
         expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-good');
         health = 'starting';
         bar.refreshIdle();
         expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-info');
+    });
+
+    it('does not paint an indexing badge while canonical health is Starting or Restoring', () => {
+        let health: 'starting' | 'restoring' | 'ok' = 'starting';
+        const root = stubEl();
+        const bar = new IndexStatusBar();
+        bar.mount(root as unknown as HTMLElement, { ...hooks, getHealth: () => health });
+        bar.show(15, 'Seek: indexing 15 notes…');
+        expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)).toBeNull();
+        expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-info');
+        health = 'restoring';
+        bar.refreshIdle();
+        expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)).toBeNull();
+        expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-info');
+        health = 'ok';
+        bar.refreshIdle();
+        expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)?.textContent).toBe('15');
+    });
+
+    it('clamps done to total and ignores stale job ids', () => {
+        const root = stubEl();
+        const bar = new IndexStatusBar();
+        bar.mount(root as unknown as HTMLElement, hooks);
+        bar.show(10, 'Seek: indexing…', { id: 1, kind: 'catchup' });
+        bar.update(12, 10, undefined, 1);
+        expect(bar.job()?.done).toBe(10);
+        bar.update(3, 10, undefined, 99);
+        expect(bar.job()?.done).toBe(10);
+        bar.hide(99);
+        expect(bar.job()?.total).toBe(10);
+        bar.hide(1);
+        expect(bar.job()).toBeNull();
+    });
+});
+
+describe('jobRemaining', () => {
+    it('is total minus done for a live pass', () => {
+        expect(jobRemaining({ done: 0, total: 15 })).toBe(15);
+        expect(jobRemaining({ done: 5, total: 15 })).toBe(10);
+        expect(jobRemaining({ done: 15, total: 15 })).toBe(0);
+        expect(jobRemaining(null)).toBeNull();
+        expect(jobRemaining({ done: 0, total: 0 })).toBeNull();
+    });
+});
+
+describe('indexWaitCardModel', () => {
+    const inventory = {
+        files: 5, chunks: 18, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: '2026-08-19T00:05:00',
+    };
+
+    it('drops stale inventory on the starting/restoring first paint', () => {
+        expect(indexWaitCardModel({ health: 'starting', stats: inventory, job: { done: 0, total: 15 } }))
+            .toEqual({ health: 'starting', stats: null, job: null });
+        expect(indexWaitCardModel({ health: 'restoring', stats: inventory }))
+            .toEqual({ health: 'restoring', stats: null, job: null });
+    });
+
+    it('keeps the coordinator job as the indexing source of truth', () => {
+        const model = indexWaitCardModel({ health: 'ok', stats: inventory, job: { done: 0, total: 15 } });
+        expect(model.health).toBe('indexing');
+        expect(model.job).toEqual({ done: 0, total: 15 });
+        expect(jobRemaining(model.job)).toBe(15);
+        expect(jobRemaining(model.job)).not.toBe(model.stats?.files);
+    });
+});
+
+describe('renderIndexStatusBadge', () => {
+    it('paints a numbered badge for indexing and a dot otherwise', () => {
+        const indexing = stubEl();
+        renderIndexStatusBadge(indexing as unknown as HTMLElement, { health: 'indexing', remaining: 15 });
+        expect(indexing.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)?.textContent).toBe('15');
+        expect(indexing.querySelector(`.${INDEX_STATUS_DOT_CLS}`)).toBeNull();
+
+        const ready = stubEl();
+        renderIndexStatusBadge(ready as unknown as HTMLElement, { health: 'ok' });
+        expect(ready.querySelector(`.${INDEX_STATUS_DOT_CLS}`)?.className).toContain('seek-dot-good');
+        expect(ready.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)).toBeNull();
     });
 });
 
@@ -166,31 +263,75 @@ describe('renderIndexStatusCard', () => {
         const root = stubEl();
         renderIndexStatusCard(root as unknown as HTMLElement, {
             health: 'indexing',
-            stats: { files: 12, chunks: 40, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null },
-            job: { done: 3, total: 12 },
+            stats: { files: 5, chunks: 18, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null },
+            job: { done: 0, total: 15 },
         });
         const blob = textOf(root);
-        expect(blob).toContain('12');
-        expect(blob).toContain('40');
-        expect(blob).toContain('3 / 12');
+        expect(blob).toContain('15');
+        expect(blob).toContain('0 / 15');
         expect(blob).toContain('Indexing');
+        expect(blob).not.toMatch(/\b5\b/);
+        expect(blob).not.toMatch(/\b18\b/);
+        expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)?.textContent).toBe('15');
+        expect(root.querySelector(`.${INDEX_STATUS_DOT_CLS}`)).toBeNull();
+    });
+
+    it('matches the status-bar badge remaining count, not committed inventory', () => {
+        const barRoot = stubEl();
+        const bar = new IndexStatusBar();
+        bar.mount(barRoot as unknown as HTMLElement, {
+            getStats: async () => ({
+                files: 5, chunks: 18, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null,
+            }),
+            getHealth: () => 'indexing' as const,
+            onOpenSettings: () => {},
+        });
+        bar.show(15, 'Seek: indexing 15 notes…');
+
+        const cardRoot = stubEl();
+        renderIndexStatusCard(cardRoot as unknown as HTMLElement, {
+            health: 'indexing',
+            stats: { files: 5, chunks: 18, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null },
+            job: bar.job(),
+        });
+
+        const badge = barRoot.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)?.textContent;
+        const cardBadge = cardRoot.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)?.textContent;
+        expect(badge).toBe('15');
+        expect(cardBadge).toBe(badge);
+        expect(textOf(cardRoot)).toContain('15 remaining');
+        expect(textOf(cardRoot)).not.toContain('5 files');
+    });
+
+    it('does not use the deprecated circular indexing dot', () => {
+        const root = stubEl();
+        renderIndexStatusCard(root as unknown as HTMLElement, {
+            health: 'indexing',
+            stats: { files: 5, chunks: 18, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null },
+            job: { done: 3, total: 15 },
+        });
+        expect(root.querySelector(`.${INDEX_STATUS_DOT_CLS}`)).toBeNull();
+        expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)?.textContent).toBe('12');
     });
 
     it('names starting and restoring as distinct from indexing and no-index', () => {
         const start = stubEl();
         renderIndexStatusCard(start as unknown as HTMLElement, {
             health: 'starting',
-            stats: { files: 0, chunks: 0, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null },
+            stats: { files: 5, chunks: 18, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null },
         });
         expect(textOf(start)).toContain('Starting up');
         expect(textOf(start)).not.toContain('No index');
+        expect(textOf(start)).not.toMatch(/\b5\b/);
+        expect(textOf(start)).toContain('…');
 
         const restore = stubEl();
         renderIndexStatusCard(restore as unknown as HTMLElement, {
             health: 'restoring',
-            stats: { files: 0, chunks: 0, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null },
+            stats: { files: 5, chunks: 18, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null },
         });
         expect(textOf(restore)).toContain('Restoring');
         expect(textOf(restore)).not.toContain('No index');
+        expect(textOf(restore)).not.toMatch(/\b5\b/);
     });
 });

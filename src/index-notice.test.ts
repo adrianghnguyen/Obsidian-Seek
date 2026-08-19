@@ -3,6 +3,10 @@ import {
     indexBannerSpec,
     indexLoadSpec,
     resolveIndexLoadPhase,
+    resolveCliSearchGate,
+    resolveIndexUiStatus,
+    resolveSidecarWait,
+    retainIndexInventory,
     indexFooterStatus,
     INDEX_STALE_MSG,
     INDEX_SYNCING_MSG,
@@ -21,6 +25,10 @@ import {
     INDEX_NO_INDEX_LABEL,
     INDEX_NO_INDEX_TITLE,
     INDEX_UP_TO_DATE_LABEL,
+    CLI_SEARCH_GATE_STARTING,
+    CLI_SEARCH_GATE_RESTORING,
+    CLI_SEARCH_GATE_INDEXING,
+    CLI_SEARCH_GATE_NO_INDEX,
     isIndexWaitKind,
     type IndexFooterInput,
 } from './index-notice';
@@ -113,6 +121,10 @@ describe('resolveIndexLoadPhase', () => {
 
     it('is idle when boot is done and nothing is pending', () => {
         expect(resolveIndexLoadPhase(idle)).toBe('idle');
+    });
+
+    it('does not treat cache warming as note indexing', () => {
+        expect(resolveIndexLoadPhase({ ...idle })).toBe('idle');
     });
 });
 
@@ -247,15 +259,27 @@ describe('indexFooterStatus', () => {
         expect(indexFooterStatus({ ...idle, reason: 'peer-ahead' }).kind).toBe('error');
     });
 
-    it('is Indexing… while indexing or recovering', () => {
+    it('is Indexing… while indexing or recovering, using the status-bar badge not refresh-cw', () => {
         expect(indexFooterStatus({ ...idle, kind: 'indexing' })).toMatchObject({
             kind: 'indexing',
             label: INDEX_INDEXING_LABEL,
-            icon: 'refresh-cw',
+            icon: '',
             tone: 'accent',
+            badgeCount: null,
         });
+        expect(indexFooterStatus({ ...idle, kind: 'indexing', job: { done: 0, total: 15 } })).toMatchObject({
+            kind: 'indexing',
+            icon: '',
+            badgeCount: 15,
+        });
+        expect(indexFooterStatus({ ...idle, kind: 'indexing' }).icon).not.toBe('refresh-cw');
         expect(indexFooterStatus({ ...idle, phase: 'indexing' }).kind).toBe('indexing');
         expect(indexFooterStatus({ ...idle, health: 'recovering' }).kind).toBe('indexing');
+        expect(indexFooterStatus({ ...idle, job: { done: 0, total: 15 } })).toMatchObject({
+            kind: 'indexing',
+            badgeCount: 15,
+            icon: '',
+        });
     });
 
     it('is No index only when idle-empty and the model is ready', () => {
@@ -292,6 +316,12 @@ describe('indexFooterStatus', () => {
         expect(indexFooterStatus({
             ...idle, health: 'recovering', modelReady: false, kind: 'onboarding',
         }).kind).toBe('indexing');
+        expect(indexFooterStatus({
+            ...idle, job: { done: 0, total: 15 }, modelReady: false, kind: 'resting',
+        }).kind).toBe('indexing');
+        expect(indexFooterStatus({
+            ...idle, uiHealth: 'starting', job: { done: 0, total: 15 }, kind: 'resting',
+        }).kind).toBe('starting');
         expect(indexFooterStatus({ ...idle, kind: 'onboarding', modelReady: false }).kind).toBe('model-loading');
         expect(indexFooterStatus({ ...idle, kind: 'onboarding' }).kind).toBe('no-index');
         expect(indexFooterStatus(idle).kind).toBe('up-to-date');
@@ -305,5 +335,120 @@ describe('isIndexWaitKind', () => {
         expect(isIndexWaitKind('indexing')).toBe(true);
         expect(isIndexWaitKind('resting')).toBe(false);
         expect(isIndexWaitKind('onboarding')).toBe(false);
+    });
+});
+
+describe('resolveCliSearchGate', () => {
+    it('blocks during hydrate / starting even when inventory is already populated', () => {
+        expect(resolveCliSearchGate({ warmPhase: 'starting', uiHealth: 'starting', chunks: 10514 }))
+            .toBe(CLI_SEARCH_GATE_STARTING);
+    });
+
+    it('blocks during sidecar restore even if some chunks already exist', () => {
+        expect(resolveCliSearchGate({ warmPhase: 'restoring', uiHealth: 'restoring', chunks: 12 }))
+            .toBe(CLI_SEARCH_GATE_RESTORING);
+    });
+
+    it('allows search on a populated index during catch-up / indexing', () => {
+        expect(resolveCliSearchGate({ warmPhase: null, uiHealth: 'indexing', chunks: 120 }))
+            .toBeNull();
+    });
+
+    it('blocks when inventory is empty', () => {
+        expect(resolveCliSearchGate({ warmPhase: null, uiHealth: 'none', chunks: 0 }))
+            .toBe(CLI_SEARCH_GATE_NO_INDEX);
+        expect(resolveCliSearchGate({ warmPhase: null, uiHealth: 'ok', chunks: 0 }))
+            .toBe(CLI_SEARCH_GATE_NO_INDEX);
+    });
+
+    it('allows degraded search when uiHealth is error but chunks exist', () => {
+        expect(resolveCliSearchGate({ warmPhase: null, uiHealth: 'error', chunks: 50 })).toBeNull();
+    });
+
+    it('is ready when warm phase is clear, uiHealth ok, and chunks > 0', () => {
+        expect(resolveCliSearchGate({ warmPhase: null, uiHealth: 'ok', chunks: 412 })).toBeNull();
+    });
+});
+
+describe('resolveIndexUiStatus', () => {
+    const idle = {
+        booting: false,
+        hydrating: false,
+        waitingForSidecar: false,
+        peerSyncPending: false,
+        health: 'healthy' as const,
+        reason: null,
+        indexing: false,
+        job: null as { done: number; total: number } | null,
+        searchableChunks: 100,
+        inventoryFiles: 40,
+    };
+
+    it('hydrating + writing + job is Starting during boot, never Indexing', () => {
+        expect(resolveIndexUiStatus({
+            ...idle, booting: true, hydrating: true, indexing: true, job: { done: 0, total: 15 }, searchableChunks: 0, inventoryFiles: 0,
+        })).toBe('starting');
+    });
+
+    it('periodic hydrate (not booting) is Restoring, never Indexing', () => {
+        expect(resolveIndexUiStatus({
+            ...idle, hydrating: true, indexing: true, job: { done: 0, total: 8 },
+        })).toBe('restoring');
+    });
+
+    it('startup cache warm after hydrate is Starting, not Indexing', () => {
+        expect(resolveIndexUiStatus({ ...idle, booting: true })).toBe('starting');
+    });
+
+    it('non-startup cache warm with searchable chunks is Ready', () => {
+        expect(resolveIndexUiStatus(idle)).toBe('ok');
+    });
+
+    it('degraded + indexing is Error', () => {
+        expect(resolveIndexUiStatus({ ...idle, health: 'degraded', reason: 'version', indexing: true })).toBe('error');
+    });
+
+    it('real catch-up with a job is Indexing', () => {
+        expect(resolveIndexUiStatus({ ...idle, indexing: true, job: { done: 3, total: 15 } })).toBe('indexing');
+    });
+
+    it('zero files with positive chunks is Ready, not None', () => {
+        expect(resolveIndexUiStatus({ ...idle, inventoryFiles: 0, searchableChunks: 12 })).toBe('ok');
+    });
+
+    it('empty idle inventory is None', () => {
+        expect(resolveIndexUiStatus({ ...idle, searchableChunks: 0, inventoryFiles: 0 })).toBe('none');
+    });
+});
+
+describe('resolveSidecarWait', () => {
+    it('clears waiting on a warm no-op (accepted producer, nothing hydrated)', () => {
+        expect(resolveSidecarWait({ hydrated: 0, skippedPartialNotes: 0 }, 16570)).toBe(false);
+    });
+
+    it('sets waiting only when the local index is empty and notes arrived partial', () => {
+        expect(resolveSidecarWait({ hydrated: 0, skippedPartialNotes: 3 }, 0)).toBe(true);
+        expect(resolveSidecarWait({ hydrated: 0, skippedPartialNotes: 3 }, 400)).toBe(false);
+    });
+
+    it('clears waiting once any chunks hydrated', () => {
+        expect(resolveSidecarWait({ hydrated: 12, skippedPartialNotes: 2 }, 0)).toBe(false);
+    });
+});
+
+describe('retainIndexInventory', () => {
+    it('ignores a 0/0 snapshot after a populated inventory', () => {
+        expect(retainIndexInventory({ files: 2774, chunks: 10514 }, { files: 0, chunks: 0 }))
+            .toEqual({ files: 2774, chunks: 10514 });
+    });
+
+    it('accepts a real empty vault when nothing was known yet', () => {
+        expect(retainIndexInventory({ files: null, chunks: null }, { files: 0, chunks: 0 }))
+            .toEqual({ files: 0, chunks: 0 });
+    });
+
+    it('allows a forced 0/0 after a full nuke', () => {
+        expect(retainIndexInventory({ files: 12, chunks: 40 }, { files: 0, chunks: 0 }, true))
+            .toEqual({ files: 0, chunks: 0 });
     });
 });
