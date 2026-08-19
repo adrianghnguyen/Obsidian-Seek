@@ -555,14 +555,16 @@ export default class SeekPlugin extends Plugin {
             //     the gap is only un-touched, externally-changed notes — an accepted
             //     freshness trade for not auto-nuking, and the banner says so.
             if (!identityHandled) await this.reconcileOnLoad();
-            // The clean-launch BM25/frame warm that used to fire here ('startup') has
-            // moved into ensureModelLoaded ('model-load') so it overlaps the model
-            // load instead of taxing app-open. reconcileOnLoad still warms ('delta')
-            // when its diff finds changes; warmCaches's `warming` guard dedups the two.
+            // Prime BM25/frame after the store is populated so a clean launch does
+            // not wait for the first search. Desktop warmCaches does not need the
+            // embedder; mobile no-ops until the model is loaded (lazy-load / jetsam).
+            // reconcileOnLoad still warms ('delta') when its diff finds changes;
+            // warmCaches's `warming` guard dedups overlapping calls.
         } finally {
             this.sidecarHydrating = false;
             this.indexBootPending = false;
             await this.touchIndexInventory();
+            void this.orchestrator.warmCaches('startup');
         }
         })();
 
@@ -1062,13 +1064,9 @@ export default class SeekPlugin extends Plugin {
             // main-thread-heavy and used to log as 'idle' long tasks.
             this.pushTaskContext('model-load');
             try {
-                // Warm the frame + BM25 caches in the model-load shadow. warmCaches
-                // reads the store (not the model), so it overlaps the cold model load
-                // and the index is hot by the time the first query runs — recovering
-                // the clean-launch COLD_START miss the old onload 'startup' warm
-                // covered. Self-guarded: `warming` dedups the reconcile 'delta' warm,
-                // and the mobile `!loaded` guard keeps cold mobile a no-op here (the
-                // model isn't loaded yet at this point).
+                // Overlap BM25/frame warm with the cold model load in case a search
+                // beats the onload 'startup' warm (or mobile, which bails until the
+                // embedder is resident). Self-guarded: `warming` dedups startup/delta.
                 void this.orchestrator.warmCaches('model-load');
                 // q4: equal quality (bake-off NDCG@10 Δ=0.0005) and, on the
                 // pinned v4 runtime, also the fastest + lightest config (20.6
