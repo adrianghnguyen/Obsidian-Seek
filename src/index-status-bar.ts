@@ -134,7 +134,7 @@ export class IndexStatusBar {
         this.progressEl?.addClass('is-hidden');
         const health = this.hooks?.getHealth() ?? 'ok';
         this.setDot(health);
-        this.setStatusLabel(`Seek: ${INDEX_STATUS_HEALTH[health].label}`);
+        this.setStatusLabel(`Seek: ${INDEX_STATUS_HEALTH[health].compact}`);
     }
 
     private setStatusLabel(text: string): void {

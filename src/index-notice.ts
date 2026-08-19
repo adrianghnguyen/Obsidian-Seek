@@ -84,19 +84,19 @@ export const INDEX_BUILDING_TITLE = 'Indexing';
 export const INDEX_BUILDING_MSG = 'Seek is still indexing your notes…';
 export const INDEX_NO_INDEX_TITLE = 'No index yet';
 export const INDEX_NO_INDEX_MSG = 'This vault has not been indexed. Nothing is loading in the background — build an index in Seek settings to search.';
-export const INDEX_NO_INDEX_LABEL = 'No index';
-export const INDEX_STARTING_LABEL = 'Starting up…';
-export const INDEX_RESTORING_LABEL = 'Restoring…';
-export const INDEX_MODEL_LOADING_LABEL = 'Loading model…';
-export const INDEX_SYNCING_LABEL = 'Syncing…';
-export const INDEX_ERROR_LABEL = 'Index error';
-export const INDEX_INDEXING_LABEL = 'Indexing…';
-export const INDEX_UP_TO_DATE_LABEL = 'Up to date';
+export const INDEX_NO_INDEX_LABEL = 'None';
+export const INDEX_STARTING_LABEL = 'Starting';
+export const INDEX_RESTORING_LABEL = 'Restoring';
+export const INDEX_MODEL_LOADING_LABEL = 'Loading';
+export const INDEX_SYNCING_LABEL = 'Syncing';
+export const INDEX_ERROR_LABEL = 'Error';
+export const INDEX_INDEXING_LABEL = 'Indexing';
+export const INDEX_UP_TO_DATE_LABEL = 'Ready';
 
 export type IndexLoadPhase = 'hydrating' | 'indexing' | 'idle';
 export type IndexLoadKind = 'resting' | 'starting' | 'hydrating' | 'indexing' | 'onboarding';
 export type IndexFooterKind = 'syncing' | 'restoring' | 'starting' | 'error' | 'indexing' | 'model-loading' | 'no-index' | 'up-to-date';
-export type IndexFooterTone = 'accent' | 'bad' | 'warn' | 'mid' | 'good';
+export type IndexFooterTone = 'info' | 'accent' | 'bad' | 'warn' | 'mid' | 'good';
 
 export interface IndexLoadFlags {
     hydrating: boolean;
@@ -185,13 +185,13 @@ export function indexLoadSpec(input: IndexLoadInput): IndexLoadSpec {
 // no-index > up-to-date, so boot never masquerades as "no index" or "up to date".
 export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
     if (input.peerSyncPending) {
-        return { kind: 'syncing', label: INDEX_SYNCING_LABEL, icon: 'refresh-cw', tone: 'accent' };
+        return { kind: 'syncing', label: INDEX_SYNCING_LABEL, icon: 'refresh-cw', tone: 'info' };
     }
     if (input.kind === 'hydrating' || input.waitingForSidecar) {
-        return { kind: 'restoring', label: INDEX_RESTORING_LABEL, icon: 'refresh-cw', tone: 'accent' };
+        return { kind: 'restoring', label: INDEX_RESTORING_LABEL, icon: 'refresh-cw', tone: 'info' };
     }
     if (input.kind === 'starting' || input.phase === 'hydrating') {
-        return { kind: 'starting', label: INDEX_STARTING_LABEL, icon: 'refresh-cw', tone: 'accent' };
+        return { kind: 'starting', label: INDEX_STARTING_LABEL, icon: 'refresh-cw', tone: 'info' };
     }
     if (input.health === 'degraded' || input.reason === 'peer-ahead') {
         return { kind: 'error', label: INDEX_ERROR_LABEL, icon: 'alert-triangle', tone: 'bad' };

@@ -18,13 +18,13 @@ export interface IndexStatusJob {
     paused?: boolean;
 }
 
-export const INDEX_STATUS_HEALTH: Record<IndexStatusHealth, { tone: string; label: string }> = {
-    none: { tone: 'mid', label: 'No index' },
-    starting: { tone: 'accent', label: 'Starting up…' },
-    restoring: { tone: 'accent', label: 'Restoring…' },
-    ok: { tone: 'good', label: 'Up to date' },
-    indexing: { tone: 'accent', label: 'Indexing…' },
-    error: { tone: 'bad', label: 'Index error' },
+export const INDEX_STATUS_HEALTH: Record<IndexStatusHealth, { tone: string; label: string; compact: string }> = {
+    none: { tone: 'mid', label: 'No index', compact: 'None' },
+    starting: { tone: 'info', label: 'Starting up…', compact: 'Starting' },
+    restoring: { tone: 'info', label: 'Restoring…', compact: 'Restoring' },
+    ok: { tone: 'good', label: 'Up to date', compact: 'Ready' },
+    indexing: { tone: 'accent', label: 'Indexing…', compact: 'Indexing' },
+    error: { tone: 'bad', label: 'Index error', compact: 'Error' },
 };
 
 export function fmtIndexStamp(iso: string): string {
