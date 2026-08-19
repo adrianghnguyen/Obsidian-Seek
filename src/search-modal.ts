@@ -32,6 +32,13 @@ import { matchTitleAlias } from './fusion';
 import { dedupeAliasesAgainstBasename, sliceResultAliases } from './result-aliases';
 import type { RecentSearches } from './recents';
 import { indexLoadSpec, indexFooterStatus, isIndexWaitKind, type IndexLoadKind, type IndexLoadState } from './index-notice';
+import {
+    renderIndexStatusCard,
+    renderIndexStatusBadge,
+    indexWaitCardModel,
+    jobRemaining,
+    type IndexStatusHealth,
+} from './index-status-card';
 
 // Search debounce. Mobile gets a longer window: the query embed runs on the
 // render thread (iframe = same event loop) and on iOS the stage-1 binary scan is
@@ -254,6 +261,7 @@ export class SeekSearchModal extends Modal {
     private indexEmpty = false;
     private lastChunkCount: number | null = null;
     private loadKind: IndexLoadKind = 'resting';
+    private lastJobRemaining: number | null = null;
     private loadPoll: number | null = null;
     // Footer index-status cluster (always present, left of esc). Null until
     // buildFooter; cleared in onClose so a late poll can't paint detached DOM.
@@ -605,10 +613,20 @@ export class SeekSearchModal extends Modal {
             reason: load.reason,
             peerSyncPending: load.peerSyncPending,
             waitingForSidecar: load.waitingForSidecar,
+            job: load.job,
+            uiHealth: load.uiHealth,
         });
         this.footStatusEl.className = `seek-foot-status is-${spec.tone}`;
         this.footStatusLabelEl.setText(spec.label);
-        setIcon(this.footStatusIconEl, spec.icon);
+        this.footStatusIconEl.empty();
+        if (spec.kind === 'indexing') {
+            renderIndexStatusBadge(this.footStatusIconEl, {
+                health: 'indexing',
+                remaining: spec.badgeCount ?? jobRemaining(load.job),
+            });
+        } else {
+            setIcon(this.footStatusIconEl, spec.icon);
+        }
     }
 
     // Build + copy an obsidian://seek deep-link for the current query. `vault` is
@@ -731,6 +749,26 @@ export class SeekSearchModal extends Modal {
         this.renderResting();
     }
 
+    private modalIndexHealth(kind: IndexLoadKind, load: IndexLoadState): IndexStatusHealth {
+        if (load.uiHealth) return load.uiHealth;
+        if (kind === 'restoring' || load.waitingForSidecar || load.peerSyncPending) return 'restoring';
+        if (kind === 'starting' || load.phase === 'hydrating') return 'starting';
+        if (kind === 'indexing' || load.phase === 'indexing' || load.catchUpPending) return 'indexing';
+        if (load.health === 'degraded') return 'error';
+        if (kind === 'onboarding') return 'none';
+        return 'ok';
+    }
+
+    private paintIndexWaitCard(parent: HTMLElement, kind: IndexLoadKind): void {
+        const load = this.getIndexLoadState?.() ?? { phase: 'idle' as const };
+        const model = indexWaitCardModel({
+            health: this.modalIndexHealth(kind, load),
+            job: load.job,
+            stats: null,
+        });
+        renderIndexStatusCard(parent, model);
+    }
+
     private currentLoadSpec() {
         const load = this.getIndexLoadState?.() ?? { phase: 'idle' as const };
         return indexLoadSpec({
@@ -750,6 +788,11 @@ export class SeekSearchModal extends Modal {
         this.clearRows();
         this.currentResults = [];
         this.resultsEl.removeClass('is-loading');
+        const load = this.getIndexLoadState?.() ?? { phase: 'idle' as const };
+        const health = this.modalIndexHealth(this.currentLoadSpec().kind, load);
+        if (health === 'indexing' || health === 'starting' || health === 'restoring') {
+            this.paintIndexWaitCard(this.resultsEl, this.currentLoadSpec().kind);
+        }
         this.renderRecents();
     }
 
@@ -801,10 +844,13 @@ export class SeekSearchModal extends Modal {
         if (chunks != null) this.lastChunkCount = chunks;
         const spec = this.currentLoadSpec();
         const prevKind = this.loadKind;
+        const remaining = jobRemaining(this.getIndexLoadState?.()?.job);
+        const remainingChanged = remaining !== this.lastJobRemaining;
         this.loadKind = spec.kind;
+        this.lastJobRemaining = remaining;
         this.indexEmpty = spec.kind === 'onboarding';
         this.syncFooterStatus();
-        if (spec.kind === prevKind) return;
+        if (spec.kind === prevKind && !remainingChanged) return;
         if (!this.lastQuery.trim()) this.renderEmpty();
         else if (this.currentResults.length === 0) this.renderEmptyQuery(spec.kind);
     }
@@ -836,8 +882,8 @@ export class SeekSearchModal extends Modal {
         this.currentResults = [];
         this.resultsEl.removeClass('is-loading');
         const box = this.resultsEl.createDiv({ cls: 'seek-empty seek-noindex' });
-        box.createDiv({ cls: 'seek-noindex-title', text: spec.title ?? 'Starting up' });
-        box.createDiv({ cls: 'seek-empty-sub', text: spec.message ?? 'Seek is loading the search index.' });
+        this.paintIndexWaitCard(box, spec.kind);
+        if (spec.message) box.createDiv({ cls: 'seek-empty-sub', text: spec.message });
     }
 
     private renderEmptyQuery(kind: IndexLoadKind): void {

@@ -535,6 +535,8 @@ export class LocalEmbedder {
     private _tokenizerLoaded = false;
     async ensureTokenizer(modelId: string = MODEL_ID, revision: string | null = MODEL_REVISION): Promise<void> {
         if (this._loaded || this._tokenizerLoaded) return;
+        const init = await this.init();
+        if (!init.iframeReady) throw new Error(init.error ?? 'iframe init failed');
         await this.runner.loadTokenizer(modelId, revision);
         this._tokenizerLoaded = true;
     }
