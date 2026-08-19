@@ -925,7 +925,9 @@
 }
 .seek-foot-status-icon {
     display: flex;
-    width: 14px;
+    align-items: center;
+    width: auto;
+    min-width: 14px;
     height: 14px;
 }
 .seek-foot-status-icon svg {
@@ -1139,11 +1141,43 @@
     font-size: 12px;
     font-variant-numeric: tabular-nums;
 }
+.seek-status-bar-label.is-hidden { display: none; }
 .seek-status-bar-progress {
     width: 48px;
     height: 6px;
 }
 .seek-status-bar-progress.is-hidden { display: none; }
+
+/* Numbered remaining-files badge — the indexing chrome shared by the status
+   bar, search-modal wait card, and footer. Replaces the circular indexing dot. */
+.seek-index-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 16px;
+    padding: 0 5px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 650;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-on-accent, #fff);
+    background: var(--interactive-accent);
+}
+.seek-status-bar .seek-index-badge {
+    min-width: 20px;
+    height: 18px;
+}
+.seek-foot-status .seek-index-badge {
+    min-width: 16px;
+    height: 14px;
+    font-size: 10px;
+}
+.seek-status-health .seek-index-badge {
+    min-width: 20px;
+    height: 18px;
+}
 .seek-index-hover {
     position: absolute;
     bottom: calc(100% + 8px);

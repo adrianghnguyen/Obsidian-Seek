@@ -208,15 +208,8 @@ export class SeekSettingTab extends PluginSettingTab {
 
     // ---- Index ---------------------------------------------------------------------
     private statusState(): 'none' | 'starting' | 'restoring' | 'ok' | 'indexing' | 'error' {
-        const warm = this.plugin.indexWarmPhase;
-        if (warm) return warm;
-        if (this.plugin.isIndexing || this.reindexPhase === 'running') return 'indexing';
-        if (this.plugin.indexHealthState === 'degraded') return 'error';
-        if (this.plugin.indexHealthState === 'recovering') return 'indexing';
-        if (this.stats && this.stats.files === 0) return 'none';
-        return 'ok'; // NOTE: 'stale' (vault edited since last index) is intentionally
-                     // not derived — it needs an expensive delta scan, and the file
-                     // watcher catches edits up automatically. See the plan's degradations.
+        if (this.reindexPhase === 'running') return 'indexing';
+        return this.plugin.indexUiHealth;
     }
 
     private renderIndex(containerEl: HTMLElement): void {
@@ -312,7 +305,11 @@ export class SeekSettingTab extends PluginSettingTab {
     }
 
     private renderStatusCard(containerEl: HTMLElement): void {
-        renderIndexStatusCard(containerEl, { health: this.statusState(), stats: this.stats });
+        renderIndexStatusCard(containerEl, {
+            health: this.statusState(),
+            stats: this.stats,
+            job: this.plugin.getIndexJob(),
+        });
     }
 
     private renderReindexRow(containerEl: HTMLElement): void {
@@ -381,8 +378,14 @@ export class SeekSettingTab extends PluginSettingTab {
         void this.plugin.runFullReindex({
             skipConfirm: true,
             onProgress: (msg) => {
-                const m = msg.match(/Indexed\s+([\d,]+)\s+files/i);
-                if (m) this.reindexDone = parseInt(m[1].replace(/,/g, ''), 10);
+                const job = this.plugin.getIndexJob();
+                if (job && job.total > 0) {
+                    this.reindexDone = job.done;
+                    this.reindexTotal = job.total;
+                } else {
+                    const m = msg.match(/Indexed\s+([\d,]+)\s+files/i);
+                    if (m) this.reindexDone = parseInt(m[1].replace(/,/g, ''), 10);
+                }
                 this.paintProgress();
             },
         }).then(() => {

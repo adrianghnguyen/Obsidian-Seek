@@ -28,7 +28,7 @@ import { IndexStore, indexDbPrefix } from './index-store';
 import { SeekLogger } from './logger';
 import { Forensics } from './forensics';
 import { RecentSearches } from './recents';
-import { SearchOrchestrator, driftRecoveryDecision, type RecencyOverride } from './search';
+import { SearchOrchestrator, driftRecoveryDecision, shouldIndexPath, type RecencyOverride } from './search';
 import { SeekSearchModal, type IndexBanner } from './search-modal';
 import { parsePaneType, openFileAtTarget, openBaseAtTarget, type OpenTarget } from './open-target';
 import {
@@ -38,14 +38,15 @@ import {
     resolveInsertLinkAlias,
     resolveInsertLinkSubpath,
 } from './insert-link';
-import { indexBannerSpec, resolveIndexLoadPhase, INDEX_STALE_MSG, INDEX_SYNCING_MSG, INDEX_PEER_AHEAD_MSG, type DegradedReason, type IndexLoadState } from './index-notice';
+import { indexBannerSpec, resolveIndexLoadPhase, resolveCliSearchGate, resolveIndexUiStatus, resolveSidecarWait, retainIndexInventory, INDEX_STALE_MSG, INDEX_SYNCING_MSG, INDEX_PEER_AHEAD_MSG, type DegradedReason, type IndexLoadState } from './index-notice';
 import { IndexStatusBar, parseIndexedProgress } from './index-status-bar';
-import type { IndexStatusHealth } from './index-status-card';
+import type { IndexJobKind, IndexStatusHealth, IndexStatusJob } from './index-status-card';
 import { SeekSettingTab } from './settings-tab';
 import { collectPlatformInfo, isMobilePlatform, resolveDevice, recordActiveBackend, maybeDemoteOnCrash, getStartupWarm } from './platform';
 import { CompositorPacer } from './pacer';
 import { shouldUnloadEmbedder, type UnloadGateState } from './embedder-lifecycle';
 import { drainCatchUp, CATCHUP_MAX_FILES_PER_BURST, CATCHUP_BURST_BUDGET_MS } from './catchup';
+import { shouldAutoDrainStartupCatchUp } from './startup-drain';
 import { TaskContextTracker, type TaskContext } from './task-context';
 import type { LongTaskEntry, MemoryPressureEntry, StorageSnapshotEntry, EvictionSuspectedEntry, AppLocalFetchEntry } from './types';
 
@@ -209,8 +210,11 @@ export default class SeekPlugin extends Plugin {
     private indexBootPending = true;
     private sidecarHydrating = false;
     private waitingForSidecar = false;
-    // Last known indexed file count for sync status-bar health (null = not probed yet).
+    // Last known indexed file/chunk counts for sync status-bar health (null = not probed yet).
     private indexInventoryFiles: number | null = null;
+    private indexInventoryChunks: number | null = null;
+    private inventoryGen = 0;
+    private nextIndexJobId = 1;
     private readonly indexProgress = new IndexStatusBar();
     // Drift auto-recovery (sibling of catch-up). The orchestrator detects persistent
     // frame/BM25 row-space drift and fires onPersistentDrift; we run a bounded,
@@ -282,31 +286,76 @@ export default class SeekPlugin extends Plugin {
     get isIndexing(): boolean { return this.currentTaskContext === 'indexing'; }
     /** Boot / sidecar-restore phase for explicit status copy. Null when idle. */
     get indexWarmPhase(): 'starting' | 'restoring' | null {
-        if (this.waitingForSidecar) return 'restoring';
+        if (this.waitingForSidecar || (this.sidecarHydrating && !this.indexBootPending)) return 'restoring';
         if (this.indexBootPending || this.sidecarHydrating) return 'starting';
         return null;
     }
     get isIndexWarmingUp(): boolean { return this.indexWarmPhase != null; }
 
+    /** Same health the status-bar item uses — Settings and the search modal must match it. */
+    get indexUiHealth(): IndexStatusHealth {
+        return this.statusBarHealth();
+    }
+
+    /** Coordinator pass currently shown on the status-bar badge, or null. */
+    getIndexJob(): IndexStatusJob | null {
+        return this.indexProgress.job();
+    }
+
     private statusBarHealth(): IndexStatusHealth {
-        const warm = this.indexWarmPhase;
-        if (warm) return warm;
-        if (this.catchUpRunning || this.catchUpPending || this.flushing || this.isIndexing) return 'indexing';
-        if (this.indexHealth === 'degraded') return 'error';
-        if (this.indexHealth === 'recovering') return 'indexing';
-        if (this.indexInventoryFiles === 0) return 'none';
-        return 'ok';
+        return resolveIndexUiStatus({
+            booting: this.indexBootPending,
+            hydrating: this.sidecarHydrating,
+            waitingForSidecar: this.waitingForSidecar,
+            peerSyncPending: this.peerSyncPending,
+            health: this.indexHealth,
+            reason: this.degradedReason,
+            indexing: this.catchUpRunning || this.catchUpPending || this.flushing || this.isIndexing || this.driftRecoveryRunning,
+            job: this.indexProgress.job(),
+            searchableChunks: this.indexInventoryChunks,
+            inventoryFiles: this.indexInventoryFiles,
+        });
     }
 
     private refreshIndexStatusBar(): void {
         this.indexProgress.refreshIdle();
     }
 
+    private publishInventory(files: number, chunks: number, force = false): void {
+        const next = retainIndexInventory(
+            { files: this.indexInventoryFiles, chunks: this.indexInventoryChunks },
+            { files, chunks },
+            force,
+        );
+        this.indexInventoryFiles = next.files;
+        this.indexInventoryChunks = next.chunks;
+    }
+
     private async touchIndexInventory(): Promise<void> {
+        const gen = ++this.inventoryGen;
         try {
-            this.indexInventoryFiles = (await this.store.count()).files;
+            const c = await this.store.count();
+            if (gen !== this.inventoryGen) return;
+            this.publishInventory(c.files, c.chunks);
         } catch { /* store not open yet */ }
-        this.refreshIndexStatusBar();
+        if (gen === this.inventoryGen) this.refreshIndexStatusBar();
+    }
+
+    private beginIndexJob(kind: IndexJobKind, total: number, label: string): number {
+        const id = this.nextIndexJobId++;
+        this.indexProgress.show(total, label, { id, kind });
+        return id;
+    }
+
+    /** Readiness gate for seek:search / seek:open / seek:insert-link — null when search may run. */
+    private async cliSearchGateMessage(): Promise<string | null> {
+        let chunks = this.orchestrator ? await this.orchestrator.indexedChunkCount() : null;
+        if ((chunks ?? 0) === 0 && (this.indexInventoryChunks ?? 0) > 0) chunks = this.indexInventoryChunks;
+        return resolveCliSearchGate({
+            warmPhase: this.indexWarmPhase,
+            uiHealth: this.indexUiHealth,
+            chunks,
+        });
     }
 
     private openSeekSettings(): void {
@@ -392,6 +441,7 @@ export default class SeekPlugin extends Plugin {
         // second Seek build in this vault (e.g. an id 'seek-prototype' dev build)
         // owns a separate database. id 'seek' → 'seek-index:<appId>', unchanged.
         await this.store.open(vaultScope, indexDbPrefix(this.manifest.id));
+        void this.touchIndexInventory();
 
         // Crash forensics: synchronous localStorage breadcrumbs (vault-scoped
         // like the IDB name — localStorage is origin-shared across vaults on
@@ -502,7 +552,7 @@ export default class SeekPlugin extends Plugin {
         // already holds. All off the load path (fire-and-forget IIFE) so plugin
         // load never blocks. sweepOrphanTmpFiles first cleans any crashed atomic
         // write. Each step is gated/no-op when the sidecar is disabled.
-        this.sidecarHydrating = true;
+        this.sidecarHydrating = false;
         void (async () => {
             try {
             let identityHandled = false;
@@ -530,7 +580,7 @@ export default class SeekPlugin extends Plugin {
                     // crash-relaunch with an unchanged vault skip the whole-vault
                     // re-chunk (the iOS 1fps loop), while an empty/evicted store
                     // still forces the recovery sweep.
-                    const hydrated = await this.orchestrator.reconcileSidecarIfChanged();
+                    const hydrated = await this.withSidecarHydrate(() => this.orchestrator.reconcileSidecarIfChanged());
                     this.applySidecarWait(hydrated);
                     // Sidecar just scanned → raise the "update Seek" banner if a peer's index
                     // is newer than this build (and gate the mobile catch-up below off it).
@@ -566,11 +616,41 @@ export default class SeekPlugin extends Plugin {
             // does not need the embedder; mobile no-ops until the model is loaded.
         } finally {
             this.sidecarHydrating = false;
-            this.indexBootPending = false;
-            await this.touchIndexInventory();
-            if (getStartupWarm()) void this.orchestrator.warmCaches('startup');
+            if (getStartupWarm()) {
+                try {
+                    await this.orchestrator.warmCaches('startup');
+                } finally {
+                    this.indexBootPending = false;
+                    await this.touchIndexInventory();
+                }
+            } else {
+                this.indexBootPending = false;
+                await this.touchIndexInventory();
+            }
+            // Empty store + live notes: desktop must drain without opening Search.
+            // Covers identity-nuke-then-empty-hydrate and boot races that skip
+            // reconcileOnLoad's pending flag.
+            if (shouldAutoDrainStartupCatchUp({
+                mobile: isMobilePlatform(),
+                catchUpPending: this.catchUpPending,
+                emptyIndexWithNotes: (this.indexInventoryChunks ?? 0) === 0 && this.indexableNoteCount() > 0,
+            })) {
+                this.catchUpPending = true;
+            }
+            this.scheduleStartupCatchUp();
         }
         })();
+
+        this.app.workspace.onLayoutReady(() => {
+            if (shouldAutoDrainStartupCatchUp({
+                mobile: isMobilePlatform(),
+                catchUpPending: this.catchUpPending,
+                emptyIndexWithNotes: (this.indexInventoryChunks ?? 0) === 0 && this.indexableNoteCount() > 0,
+            })) {
+                this.catchUpPending = true;
+            }
+            this.scheduleStartupCatchUp();
+        });
 
         // Periodic sidecar reconcile: remote arrivals don't fire vault events for
         // .obsidian/ dotfiles, so poll for another device's freshly-synced index
@@ -735,6 +815,9 @@ export default class SeekPlugin extends Plugin {
                     const orchestrator = this.orchestrator;
                     if (!orchestrator) return fail('Seek not initialized — plugin still loading');
 
+                    const gate = await this.cliSearchGateMessage();
+                    if (gate) return asJson ? JSON.stringify({ error: gate, results: [], ready: false }) : gate;
+
                     const parsedLimit = typeof args.limit === 'string' ? parseInt(args.limit, 10) : NaN;
                     const topK = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : 10;
 
@@ -831,6 +914,9 @@ export default class SeekPlugin extends Plugin {
                     const orchestrator = this.orchestrator;
                     if (!orchestrator) return 'Seek error: Seek not initialized — plugin still loading';
 
+                    const gate = await this.cliSearchGateMessage();
+                    if (gate) return gate;
+
                     const parsedRank = typeof args.rank === 'string' ? parseInt(args.rank, 10) : NaN;
                     const rank = Number.isFinite(parsedRank) && parsedRank > 0 ? parsedRank : 1;
                     const target = parsePaneType(typeof args.paneType === 'string' ? args.paneType : undefined);
@@ -868,6 +954,9 @@ export default class SeekPlugin extends Plugin {
                     // Captured for the withQueryInFlight closure (null-check narrowing).
                     const orchestrator = this.orchestrator;
                     if (!orchestrator) return 'Seek error: Seek not initialized — plugin still loading';
+
+                    const gate = await this.cliSearchGateMessage();
+                    if (gate) return gate;
 
                     const parsedRank = typeof args.rank === 'string' ? parseInt(args.rank, 10) : NaN;
                     const rank = Number.isFinite(parsedRank) && parsedRank > 0 ? parsedRank : 1;
@@ -1272,7 +1361,7 @@ export default class SeekPlugin extends Plugin {
             // 1. Both platforms: hydrate from a matching-identity peer first (embed-free).
             //    rebuildFromSidecar nukes+stamps+hydrates ONLY if a compatible producer
             //    exists; otherwise it returns acceptedProducers:0 without touching the index.
-            const rebuilt = await this.orchestrator.rebuildFromSidecar();
+            const rebuilt = await this.withSidecarHydrate(() => this.orchestrator.rebuildFromSidecar());
             if (rebuilt && rebuilt.acceptedProducers > 0) {
                 this.identityHealNotified = false; // healed (silent — background sync)
                 // A current-version peer existed: the fleet self-heals embed-free even
@@ -1289,7 +1378,7 @@ export default class SeekPlugin extends Plugin {
             //     interrupted attempt resumes (re-runs the seconds-long proof) instead of
             //     restarting from zero. Both platforms reach it; mobile stays embed-free.
             //     Only a GENUINELY old index ('stale') falls through to the rebuild/wait.
-            const healed = await this.orchestrator.reconcileIdentityInPlace();
+            const healed = await this.withSidecarHydrate(() => this.orchestrator.reconcileIdentityInPlace());
             if (healed === 'stamped') {
                 this.identityHealNotified = false;
                 this.indexHealth = 'healthy';
@@ -1389,7 +1478,8 @@ export default class SeekPlugin extends Plugin {
             // the large-vault loop where a 415s reindex outlived the 300s poll.
             if (this.isIndexBusy()) return;
             if (await this.enforceIndexIdentity()) return;
-            await this.orchestrator.reconcileSidecarIfChanged();
+            const hydrated = await this.withSidecarHydrate(() => this.orchestrator.reconcileSidecarIfChanged());
+            this.applySidecarWait(hydrated);
             // The reconcile above scanned the sidecar dir, so peerAhead is fresh: raise (or
             // clear) the "update Seek" banner. Runs only on the local-healthy path, since
             // enforceIndexIdentity returns early when the local index is itself version-stale.
@@ -1749,11 +1839,8 @@ export default class SeekPlugin extends Plugin {
     // Startup mtime-diff sweep. Authoritative diff of the persisted index vs. the
     // live vault — catches external sync, edits made while disabled, and deletes
     // missed by a crash. Deletes/moves apply immediately (model-free). Edits are
-    // DEFERRED on every platform: forcing a cold model load at startup would break
-    // the lazy-load contract (don't spend ~250 MB if the user never searches), so
-    // we set catchUpPending and let the first search's model load drive the embed
-    // via runCatchUp. The live-session flush (flushDirty) is where the desktop
-    // force applies, since the model is typically already warm by then.
+    // DEFERRED at this step (embed: false); desktop then auto-drains via
+    // scheduleStartupCatchUp without opening Search. Mobile stays lazy.
     private async reconcileOnLoad(): Promise<void> {
         if (!this.orchestrator) return;
         this.pushTaskContext('reconcile');
@@ -1766,6 +1853,7 @@ export default class SeekPlugin extends Plugin {
             await this.logger.appendError('reconcileOnLoad', e).catch(() => {});
         } finally {
             this.popTaskContext('reconcile');
+            void this.touchIndexInventory();
         }
     }
 
@@ -1844,21 +1932,34 @@ export default class SeekPlugin extends Plugin {
             health: this.indexHealth,
             reason: this.degradedReason,
             peerSyncPending: this.peerSyncPending,
+            job: this.indexProgress.job(),
+            uiHealth: this.statusBarHealth(),
         };
     }
 
-    private applySidecarWait(result: { hydrated: number; acceptedProducers: number } | null): void {
+    private applySidecarWait(result: { hydrated: number; skippedPartialNotes: number; acceptedProducers: number } | null): void {
         if (!result) return;
-        if (result.hydrated > 0) this.waitingForSidecar = false;
-        else if (result.acceptedProducers > 0) this.waitingForSidecar = true;
+        this.waitingForSidecar = resolveSidecarWait(result, this.indexInventoryChunks);
         if (result.hydrated > 0) void this.touchIndexInventory();
         else this.refreshIndexStatusBar();
     }
 
+    private async withSidecarHydrate<T>(fn: () => Promise<T>): Promise<T> {
+        this.sidecarHydrating = true;
+        this.refreshIndexStatusBar();
+        try {
+            return await fn();
+        } finally {
+            this.sidecarHydrating = false;
+            this.refreshIndexStatusBar();
+        }
+    }
+
     private indexableNoteCount(): number {
-        let n = this.app.vault.getMarkdownFiles().length;
-        if (this.settings.indexBases) n += this.app.vault.getFiles().filter(f => f.extension === 'base').length;
-        return n;
+        const md = this.app.vault.getMarkdownFiles();
+        const extra = this.settings.indexBases ? this.app.vault.getFiles().filter(f => f.extension === 'base') : [];
+        const all = extra.length === 0 ? md : [...md, ...extra];
+        return all.filter(f => shouldIndexPath(this.app, this.settings, f.path)).length;
     }
 
     // Translate the orchestrator's peer-ahead signal (a sidecar refused for being at a
@@ -1989,17 +2090,23 @@ export default class SeekPlugin extends Plugin {
         const pacer = new CompositorPacer();
         void (async () => {
             this.pushTaskContext('catchup');
-            let shown = false;
+            let jobId: number | null = null;
             let passTotal = 0;
             let committed = 0;
             try {
                 const { pending } = await drainCatchUp({
                     computeDelta: async () => {
                         const d = await orchestrator.computeDelta();
-                        if (!shown && d.dirty.length > 0) {
-                            passTotal = d.dirty.length;
-                            this.indexProgress.show(passTotal, `Seek: indexing ${passTotal} notes…`);
-                            shown = true;
+                        if (d.dirty.length > 0) {
+                            if (jobId == null) {
+                                passTotal = d.dirty.length;
+                                jobId = this.beginIndexJob('catchup', passTotal, `Seek: indexing ${passTotal} notes…`);
+                            } else if (d.dirty.length > Math.max(0, passTotal - committed)) {
+                                this.indexProgress.hide(jobId);
+                                committed = 0;
+                                passTotal = d.dirty.length;
+                                jobId = this.beginIndexJob('catchup', passTotal, `Seek: indexing ${passTotal} notes…`);
+                            }
                         }
                         return d;
                     },
@@ -2012,15 +2119,16 @@ export default class SeekPlugin extends Plugin {
                                     committed + (p?.files ?? 0),
                                     passTotal || d.length,
                                     msg,
+                                    jobId ?? undefined,
                                 );
                             },
                         });
                         committed += r.committedPaths.length;
-                        if (shown) {
+                        if (jobId != null) {
                             const label = this.indexingBlocked
                                 ? `Seek: indexing paused · ${committed} / ${passTotal}`
                                 : `Seek: indexing ${committed} / ${passTotal} notes…`;
-                            this.indexProgress.update(committed, passTotal, label);
+                            this.indexProgress.update(committed, passTotal, label, jobId);
                         }
                         return r;
                     },
@@ -2037,14 +2145,31 @@ export default class SeekPlugin extends Plugin {
             } finally {
                 this.popTaskContext('catchup');
                 this.catchUpRunning = false;
-                if (shown) this.indexProgress.hide();
+                if (jobId != null) this.indexProgress.hide(jobId);
                 else this.refreshIndexStatusBar();
                 void this.touchIndexInventory();
             }
         })();
     }
 
-    // Persistent-drift escalation from the orchestrator (onCoherenceDrift's re-trip
+    // After boot reconciliation, desktop loads the model and drains pending
+    // embeds without opening Search. Mobile stays lazy (jetsam / heap).
+    private scheduleStartupCatchUp(): void {
+        if (!shouldAutoDrainStartupCatchUp({
+            mobile: isMobilePlatform(),
+            catchUpPending: this.catchUpPending,
+        })) return;
+        const pacer = new CompositorPacer();
+        void pacer.pace().then(async () => {
+            if (!this.catchUpPending) return;
+            try {
+                await this.ensureModelLoaded();
+                this.runCatchUp();
+            } catch {
+                // Leave catchUpPending set — visibility / next search retries.
+            }
+        });
+    }
     // branch). Gen-keyed suppression: only escalate once per index generation, so a
     // degraded index re-tripping drift on every keystroke doesn't re-arm recovery — a
     // later mutation (delta/reindex/invalidate/hydrate) bumps the generation and
@@ -2094,7 +2219,7 @@ export default class SeekPlugin extends Plugin {
                 // Step 1 — sidecar hydrate: reconcile IDB against the live vault
                 // (embed-free; null no-op when sidecar off), which itself re-warms on a
                 // >0 hydrate. On the write mutex, so it can't overlap a reindex's store.close().
-                await orchestrator.hydrateSidecar();
+                await this.withSidecarHydrate(() => orchestrator.hydrateSidecar());
                 // Step 2 — warm: co-rebuild frame + BM25 from one (reconciled) IDB
                 // snapshot, fixing the transient row-space desync (on cold mobile
                 // warmCaches no-ops, but the verify below rebuilds via ensureFrame/ensureBm25).
@@ -2194,15 +2319,15 @@ export default class SeekPlugin extends Plugin {
             }
         }
 
-        // Status-bar percent for this pass; settings still gets opts.onProgress.
-        this.indexProgress.show(this.indexableNoteCount(), 'Seek: indexing…');
+        const jobId = this.beginIndexJob('full', this.indexableNoteCount(), 'Seek: indexing…');
+        this.publishInventory(0, 0, true);
         this.pushTaskContext('indexing');
         try {
             await this.ensureModelLoaded();
             this.orchestrator.invalidateBm25Cache();
             const result = await this.orchestrator.reindexAll((msg) => {
                 opts?.onProgress?.(msg);
-                this.indexProgress.updateFromProgress(msg);
+                this.indexProgress.updateFromProgress(msg, jobId);
             }, {
                 // 3A soft preempt: the full pass pauses between files while the user
                 // types / a query embed is in flight — the same indexingBlocked
@@ -2240,7 +2365,7 @@ export default class SeekPlugin extends Plugin {
             return false;
         } finally {
             this.popTaskContext('indexing');
-            this.indexProgress.hide();
+            this.indexProgress.hide(jobId);
             void this.touchIndexInventory();
         }
     }
@@ -2257,9 +2382,15 @@ export default class SeekPlugin extends Plugin {
             const c = await this.store.count();
             files = c.files;
             chunks = c.chunks;
-            this.indexInventoryFiles = files;
+            this.inventoryGen++;
+            this.publishInventory(files, chunks);
+            files = this.indexInventoryFiles ?? files;
+            chunks = this.indexInventoryChunks ?? chunks;
             this.refreshIndexStatusBar();
-        } catch { /* index not open yet */ }
+        } catch {
+            if (this.indexInventoryFiles != null) files = this.indexInventoryFiles;
+            if (this.indexInventoryChunks != null) chunks = this.indexInventoryChunks;
+        }
         let storageMB: number | null = null, indexMB: number | null = null, modelMB: number | null = null;
         if (navigator.storage?.estimate) {
             try {
@@ -2506,6 +2637,8 @@ export default class SeekPlugin extends Plugin {
             else if (this.visibilityDoc?.visibilityState === 'visible') {
                 this.forensics?.beat('visibility-visible');
                 emit('visibility-visible').catch(() => {});
+                this.runCatchUp();
+                this.runDriftRecovery();
             }
         };
         this.onPageHide = () => {
