@@ -206,8 +206,9 @@ export class SeekSettingTab extends PluginSettingTab {
     private save = () => this.plugin.saveSettings();
 
     // ---- Index ---------------------------------------------------------------------
-    private statusState(): 'none' | 'ok' | 'indexing' | 'error' {
-        if (this.plugin.isIndexWarmingUp) return 'indexing';
+    private statusState(): 'none' | 'starting' | 'restoring' | 'ok' | 'indexing' | 'error' {
+        const warm = this.plugin.indexWarmPhase;
+        if (warm) return warm;
         if (this.plugin.isIndexing || this.reindexPhase === 'running') return 'indexing';
         if (this.plugin.indexHealthState === 'degraded') return 'error';
         if (this.plugin.indexHealthState === 'recovering') return 'indexing';

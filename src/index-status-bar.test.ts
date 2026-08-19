@@ -172,4 +172,22 @@ describe('renderIndexStatusCard', () => {
         expect(blob).toContain('3 / 12');
         expect(blob).toContain('Indexing');
     });
+
+    it('names starting and restoring as distinct from indexing and no-index', () => {
+        const start = stubEl();
+        renderIndexStatusCard(start as unknown as HTMLElement, {
+            health: 'starting',
+            stats: { files: 0, chunks: 0, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null },
+        });
+        expect(textOf(start)).toContain('Starting up');
+        expect(textOf(start)).not.toContain('No index');
+
+        const restore = stubEl();
+        renderIndexStatusCard(restore as unknown as HTMLElement, {
+            health: 'restoring',
+            stats: { files: 0, chunks: 0, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null },
+        });
+        expect(textOf(restore)).toContain('Restoring');
+        expect(textOf(restore)).not.toContain('No index');
+    });
 });

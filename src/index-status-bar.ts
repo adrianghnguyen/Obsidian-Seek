@@ -160,7 +160,7 @@ export class IndexStatusBar {
         hover.empty();
         let health = hooks.getHealth();
         if (this.jobActive) health = 'indexing';
-        else if (health !== 'error' && health !== 'indexing' && stats.files === 0) health = 'none';
+        else if (health !== 'error' && health !== 'indexing' && health !== 'starting' && health !== 'restoring' && stats.files === 0) health = 'none';
         renderIndexStatusCard(hover, {
             health,
             stats,
