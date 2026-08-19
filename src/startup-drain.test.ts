@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { shouldAutoDrainStartupCatchUp } from './startup-drain';
+import { isKnownEmptyIndexWithNotes, shouldAutoDrainStartupCatchUp } from './startup-drain';
 
 describe('shouldAutoDrainStartupCatchUp', () => {
     it('loads and drains pending work on desktop', () => {
@@ -21,5 +21,14 @@ describe('shouldAutoDrainStartupCatchUp', () => {
         expect(shouldAutoDrainStartupCatchUp({
             mobile: true, catchUpPending: false, emptyIndexWithNotes: true,
         })).toBe(false);
+    });
+});
+
+describe('isKnownEmptyIndexWithNotes', () => {
+    it('is true only for a probed-empty store', () => {
+        expect(isKnownEmptyIndexWithNotes(0, 10)).toBe(true);
+        expect(isKnownEmptyIndexWithNotes(null, 10)).toBe(false);
+        expect(isKnownEmptyIndexWithNotes(400, 10)).toBe(false);
+        expect(isKnownEmptyIndexWithNotes(0, 0)).toBe(false);
     });
 });

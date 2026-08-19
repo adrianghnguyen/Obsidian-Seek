@@ -753,7 +753,7 @@ export class SeekSearchModal extends Modal {
         if (load.uiHealth) return load.uiHealth;
         if (kind === 'restoring' || load.waitingForSidecar || load.peerSyncPending) return 'restoring';
         if (kind === 'starting' || load.phase === 'hydrating') return 'starting';
-        if (kind === 'indexing' || load.phase === 'indexing' || load.catchUpPending) return 'indexing';
+        if (kind === 'indexing' || load.phase === 'indexing') return 'indexing';
         if (load.health === 'degraded') return 'error';
         if (kind === 'onboarding') return 'none';
         return 'ok';
@@ -790,7 +790,9 @@ export class SeekSearchModal extends Modal {
         this.resultsEl.removeClass('is-loading');
         const load = this.getIndexLoadState?.() ?? { phase: 'idle' as const };
         const health = this.modalIndexHealth(this.currentLoadSpec().kind, load);
-        if (health === 'indexing' || health === 'starting' || health === 'restoring') {
+        // Populated recents: Starting/Restoring may still flash a wait card.
+        // Indexing belongs in the footer — a reload+open catch-up pause is not "building index".
+        if (health === 'starting' || health === 'restoring') {
             this.paintIndexWaitCard(this.resultsEl, this.currentLoadSpec().kind);
         }
         this.renderRecents();

@@ -46,7 +46,7 @@ import { collectPlatformInfo, isMobilePlatform, resolveDevice, recordActiveBacke
 import { CompositorPacer } from './pacer';
 import { shouldUnloadEmbedder, type UnloadGateState } from './embedder-lifecycle';
 import { drainCatchUp, CATCHUP_MAX_FILES_PER_BURST, CATCHUP_BURST_BUDGET_MS } from './catchup';
-import { shouldAutoDrainStartupCatchUp } from './startup-drain';
+import { isKnownEmptyIndexWithNotes, shouldAutoDrainStartupCatchUp } from './startup-drain';
 import { TaskContextTracker, type TaskContext } from './task-context';
 import type { LongTaskEntry, MemoryPressureEntry, StorageSnapshotEntry, EvictionSuspectedEntry, AppLocalFetchEntry } from './types';
 
@@ -310,7 +310,8 @@ export default class SeekPlugin extends Plugin {
             peerSyncPending: this.peerSyncPending,
             health: this.indexHealth,
             reason: this.degradedReason,
-            indexing: this.catchUpRunning || this.catchUpPending || this.flushing || this.isIndexing || this.driftRecoveryRunning,
+            indexing: this.catchUpRunning || this.flushing || this.isIndexing,
+            catchUpPending: this.catchUpPending,
             job: this.indexProgress.job(),
             searchableChunks: this.indexInventoryChunks,
             inventoryFiles: this.indexInventoryFiles,
@@ -633,7 +634,7 @@ export default class SeekPlugin extends Plugin {
             if (shouldAutoDrainStartupCatchUp({
                 mobile: isMobilePlatform(),
                 catchUpPending: this.catchUpPending,
-                emptyIndexWithNotes: (this.indexInventoryChunks ?? 0) === 0 && this.indexableNoteCount() > 0,
+                emptyIndexWithNotes: isKnownEmptyIndexWithNotes(this.indexInventoryChunks, this.indexableNoteCount()),
             })) {
                 this.catchUpPending = true;
             }
@@ -645,7 +646,7 @@ export default class SeekPlugin extends Plugin {
             if (shouldAutoDrainStartupCatchUp({
                 mobile: isMobilePlatform(),
                 catchUpPending: this.catchUpPending,
-                emptyIndexWithNotes: (this.indexInventoryChunks ?? 0) === 0 && this.indexableNoteCount() > 0,
+                emptyIndexWithNotes: isKnownEmptyIndexWithNotes(this.indexInventoryChunks, this.indexableNoteCount()),
             })) {
                 this.catchUpPending = true;
             }

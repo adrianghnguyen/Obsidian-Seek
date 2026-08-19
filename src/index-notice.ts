@@ -168,7 +168,9 @@ export interface IndexFooterStatus {
 // 'indexing'.
 export function resolveIndexLoadPhase(flags: IndexLoadFlags): IndexLoadPhase {
     if (flags.hydrating) return 'hydrating';
-    if (flags.indexing || flags.catchUpPending || flags.catchUpRunning || flags.flushing || flags.writing) {
+    // catchUpPending is queued work, not embeds. Painting it as indexing makes every
+    // reload+Search look like "building index" while the modal pauses the drain.
+    if (flags.indexing || flags.catchUpRunning || flags.flushing || flags.writing) {
         return 'indexing';
     }
     return 'idle';
@@ -185,6 +187,8 @@ export interface IndexUiStatusInput {
     reason: DegradedReason;
     /** Real note-embed activity: catch-up, flush, full reindex — not cache warm. */
     indexing: boolean;
+    /** Queued catch-up. Not indexing until embeds run. Empty+pending → starting, not none. */
+    catchUpPending?: boolean;
     job?: { done: number; total: number } | null;
     searchableChunks: number | null;
     inventoryFiles: number | null;
@@ -204,7 +208,11 @@ export function resolveIndexUiStatus(input: IndexUiStatusInput): IndexUiStatus {
     if (input.indexing || (input.job != null && input.job.total > 0)) return 'indexing';
     const chunks = input.searchableChunks;
     const files = input.inventoryFiles ?? 0;
-    if (chunks === 0 && files === 0) return 'none';
+    if (chunks === 0 && files === 0) {
+        // Queued first build — not "no index", not "still indexing your notes".
+        if (input.catchUpPending) return 'starting';
+        return 'none';
+    }
     return 'ok';
 }
 
@@ -267,10 +275,19 @@ export function indexLoadSpec(input: IndexLoadInput): IndexLoadSpec {
     if (input.phase === 'hydrating') {
         return { kind: 'starting', title: INDEX_STARTING_TITLE, message: INDEX_STARTING_MSG, showAction: false };
     }
-    if (input.phase === 'indexing' || input.catchUpPending) {
+    // Unknown probe: never claim "still indexing" just because catch-up is queued.
+    if (input.chunks == null) {
+        if (input.catchUpPending || input.phase === 'indexing') {
+            return { kind: 'starting', title: INDEX_STARTING_TITLE, message: INDEX_STARTING_MSG, showAction: false };
+        }
+        return { kind: 'resting', showAction: false };
+    }
+    if (input.phase === 'indexing') {
         return { kind: 'indexing', title: INDEX_BUILDING_TITLE, message: INDEX_BUILDING_MSG, showAction: false };
     }
-    if (input.chunks == null) return { kind: 'resting', showAction: false };
+    if (input.catchUpPending) {
+        return { kind: 'starting', title: INDEX_STARTING_TITLE, message: INDEX_STARTING_MSG, showAction: false };
+    }
     return { kind: 'onboarding', title: INDEX_NO_INDEX_TITLE, message: INDEX_NO_INDEX_MSG, showAction: true };
 }
 
@@ -291,7 +308,10 @@ export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
     if (input.uiHealth === 'error' || input.health === 'degraded' || input.reason === 'peer-ahead') {
         return { kind: 'error', label: INDEX_ERROR_LABEL, icon: 'alert-triangle', tone: 'bad' };
     }
-    if (input.uiHealth === 'indexing' || input.kind === 'indexing' || input.phase === 'indexing' || input.health === 'recovering'
+    if (input.health === 'recovering') {
+        return { kind: 'starting', label: INDEX_STARTING_LABEL, icon: 'refresh-cw', tone: 'info' };
+    }
+    if (input.uiHealth === 'indexing' || input.kind === 'indexing' || input.phase === 'indexing'
         || (input.job != null && input.job.total > 0)) {
         const remaining = input.job && input.job.total > 0
             ? Math.max(0, input.job.total - input.job.done)

@@ -10,3 +10,8 @@ export function shouldAutoDrainStartupCatchUp(opts: {
     if (opts.mobile) return false;
     return opts.catchUpPending || !!opts.emptyIndexWithNotes;
 }
+
+/** True only for a probed-empty store. `null` inventory is unknown — never treat as empty. */
+export function isKnownEmptyIndexWithNotes(inventoryChunks: number | null, noteCount: number): boolean {
+    return inventoryChunks === 0 && noteCount > 0;
+}
