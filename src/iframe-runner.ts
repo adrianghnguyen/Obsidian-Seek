@@ -457,6 +457,28 @@ export class IframeRunner {
     }
 }
 
+// Chromium on Windows ignores GPUAdapterOptions.powerPreference and warns
+// (crbug.com/369219127). transformers.js and ORT-Web each pass the hint, so
+// a WebGPU load logs it twice. Harmless: same adapter, same outputs, WASM
+// fallback in loadModel() is unrelated. Keep the iframe IIFE in sync.
+export function isChromiumPowerPreferenceAdapterWarning(message: string): boolean {
+    return message.includes('powerPreference') && message.includes('requestAdapter');
+}
+
+const WEBGPU_POWER_PREFERENCE_WARN_FILTER = [
+    '// Chromium on Windows logs a harmless warning when transformers/ORT pass',
+    '// powerPreference to requestAdapter (crbug.com/369219127). Filter it so',
+    '// DevTools stays readable; GPU selection is unchanged.',
+    '(function () {',
+    '    const origWarn = console.warn;',
+    '    console.warn = function () {',
+    "        const msg = Array.prototype.map.call(arguments, function (a) { return String(a); }).join(' ');",
+    "        if (msg.indexOf('powerPreference') >= 0 && msg.indexOf('requestAdapter') >= 0) return;",
+    '        return origWarn.apply(console, arguments);',
+    '    };',
+    '})();',
+].join('\n');
+
 // Exported for testing only — the string content of the RPC dispatch handler
 // (e.g. the source-origin check) can't be exercised via a real srcdoc iframe
 // in the node test env, so tests assert on the emitted script text instead.
@@ -470,6 +492,7 @@ export function buildChildScript(cdnUrl: string, outputDim: number): string {
     // ${} (single-quote concatenation only), or the parent will eval it.
     return `
 const CDN_URL = ${JSON.stringify(cdnUrl)};
+${WEBGPU_POWER_PREFERENCE_WARN_FILTER}
 const WARMUP_BATCH_SIZES = ${JSON.stringify(WARMUP_BATCH_SIZES)};
 const SEQ_BUCKETS = ${JSON.stringify(SEQ_BUCKETS)};
 const QUERY_SEQ_BUCKETS = ${JSON.stringify(QUERY_SEQ_BUCKETS)};
