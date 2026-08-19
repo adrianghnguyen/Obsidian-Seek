@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { IframeRunner, buildChildScript } from './iframe-runner';
+import { IframeRunner, buildChildScript, isChromiumPowerPreferenceAdapterWarning } from './iframe-runner';
 
 // F5 — per-RPC timeout. A jetsam-killed iframe child never replies; without the
 // timeout the parent promise hangs forever, stranding the embed catch's
@@ -43,6 +43,29 @@ describe('IframeRunner per-RPC timeout (F5)', () => {
     it('an uninitialized runner rejects immediately, not via the timeout', async () => {
         const r = new IframeRunner();   // no iframe injected
         await expect(r.embedBatch(['x'])).rejects.toThrow(/not initialized/);
+    });
+});
+
+describe('Chromium powerPreference requestAdapter warning (crbug.com/369219127)', () => {
+    it('matches only warnings that name both powerPreference and requestAdapter', () => {
+        expect(isChromiumPowerPreferenceAdapterWarning(
+            "The 'powerPreference' option is currently ignored when calling requestAdapter()",
+        )).toBe(true);
+        expect(isChromiumPowerPreferenceAdapterWarning('requestAdapter returned null')).toBe(false);
+        expect(isChromiumPowerPreferenceAdapterWarning('powerPreference is a no-op on Apple Silicon')).toBe(false);
+        expect(isChromiumPowerPreferenceAdapterWarning('model load failed')).toBe(false);
+    });
+
+    it('installs the iframe console.warn filter before pipeline bootstrap', () => {
+        const script = buildChildScript('https://example.com/cdn', 384);
+        const cdnIdx = script.indexOf('const CDN_URL');
+        const filterIdx = script.indexOf("msg.indexOf('powerPreference')");
+        const adapterIdx = script.indexOf("msg.indexOf('requestAdapter')");
+        const pipelineIdx = script.indexOf('let pipeline = null');
+        expect(filterIdx).toBeGreaterThan(cdnIdx);
+        expect(adapterIdx).toBeGreaterThan(filterIdx);
+        expect(pipelineIdx).toBeGreaterThan(adapterIdx);
+        expect(script).toContain('crbug.com/369219127');
     });
 });
 
