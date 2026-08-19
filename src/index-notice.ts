@@ -96,6 +96,8 @@ export interface IndexLoadFlags {
     catchUpRunning: boolean;
     flushing: boolean;
     writing: boolean;
+    /** Full or incremental reindex task (settings reindex, bulk flush). */
+    indexing?: boolean;
 }
 
 export interface IndexLoadInput {
@@ -145,18 +147,21 @@ export interface IndexFooterStatus {
 // flag — otherwise the modal would say "indexing" during an embed-free restore.
 export function resolveIndexLoadPhase(flags: IndexLoadFlags): IndexLoadPhase {
     if (flags.hydrating) return 'hydrating';
-    if (flags.catchUpPending || flags.catchUpRunning || flags.flushing || flags.writing) return 'indexing';
+    if (flags.indexing || flags.catchUpPending || flags.catchUpRunning || flags.flushing || flags.writing) return 'indexing';
     return 'idle';
 }
 
 export function indexLoadSpec(input: IndexLoadInput): IndexLoadSpec {
-    if (input.chunks == null || input.chunks > 0) return { kind: 'resting', showAction: false };
+    // A populated index keeps the resting body (recents) even mid-restore/rebuild.
+    if (input.chunks != null && input.chunks > 0) return { kind: 'resting', showAction: false };
+    // Empty or not-yet-probed: never claim "no index" while Seek is still warming up.
     if (input.phase === 'hydrating' || input.waitingForSidecar) {
         return { kind: 'hydrating', message: INDEX_HYDRATING_MSG, showAction: false };
     }
     if (input.phase === 'indexing' || input.catchUpPending) {
         return { kind: 'indexing', message: INDEX_BUILDING_MSG, showAction: false };
     }
+    if (input.chunks == null) return { kind: 'resting', showAction: false };
     return { kind: 'onboarding', showAction: true };
 }
 

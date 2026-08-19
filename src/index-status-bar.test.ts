@@ -145,6 +145,17 @@ describe('IndexStatusBar', () => {
         expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-good');
         expect(root.querySelector('.seek-dot')?.className).not.toContain('seek-dot-accent');
     });
+
+    it('refreshIdle repaints the dot when health changes outside a job', () => {
+        let health: 'indexing' | 'ok' = 'indexing';
+        const root = stubEl();
+        const bar = new IndexStatusBar();
+        bar.mount(root as unknown as HTMLElement, { ...hooks, getHealth: () => health });
+        expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-accent');
+        health = 'ok';
+        bar.refreshIdle();
+        expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-good');
+    });
 });
 
 describe('renderIndexStatusCard', () => {

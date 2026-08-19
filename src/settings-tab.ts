@@ -207,6 +207,7 @@ export class SeekSettingTab extends PluginSettingTab {
 
     // ---- Index ---------------------------------------------------------------------
     private statusState(): 'none' | 'ok' | 'indexing' | 'error' {
+        if (this.plugin.isIndexWarmingUp) return 'indexing';
         if (this.plugin.isIndexing || this.reindexPhase === 'running') return 'indexing';
         if (this.plugin.indexHealthState === 'degraded') return 'error';
         if (this.plugin.indexHealthState === 'recovering') return 'indexing';

@@ -208,6 +208,8 @@ export default class SeekPlugin extends Plugin {
     private indexBootPending = true;
     private sidecarHydrating = false;
     private waitingForSidecar = false;
+    // Last known indexed file count for sync status-bar health (null = not probed yet).
+    private indexInventoryFiles: number | null = null;
     private readonly indexProgress = new IndexStatusBar();
     // Drift auto-recovery (sibling of catch-up). The orchestrator detects persistent
     // frame/BM25 row-space drift and fires onPersistentDrift; we run a bounded,
@@ -277,12 +279,29 @@ export default class SeekPlugin extends Plugin {
     // private; this is the read-only surface the settings Index status card reads
     // (on open and while polling a live reindex) to show its "Indexing…" state.
     get isIndexing(): boolean { return this.currentTaskContext === 'indexing'; }
+    /** True while sidecar restore / boot reconcile has not finished. */
+    get isIndexWarmingUp(): boolean {
+        return this.indexBootPending || this.sidecarHydrating || this.waitingForSidecar;
+    }
 
     private statusBarHealth(): 'none' | 'ok' | 'indexing' | 'error' {
-        if (this.catchUpRunning || this.flushing || this.currentTaskContext === 'indexing') return 'indexing';
+        if (this.isIndexWarmingUp) return 'indexing';
+        if (this.catchUpRunning || this.catchUpPending || this.flushing || this.isIndexing) return 'indexing';
         if (this.indexHealth === 'degraded') return 'error';
         if (this.indexHealth === 'recovering') return 'indexing';
+        if (this.indexInventoryFiles === 0) return 'none';
         return 'ok';
+    }
+
+    private refreshIndexStatusBar(): void {
+        this.indexProgress.refreshIdle();
+    }
+
+    private async touchIndexInventory(): Promise<void> {
+        try {
+            this.indexInventoryFiles = (await this.store.count()).files;
+        } catch { /* store not open yet */ }
+        this.refreshIndexStatusBar();
     }
 
     private openSeekSettings(): void {
@@ -543,6 +562,7 @@ export default class SeekPlugin extends Plugin {
         } finally {
             this.sidecarHydrating = false;
             this.indexBootPending = false;
+            await this.touchIndexInventory();
         }
         })();
 
@@ -1719,6 +1739,8 @@ export default class SeekPlugin extends Plugin {
             this.popTaskContext('indexing');
             this.flushing = false;
             if (bulkProgress) this.indexProgress.hide();
+            else this.refreshIndexStatusBar();
+            void this.touchIndexInventory();
         }
     }
 
@@ -1813,6 +1835,7 @@ export default class SeekPlugin extends Plugin {
                 catchUpRunning: this.catchUpRunning,
                 flushing: this.flushing,
                 writing: this.orchestrator?.isWriting() ?? false,
+                indexing: this.isIndexing,
             }),
             catchUpPending: this.catchUpPending,
             waitingForSidecar: this.waitingForSidecar,
@@ -1826,6 +1849,8 @@ export default class SeekPlugin extends Plugin {
         if (!result) return;
         if (result.hydrated > 0) this.waitingForSidecar = false;
         else if (result.acceptedProducers > 0) this.waitingForSidecar = true;
+        if (result.hydrated > 0) void this.touchIndexInventory();
+        else this.refreshIndexStatusBar();
     }
 
     private indexableNoteCount(): number {
@@ -1858,6 +1883,7 @@ export default class SeekPlugin extends Plugin {
             this.peerAheadNotified = false;
             if (this.degradedReason === 'peer-ahead') { this.indexHealth = 'healthy'; this.degradedReason = null; }
         }
+        this.refreshIndexStatusBar();
     }
 
     private openSearchModal(initialQuery = ''): void {
@@ -2010,6 +2036,8 @@ export default class SeekPlugin extends Plugin {
                 this.popTaskContext('catchup');
                 this.catchUpRunning = false;
                 if (shown) this.indexProgress.hide();
+                else this.refreshIndexStatusBar();
+                void this.touchIndexInventory();
             }
         })();
     }
@@ -2211,6 +2239,7 @@ export default class SeekPlugin extends Plugin {
         } finally {
             this.popTaskContext('indexing');
             this.indexProgress.hide();
+            void this.touchIndexInventory();
         }
     }
 
@@ -2222,7 +2251,13 @@ export default class SeekPlugin extends Plugin {
     // degrades one field rather than blanking the whole card.
     async getIndexStats(): Promise<IndexStats> {
         let files = 0, chunks = 0;
-        try { const c = await this.store.count(); files = c.files; chunks = c.chunks; } catch { /* index not open yet */ }
+        try {
+            const c = await this.store.count();
+            files = c.files;
+            chunks = c.chunks;
+            this.indexInventoryFiles = files;
+            this.refreshIndexStatusBar();
+        } catch { /* index not open yet */ }
         let storageMB: number | null = null, indexMB: number | null = null, modelMB: number | null = null;
         if (navigator.storage?.estimate) {
             try {
