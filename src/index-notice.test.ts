@@ -100,15 +100,25 @@ describe('resolveIndexLoadPhase', () => {
         expect(resolveIndexLoadPhase({ ...idle, catchUpPending: true })).toBe('indexing');
     });
 
+    it('treats an active reindex task as indexing', () => {
+        expect(resolveIndexLoadPhase({ ...idle, indexing: true })).toBe('indexing');
+    });
+
     it('is idle when boot is done and nothing is pending', () => {
         expect(resolveIndexLoadPhase(idle)).toBe('idle');
     });
 });
 
 describe('indexLoadSpec', () => {
-    it('stays resting when the store cannot be read yet', () => {
+    it('stays resting when the store cannot be read yet and boot is idle', () => {
         expect(indexLoadSpec({ chunks: null, phase: 'idle' }).kind).toBe('resting');
-        expect(indexLoadSpec({ chunks: null, phase: 'hydrating' }).kind).toBe('resting');
+    });
+
+    it('shows hydrate copy when the chunk probe has not returned yet but boot is still warming', () => {
+        const spec = indexLoadSpec({ chunks: null, phase: 'hydrating' });
+        expect(spec.kind).toBe('hydrating');
+        expect(spec.message).toBe(INDEX_HYDRATING_MSG);
+        expect(spec.showAction).toBe(false);
     });
 
     it('does not claim an empty vault while hydrating', () => {

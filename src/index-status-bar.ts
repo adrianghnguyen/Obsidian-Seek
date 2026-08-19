@@ -107,6 +107,12 @@ export class IndexStatusBar {
         this.hideHover();
     }
 
+    /** Repaint the idle dot/label from getHealth() — e.g. after boot or catch-up. */
+    refreshIdle(): void {
+        if (this.jobActive) return;
+        this.paintIdle();
+    }
+
     private paintJob(force: boolean): void {
         if (!this.root) return;
         const pct = quantizePercent(this.done, this.total);
