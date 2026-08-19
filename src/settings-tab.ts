@@ -22,6 +22,7 @@ import { DEFAULT_SETTINGS, MATCH_STRENGTH_MIN_NOTES } from './types';
 import { renderIndexStatusCard } from './index-status-card';
 import {
     getBackendOverride, setBackendOverride, isWebgpuDemoted, clearWebgpuDemoted,
+    getStartupWarm, setStartupWarm,
     type BackendChoice,
 } from './platform';
 import { enumerateDatePropertyNames } from './prop-types';
@@ -231,6 +232,11 @@ export class SeekSettingTab extends PluginSettingTab {
         // The reindex button + live progress bar stay outside the disclosure: it's the
         // primary action and must be visible regardless of the advanced toggle.
         this.renderReindexRow(containerEl);
+
+        new Setting(containerEl)
+            .setName('Warm caches on startup')
+            .setDesc('On this device only (not synced). After Obsidian opens, Seek loads the search index into memory so the first query is faster. Turn off for a lighter app start. Takes effect the next time Obsidian opens.')
+            .addToggle(t => t.setValue(getStartupWarm()).onChange(v => setStartupWarm(v)));
 
         // Advanced disclosure — what to index (Bases / excluded folders) and where the
         // index lives are set-once knobs, so tuck them away like Relevance's advanced
@@ -768,8 +774,9 @@ export class SeekSettingTab extends PluginSettingTab {
                 .setDesc('Restores the default configuration for all Seek settings. Your index will not be rebuilt.')
                 .addButton(b => b.setButtonText('Cancel').onClick(() => { this.resetConfirm = false; this.rerender(); }))
                 .addButton(b => b.setButtonText('Reset settings').setWarning().onClick(async () => {
-                    // Restore every persisted (synced) setting. Compute is per-device
-                    // localStorage, not part of data.json, so it is deliberately untouched.
+                    // Restore every persisted (synced) setting. Compute and startup-warm
+                    // are per-device localStorage, not part of data.json, so they are
+                    // deliberately untouched.
                     Object.assign(this.s, DEFAULT_SETTINGS);
                     await this.save();
                     this.resetConfirm = false;
