@@ -25,7 +25,8 @@ sym: shouldAutoDrainStartupCatchUp
 sym: scheduleStartupCatchUp
 sym: beginIndexJob
 sym: isChromiumPowerPreferenceAdapterWarning
-open: webgpu-filter-uncommitted
+sym: isKnownEmptyIndexWithNotes
+open: none
 exclude: idb-cross-device
 exclude: sidecar-protocol
 exclude: webgpu-device-lost-mobile
@@ -185,3 +186,43 @@ did: test in iframe-runner.test.ts
 did: build copy vault plugin:reload hashes match
 open: not committed
 open: iframe needs reload or restart to pick up filter
+
+---
+
+## 2026-08-19 false-building-index-modal
+
+id: 2026-08-19-false-building-index-modal
+date: 2026-08-19
+status: done
+tag: startup
+tag: ui
+tag: catch-up
+tag: modal
+file: src/index-notice.ts
+file: src/startup-drain.ts
+file: src/main.ts
+file: src/search-modal.ts
+file: src/index-notice.test.ts
+file: src/startup-drain.test.ts
+sym: resolveIndexUiStatus
+sym: resolveIndexLoadPhase
+sym: indexLoadSpec
+sym: isKnownEmptyIndexWithNotes
+sym: catchUpPending
+cmd: obsidian plugin:reload
+found: every Obsidian reload then open Search showed building/indexing
+found: copy Seek is still indexing your notes when index already exists
+rca: onLayoutReady treated unprobed inventory null as 0 so emptyIndexWithNotes true every boot
+rca: that latched catchUpPending
+rca: catchUpPending painted as indexing before any embed
+rca: opening Search pauses catch-up so pending stayed true
+rca: populated recents still painted Indexing wait card
+rca: drift recovering footer said Indexing
+did: isKnownEmptyIndexWithNotes requires probed chunks===0
+did: catchUpPending is starting or ready never indexing
+did: Indexing only catchUpRunning flushing isIndexing or live job
+did: empty+pending is Starting not building
+did: populated modal recents no Indexing wait card
+did: recovering footer is Starting
+did: build copy vault plugin:reload hashes match
+was-wrong: 2026-08-19-startup-gates-fix treated catchUpPending as indexing on purpose

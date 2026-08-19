@@ -111,8 +111,12 @@ describe('resolveIndexLoadPhase', () => {
         expect(resolveIndexLoadPhase({ ...idle, hydrating: true, writing: true, catchUpPending: true })).toBe('hydrating');
     });
 
-    it('treats catchUpPending as indexing even before an embed starts', () => {
-        expect(resolveIndexLoadPhase({ ...idle, catchUpPending: true })).toBe('indexing');
+    it('does not treat queued catch-up as indexing before embeds run', () => {
+        expect(resolveIndexLoadPhase({ ...idle, catchUpPending: true })).toBe('idle');
+    });
+
+    it('treats catch-up as indexing only once it is running', () => {
+        expect(resolveIndexLoadPhase({ ...idle, catchUpRunning: true })).toBe('indexing');
     });
 
     it('treats an active reindex task as indexing', () => {
@@ -148,13 +152,18 @@ describe('indexLoadSpec', () => {
         expect(spec.showAction).toBe(false);
     });
 
-    it('does not claim an empty vault while indexing or while catch-up is only pending', () => {
+    it('says Indexing only while a real index pass is running', () => {
         expect(indexLoadSpec({ chunks: 0, phase: 'indexing' }).kind).toBe('indexing');
+        expect(indexLoadSpec({ chunks: 0, phase: 'indexing' }).title).toBe(INDEX_BUILDING_TITLE);
+        expect(indexLoadSpec({ chunks: 0, phase: 'indexing' }).message).toBe(INDEX_BUILDING_MSG);
+    });
+
+    it('says Starting for queued catch-up, not still-indexing, including before the chunk probe', () => {
         const pending = indexLoadSpec({ chunks: 0, phase: 'idle', catchUpPending: true });
-        expect(pending.kind).toBe('indexing');
-        expect(pending.title).toBe(INDEX_BUILDING_TITLE);
-        expect(pending.message).toBe(INDEX_BUILDING_MSG);
-        expect(pending.showAction).toBe(false);
+        expect(pending.kind).toBe('starting');
+        expect(pending.title).toBe(INDEX_STARTING_TITLE);
+        expect(pending.message).toBe(INDEX_STARTING_MSG);
+        expect(indexLoadSpec({ chunks: null, phase: 'idle', catchUpPending: true }).kind).toBe('starting');
     });
 
     it('shows onboarding only when idle with zero chunks', () => {
@@ -259,7 +268,7 @@ describe('indexFooterStatus', () => {
         expect(indexFooterStatus({ ...idle, reason: 'peer-ahead' }).kind).toBe('error');
     });
 
-    it('is Indexing… while indexing or recovering, using the status-bar badge not refresh-cw', () => {
+    it('is Indexing… while indexing, using the status-bar badge not refresh-cw', () => {
         expect(indexFooterStatus({ ...idle, kind: 'indexing' })).toMatchObject({
             kind: 'indexing',
             label: INDEX_INDEXING_LABEL,
@@ -274,11 +283,19 @@ describe('indexFooterStatus', () => {
         });
         expect(indexFooterStatus({ ...idle, kind: 'indexing' }).icon).not.toBe('refresh-cw');
         expect(indexFooterStatus({ ...idle, phase: 'indexing' }).kind).toBe('indexing');
-        expect(indexFooterStatus({ ...idle, health: 'recovering' }).kind).toBe('indexing');
         expect(indexFooterStatus({ ...idle, job: { done: 0, total: 15 } })).toMatchObject({
             kind: 'indexing',
             badgeCount: 15,
             icon: '',
+        });
+    });
+
+    it('says Starting during embed-free drift recovery, not Indexing', () => {
+        expect(indexFooterStatus({ ...idle, health: 'recovering' })).toMatchObject({
+            kind: 'starting',
+            label: INDEX_STARTING_LABEL,
+            icon: 'refresh-cw',
+            tone: 'info',
         });
     });
 
@@ -315,7 +332,7 @@ describe('indexFooterStatus', () => {
         }).kind).toBe('indexing');
         expect(indexFooterStatus({
             ...idle, health: 'recovering', modelReady: false, kind: 'onboarding',
-        }).kind).toBe('indexing');
+        }).kind).toBe('starting');
         expect(indexFooterStatus({
             ...idle, job: { done: 0, total: 15 }, modelReady: false, kind: 'resting',
         }).kind).toBe('indexing');
@@ -410,6 +427,16 @@ describe('resolveIndexUiStatus', () => {
 
     it('real catch-up with a job is Indexing', () => {
         expect(resolveIndexUiStatus({ ...idle, indexing: true, job: { done: 3, total: 15 } })).toBe('indexing');
+    });
+
+    it('queued catch-up on a populated index is Ready, not Indexing', () => {
+        expect(resolveIndexUiStatus({ ...idle, catchUpPending: true })).toBe('ok');
+    });
+
+    it('queued catch-up on an empty probed index is Starting, not None or Indexing', () => {
+        expect(resolveIndexUiStatus({
+            ...idle, catchUpPending: true, searchableChunks: 0, inventoryFiles: 0,
+        })).toBe('starting');
     });
 
     it('zero files with positive chunks is Ready, not None', () => {
