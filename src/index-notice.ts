@@ -76,19 +76,28 @@ export function indexBannerSpec(health: IndexHealth, reason: DegradedReason, pee
     return null;
 }
 
-export const INDEX_HYDRATING_MSG = 'Restoring the search index from another device…';
+export const INDEX_STARTING_TITLE = 'Starting up';
+export const INDEX_STARTING_MSG = 'Seek is loading the search index. This is not an empty vault — search will be available in a moment.';
+export const INDEX_RESTORING_TITLE = 'Restoring';
+export const INDEX_RESTORING_MSG = 'Seek is restoring the search index from another device…';
+export const INDEX_BUILDING_TITLE = 'Indexing';
 export const INDEX_BUILDING_MSG = 'Seek is still indexing your notes…';
-export const INDEX_NO_INDEX_LABEL = 'No index';
-export const INDEX_NOT_READY_LABEL = 'Index not ready';
-export const INDEX_SYNCING_LABEL = 'Syncing…';
-export const INDEX_ERROR_LABEL = 'Index error';
-export const INDEX_INDEXING_LABEL = 'Indexing…';
-export const INDEX_UP_TO_DATE_LABEL = 'Up to date';
+export const INDEX_NO_INDEX_TITLE = 'No index yet';
+export const INDEX_NO_INDEX_MSG = 'This vault has not been indexed. Nothing is loading in the background — build an index in Seek settings to search.';
+export const INDEX_NO_INDEX_LABEL = 'None';
+export const INDEX_STARTING_LABEL = 'Starting';
+export const INDEX_RESTORING_LABEL = 'Restoring';
+export const INDEX_MODEL_LOADING_LABEL = 'Loading';
+export const INDEX_ERROR_LABEL = 'Error';
+export const INDEX_INDEXING_LABEL = 'Indexing';
+export const INDEX_UP_TO_DATE_LABEL = 'Ready';
 
 export type IndexLoadPhase = 'hydrating' | 'indexing' | 'idle';
-export type IndexLoadKind = 'resting' | 'hydrating' | 'indexing' | 'onboarding';
-export type IndexFooterKind = 'syncing' | 'error' | 'indexing' | 'not-ready' | 'no-index' | 'up-to-date';
-export type IndexFooterTone = 'accent' | 'bad' | 'warn' | 'mid' | 'good';
+export type IndexLoadKind = 'resting' | 'starting' | 'restoring' | 'indexing' | 'onboarding';
+export type IndexFooterKind = 'restoring' | 'starting' | 'error' | 'indexing' | 'model-loading' | 'no-index' | 'up-to-date';
+export type IndexFooterTone = 'info' | 'accent' | 'bad' | 'warn' | 'mid' | 'good';
+/** Shared by status bar, settings card, modal, and CLI — one precedence tree. */
+export type IndexUiStatus = 'none' | 'starting' | 'restoring' | 'ok' | 'indexing' | 'error';
 
 export interface IndexLoadFlags {
     hydrating: boolean;
@@ -96,6 +105,8 @@ export interface IndexLoadFlags {
     catchUpRunning: boolean;
     flushing: boolean;
     writing: boolean;
+    /** Full or incremental reindex task (settings reindex, bulk flush). */
+    indexing?: boolean;
 }
 
 export interface IndexLoadInput {
@@ -107,6 +118,7 @@ export interface IndexLoadInput {
 
 export interface IndexLoadSpec {
     kind: IndexLoadKind;
+    title?: string;
     message?: string;
     showAction: boolean;
 }
@@ -123,6 +135,10 @@ export interface IndexLoadState {
     health?: IndexHealth;
     reason?: DegradedReason;
     peerSyncPending?: boolean;
+    /** Coordinator pass currently driving the status-bar badge, or null. */
+    job?: { done: number; total: number; paused?: boolean } | null;
+    /** Canonical UI status — every surface must show this, not a local remapping. */
+    uiHealth?: IndexUiStatus;
 }
 
 export interface IndexFooterInput {
@@ -132,6 +148,9 @@ export interface IndexFooterInput {
     health?: IndexHealth;
     reason?: DegradedReason;
     peerSyncPending?: boolean;
+    waitingForSidecar?: boolean;
+    job?: { done: number; total: number; paused?: boolean } | null;
+    uiHealth?: IndexUiStatus;
 }
 
 export interface IndexFooterStatus {
@@ -139,43 +158,154 @@ export interface IndexFooterStatus {
     label: string;
     icon: string;
     tone: IndexFooterTone;
+    /** When set, footer paints the status-bar numbered badge instead of a lucide icon. */
+    badgeCount?: number | null;
 }
 
 // Hydrate holds the write mutex, so `writing` must not win over an explicit hydrating
 // flag — otherwise the modal would say "indexing" during an embed-free restore.
+// warmCaches is a frame/BM25 rebuild, not note indexing — it must not flip this to
+// 'indexing'.
 export function resolveIndexLoadPhase(flags: IndexLoadFlags): IndexLoadPhase {
     if (flags.hydrating) return 'hydrating';
-    if (flags.catchUpPending || flags.catchUpRunning || flags.flushing || flags.writing) return 'indexing';
+    if (flags.indexing || flags.catchUpPending || flags.catchUpRunning || flags.flushing || flags.writing) {
+        return 'indexing';
+    }
     return 'idle';
 }
 
-export function indexLoadSpec(input: IndexLoadInput): IndexLoadSpec {
-    if (input.chunks == null || input.chunks > 0) return { kind: 'resting', showAction: false };
-    if (input.phase === 'hydrating' || input.waitingForSidecar) {
-        return { kind: 'hydrating', message: INDEX_HYDRATING_MSG, showAction: false };
-    }
-    if (input.phase === 'indexing' || input.catchUpPending) {
-        return { kind: 'indexing', message: INDEX_BUILDING_MSG, showAction: false };
-    }
-    return { kind: 'onboarding', showAction: true };
+export interface IndexUiStatusInput {
+    /** Plugin construct → onload sidecar/reconcile IIFE (and optional startup cache warm). */
+    booting: boolean;
+    /** Actual sidecar hydrate in flight (startup, periodic, identity, drift). */
+    hydrating: boolean;
+    waitingForSidecar: boolean;
+    peerSyncPending: boolean;
+    health: IndexHealth;
+    reason: DegradedReason;
+    /** Real note-embed activity: catch-up, flush, full reindex — not cache warm. */
+    indexing: boolean;
+    job?: { done: number; total: number } | null;
+    searchableChunks: number | null;
+    inventoryFiles: number | null;
 }
 
-// Search-modal footer status: always-visible icon + short label. Priority is
-// syncing > error > indexing > model-not-ready > no-index > up-to-date, so a
-// populated index with a cold model never claims "Up to date".
-export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
-    const hydrating = input.kind === 'hydrating' || input.phase === 'hydrating';
-    if (hydrating || input.peerSyncPending) {
-        return { kind: 'syncing', label: INDEX_SYNCING_LABEL, icon: 'refresh-cw', tone: 'accent' };
+/**
+ * Canonical UI status. Precedence:
+ * active restore > startup > integrity error > real indexing > empty > ready.
+ * Cache warming is invisible here (search stays usable on a populated index).
+ */
+export function resolveIndexUiStatus(input: IndexUiStatusInput): IndexUiStatus {
+    if (input.waitingForSidecar || input.peerSyncPending || (input.hydrating && !input.booting)) {
+        return 'restoring';
     }
-    if (input.health === 'degraded' || input.reason === 'peer-ahead') {
+    if (input.booting || input.hydrating) return 'starting';
+    if (input.health === 'degraded' || input.reason === 'peer-ahead') return 'error';
+    if (input.indexing || (input.job != null && input.job.total > 0)) return 'indexing';
+    const chunks = input.searchableChunks;
+    const files = input.inventoryFiles ?? 0;
+    if (chunks === 0 && files === 0) return 'none';
+    return 'ok';
+}
+
+/** Warm no-op hydrate (accepted producer, nothing new) must clear Restoring. */
+export function resolveSidecarWait(
+    result: { hydrated: number; skippedPartialNotes: number },
+    inventoryChunks: number | null,
+): boolean {
+    if (result.hydrated > 0) return false;
+    return result.skippedPartialNotes > 0 && (inventoryChunks ?? 0) === 0;
+}
+
+/** CLI / headless search gate — null when the index checklist is satisfied. */
+export type CliSearchGateHealth = 'ok' | 'starting' | 'restoring' | 'indexing' | 'error' | 'none';
+
+export interface CliSearchGateInput {
+    warmPhase: 'starting' | 'restoring' | null;
+    uiHealth: CliSearchGateHealth;
+    chunks: number | null;
+}
+
+export const CLI_SEARCH_GATE_STARTING = 'Seek not ready — search index still loading';
+export const CLI_SEARCH_GATE_RESTORING = 'Seek not ready — restoring search index from another device';
+export const CLI_SEARCH_GATE_INDEXING = 'Seek not ready — index still building';
+export const CLI_SEARCH_GATE_NO_INDEX = 'Seek not ready — no indexed notes yet';
+
+export function resolveCliSearchGate(input: CliSearchGateInput): string | null {
+    // Starting/restoring block even on a populated store — search during boot
+    // races sidecar hydrate / applyDelta and can empty the in-memory frame.
+    if (input.warmPhase === 'starting' || input.uiHealth === 'starting') return CLI_SEARCH_GATE_STARTING;
+    if (input.warmPhase === 'restoring' || input.uiHealth === 'restoring') return CLI_SEARCH_GATE_RESTORING;
+    const populated = input.chunks != null && input.chunks > 0;
+    if (populated) return null;
+    if (input.uiHealth === 'indexing') return CLI_SEARCH_GATE_INDEXING;
+    if (input.chunks == null) return CLI_SEARCH_GATE_STARTING;
+    return CLI_SEARCH_GATE_NO_INDEX;
+}
+
+/** Drop a 0/0 snapshot that would clobber a known-positive inventory (transient IDB reads). */
+export function retainIndexInventory(
+    prev: { files: number | null; chunks: number | null },
+    next: { files: number; chunks: number },
+    force = false,
+): { files: number; chunks: number } {
+    if (!force && next.files === 0 && next.chunks === 0 && ((prev.chunks ?? 0) > 0 || (prev.files ?? 0) > 0)) {
+        return { files: prev.files ?? 0, chunks: prev.chunks ?? 0 };
+    }
+    return next;
+}
+
+export function indexLoadSpec(input: IndexLoadInput): IndexLoadSpec {
+    // A populated index keeps the resting body (recents) even mid-restore/rebuild.
+    // The footer still names the live phase.
+    if (input.chunks != null && input.chunks > 0) return { kind: 'resting', showAction: false };
+    // Empty or not-yet-probed: name the real wait phase. Never claim "no index"
+    // while Seek is still starting, restoring, or indexing.
+    if (input.waitingForSidecar) {
+        return { kind: 'restoring', title: INDEX_RESTORING_TITLE, message: INDEX_RESTORING_MSG, showAction: false };
+    }
+    if (input.phase === 'hydrating') {
+        return { kind: 'starting', title: INDEX_STARTING_TITLE, message: INDEX_STARTING_MSG, showAction: false };
+    }
+    if (input.phase === 'indexing' || input.catchUpPending) {
+        return { kind: 'indexing', title: INDEX_BUILDING_TITLE, message: INDEX_BUILDING_MSG, showAction: false };
+    }
+    if (input.chunks == null) return { kind: 'resting', showAction: false };
+    return { kind: 'onboarding', title: INDEX_NO_INDEX_TITLE, message: INDEX_NO_INDEX_MSG, showAction: true };
+}
+
+export function isIndexWaitKind(kind: IndexLoadKind): boolean {
+    return kind === 'starting' || kind === 'restoring' || kind === 'indexing';
+}
+
+// Search-modal footer: always-visible icon + one-word label. UI path is
+// Starting / Restoring / Indexing (plus Loading, None, Error, Ready).
+// Peer-sync and sidecar wait both read as Restoring.
+export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
+    if (input.uiHealth === 'restoring' || input.kind === 'restoring' || input.waitingForSidecar || input.peerSyncPending) {
+        return { kind: 'restoring', label: INDEX_RESTORING_LABEL, icon: 'refresh-cw', tone: 'info' };
+    }
+    if (input.uiHealth === 'starting' || input.kind === 'starting' || input.phase === 'hydrating') {
+        return { kind: 'starting', label: INDEX_STARTING_LABEL, icon: 'refresh-cw', tone: 'info' };
+    }
+    if (input.uiHealth === 'error' || input.health === 'degraded' || input.reason === 'peer-ahead') {
         return { kind: 'error', label: INDEX_ERROR_LABEL, icon: 'alert-triangle', tone: 'bad' };
     }
-    if (input.kind === 'indexing' || input.phase === 'indexing' || input.health === 'recovering') {
-        return { kind: 'indexing', label: INDEX_INDEXING_LABEL, icon: 'refresh-cw', tone: 'accent' };
+    if (input.uiHealth === 'indexing' || input.kind === 'indexing' || input.phase === 'indexing' || input.health === 'recovering'
+        || (input.job != null && input.job.total > 0)) {
+        const remaining = input.job && input.job.total > 0
+            ? Math.max(0, input.job.total - input.job.done)
+            : null;
+        return {
+            kind: 'indexing',
+            label: INDEX_INDEXING_LABEL,
+            icon: '',
+            tone: 'accent',
+            badgeCount: remaining,
+        };
     }
     if (!input.modelReady) {
-        return { kind: 'not-ready', label: INDEX_NOT_READY_LABEL, icon: 'alert-triangle', tone: 'warn' };
+        return { kind: 'model-loading', label: INDEX_MODEL_LOADING_LABEL, icon: 'refresh-cw', tone: 'warn' };
     }
     if (input.kind === 'onboarding') {
         return { kind: 'no-index', label: INDEX_NO_INDEX_LABEL, icon: 'circle-off', tone: 'mid' };

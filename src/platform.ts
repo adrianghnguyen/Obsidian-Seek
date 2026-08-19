@@ -71,6 +71,26 @@ export function recordActiveBackend(device: string): void {
     catch { /* best-effort */ }
 }
 
+// ── Per-device startup cache warm ──────────────────────────────────────────
+// BM25/frame warm after boot is a DEVICE cost (IDB + CPU at app-open), not a
+// vault preference. data.json would sync it; localStorage does not. Absent key
+// = ON (the shipped default: first search should not pay a cold rebuild).
+const STARTUP_WARM_KEY = 'seek-startup-warm';
+
+export function getStartupWarm(): boolean {
+    try {
+        const v = window.localStorage.getItem(STARTUP_WARM_KEY);
+        if (v === '0') return false;
+        if (v === '1') return true;
+    } catch { /* localStorage unavailable — treat as on */ }
+    return true;
+}
+
+export function setStartupWarm(on: boolean): void {
+    try { window.localStorage.setItem(STARTUP_WARM_KEY, on ? '1' : '0'); }
+    catch { /* best-effort */ }
+}
+
 // Capability ALLOWLIST — WebGPU auto-enables ONLY on surfaces verified to
 // reindex without an OS memory kill. NOT "mobile minus iPhone": anything
 // unverified (every Android, an iPad we haven't characterised stays on the

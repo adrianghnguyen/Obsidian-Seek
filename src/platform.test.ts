@@ -18,6 +18,8 @@ import {
     maybeDemoteOnCrash,
     residentInt8Enabled,
     RESIDENT_INT8_MAX_BYTES,
+    getStartupWarm,
+    setStartupWarm,
 } from './platform';
 
 // Minimal in-memory localStorage (node has no DOM). Reset per test.
@@ -201,5 +203,18 @@ describe('residentInt8Enabled — B2 resident-block memory gate', () => {
         expect(Number.isInteger(rows)).toBe(true);
         expect(residentInt8Enabled(rows, embDim)).toBe(true);
         expect(residentInt8Enabled(rows + 1, embDim)).toBe(false);
+    });
+});
+
+describe('startup cache warm (per-device)', () => {
+    it('defaults on when the key is absent', () => {
+        expect(getStartupWarm()).toBe(true);
+    });
+
+    it('round-trips through localStorage', () => {
+        setStartupWarm(false);
+        expect(getStartupWarm()).toBe(false);
+        setStartupWarm(true);
+        expect(getStartupWarm()).toBe(true);
     });
 });

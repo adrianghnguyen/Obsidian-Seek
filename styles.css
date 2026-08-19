@@ -925,7 +925,9 @@
 }
 .seek-foot-status-icon {
     display: flex;
-    width: 14px;
+    align-items: center;
+    width: auto;
+    min-width: 14px;
     height: 14px;
 }
 .seek-foot-status-icon svg {
@@ -933,11 +935,13 @@
     height: 14px;
 }
 .seek-foot-status.is-accent { color: var(--interactive-accent); }
+.seek-foot-status.is-info { color: var(--color-blue); }
 .seek-foot-status.is-bad { color: var(--text-error); }
 .seek-foot-status.is-warn { color: var(--text-warning); }
 .seek-foot-status.is-mid,
 .seek-foot-status.is-good { color: var(--text-muted); }
-.seek-foot-status.is-accent .seek-foot-status-icon svg {
+.seek-foot-status.is-accent .seek-foot-status-icon svg,
+.seek-foot-status.is-info .seek-foot-status-icon svg {
     animation: seek-foot-spin 1s linear infinite;
 }
 @keyframes seek-foot-spin {
@@ -1037,7 +1041,7 @@
     margin: 4px 0 12px;
 }
 
-/* status dots — five health tones from theme status colors, with a soft halo */
+/* status dots — health tones from theme status colors, with a soft halo */
 .seek-dot {
     width: 8px;
     height: 8px;
@@ -1056,6 +1060,10 @@
 .seek-dot-accent {
     background: var(--interactive-accent);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--interactive-accent) 22%, transparent);
+}
+.seek-dot-info {
+    background: var(--color-blue);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-blue) 22%, transparent);
 }
 .seek-dot-bad {
     background: var(--color-red);
@@ -1133,11 +1141,43 @@
     font-size: 12px;
     font-variant-numeric: tabular-nums;
 }
+.seek-status-bar-label.is-hidden { display: none; }
 .seek-status-bar-progress {
     width: 48px;
     height: 6px;
 }
 .seek-status-bar-progress.is-hidden { display: none; }
+
+/* Numbered remaining-files badge — the indexing chrome shared by the status
+   bar, search-modal wait card, and footer. Replaces the circular indexing dot. */
+.seek-index-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 16px;
+    padding: 0 5px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 650;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-on-accent, #fff);
+    background: var(--interactive-accent);
+}
+.seek-status-bar .seek-index-badge {
+    min-width: 20px;
+    height: 18px;
+}
+.seek-foot-status .seek-index-badge {
+    min-width: 16px;
+    height: 14px;
+    font-size: 10px;
+}
+.seek-status-health .seek-index-badge {
+    min-width: 20px;
+    height: 18px;
+}
 .seek-index-hover {
     position: absolute;
     bottom: calc(100% + 8px);

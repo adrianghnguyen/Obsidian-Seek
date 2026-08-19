@@ -340,6 +340,11 @@ export class SearchOrchestrator {
         return this.coord.isWriting() || this.sidecarFlushesInFlight > 0;
     }
 
+    /** True while warmCaches is rebuilding frame/BM25 (observable boot gate). */
+    isWarmingCaches(): boolean {
+        return this.warming;
+    }
+
     // Full reindex. Drops the database, walks all markdown, re-embeds everything.
     // Serialized against deltas via the write mutex (a delta mid-nuke would throw).
     async reindexAll(onProgress?: (msg: string) => void, opts: { shouldContinue?: () => boolean } = {}): Promise<IndexCompleteEntry> {
