@@ -17,6 +17,8 @@ Non-obvious notes:
 - To exercise the real search pipeline (chunk → embed → store → BM25 fuse → rank) without Obsidian, use the Tier-2 harness in `src/test-harness/scenario.ts`: `Scenario` boots the real `SearchOrchestrator` + `IndexStore` over a fake vault/embedder, and `orch.search(query, k)` returns ranked results.
 - To run the built plugin in a real vault, copy `main.js`, `manifest.json`, and `styles.css` into `<vault>/.obsidian/plugins/seek/`. First real index downloads the embedding model from `huggingface.co` and the transformers.js runtime from `cdn.jsdelivr.net` (once per device). Deploy/reload/verify details: `.cursor/rules/deploy-and-verify.mdc` (vault path `C:\Obsidian\.obsidian\plugins\seek\`).
 
+Configurable settings must always be available in the plugin options menu (Settings → Seek / `settings-tab.ts`). Do not add a user-tunable flag (synced `data.json` or per-device localStorage) without a corresponding control there. Hidden silent defaults are only for ratified non-user knobs already documented in `DEFAULT_SETTINGS`.
+
 ## Upstream sync (this is a fork)
 
 Remotes:
