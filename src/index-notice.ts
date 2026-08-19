@@ -78,8 +78,8 @@ export function indexBannerSpec(health: IndexHealth, reason: DegradedReason, pee
 
 export const INDEX_STARTING_TITLE = 'Starting up';
 export const INDEX_STARTING_MSG = 'Seek is loading the search index. This is not an empty vault — search will be available in a moment.';
-export const INDEX_HYDRATING_TITLE = 'Restoring from another device';
-export const INDEX_HYDRATING_MSG = 'Restoring the search index from another device…';
+export const INDEX_RESTORING_TITLE = 'Restoring';
+export const INDEX_RESTORING_MSG = 'Seek is restoring the search index from another device…';
 export const INDEX_BUILDING_TITLE = 'Indexing';
 export const INDEX_BUILDING_MSG = 'Seek is still indexing your notes…';
 export const INDEX_NO_INDEX_TITLE = 'No index yet';
@@ -88,14 +88,13 @@ export const INDEX_NO_INDEX_LABEL = 'None';
 export const INDEX_STARTING_LABEL = 'Starting';
 export const INDEX_RESTORING_LABEL = 'Restoring';
 export const INDEX_MODEL_LOADING_LABEL = 'Loading';
-export const INDEX_SYNCING_LABEL = 'Syncing';
 export const INDEX_ERROR_LABEL = 'Error';
 export const INDEX_INDEXING_LABEL = 'Indexing';
 export const INDEX_UP_TO_DATE_LABEL = 'Ready';
 
 export type IndexLoadPhase = 'hydrating' | 'indexing' | 'idle';
-export type IndexLoadKind = 'resting' | 'starting' | 'hydrating' | 'indexing' | 'onboarding';
-export type IndexFooterKind = 'syncing' | 'restoring' | 'starting' | 'error' | 'indexing' | 'model-loading' | 'no-index' | 'up-to-date';
+export type IndexLoadKind = 'resting' | 'starting' | 'restoring' | 'indexing' | 'onboarding';
+export type IndexFooterKind = 'restoring' | 'starting' | 'error' | 'indexing' | 'model-loading' | 'no-index' | 'up-to-date';
 export type IndexFooterTone = 'info' | 'accent' | 'bad' | 'warn' | 'mid' | 'good';
 
 export interface IndexLoadFlags {
@@ -168,7 +167,7 @@ export function indexLoadSpec(input: IndexLoadInput): IndexLoadSpec {
     // Empty or not-yet-probed: name the real wait phase. Never claim "no index"
     // while Seek is still starting, restoring, or indexing.
     if (input.waitingForSidecar) {
-        return { kind: 'hydrating', title: INDEX_HYDRATING_TITLE, message: INDEX_HYDRATING_MSG, showAction: false };
+        return { kind: 'restoring', title: INDEX_RESTORING_TITLE, message: INDEX_RESTORING_MSG, showAction: false };
     }
     if (input.phase === 'hydrating') {
         return { kind: 'starting', title: INDEX_STARTING_TITLE, message: INDEX_STARTING_MSG, showAction: false };
@@ -180,14 +179,15 @@ export function indexLoadSpec(input: IndexLoadInput): IndexLoadSpec {
     return { kind: 'onboarding', title: INDEX_NO_INDEX_TITLE, message: INDEX_NO_INDEX_MSG, showAction: true };
 }
 
-// Search-modal footer status: always-visible icon + short label. Priority is
-// peer-sync > restoring > starting > error > indexing > model-loading >
-// no-index > up-to-date, so boot never masquerades as "no index" or "up to date".
+export function isIndexWaitKind(kind: IndexLoadKind): boolean {
+    return kind === 'starting' || kind === 'restoring' || kind === 'indexing';
+}
+
+// Search-modal footer: always-visible icon + one-word label. UI path is
+// Starting / Restoring / Indexing (plus Loading, None, Error, Ready).
+// Peer-sync and sidecar wait both read as Restoring.
 export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
-    if (input.peerSyncPending) {
-        return { kind: 'syncing', label: INDEX_SYNCING_LABEL, icon: 'refresh-cw', tone: 'info' };
-    }
-    if (input.kind === 'hydrating' || input.waitingForSidecar) {
+    if (input.kind === 'restoring' || input.waitingForSidecar || input.peerSyncPending) {
         return { kind: 'restoring', label: INDEX_RESTORING_LABEL, icon: 'refresh-cw', tone: 'info' };
     }
     if (input.kind === 'starting' || input.phase === 'hydrating') {

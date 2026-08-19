@@ -31,7 +31,7 @@ import { applySearchModalSize } from './search-modal-size';
 import { matchTitleAlias } from './fusion';
 import { dedupeAliasesAgainstBasename, sliceResultAliases } from './result-aliases';
 import type { RecentSearches } from './recents';
-import { indexLoadSpec, indexFooterStatus, type IndexLoadKind, type IndexLoadState } from './index-notice';
+import { indexLoadSpec, indexFooterStatus, isIndexWaitKind, type IndexLoadKind, type IndexLoadState } from './index-notice';
 
 // Search debounce. Mobile gets a longer window: the query embed runs on the
 // render thread (iframe = same event loop) and on iOS the stage-1 binary scan is
@@ -727,10 +727,7 @@ export class SeekSearchModal extends Modal {
     private renderEmpty(): void {
         const spec = this.currentLoadSpec();
         if (spec.kind === 'onboarding') { this.renderNoIndex(); return; }
-        if (spec.kind === 'starting' || spec.kind === 'hydrating' || spec.kind === 'indexing') {
-            this.renderIndexWait(spec);
-            return;
-        }
+        if (isIndexWaitKind(spec.kind)) { this.renderIndexWait(spec); return; }
         this.renderResting();
     }
 
@@ -845,7 +842,7 @@ export class SeekSearchModal extends Modal {
 
     private renderEmptyQuery(kind: IndexLoadKind): void {
         if (kind === 'onboarding') { this.renderNoIndex(); return; }
-        if (kind === 'starting' || kind === 'hydrating' || kind === 'indexing') {
+        if (isIndexWaitKind(kind)) {
             this.renderIndexWait(this.currentLoadSpec());
             return;
         }
