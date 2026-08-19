@@ -42,7 +42,7 @@ import { indexBannerSpec, resolveIndexLoadPhase, INDEX_STALE_MSG, INDEX_SYNCING_
 import { IndexStatusBar, parseIndexedProgress } from './index-status-bar';
 import type { IndexStatusHealth } from './index-status-card';
 import { SeekSettingTab } from './settings-tab';
-import { collectPlatformInfo, isMobilePlatform, resolveDevice, recordActiveBackend, maybeDemoteOnCrash } from './platform';
+import { collectPlatformInfo, isMobilePlatform, resolveDevice, recordActiveBackend, maybeDemoteOnCrash, getStartupWarm } from './platform';
 import { CompositorPacer } from './pacer';
 import { shouldUnloadEmbedder, type UnloadGateState } from './embedder-lifecycle';
 import { drainCatchUp, CATCHUP_MAX_FILES_PER_BURST, CATCHUP_BURST_BUDGET_MS } from './catchup';
@@ -561,15 +561,14 @@ export default class SeekPlugin extends Plugin {
             //     freshness trade for not auto-nuking, and the banner says so.
             if (!identityHandled) await this.reconcileOnLoad();
             // Prime BM25/frame after the store is populated so a clean launch does
-            // not wait for the first search. Desktop warmCaches does not need the
-            // embedder; mobile no-ops until the model is loaded (lazy-load / jetsam).
-            // reconcileOnLoad still warms ('delta') when its diff finds changes;
-            // warmCaches's `warming` guard dedups overlapping calls.
+            // not wait for the first search, gated by the per-device "Warm caches
+            // on startup" setting (localStorage, never synced). Desktop warmCaches
+            // does not need the embedder; mobile no-ops until the model is loaded.
         } finally {
             this.sidecarHydrating = false;
             this.indexBootPending = false;
             await this.touchIndexInventory();
-            void this.orchestrator.warmCaches('startup');
+            if (getStartupWarm()) void this.orchestrator.warmCaches('startup');
         }
         })();
 

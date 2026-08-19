@@ -526,6 +526,8 @@ export interface SeekSettings {
     // synced); see platform.ts resolveDevice / getBackendOverride. The old
     // `experimentalMobileWebgpu` boolean was removed 2026-06-12 for this reason
     // — a stale value persisted in data.json is now an ignored extra key.
+    // Same rule for startup cache warm (see platform.ts getStartupWarm): it is a
+    // per-device app-open cost, not a vault preference, so it is not a field here.
 
     // Persist the vector index to vault files (`<pluginDir>/index/` or vault-root
     // Seek Index/) so it survives iOS IndexedDB eviction and flows between devices
