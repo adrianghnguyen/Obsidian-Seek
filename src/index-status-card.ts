@@ -10,7 +10,7 @@ export interface IndexStatusCardStats {
     lastUpdatedAt: string | null;
 }
 
-export type IndexStatusHealth = 'none' | 'ok' | 'indexing' | 'error';
+export type IndexStatusHealth = 'none' | 'starting' | 'restoring' | 'ok' | 'indexing' | 'error';
 
 export interface IndexStatusJob {
     done: number;
@@ -20,6 +20,8 @@ export interface IndexStatusJob {
 
 export const INDEX_STATUS_HEALTH: Record<IndexStatusHealth, { tone: string; label: string }> = {
     none: { tone: 'mid', label: 'No index' },
+    starting: { tone: 'accent', label: 'Starting up…' },
+    restoring: { tone: 'accent', label: 'Restoring…' },
     ok: { tone: 'good', label: 'Up to date' },
     indexing: { tone: 'accent', label: 'Indexing…' },
     error: { tone: 'bad', label: 'Index error' },

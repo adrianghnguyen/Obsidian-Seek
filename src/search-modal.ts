@@ -31,7 +31,7 @@ import { applySearchModalSize } from './search-modal-size';
 import { matchTitleAlias } from './fusion';
 import { dedupeAliasesAgainstBasename, sliceResultAliases } from './result-aliases';
 import type { RecentSearches } from './recents';
-import { indexLoadSpec, indexFooterStatus, INDEX_HYDRATING_MSG, INDEX_BUILDING_MSG, type IndexLoadKind, type IndexLoadState } from './index-notice';
+import { indexLoadSpec, indexFooterStatus, type IndexLoadKind, type IndexLoadState } from './index-notice';
 
 // Search debounce. Mobile gets a longer window: the query embed runs on the
 // render thread (iframe = same event loop) and on iOS the stage-1 binary scan is
@@ -604,6 +604,7 @@ export class SeekSearchModal extends Modal {
             health: load.health,
             reason: load.reason,
             peerSyncPending: load.peerSyncPending,
+            waitingForSidecar: load.waitingForSidecar,
         });
         this.footStatusEl.className = `seek-foot-status is-${spec.tone}`;
         this.footStatusLabelEl.setText(spec.label);
@@ -726,7 +727,10 @@ export class SeekSearchModal extends Modal {
     private renderEmpty(): void {
         const spec = this.currentLoadSpec();
         if (spec.kind === 'onboarding') { this.renderNoIndex(); return; }
-        if (spec.kind === 'hydrating' || spec.kind === 'indexing') { this.renderIndexWait(spec.kind); return; }
+        if (spec.kind === 'starting' || spec.kind === 'hydrating' || spec.kind === 'indexing') {
+            this.renderIndexWait(spec);
+            return;
+        }
         this.renderResting();
     }
 
@@ -816,34 +820,35 @@ export class SeekSearchModal extends Modal {
         this.clearRows();
         this.currentResults = [];
         this.resultsEl.removeClass('is-loading');
+        const spec = this.currentLoadSpec();
         const box = this.resultsEl.createDiv({ cls: 'seek-empty seek-noindex' });
-        box.createDiv({ cls: 'seek-noindex-title', text: 'Your vault isn’t indexed yet' });
-        box.createDiv({ cls: 'seek-empty-sub', text: 'Seek needs to build a search index before it can find anything.' });
+        box.createDiv({ cls: 'seek-noindex-title', text: spec.title ?? 'No index yet' });
+        box.createDiv({
+            cls: 'seek-empty-sub',
+            text: spec.message ?? 'This vault has not been indexed. Build an index in Seek settings to search.',
+        });
         if (!this.getIndexNotice?.()) {
             box.createEl('button', { cls: 'seek-noindex-btn mod-cta', text: 'Open Seek settings to index' })
                 .addEventListener('click', () => this.openSeekSettings());
         }
     }
 
-    private renderIndexWait(kind: 'hydrating' | 'indexing'): void {
+    private renderIndexWait(spec: { kind: IndexLoadKind; title?: string; message?: string }): void {
         if (!this.resultsEl) return;
         this.clearRows();
         this.currentResults = [];
         this.resultsEl.removeClass('is-loading');
         const box = this.resultsEl.createDiv({ cls: 'seek-empty seek-noindex' });
-        box.createDiv({
-            cls: 'seek-noindex-title',
-            text: kind === 'hydrating' ? 'Restoring the search index' : 'Indexing your notes',
-        });
-        box.createDiv({
-            cls: 'seek-empty-sub',
-            text: kind === 'hydrating' ? INDEX_HYDRATING_MSG : INDEX_BUILDING_MSG,
-        });
+        box.createDiv({ cls: 'seek-noindex-title', text: spec.title ?? 'Starting up' });
+        box.createDiv({ cls: 'seek-empty-sub', text: spec.message ?? 'Seek is loading the search index.' });
     }
 
     private renderEmptyQuery(kind: IndexLoadKind): void {
         if (kind === 'onboarding') { this.renderNoIndex(); return; }
-        if (kind === 'hydrating' || kind === 'indexing') { this.renderIndexWait(kind); return; }
+        if (kind === 'starting' || kind === 'hydrating' || kind === 'indexing') {
+            this.renderIndexWait(this.currentLoadSpec());
+            return;
+        }
         if (!this.resultsEl) return;
         this.clearRows();
         const empty = this.resultsEl.createDiv({ cls: 'seek-empty' });

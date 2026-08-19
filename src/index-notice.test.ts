@@ -8,12 +8,19 @@ import {
     INDEX_SYNCING_MSG,
     INDEX_PEER_AHEAD_MSG,
     INDEX_HYDRATING_MSG,
+    INDEX_HYDRATING_TITLE,
     INDEX_BUILDING_MSG,
+    INDEX_BUILDING_TITLE,
+    INDEX_STARTING_MSG,
+    INDEX_STARTING_TITLE,
+    INDEX_STARTING_LABEL,
+    INDEX_RESTORING_LABEL,
     INDEX_SYNCING_LABEL,
     INDEX_ERROR_LABEL,
     INDEX_INDEXING_LABEL,
-    INDEX_NOT_READY_LABEL,
+    INDEX_MODEL_LOADING_LABEL,
     INDEX_NO_INDEX_LABEL,
+    INDEX_NO_INDEX_TITLE,
     INDEX_UP_TO_DATE_LABEL,
     type IndexFooterInput,
 } from './index-notice';
@@ -114,17 +121,18 @@ describe('indexLoadSpec', () => {
         expect(indexLoadSpec({ chunks: null, phase: 'idle' }).kind).toBe('resting');
     });
 
-    it('shows hydrate copy when the chunk probe has not returned yet but boot is still warming', () => {
+    it('shows starting copy when the chunk probe has not returned yet but boot is still warming', () => {
         const spec = indexLoadSpec({ chunks: null, phase: 'hydrating' });
-        expect(spec.kind).toBe('hydrating');
-        expect(spec.message).toBe(INDEX_HYDRATING_MSG);
+        expect(spec.kind).toBe('starting');
+        expect(spec.title).toBe(INDEX_STARTING_TITLE);
+        expect(spec.message).toBe(INDEX_STARTING_MSG);
         expect(spec.showAction).toBe(false);
     });
 
-    it('does not claim an empty vault while hydrating', () => {
+    it('does not claim an empty vault while starting up', () => {
         const spec = indexLoadSpec({ chunks: 0, phase: 'hydrating' });
-        expect(spec.kind).toBe('hydrating');
-        expect(spec.message).toBe(INDEX_HYDRATING_MSG);
+        expect(spec.kind).toBe('starting');
+        expect(spec.message).toBe(INDEX_STARTING_MSG);
         expect(spec.showAction).toBe(false);
     });
 
@@ -132,6 +140,7 @@ describe('indexLoadSpec', () => {
         expect(indexLoadSpec({ chunks: 0, phase: 'indexing' }).kind).toBe('indexing');
         const pending = indexLoadSpec({ chunks: 0, phase: 'idle', catchUpPending: true });
         expect(pending.kind).toBe('indexing');
+        expect(pending.title).toBe(INDEX_BUILDING_TITLE);
         expect(pending.message).toBe(INDEX_BUILDING_MSG);
         expect(pending.showAction).toBe(false);
     });
@@ -139,12 +148,15 @@ describe('indexLoadSpec', () => {
     it('shows onboarding only when idle with zero chunks', () => {
         const spec = indexLoadSpec({ chunks: 0, phase: 'idle' });
         expect(spec.kind).toBe('onboarding');
+        expect(spec.title).toBe(INDEX_NO_INDEX_TITLE);
         expect(spec.showAction).toBe(true);
     });
 
     it('keeps restore copy when idle-empty but a peer sidecar is still expected', () => {
         const spec = indexLoadSpec({ chunks: 0, phase: 'idle', waitingForSidecar: true });
         expect(spec.kind).toBe('hydrating');
+        expect(spec.title).toBe(INDEX_HYDRATING_TITLE);
+        expect(spec.message).toBe(INDEX_HYDRATING_MSG);
         expect(spec.showAction).toBe(false);
     });
 
@@ -173,27 +185,39 @@ describe('indexFooterStatus', () => {
         });
     });
 
-    it('does not claim up to date on a populated index while the model is cold', () => {
+    it('says Loading model on a populated index while the model is cold', () => {
         expect(indexFooterStatus({ ...idle, modelReady: false })).toEqual({
-            kind: 'not-ready',
-            label: INDEX_NOT_READY_LABEL,
-            icon: 'alert-triangle',
+            kind: 'model-loading',
+            label: INDEX_MODEL_LOADING_LABEL,
+            icon: 'refresh-cw',
             tone: 'warn',
         });
     });
 
-    it('is syncing while hydrating, even on a populated index', () => {
-        expect(indexFooterStatus({ ...idle, kind: 'hydrating' }).kind).toBe('syncing');
+    it('says Starting up while local boot is hydrating, even on a populated index', () => {
+        expect(indexFooterStatus({ ...idle, kind: 'starting' })).toMatchObject({
+            kind: 'starting',
+            label: INDEX_STARTING_LABEL,
+        });
         expect(indexFooterStatus({ ...idle, phase: 'hydrating' })).toMatchObject({
-            kind: 'syncing',
-            label: INDEX_SYNCING_LABEL,
+            kind: 'starting',
+            label: INDEX_STARTING_LABEL,
             icon: 'refresh-cw',
             tone: 'accent',
         });
     });
 
+    it('says Restoring while a peer sidecar is expected', () => {
+        expect(indexFooterStatus({ ...idle, kind: 'hydrating' })).toMatchObject({
+            kind: 'restoring',
+            label: INDEX_RESTORING_LABEL,
+        });
+        expect(indexFooterStatus({ ...idle, waitingForSidecar: true }).kind).toBe('restoring');
+    });
+
     it('is syncing while a peer index is on its way', () => {
         expect(indexFooterStatus({ ...idle, peerSyncPending: true }).kind).toBe('syncing');
+        expect(indexFooterStatus({ ...idle, peerSyncPending: true }).label).toBe(INDEX_SYNCING_LABEL);
     });
 
     it('is Index error when degraded or peer-ahead', () => {
@@ -226,13 +250,19 @@ describe('indexFooterStatus', () => {
         });
     });
 
-    it('priority: syncing > error > indexing > model-not-ready > no-index > up-to-date', () => {
+    it('priority: peer-sync > restoring > starting > error > indexing > model-loading > no-index > up-to-date', () => {
+        expect(indexFooterStatus({
+            ...idle, peerSyncPending: true, kind: 'hydrating', health: 'degraded', modelReady: false,
+        }).kind).toBe('syncing');
         expect(indexFooterStatus({
             ...idle, kind: 'hydrating', health: 'degraded', phase: 'indexing', modelReady: false,
-        }).kind).toBe('syncing');
+        }).kind).toBe('restoring');
         expect(indexFooterStatus({
-            ...idle, peerSyncPending: true, health: 'degraded', modelReady: false,
-        }).kind).toBe('syncing');
+            ...idle, kind: 'starting', health: 'degraded', phase: 'indexing', modelReady: false,
+        }).kind).toBe('starting');
+        expect(indexFooterStatus({
+            ...idle, phase: 'hydrating', health: 'degraded', modelReady: false,
+        }).kind).toBe('starting');
         expect(indexFooterStatus({
             ...idle, health: 'degraded', phase: 'indexing', modelReady: false,
         }).kind).toBe('error');
@@ -245,7 +275,7 @@ describe('indexFooterStatus', () => {
         expect(indexFooterStatus({
             ...idle, health: 'recovering', modelReady: false, kind: 'onboarding',
         }).kind).toBe('indexing');
-        expect(indexFooterStatus({ ...idle, kind: 'onboarding', modelReady: false }).kind).toBe('not-ready');
+        expect(indexFooterStatus({ ...idle, kind: 'onboarding', modelReady: false }).kind).toBe('model-loading');
         expect(indexFooterStatus({ ...idle, kind: 'onboarding' }).kind).toBe('no-index');
         expect(indexFooterStatus(idle).kind).toBe('up-to-date');
     });

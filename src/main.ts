@@ -40,6 +40,7 @@ import {
 } from './insert-link';
 import { indexBannerSpec, resolveIndexLoadPhase, INDEX_STALE_MSG, INDEX_SYNCING_MSG, INDEX_PEER_AHEAD_MSG, type DegradedReason, type IndexLoadState } from './index-notice';
 import { IndexStatusBar, parseIndexedProgress } from './index-status-bar';
+import type { IndexStatusHealth } from './index-status-card';
 import { SeekSettingTab } from './settings-tab';
 import { collectPlatformInfo, isMobilePlatform, resolveDevice, recordActiveBackend, maybeDemoteOnCrash } from './platform';
 import { CompositorPacer } from './pacer';
@@ -279,13 +280,17 @@ export default class SeekPlugin extends Plugin {
     // private; this is the read-only surface the settings Index status card reads
     // (on open and while polling a live reindex) to show its "Indexing…" state.
     get isIndexing(): boolean { return this.currentTaskContext === 'indexing'; }
-    /** True while sidecar restore / boot reconcile has not finished. */
-    get isIndexWarmingUp(): boolean {
-        return this.indexBootPending || this.sidecarHydrating || this.waitingForSidecar;
+    /** Boot / sidecar-restore phase for explicit status copy. Null when idle. */
+    get indexWarmPhase(): 'starting' | 'restoring' | null {
+        if (this.waitingForSidecar) return 'restoring';
+        if (this.indexBootPending || this.sidecarHydrating) return 'starting';
+        return null;
     }
+    get isIndexWarmingUp(): boolean { return this.indexWarmPhase != null; }
 
-    private statusBarHealth(): 'none' | 'ok' | 'indexing' | 'error' {
-        if (this.isIndexWarmingUp) return 'indexing';
+    private statusBarHealth(): IndexStatusHealth {
+        const warm = this.indexWarmPhase;
+        if (warm) return warm;
         if (this.catchUpRunning || this.catchUpPending || this.flushing || this.isIndexing) return 'indexing';
         if (this.indexHealth === 'degraded') return 'error';
         if (this.indexHealth === 'recovering') return 'indexing';
