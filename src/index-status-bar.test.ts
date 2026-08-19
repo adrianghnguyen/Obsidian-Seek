@@ -147,7 +147,7 @@ describe('IndexStatusBar', () => {
     });
 
     it('refreshIdle repaints the dot when health changes outside a job', () => {
-        let health: 'indexing' | 'ok' = 'indexing';
+        let health: 'indexing' | 'ok' | 'starting' = 'indexing';
         const root = stubEl();
         const bar = new IndexStatusBar();
         bar.mount(root as unknown as HTMLElement, { ...hooks, getHealth: () => health });
@@ -155,6 +155,9 @@ describe('IndexStatusBar', () => {
         health = 'ok';
         bar.refreshIdle();
         expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-good');
+        health = 'starting';
+        bar.refreshIdle();
+        expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-info');
     });
 });
 

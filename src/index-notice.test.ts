@@ -203,7 +203,7 @@ describe('indexFooterStatus', () => {
             kind: 'starting',
             label: INDEX_STARTING_LABEL,
             icon: 'refresh-cw',
-            tone: 'accent',
+            tone: 'info',
         });
     });
 
@@ -215,9 +215,25 @@ describe('indexFooterStatus', () => {
         expect(indexFooterStatus({ ...idle, waitingForSidecar: true }).kind).toBe('restoring');
     });
 
-    it('is syncing while a peer index is on its way', () => {
-        expect(indexFooterStatus({ ...idle, peerSyncPending: true }).kind).toBe('syncing');
-        expect(indexFooterStatus({ ...idle, peerSyncPending: true }).label).toBe(INDEX_SYNCING_LABEL);
+    it('uses a blue info tone for starting, restoring, and peer-sync', () => {
+        expect(indexFooterStatus({ ...idle, kind: 'starting' }).tone).toBe('info');
+        expect(indexFooterStatus({ ...idle, kind: 'hydrating' }).tone).toBe('info');
+        expect(indexFooterStatus({ ...idle, peerSyncPending: true }).tone).toBe('info');
+    });
+
+    it('keeps footer labels to one word', () => {
+        for (const spec of [
+            indexFooterStatus(idle),
+            indexFooterStatus({ ...idle, kind: 'starting' }),
+            indexFooterStatus({ ...idle, kind: 'hydrating' }),
+            indexFooterStatus({ ...idle, kind: 'indexing' }),
+            indexFooterStatus({ ...idle, kind: 'onboarding' }),
+            indexFooterStatus({ ...idle, modelReady: false }),
+            indexFooterStatus({ ...idle, health: 'degraded' }),
+            indexFooterStatus({ ...idle, peerSyncPending: true }),
+        ]) {
+            expect(spec.label).not.toMatch(/\s/);
+        }
     });
 
     it('is Index error when degraded or peer-ahead', () => {

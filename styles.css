@@ -933,11 +933,13 @@
     height: 14px;
 }
 .seek-foot-status.is-accent { color: var(--interactive-accent); }
+.seek-foot-status.is-info { color: var(--color-blue); }
 .seek-foot-status.is-bad { color: var(--text-error); }
 .seek-foot-status.is-warn { color: var(--text-warning); }
 .seek-foot-status.is-mid,
 .seek-foot-status.is-good { color: var(--text-muted); }
-.seek-foot-status.is-accent .seek-foot-status-icon svg {
+.seek-foot-status.is-accent .seek-foot-status-icon svg,
+.seek-foot-status.is-info .seek-foot-status-icon svg {
     animation: seek-foot-spin 1s linear infinite;
 }
 @keyframes seek-foot-spin {
@@ -1037,7 +1039,7 @@
     margin: 4px 0 12px;
 }
 
-/* status dots — five health tones from theme status colors, with a soft halo */
+/* status dots — health tones from theme status colors, with a soft halo */
 .seek-dot {
     width: 8px;
     height: 8px;
@@ -1056,6 +1058,10 @@
 .seek-dot-accent {
     background: var(--interactive-accent);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--interactive-accent) 22%, transparent);
+}
+.seek-dot-info {
+    background: var(--color-blue);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-blue) 22%, transparent);
 }
 .seek-dot-bad {
     background: var(--color-red);
