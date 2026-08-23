@@ -25,6 +25,7 @@ sym: shouldAutoDrainStartupCatchUp
 sym: scheduleStartupCatchUp
 sym: beginIndexJob
 sym: isChromiumPowerPreferenceAdapterWarning
+sym: stripGpuPowerPreference
 sym: isKnownEmptyIndexWithNotes
 open: none
 exclude: idb-cross-device
@@ -226,3 +227,68 @@ did: populated modal recents no Indexing wait card
 did: recovering footer is Starting
 did: build copy vault plugin:reload hashes match
 was-wrong: 2026-08-19-startup-gates-fix treated catchUpPending as indexing on purpose
+
+---
+
+## 2026-08-19 webgpu-strip-powerpreference
+
+id: 2026-08-19-webgpu-strip-powerpreference
+date: 2026-08-19
+status: done
+tag: webgpu
+tag: chromium
+tag: iframe
+file: src/iframe-runner.ts
+file: src/iframe-runner.test.ts
+sym: stripGpuPowerPreference
+sym: WEBGPU_POWER_PREFERENCE_WARN_FILTER
+sym: requestAdapter
+bug: crbug.com/369219127
+cmd: obsidian plugin:reload
+found: powerPreference warning still after console.warn filter
+found: transformers@4.2.0 init requestAdapter
+found: ORT wasm glue second requestAdapter in worker-like realm
+rca: Blink emits the warn from requestAdapter itself not console.warn
+rca: wrapping console.warn cannot catch Chromium inspector messages
+did: strip powerPreference from requestAdapter options in iframe
+did: wrap GPU.prototype.requestAdapter
+did: wrap Worker so ORT glue realm also strips
+did: keep console.warn filter as fallback
+did: build copy vault plugin:reload hashes match
+was-wrong: 2026-08-19-webgpu-powerpreference console.warn filter was not sufficient
+
+---
+
+## 2026-08-19 webgpu-warn-cli-verify
+
+id: 2026-08-19-webgpu-warn-cli-verify
+date: 2026-08-19
+status: done
+tag: webgpu
+tag: chromium
+tag: cli
+cmd: obsidian restart
+cmd: obsidian dev:debug
+cmd: obsidian plugin:reload
+cmd: obsidian dev:console
+cmd: seek:search
+file: src/iframe-runner.ts
+sym: stripGpuPowerPreference
+sym: _seekNoPowerPref
+bug: crbug.com/369219127
+found: restart then seek alive in ~6s
+found: after plugin:reload uiHealth starting 0/0 then indexing 4395/16418 then ok
+found: seek:search probe hit Notes/Application performance monitoring.md
+found: iframe requestAdapter._seekNoPowerPref true
+found: GPU.prototype wrapped
+found: Worker is SeekWorker
+found: parent navigator.gpu not wrapped
+found: explicit iframe requestAdapter powerPreference returned adapter ok
+found: dev:console had zero powerPreference lines
+found: dev:errors empty
+found: CLI console only seek INFO applyDelta and CLI commands
+rca: warning is Seek iframe transformers/ORT when it fires
+rca: Blink inspector warn is not captured by obsidian dev:console
+rca: strip hook is live in iframe so native requestAdapter should not see powerPreference
+did: full restart debug-on plugin-reload search console dump eval hook inspect
+open: none unless DevTools still shows a post-strip stack
