@@ -21,9 +21,13 @@ Configurable settings must always be available in the plugin options menu (Setti
 
 ## Upstream sync (this is a fork)
 
+This working copy is the **fork**, not the parent. Day-to-day push/PR work targets `origin` (`adrianghnguyen/Obsidian-Seek`). `upstream` is only for syncing parent releases.
+
 Remotes:
 - `origin` — fork (`adrianghnguyen/Obsidian-Seek`)
 - `upstream` — parent (`ryan-manor/Obsidian-Seek`); keep this remote permanently
+
+`gh` may resolve the default repo to **upstream** (read-only). For PRs and `gh pr` / `gh api` against our work, always pass `--repo adrianghnguyen/Obsidian-Seek` (or ensure the cwd remote/`gh` default is the fork). Do not open routine feature PRs against `ryan-manor/Obsidian-Seek` unless the user explicitly asks to contribute upstream.
 
 Prefer **merge on a temp branch**, not rebase, so each sync builds a shared merge-base and does not force-push `main`.
 
