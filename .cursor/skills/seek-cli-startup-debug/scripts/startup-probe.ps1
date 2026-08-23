@@ -78,4 +78,4 @@ while ((Get-Elapsed $start) -lt $MaxSeconds) {
 Log "Capturing console and errors"
 Run-Obsidian dev:console limit=150 "vault=$Vault"
 Run-Obsidian dev:errors "vault=$Vault"
-Log "=== Probe complete (${MaxSeconds}s window) — see $LogFile ==="
+Log "=== Probe complete (${MaxSeconds}s window) - see $LogFile ==="
