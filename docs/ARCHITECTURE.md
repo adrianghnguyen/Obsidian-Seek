@@ -558,6 +558,7 @@ CLI handlers register only when `registerCliHandler` exists on the plugin instan
 
 ## Related docs
 
+- [seek-architecture.canvas.tsx](./seek-architecture.canvas.tsx) — interactive Cursor canvas (system map, index/search/persistence drill-downs)
 - [README.md](../README.md) — user-facing install and privacy summary
 - [CHANGELOG.md](../CHANGELOG.md) — release history
 - [User guide](https://publish.obsidian.md/rmm/Seek+Documentation/About+Seek) — external documentation
