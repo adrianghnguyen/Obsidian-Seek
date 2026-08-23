@@ -13,11 +13,13 @@ status: open
 tag: startup
 tag: cli
 tag: webgpu
+tag: ui
 file: src/index-notice.ts
 file: src/startup-drain.ts
 file: src/main.ts
 file: src/index-status-bar.ts
 file: src/iframe-runner.ts
+file: .cursor/skills/seek-cli-startup-debug/scripts/startup-probe.ps1
 sym: resolveIndexUiStatus
 sym: resolveCliSearchGate
 sym: retainIndexInventory
@@ -27,6 +29,7 @@ sym: beginIndexJob
 sym: isChromiumPowerPreferenceAdapterWarning
 sym: stripGpuPowerPreference
 sym: isKnownEmptyIndexWithNotes
+found: 2026-08-22 vault functional UI verify PASS on 1.1.4
 open: none
 exclude: idb-cross-device
 exclude: sidecar-protocol
@@ -292,3 +295,73 @@ rca: Blink inspector warn is not captured by obsidian dev:console
 rca: strip hook is live in iframe so native requestAdapter should not see powerPreference
 did: full restart debug-on plugin-reload search console dump eval hook inspect
 open: none unless DevTools still shows a post-strip stack
+
+---
+
+## 2026-08-22 functional-ui-verify
+
+id: 2026-08-22-functional-ui-verify
+date: 2026-08-22
+status: done
+tag: startup
+tag: ui
+tag: cli
+tag: catch-up
+tag: webgpu
+cmd: obsidian restart
+cmd: obsidian eval
+cmd: obsidian dev:debug
+cmd: obsidian dev:dom
+cmd: obsidian dev:screenshot
+cmd: obsidian plugin:reload
+cmd: seek:search
+file: .cursor/skills/seek-cli-startup-debug/SKILL.md
+file: .cursor/skills/seek-cli-startup-debug/scripts/startup-probe.ps1
+file: .cursor/seek-ui-warm.png
+file: .cursor/seek-ui-indexing.png
+file: .cursor/seek-ui-ready.png
+file: .cursor/seek-ui-settings-dom.txt
+commit: 5430814
+found: branch fix-seek-index-modal tip 5430814 deployed Seek 1.1.4 vault hash match
+found: cold start warmPhase starting then ok ranked seek:search probe hit
+found: no false idle no-index during boot
+found: search gated Seek not ready while starting
+found: catch-up indexing with chunks already populated still returned ranked hits
+found: footer DOM Starting then Indexing then Ready
+found: warm screenshot Starting up not empty vault copy
+found: settings tab text has Warm caches on startup
+found: plugin:reload settled ok same 4412/16509 inventory no empty indexing latch
+found: zero powerPreference lines in dev:console
+found: startup-probe.ps1 parse fail on em-dash in complete log line
+found: open Seek modal during catch-up latches searchActive so job done stays 0 until close
+found: reload early periodicReconcile errors Neither model nor tokenizer loaded then model loaded with warnings on webgpu
+rca: functional checklist uses seek-cli-startup-debug gates plus obsidian-plugin-debug DOM screenshot
+rca: searchActive blocks catch-up drain while modal open
+did: typecheck relevant tests build copy vault reload then restart-first gate poll
+did: capture warm indexing ready screenshots and settings Warm caches via tab.containerEl
+did: reload catch-up battery stuckEmptyIndexing false settledOk true
+open: startup-probe.ps1 encoding
+open: tokenizer-not-loaded noise before model ready on reload
+
+---
+
+## 2026-08-22 verify-followups
+
+id: 2026-08-22-verify-followups
+date: 2026-08-22
+status: done
+tag: cli
+tag: startup
+tag: catch-up
+file: .cursor/skills/seek-cli-startup-debug/scripts/startup-probe.ps1
+file: src/search.ts
+sym: collectLiveIds
+sym: reChunkLive
+found: startup-probe.ps1 em-dash broke PowerShell string parse
+found: collectLiveIds logged Neither model nor tokenizer loaded once per note after reload teardown
+rca: Unicode em-dash in Log complete line
+rca: mid-pass embedder.teardown clears tokenizer latch so tokenCounts fails every remaining file
+did: replace em-dash with ASCII hyphen in startup-probe.ps1
+did: abort collectLiveIds and reChunkLive on that error after one log
+did: patch personal obsidian-plugin-debug skill with settings tabs DOM screenshot PowerShell tips
+was-wrong: 2026-08-22-functional-ui-verify left those two open

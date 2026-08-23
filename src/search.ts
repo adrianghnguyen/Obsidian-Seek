@@ -2720,6 +2720,11 @@ export class SearchOrchestrator {
                 // Tokenizer hiccup on one note — skip its hydrate (it just embeds
                 // later via the catch-up); never abort the whole hydrate.
                 await this.logger.appendError(`reChunkLive-tokenBudget:${f.path}`, e);
+                // Same unload/reload latch clear as collectLiveIds: further notes
+                // will all fail identically, so stop walking the vault.
+                if (e instanceof Error && /Neither model nor tokenizer loaded/i.test(e.message)) {
+                    break;
+                }
                 continue;
             }
             if (chunks.length > 0) out.push({ notePath: f.path, mtimeMs: f.stat.mtime, chunks, contentHash: cyrb53Hex(content) });
@@ -2780,6 +2785,12 @@ export class SearchOrchestrator {
             } catch (e) {
                 complete = false; // tokenizer hiccup → incomplete
                 await this.logger.appendError(`collectLiveIds-tokenBudget:${f.path}`, e);
+                // Mid-pass teardown/reload clears the tokenizer latch; every later
+                // note fails the same way. Abort once — incomplete already tells
+                // compact to retry — instead of thousands of identical errors.
+                if (e instanceof Error && /Neither model nor tokenizer loaded/i.test(e.message)) {
+                    return { ids, complete: false };
+                }
                 continue;
             }
             for (const c of chunks) ids.add(c.chunk_id);
