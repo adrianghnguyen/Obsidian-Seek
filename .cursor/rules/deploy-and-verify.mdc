@@ -18,6 +18,8 @@ A feature task is **not done** until the plugin is deployed to the dev vault and
    - `obsidian eval` confirms new settings or runtime behavior
 6. Tell the user to **close and reopen** affected modals; use `obsidian restart` if CSS or layout looks stale
 
+Large local features/fixes: also run the CLI verify cycle in `.cursor/rules/cli-verify-cycle.mdc` (startup skill when first-load is in scope).
+
 ## Do not skip
 
 - Never assume deploy succeeded from build output alone

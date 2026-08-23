@@ -459,23 +459,91 @@ export class IframeRunner {
 
 // Chromium on Windows ignores GPUAdapterOptions.powerPreference and warns
 // (crbug.com/369219127). transformers.js and ORT-Web each pass the hint, so
-// a WebGPU load logs it twice. Harmless: same adapter, same outputs, WASM
-// fallback in loadModel() is unrelated. Keep the iframe IIFE in sync.
+// a WebGPU load logs it twice. Blink emits that from requestAdapter itself —
+// wrapping console.warn does not catch it. Strip the option in this realm and
+// in Workers ORT spawns. Keep the iframe IIFE in sync with stripGpuPowerPreference().
 export function isChromiumPowerPreferenceAdapterWarning(message: string): boolean {
     return message.includes('powerPreference') && message.includes('requestAdapter');
 }
 
+export function stripGpuPowerPreference(options: unknown): unknown {
+    if (!options || typeof options !== 'object') return options;
+    if (!('powerPreference' in options)) return options;
+    const next: Record<string, unknown> = {};
+    for (const key of Object.keys(options as Record<string, unknown>)) {
+        if (key !== 'powerPreference') next[key] = (options as Record<string, unknown>)[key];
+    }
+    return next;
+}
+
 const WEBGPU_POWER_PREFERENCE_WARN_FILTER = [
-    '// Chromium on Windows logs a harmless warning when transformers/ORT pass',
-    '// powerPreference to requestAdapter (crbug.com/369219127). Filter it so',
-    '// DevTools stays readable; GPU selection is unchanged.',
+    '// Chromium on Windows warns when requestAdapter is passed powerPreference',
+    '// (crbug.com/369219127). Blink logs it; console.warn wrapping does not help.',
+    '// Strip the option on this realm and on Workers ORT creates.',
     '(function () {',
-    '    const origWarn = console.warn;',
+    '    function stripPref(options) {',
+    "        if (!options || typeof options !== 'object') return options;",
+    "        if (!('powerPreference' in options)) return options;",
+    '        var next = {};',
+    '        for (var k in options) {',
+    "            if (Object.prototype.hasOwnProperty.call(options, k) && k !== 'powerPreference') next[k] = options[k];",
+    '        }',
+    '        return next;',
+    '    }',
+    '    function wrapAdapter(fn) {',
+    '        if (!fn || fn._seekNoPowerPref) return fn;',
+    '        function wrapped(options) { return fn.call(this, stripPref(options)); }',
+    '        wrapped._seekNoPowerPref = true;',
+    '        return wrapped;',
+    '    }',
+    '    function patchGpu(gpu) {',
+    '        if (!gpu || typeof gpu.requestAdapter !== \'function\') return;',
+    '        try { gpu.requestAdapter = wrapAdapter(gpu.requestAdapter.bind(gpu)); } catch (e1) {}',
+    '        try {',
+    '            var proto = Object.getPrototypeOf(gpu);',
+    '            if (proto && typeof proto.requestAdapter === \'function\') proto.requestAdapter = wrapAdapter(proto.requestAdapter);',
+    '        } catch (e2) {}',
+    '    }',
+    '    function install() {',
+    '        try { if (typeof navigator !== \'undefined\') patchGpu(navigator.gpu); } catch (e3) {}',
+    '        try {',
+    '            if (typeof GPU !== \'undefined\' && GPU.prototype && typeof GPU.prototype.requestAdapter === \'function\') {',
+    '                GPU.prototype.requestAdapter = wrapAdapter(GPU.prototype.requestAdapter);',
+    '            }',
+    '        } catch (e4) {}',
+    '    }',
+    '    install();',
+    '    var origWarn = console.warn;',
     '    console.warn = function () {',
-    "        const msg = Array.prototype.map.call(arguments, function (a) { return String(a); }).join(' ');",
+    "        var msg = Array.prototype.map.call(arguments, function (a) { return String(a); }).join(' ');",
     "        if (msg.indexOf('powerPreference') >= 0 && msg.indexOf('requestAdapter') >= 0) return;",
     '        return origWarn.apply(console, arguments);',
     '    };',
+    '    try {',
+    '        var OrigWorker = typeof Worker !== \'undefined\' ? Worker : null;',
+    '        if (OrigWorker) {',
+    "            var hook = '(function(){' +",
+    "                'function s(o){if(!o||typeof o!==\"object\")return o;if(!(\"powerPreference\"in o))return o;var n={};for(var k in o){if(k!==\"powerPreference\")n[k]=o[k];}return n;}' +",
+    "                'function w(f){if(!f||f._seekNoPowerPref)return f;function g(o){return f.call(this,s(o));}g._seekNoPowerPref=true;return g;}' +",
+    "                'try{if(navigator.gpu)navigator.gpu.requestAdapter=w(navigator.gpu.requestAdapter.bind(navigator.gpu));}catch(e){}' +",
+    "                'try{if(typeof GPU!==\"undefined\"&&GPU.prototype)GPU.prototype.requestAdapter=w(GPU.prototype.requestAdapter);}catch(e){}' +",
+    "            '})();';",
+    '            function SeekWorker(url, opts) {',
+    '                try {',
+    '                    var isModule = opts && opts.type === \'module\';',
+    '                    var src = isModule',
+    "                        ? hook + 'import(' + JSON.stringify(String(url)) + ');'",
+    "                        : hook + 'importScripts(' + JSON.stringify(String(url)) + ');';",
+    '                    var blob = new Blob([src], { type: \'text/javascript\' });',
+    '                    return new OrigWorker(URL.createObjectURL(blob), opts);',
+    '                } catch (e5) {',
+    '                    return new OrigWorker(url, opts);',
+    '                }',
+    '            }',
+    '            SeekWorker.prototype = OrigWorker.prototype;',
+    '            self.Worker = SeekWorker;',
+    '        }',
+    '    } catch (e6) {}',
     '})();',
 ].join('\n');
 

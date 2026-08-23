@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { IframeRunner, buildChildScript, isChromiumPowerPreferenceAdapterWarning } from './iframe-runner';
+import { IframeRunner, buildChildScript, isChromiumPowerPreferenceAdapterWarning, stripGpuPowerPreference } from './iframe-runner';
 
 // F5 — per-RPC timeout. A jetsam-killed iframe child never replies; without the
 // timeout the parent promise hangs forever, stranding the embed catch's
@@ -56,15 +56,25 @@ describe('Chromium powerPreference requestAdapter warning (crbug.com/369219127)'
         expect(isChromiumPowerPreferenceAdapterWarning('model load failed')).toBe(false);
     });
 
-    it('installs the iframe console.warn filter before pipeline bootstrap', () => {
+    it('strips powerPreference and leaves other adapter options', () => {
+        expect(stripGpuPowerPreference(undefined)).toBeUndefined();
+        expect(stripGpuPowerPreference({ powerPreference: 'high-performance' })).toEqual({});
+        expect(stripGpuPowerPreference({ powerPreference: 'low-power', forceFallbackAdapter: true }))
+            .toEqual({ forceFallbackAdapter: true });
+        expect(stripGpuPowerPreference({ forceFallbackAdapter: false })).toEqual({ forceFallbackAdapter: false });
+    });
+
+    it('strips powerPreference on requestAdapter before pipeline bootstrap', () => {
         const script = buildChildScript('https://example.com/cdn', 384);
         const cdnIdx = script.indexOf('const CDN_URL');
-        const filterIdx = script.indexOf("msg.indexOf('powerPreference')");
-        const adapterIdx = script.indexOf("msg.indexOf('requestAdapter')");
+        const stripIdx = script.indexOf("k !== 'powerPreference'");
+        const protoIdx = script.indexOf('GPU.prototype.requestAdapter');
+        const workerIdx = script.indexOf('self.Worker = SeekWorker');
         const pipelineIdx = script.indexOf('let pipeline = null');
-        expect(filterIdx).toBeGreaterThan(cdnIdx);
-        expect(adapterIdx).toBeGreaterThan(filterIdx);
-        expect(pipelineIdx).toBeGreaterThan(adapterIdx);
+        expect(stripIdx).toBeGreaterThan(cdnIdx);
+        expect(protoIdx).toBeGreaterThan(stripIdx);
+        expect(workerIdx).toBeGreaterThan(protoIdx);
+        expect(pipelineIdx).toBeGreaterThan(workerIdx);
         expect(script).toContain('crbug.com/369219127');
     });
 });

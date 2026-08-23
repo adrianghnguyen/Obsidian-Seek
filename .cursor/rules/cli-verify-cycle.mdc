@@ -1,0 +1,22 @@
+---
+description: Large local features/fixes must finish with an Obsidian CLI verify cycle, using project skills
+alwaysApply: true
+---
+
+# CLI verify cycle (local, large work)
+
+After a **large** feature or fix in this **local** environment, the task is not done at build/deploy. Run an Obsidian CLI verify cycle. Skip if there is no local vault/CLI (cloud agent, no `obsidian` on PATH, no `C:\Obsidian\.obsidian\plugins\seek\`).
+
+Large: multi-file behavior, startup/index/search UI, embed/iframe/WebGPU, catch-up/hydrate, anything unit tests cannot see. Not: typo, comment, test-only, docs-only.
+
+## Cycle
+
+1. Follow `.cursor/rules/deploy-and-verify.mdc` (typecheck, relevant tests, build, copy, reload/restart).
+2. Then **runtime CLI verify**. Use skills; do not invent a parallel protocol:
+   - First-load / hydrate / catch-up / empty search / status labels → `.cursor/skills/seek-cli-startup-debug/SKILL.md` (restart first, serial eval, `dev:debug on` after restart, `dev:console` / `dev:errors`).
+   - Deploying a branch into the vault → `.cursor/skills/deploy-branch-to-vault/SKILL.md`.
+   - Other runtime: `obsidian eval`, `obsidian seek:search`, `obsidian plugin:reload` as the change requires.
+3. Confirm the new behavior (or the bug is gone) from CLI output, not from build success.
+4. If CSS/layout/iframe looks stale: `obsidian restart vault=Obsidian`, then re-probe.
+
+Do not skip because `npm test` passed. Do not probe a warm session when the bug is first-load. Log Seek console lines that matter.
