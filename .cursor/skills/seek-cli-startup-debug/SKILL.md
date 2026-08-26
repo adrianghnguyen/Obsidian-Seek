@@ -173,6 +173,16 @@ Also list:
 - Any `dev:errors` entries
 - Probe caveats (warm session skipped, vault size, parallel contamination, `warmCaches` not observable)
 
+## Logging report (after the timeline, or instead of hoping `dev:console` caught hydrate)
+
+The palette command is gone. Settings → Seek → Diagnostics → **Generate logging report**, or:
+
+```powershell
+obsidian eval vault=Obsidian code="app.plugins.plugins.seek.openLoggingReport().then(()=>'ok')"
+```
+
+Writes vault-root `seek-report.md` + `seek-report.json` (`sidecar-hydrate`, `index-complete` timings, errors). Prefer `seek-report.json` over `dev:console` for hydrate/index forensics. Do not call this mid-catch-up if eval is already contested.
+
 ## Anti-patterns
 
 - Probing warm instance without restart for first-load questions
