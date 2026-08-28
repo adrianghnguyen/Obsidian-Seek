@@ -632,7 +632,16 @@ export default class SeekPlugin extends Plugin {
             //     In-session edits still index live via the flushDirty event path, so
             //     the gap is only un-touched, externally-changed notes — an accepted
             //     freshness trade for not auto-nuking, and the banner says so.
-            if (!identityHandled) await this.reconcileOnLoad();
+            if (!identityHandled) {
+                // T4 persist-cache: load IDB-resident frame + BM25 before the first
+                // reconcile delta so applyDelta can patch instead of cold rebuild.
+                try {
+                    await this.orchestrator.restorePersistedCachesBeforeReconcile();
+                } catch (e) {
+                    await this.logger.appendError('persist-cache-restore', e).catch(() => {});
+                }
+                await this.reconcileOnLoad();
+            }
             // Prime BM25/frame after the store is populated so a clean launch does
             // not wait for the first search, gated by the per-device "Warm caches
             // on startup" setting (localStorage, never synced). Desktop warmCaches
