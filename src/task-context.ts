@@ -26,7 +26,8 @@ export type TaskContext =
     | 'catchup'      // deferred-embed drain (runCatchUp)
     | 'model-load'   // embedder load: fetch + wasm compile + session init + warmup
     | 'bm25-warm'    // BM25 cache build/refit (the cold-start fit)
-    | 'reconcile';   // periodic/onload reconcile: sidecar scan, orphan sweep, compaction
+    | 'reconcile'    // periodic/onload reconcile: sidecar scan, orphan sweep, compaction
+    | 'hydrating';   // sidecar hydrate IIFE (withSidecarHydrate / reChunkLive)
 
 interface Span {
     c: TaskContext;

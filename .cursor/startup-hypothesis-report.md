@@ -1,6 +1,6 @@
 # Startup hypothesis report (sidecar)
 
-_Companion to `seek-report.json` / `seek-report.md` · vault Obsidian · Seek 1.1.4 · 2026-08-27_
+_Companion to `.seek-artifacts/seek-report.json` / `seek-report.md` · vault Obsidian · Seek 1.1.4 · 2026-08-27_
 
 Serial subagent run (H1–H6, T1–T3). **Run A** (cold restart) for H1/H2; historical report mixed cold and warm — see protocol below.
 
@@ -288,4 +288,47 @@ Workers (H6), recency-first embed (already on), BM25-only tuning (~300ms).
 - T3 needs plugin bisect or hydrate task-context span (§5).
 - **Never** run `seek:search` during `uiHealth: indexing` on either run (hangs).
 
-**Artifacts:** `seek-report.json` (mixed — supersede with labeled cold/warm copies), `hyp-probe.ps1`, `seek-cli-startup-debug` skill, [`greedy-incremental-hydrate.md`](greedy-incremental-hydrate.md).
+**Artifacts:** `seek-report.json` (mixed — supersede with labeled cold/warm copies), `hyp-probe.ps1`, `startup-trace-probe.ps1`, `parse-startup-trace.mjs`, `seek-cli-startup-debug` skill, [`greedy-incremental-hydrate.md`](greedy-incremental-hydrate.md).
+
+---
+
+## Tracing and path worktrees
+
+**Branch:** `startup/trace-infra` — measurement-only (schema v17, no speedup fixes). Path feature branches (`path/greedy-hydrate`, etc.) fork from trace-infra.
+
+### Three layers
+
+| Layer | Artifact | Purpose |
+|-------|----------|---------|
+| **L0** | `.cursor/gate-trace.jsonl` | CLI gate polls every 2s (`startup-trace-probe.ps1`) |
+| **L1** | NDJSON `rechunk-live`, `startup-span`, `startup-gate` | `filesWalked`, hydrate span, gate release in `.seek-artifacts/seek-report.json` |
+| **L2** | `TaskContext: hydrating` | Long-task attribution during `withSidecarHydrate` |
+
+### Probe commands
+
+```powershell
+# Run A — cold restart (hydrate/gate only; stop when warmPhase null)
+.\.cursor\skills\seek-cli-startup-debug\scripts\startup-trace-probe.ps1 -Run A -PathId baseline
+
+# Run B — warm reload (catch-up; precheck idle)
+.\.cursor\skills\seek-cli-startup-debug\scripts\startup-trace-probe.ps1 -Run B -PathId baseline
+
+# Parse scorecard
+node .\.cursor\skills\seek-cli-startup-debug\scripts\parse-startup-trace.mjs `
+  --jsonl .cursor\gate-trace.jsonl `
+  --report C:\Obsidian\.seek-artifacts\seek-report.json `
+  --path baseline --run cold-restart `
+  --baseline .cursor\baseline-cold
+```
+
+### Worktree workflow
+
+1. **T0** `startup/trace-infra` — tracing + baseline (this branch)
+2. **T1–T5** one worktree per path from trace-infra; score only assigned goals
+3. **T6** `path/compose` — stack passing paths; check interaction vs Σ isolated Δ
+
+Vault singleton: only one `main.js` in `C:\Obsidian\.obsidian\plugins\seek\` at measure time.
+
+### Results registry
+
+Living scoreboard: [`.cursor/startup-path-results.md`](startup-path-results.md). Handoff JSON per tree: `.cursor/handoff/T0.json` … `T6.json`.

@@ -94,6 +94,34 @@ Run probes **serially** — never parallel eval/search storms (contaminates timi
 
 Optional helper: [scripts/startup-probe.ps1](scripts/startup-probe.ps1) runs steps 1–5 with serial probes.
 
+## Startup trace probe (Run A / B + JSONL)
+
+For hypothesis scorecards and path worktrees, use [scripts/startup-trace-probe.ps1](scripts/startup-trace-probe.ps1):
+
+```powershell
+# Run A — cold restart; stops when warmPhase null (do not wait for catch-up)
+.\.cursor\skills\seek-cli-startup-debug\scripts\startup-trace-probe.ps1 -Run A -PathId baseline
+
+# Run B — warm reload; precheck requires uiHealth ok + job.remaining 0
+.\.cursor\skills\seek-cli-startup-debug\scripts\startup-trace-probe.ps1 -Run B -PathId baseline
+```
+
+Emits `.cursor/gate-trace.jsonl` (one JSON object per line: `path_id`, `git_sha`, `elapsed_s`, `gate`, optional `search`). Copies `.seek-artifacts/seek-report.json` to `.cursor/scorecards/<path>-<run>-<timestamp>.json`.
+
+Parse with [scripts/parse-startup-trace.mjs](scripts/parse-startup-trace.mjs):
+
+```powershell
+node .\.cursor\skills\seek-cli-startup-debug\scripts\parse-startup-trace.mjs `
+  --jsonl .cursor\gate-trace.jsonl `
+  --report C:\Obsidian\.seek-artifacts\seek-report.json `
+  --path baseline --run cold-restart `
+  --baseline .cursor\baseline-cold
+```
+
+**Worktree deploy:** build from the active worktree only, copy `main.js` + `manifest.json` + `styles.css` to the vault, then probe. Only one build in the vault at a time.
+
+Schema v17 NDJSON types: `rechunk-live` (`filesWalked`, `tokenCountsRpc`), `startup-span`, `startup-gate`, `TaskContext: hydrating` for long-task rollup.
+
 ## Eval probes (PowerShell-safe)
 
 Top-level `await` does **NOT** work in `obsidian eval` — use `.then(...)`.
@@ -181,7 +209,7 @@ The palette command is gone. Settings → Seek → Diagnostics → **Generate lo
 obsidian eval vault=Obsidian code="app.plugins.plugins.seek.openLoggingReport().then(()=>'ok')"
 ```
 
-Writes vault-root `seek-report.md` + `seek-report.json` (`sidecar-hydrate`, `index-complete` timings, errors). Prefer `seek-report.json` over `dev:console` for hydrate/index forensics. Do not call this mid-catch-up if eval is already contested.
+Writes vault-root `seek-report.md` (summary) and `.seek-artifacts/seek-report.json` (full parse target). Prefer the JSON over `dev:console` for hydrate/index forensics. Do not call this mid-catch-up if eval is already contested.
 
 ## Anti-patterns
 

@@ -1,6 +1,6 @@
 # Greedy incremental hydrate (sidecar companion)
 
-_Companion to [`startup-hypothesis-report.md`](startup-hypothesis-report.md) · `seek-report.json` · Seek 1.1.4_
+_Companion to [`startup-hypothesis-report.md`](startup-hypothesis-report.md) · `.seek-artifacts/seek-report.json` · Seek 1.1.4_
 
 **North-star metric:** `T_first_good` — wall clock from Obsidian ready → first **useful** search result (ranked hit on a note touched in the last 3–7 days, or non-gate `seek:search` with `chunks > 0` on recent corpus). Not “hydrate finished” and not “full vault indexed.”
 
@@ -157,7 +157,7 @@ From [`startup-hypothesis-report.md`](startup-hypothesis-report.md): `N_notes = 
 
 ## Instrumentation (logging report)
 
-New NDJSON / `seek-report.json` rows:
+New NDJSON / `.seek-artifacts/seek-report.json` rows:
 
 ```json
 {
@@ -272,3 +272,5 @@ Uses parent **two-run** discipline. **Never mix** `cold-restart` and `warm-reloa
 | §6 Burst cap | Analogous UX for **post-gate** embed catch-up |
 
 **Artifacts:** implement in `sidecar-sync.ts` + `search.ts` (`reChunkLiveSubset`); gate in `main.ts` + `index-notice.ts`.
+
+**Worktree:** `path/greedy-hydrate` from `startup/trace-infra` (`../Obsidian-Seek-path-greedy`). Use `startup-trace-probe.ps1 -Run A -PathId greedy-hydrate` and `parse-startup-trace.mjs` for isolated scorecards. See [startup-path-results.md](startup-path-results.md).

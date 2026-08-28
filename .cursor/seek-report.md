@@ -4,7 +4,7 @@ _Generated 2026-08-26T05:02:08.466Z · log schema v16_
 
 > [!info] Redacted report — note paths, titles, and query text were replaced by salted tokens (`note-3f9a21c4.md`). Identical tokens mean the identical note, so the diagnostics still read. Please still skim before sharing.
 
-**Full data:** `seek-report.json` — parse that for analysis; this `.md` is a human summary.
+**Full data:** `.seek-artifacts/seek-report.json` — parse that for analysis; this `.md` is a human summary.
 
 ## At a Glance
 - This device: `desktop-c42c606c` · session `809e96fe-1a98-4f89-84d3-0cf8f4887cdf`

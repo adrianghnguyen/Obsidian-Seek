@@ -59,7 +59,9 @@ export type Dtype = 'q4f16' | 'q4' | 'q8' | 'fp32';
 // rows still parse (they carry 'unknown' and nothing else).
 // v16 (issue #5): + delta-apply entry (incremental-patch outcome: fallback
 // reason, patch cost, mutex hold), + IndexCompleteEntry.paceWaitMs.
-export const LOG_SCHEMA_VERSION = 16;
+// v17: startup trace infra — rechunk-live (filesWalked, tokenCountsRpc),
+// startup-span (boot/hydrate phase boundaries), startup-gate (search gate release).
+export const LOG_SCHEMA_VERSION = 17;
 
 // ---- chunk model ----
 
@@ -1473,6 +1475,38 @@ export interface SidecarHydrateEntry {
     [key: string]: string | number | boolean | null | undefined;
 }
 
+// Whole-vault reChunkLive pass — tokenizer-only oracle walk (startup trace v17).
+export interface RechunkLiveEntry {
+    type: 'rechunk-live';
+    timestamp: string;
+    filesWalked: number;
+    filesSkipped: number;
+    tokenCountsRpc: number;
+    durationMs: number;
+    complete: boolean;
+}
+
+// Boot/hydrate phase boundary markers for correlating CLI gate JSONL with NDJSON.
+export interface StartupSpanEntry {
+    type: 'startup-span';
+    timestamp: string;
+    span: string;
+    phase: 'start' | 'end';
+    durationMs?: number;
+    [key: string]: string | number | boolean | null | undefined;
+}
+
+// Search gate release or gate test during Starting (startup trace v17).
+export interface StartupGateEntry {
+    type: 'startup-gate';
+    timestamp: string;
+    event: 'released' | 'tested';
+    warmPhase: string | null;
+    uiHealth: string;
+    elapsedMs?: number;
+    searchResult?: string;
+}
+
 // Stamped onto every entry by logger.append(). Optional so pre-v9 logs (which
 // predate device/session attribution) still parse — the report treats a missing
 // deviceId as 'legacy' and a missing sessionId as un-scopable.
@@ -1507,4 +1541,7 @@ export type LogEntry = (
     | WebgpuEventEntry
     | SidecarHydrateEntry
     | DeltaApplyEntry
+    | RechunkLiveEntry
+    | StartupSpanEntry
+    | StartupGateEntry
 ) & LogMeta;

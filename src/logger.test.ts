@@ -329,7 +329,7 @@ describe('report generation', () => {
         } as LogEntry);
 
         await logger.writeReport(true);
-        const json = adapter.files.get('seek-report.json')!;
+        const json = adapter.files.get('.seek-artifacts/seek-report.json')!;
         expect(json).not.toContain('Taxes 2025');
         expect(json).not.toContain('tax return');
         expect(JSON.parse(json).redacted).toBe(true);
@@ -347,7 +347,7 @@ describe('report generation', () => {
         } as LogEntry);
 
         await logger.writeReport(false);
-        expect(adapter.files.get('seek-report.json')!).toContain('Money/Taxes 2025.md');
+        expect(adapter.files.get('.seek-artifacts/seek-report.json')!).toContain('Money/Taxes 2025.md');
         expect(adapter.files.get('seek-report.md')!).toContain('Review before sharing');
     });
 });
