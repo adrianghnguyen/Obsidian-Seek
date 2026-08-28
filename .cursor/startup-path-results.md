@@ -46,13 +46,23 @@ Goals: G_ui_responsive
 |----------|---------------|-------------------------|---------|
 | _pending_ | | | code shipped @ 62a1786; measure after T1 fixture |
 
+### burst-cap (`path/burst-cap`)
+
+Goals: G_catchup_ux
+
+| scenario | T_first_hit_ms | T_drain_total_ms | verdict |
+|----------|----------------|------------------|---------|
+| _pending_ | | | code shipped @ 2894abf; merged into path/compose; Run B measure |
+
+Constants: `DESKTOP_CATCHUP_MAX_FILES_PER_BURST=40`, `DESKTOP_CATCHUP_BURST_BUDGET_MS=15000`
+
 ### batch-rpc (`path/batch-rpc`)
 
 Goals: G_cold_recovery, G_catchup_chunk
 
 | run | token_counts_rpc | T_hydrate_ms | T_chunk_ms | verdict |
 |-----|------------------|--------------|------------|---------|
-| _pending_ | | | | |
+| _pending_ | | | | code shipped @ 00d404c; merged into path/compose |
 
 ### persist-cache (`path/persist-cache`)
 
@@ -60,20 +70,12 @@ Goals: G_eviction
 
 | scenario | mutex_hold_ms | delta_incremental | verdict |
 |----------|---------------|---------------------|---------|
-| _pending_ | | | |
-
-### burst-cap (`path/burst-cap`)
-
-Goals: G_catchup_ux
-
-| scenario | T_first_hit_ms | T_drain_total_ms | verdict |
-|----------|----------------|------------------|---------|
-| _pending_ | | | |
+| _pending_ | | | WIP in stash |
 
 ## Compose (`path/compose`)
 
 | paths_included | goal | expected_combo | actual_combo | interaction | ship? |
 |----------------|------|----------------|--------------|-------------|-------|
-| _pending_ | | | | | |
+| T1+T2+T3+T5 | quick startup | greedy+yield+batch+burst | building | T4 pending | no |
 
 Handoffs: `.cursor/handoff/T1.json` … `T6.json`
