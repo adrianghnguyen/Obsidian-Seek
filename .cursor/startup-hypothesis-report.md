@@ -288,4 +288,4 @@ Workers (H6), recency-first embed (already on), BM25-only tuning (~300ms).
 - T3 needs plugin bisect or hydrate task-context span (§5).
 - **Never** run `seek:search` during `uiHealth: indexing` on either run (hangs).
 
-**Artifacts:** `seek-report.json` (mixed — supersede with labeled cold/warm copies), `hyp-probe.ps1`, `seek-cli-startup-debug` skill.
+**Artifacts:** `seek-report.json` (mixed — supersede with labeled cold/warm copies), `hyp-probe.ps1`, `seek-cli-startup-debug` skill, [`greedy-incremental-hydrate.md`](greedy-incremental-hydrate.md).
