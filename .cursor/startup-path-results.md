@@ -62,7 +62,7 @@ Goals: G_cold_recovery, G_catchup_chunk
 
 | run | token_counts_rpc | T_hydrate_ms | T_chunk_ms | verdict |
 |-----|------------------|--------------|------------|---------|
-| _pending_ | | | | code shipped @ 00d404c; merged into path/compose |
+| _pending_ | ~554 est. (8× batch) | | | code shipped @ 00d404c; `TOKEN_COUNTS_BATCH=8`; merged into path/compose |
 
 ### persist-cache (`path/persist-cache`)
 
