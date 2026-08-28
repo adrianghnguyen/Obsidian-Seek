@@ -2,6 +2,24 @@
 
 _Isolated per-path metrics from worktree verification. Never mix Run A (`cold-restart`) and Run B (`warm-reload`) in one table._
 
+## Worktrees (vault singleton)
+
+Only one `main.js` in `C:\Obsidian\.obsidian\plugins\seek\` at measure time. Build/deploy from the path's worktree:
+
+| tree | path_id | branch | worktree |
+|------|---------|--------|----------|
+| T0 | trace-infra | `startup/trace-infra` | `C:\Coding_projects\Obsidian-Seek-worktrees\trace-infra` |
+| T1 | greedy-hydrate | `path/greedy-hydrate` | `...\greedy-hydrate` |
+| T2 | cheap-yield | `path/cheap-yield` | `...\cheap-yield` |
+| T3 | batch-rpc | `path/batch-rpc` | `...\batch-rpc` |
+| T4 | persist-cache | `path/persist-cache` | `C:\Coding_projects\Obsidian-Seek` (main repo) |
+| T5 | burst-cap | `path/burst-cap` | `...\burst-cap` |
+| T6 | compose | `path/compose` | `...\compose` |
+
+Setup: `.cursor\skills\seek-cli-startup-debug\scripts\setup-startup-worktrees.ps1`  
+Deploy: `.cursor\skills\seek-cli-startup-debug\scripts\deploy-worktree-to-vault.ps1 -PathId <path_id>`  
+Registry: `.cursor\worktrees.json`
+
 ## Goal coverage
 
 | goal_id | User scenario | SLO (p50) | best_path | p50_value | verdict |
@@ -76,6 +94,6 @@ Goals: G_eviction
 
 | paths_included | goal | expected_combo | actual_combo | interaction | ship? |
 |----------------|------|----------------|--------------|-------------|-------|
-| T1+T2+T3+T5 | quick startup | greedy+yield+batch+burst | building | T4 pending | no |
+| T1+T2+T3+T4+T5 | quick startup | full stack | @ 2e4103d compose | worktrees isolated | building |
 
 Handoffs: `.cursor/handoff/T1.json` … `T6.json`

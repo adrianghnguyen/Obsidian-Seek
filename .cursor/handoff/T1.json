@@ -3,7 +3,7 @@
   "path_id": "greedy-hydrate",
   "branch": "path/greedy-hydrate",
   "commit": "159970a",
-  "worktree": "C:/Coding_projects/Obsidian-Seek",
+  "worktree": "C:/Coding_projects/Obsidian-Seek-worktrees/greedy-hydrate",
   "scenarios_run": ["Run A cold-restart"],
   "scorecards": [
     ".cursor/scorecards/greedy-hydrate-cold-restart-parsed.json",

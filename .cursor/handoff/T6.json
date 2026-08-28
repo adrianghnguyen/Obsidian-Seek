@@ -1,0 +1,19 @@
+{
+  "tree_id": "T6",
+  "path_id": "compose",
+  "branch": "path/compose",
+  "commit": "2e4103d",
+  "worktree": "C:/Coding_projects/Obsidian-Seek-worktrees/compose",
+  "paths_included": ["T1", "T2", "T3", "T4", "T5"],
+  "scenarios_run": [],
+  "scorecards": [],
+  "goals": {
+    "G_small_delta": "pending",
+    "G_first_good": "pending",
+    "G_noop_sync": "pending",
+    "G_cold_recovery": "pending",
+    "G_catchup_ux": "pending"
+  },
+  "blockers": "Deploy compose worktree and Run A/B after per-path baselines; verify interaction vs sum of isolated deltas",
+  "deliverables": ["full stack merge on path/compose"]
+}

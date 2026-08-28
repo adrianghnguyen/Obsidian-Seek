@@ -1,0 +1,41 @@
+{
+  "root": "C:/Coding_projects/Obsidian-Seek",
+  "vault_plugin": "C:/Obsidian/.obsidian/plugins/seek",
+  "trees": {
+    "T0": {
+      "path_id": "trace-infra",
+      "branch": "startup/trace-infra",
+      "worktree": "C:/Coding_projects/Obsidian-Seek-worktrees/trace-infra"
+    },
+    "T1": {
+      "path_id": "greedy-hydrate",
+      "branch": "path/greedy-hydrate",
+      "worktree": "C:/Coding_projects/Obsidian-Seek-worktrees/greedy-hydrate"
+    },
+    "T2": {
+      "path_id": "cheap-yield",
+      "branch": "path/cheap-yield",
+      "worktree": "C:/Coding_projects/Obsidian-Seek-worktrees/cheap-yield"
+    },
+    "T3": {
+      "path_id": "batch-rpc",
+      "branch": "path/batch-rpc",
+      "worktree": "C:/Coding_projects/Obsidian-Seek-worktrees/batch-rpc"
+    },
+    "T4": {
+      "path_id": "persist-cache",
+      "branch": "path/persist-cache",
+      "worktree": "C:/Coding_projects/Obsidian-Seek"
+    },
+    "T5": {
+      "path_id": "burst-cap",
+      "branch": "path/burst-cap",
+      "worktree": "C:/Coding_projects/Obsidian-Seek-worktrees/burst-cap"
+    },
+    "T6": {
+      "path_id": "compose",
+      "branch": "path/compose",
+      "worktree": "C:/Coding_projects/Obsidian-Seek-worktrees/compose"
+    }
+  }
+}
