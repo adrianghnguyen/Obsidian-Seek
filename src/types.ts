@@ -61,7 +61,7 @@ export type Dtype = 'q4f16' | 'q4' | 'q8' | 'fp32';
 // reason, patch cost, mutex hold), + IndexCompleteEntry.paceWaitMs.
 // v17: startup trace infra — rechunk-live (filesWalked, tokenCountsRpc),
 // startup-span (boot/hydrate phase boundaries), startup-gate (search gate release).
-export const LOG_SCHEMA_VERSION = 17;
+export const LOG_SCHEMA_VERSION = 18;
 
 // ---- chunk model ----
 
@@ -1484,6 +1484,31 @@ export interface RechunkLiveEntry {
     tokenCountsRpc: number;
     durationMs: number;
     complete: boolean;
+    subset?: boolean;
+    filesInTier?: number;
+}
+
+export interface SidecarHydrateTierEntry {
+    type: 'sidecar-hydrate-tier';
+    timestamp: string;
+    tier: string;
+    filesWalked: number;
+    chunksProduced: number;
+    needed: number;
+    hydrated: number;
+    freshIdsRemaining: number;
+    durationMs: number;
+    gateReleased: boolean;
+}
+
+export interface SidecarHydrateGreedyEntry {
+    type: 'sidecar-hydrate-greedy';
+    timestamp: string;
+    tiersRun: number;
+    stoppedEarly: boolean;
+    reason: string | null;
+    T_first_good_ms: number | null;
+    T_hydrate_total_ms: number;
 }
 
 // Boot/hydrate phase boundary markers for correlating CLI gate JSONL with NDJSON.
@@ -1540,6 +1565,8 @@ export type LogEntry = (
     | Phase5SmokeEntry
     | WebgpuEventEntry
     | SidecarHydrateEntry
+    | SidecarHydrateTierEntry
+    | SidecarHydrateGreedyEntry
     | DeltaApplyEntry
     | RechunkLiveEntry
     | StartupSpanEntry

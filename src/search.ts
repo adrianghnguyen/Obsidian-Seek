@@ -2388,6 +2388,11 @@ export class SearchOrchestrator {
     setPersistentDriftHandler(fn: () => void): void {
         this.onPersistentDrift = fn;
     }
+    // Injected by the plugin — tier 0 greedy hydrate releases the search gate early.
+    private onGoodEnough?: () => void;
+    setGoodEnoughHandler(fn: () => void): void {
+        this.onGoodEnough = fn;
+    }
     private onCoherenceDrift(where: string): void {
         this.coherenceDriftCount++;
         const now = performance.now();
@@ -2425,7 +2430,7 @@ export class SearchOrchestrator {
         // to the un-stamped path), never correctness.
         const wasEmpty = (await this.store.count()).chunks === 0;
         const result = await this.coord.runExclusive(() =>
-            hydrateFromSidecar(this.hydrateDeps(() => this.reChunkLive())),
+            hydrateFromSidecar(this.hydrateDepsGreedy()),
         );
         this._peerAhead = result.peerAhead; // refresh the "newer index exists" signal per scan
         // Stamp the build identity when hydrating onto a PREVIOUSLY-EMPTY index: every
@@ -2751,6 +2756,79 @@ export class SearchOrchestrator {
         return out;
     }
 
+    /** Greedy hydrate oracle — only the given files, mtime order, with cheapYield. */
+    private async reChunkLiveSubset(
+        files: Array<{ path: string; mtimeMs: number }>,
+        shouldStop?: () => boolean,
+    ): Promise<ReChunkedNote[]> {
+        const t0 = performance.now();
+        await this.embedder.ensureTokenizer();
+        const out: ReChunkedNote[] = [];
+        let filesWalked = 0;
+        let filesSkipped = 0;
+        let tokenCountsRpc = 0;
+        let complete = true;
+        let sinceYield = 0;
+        for (const ref of files) {
+            if (shouldStop?.()) {
+                complete = false;
+                break;
+            }
+            if (++sinceYield >= 8) { sinceYield = 0; await cheapYield(); }
+            const f = this.app.vault.getAbstractFileByPath(ref.path);
+            if (!(f instanceof TFile)) continue;
+            const file = f;
+            filesWalked++;
+            let content: string;
+            try {
+                content = await this.app.vault.cachedRead(file);
+            } catch {
+                filesSkipped++;
+                continue;
+            }
+            let chunks = this.chunksFor(content, file.path, new Date(file.stat.mtime).toISOString());
+            if (chunks.length === 0) continue;
+            try {
+                tokenCountsRpc++;
+                chunks = (await enforceTokenBudget(chunks, ts => this.embedder.tokenCounts(ts))).chunks;
+            } catch (e) {
+                await this.logger.appendError(`reChunkLiveSubset-tokenBudget:${file.path}`, e);
+                filesSkipped++;
+                if (e instanceof Error && /Neither model nor tokenizer loaded/i.test(e.message)) {
+                    complete = false;
+                    break;
+                }
+                continue;
+            }
+            if (chunks.length > 0) {
+                out.push({ notePath: file.path, mtimeMs: file.stat.mtime, chunks, contentHash: cyrb53Hex(content) });
+            }
+            if (shouldStop?.()) {
+                complete = false;
+                break;
+            }
+        }
+        void this.logger.append({
+            type: 'rechunk-live',
+            timestamp: new Date().toISOString(),
+            filesWalked,
+            filesSkipped,
+            tokenCountsRpc,
+            durationMs: Math.round(performance.now() - t0),
+            complete,
+            subset: true,
+            filesInTier: files.length,
+        }).catch(() => {});
+        return out;
+    }
+
+    private listHydrateFilesSorted(): Array<{ path: string; mtimeMs: number }> {
+        return this.indexableFiles()
+            .filter(f => this.shouldIndex(f.path))
+            .map(f => ({ path: f.path, mtimeMs: f.stat.mtime }))
+            .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    }
+
     // The live-vault chunk_id set + whether it is COMPLETE — the liveness oracle for
     // sidecar compaction. Mirrors reChunkLive's id pipeline (chunksFor THEN
     // enforceTokenBudget over indexableFiles, so ids match what indexing wrote for
@@ -3056,6 +3134,38 @@ export class SearchOrchestrator {
                     }
                 }
                 void this.logger.append({ type: 'sidecar-hydrate', timestamp: new Date().toISOString(), phase: msg, ...flat }).catch(() => {});
+            },
+        };
+    }
+
+    private hydrateDepsGreedy(addsSink?: DeltaAdd[]): HydrateDeps {
+        const base = this.hydrateDeps(() => this.reChunkLive(), addsSink);
+        return {
+            ...base,
+            greedyHydrate: true,
+            listHydrateFiles: async () => this.listHydrateFilesSorted(),
+            reChunkSubset: (files, shouldStop) => this.reChunkLiveSubset(files, shouldStop),
+            onGoodEnough: () => {
+                this.invalidateBm25Cache();
+                this.onGoodEnough?.();
+            },
+            log: (msg, detail) => {
+                const flat: Record<string, string | number | boolean | null> = {};
+                if (detail && typeof detail === 'object') {
+                    for (const [k, v] of Object.entries(detail as Record<string, unknown>)) {
+                        if (Array.isArray(v)) flat[`${k}Count`] = v.length;
+                        else if (v == null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') flat[k] = v ?? null;
+                        else flat[k] = String(v);
+                    }
+                }
+                const ts = new Date().toISOString();
+                if (msg === 'sidecar-hydrate-tier') {
+                    void this.logger.append({ type: 'sidecar-hydrate-tier', timestamp: ts, ...flat } as import('./types').SidecarHydrateTierEntry).catch(() => {});
+                } else if (msg === 'sidecar-hydrate-greedy') {
+                    void this.logger.append({ type: 'sidecar-hydrate-greedy', timestamp: ts, ...flat } as import('./types').SidecarHydrateGreedyEntry).catch(() => {});
+                } else {
+                    void this.logger.append({ type: 'sidecar-hydrate', timestamp: ts, phase: msg, ...flat }).catch(() => {});
+                }
             },
         };
     }

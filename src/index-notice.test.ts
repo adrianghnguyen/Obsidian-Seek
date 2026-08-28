@@ -413,6 +413,12 @@ describe('resolveIndexUiStatus', () => {
         })).toBe('restoring');
     });
 
+    it('greedy background hydrate after good-enough gate is Indexing', () => {
+        expect(resolveIndexUiStatus({
+            ...idle, hydrating: true, goodEnough: true,
+        })).toBe('indexing');
+    });
+
     it('startup cache warm after hydrate is Starting, not Indexing', () => {
         expect(resolveIndexUiStatus({ ...idle, booting: true })).toBe('starting');
     });

@@ -48,11 +48,45 @@ export interface ReChunkedNote {
     contentHash?: string; // cyrb53 of the raw bytes — persisted so computeDelta can skip mtime-only re-stamps
 }
 
+export interface HydrateFileRef {
+    path: string;
+    mtimeMs: number;
+}
+
+export interface HydrateTierCompleteDetail {
+    tier: string;
+    filesWalked: number;
+    chunksProduced: number;
+    needed: number;
+    hydrated: number;
+    freshIdsRemaining: number;
+    durationMs: number;
+    gateReleased: boolean;
+}
+
+export const HYDRATE_TIERS = [
+    { id: 'hydrate-tier-3d', days: 3 },
+    { id: 'hydrate-tier-7d', days: 7 },
+    { id: 'hydrate-tier-14d', days: 14 },
+    { id: 'hydrate-tier-30d', days: 30 },
+    { id: 'hydrate-tier-90d', days: 90 },
+    { id: 'hydrate-tier-full', days: null as number | null },
+] as const;
+
 export interface HydrateDeps {
     adapter: DataAdapter;
     indexDir: string;
     expect: MetaExpectation; // {modelId, chunkerVersion, dim} this consumer can reproduce
-    reChunk: () => Promise<ReChunkedNote[]>; // live vault → re-chunked notes
+    reChunk: () => Promise<ReChunkedNote[]>; // live vault → re-chunked notes (legacy full walk)
+    /** Greedy hydrate: re-chunk only the given files (mtime-desc within tier). */
+    reChunkSubset?: (files: HydrateFileRef[], shouldStop?: () => boolean) => Promise<ReChunkedNote[]>;
+    /** Greedy hydrate: indexable files sorted mtime descending. */
+    listHydrateFiles?: () => Promise<HydrateFileRef[]>;
+    /** Greedy hydrate: tier 0 committed — release search gate (P1). */
+    onGoodEnough?: () => void;
+    onTierComplete?: (detail: HydrateTierCompleteDetail) => void;
+    /** When true and reChunkSubset + listHydrateFiles are set, use tiered greedy hydrate. */
+    greedyHydrate?: boolean;
     existingIds: () => Promise<Set<string>>; // chunk_ids already in IDB (skip — idempotent)
     putQuantized: (chunks: Chunk[], tiers: { q: QuantVec; bin: Uint8Array }[]) => Promise<void>;
     putFileRecord: (rec: { note_path: string; mtimeMs: number; chunk_ids: string[]; contentHash?: string }) => Promise<void>;
@@ -152,6 +186,236 @@ export async function probePeerAhead(
     return false;
 }
 
+interface Candidate {
+    note: ReChunkedNote;
+    entries: ResolvedEntry[]; // aligned with note.chunks
+}
+
+interface TierHydrateResult {
+    needed: number;
+    hydrated: number;
+    skippedPartialNotes: number;
+    hydratedNotePaths: string[];
+    hydratedIds: string[];
+}
+
+function selectCandidates(
+    live: ReChunkedNote[],
+    scan: { map: Map<string, ResolvedEntry> },
+    existing: Set<string>,
+    freshIdsRemaining: Set<string>,
+): { candidates: Candidate[]; needed: number } {
+    const candidates: Candidate[] = [];
+    let needed = 0;
+    for (const note of live) {
+        if (note.chunks.length === 0) continue;
+        if (note.chunks.every(c => existing.has(c.chunk_id))) continue; // already indexed
+        if (!note.chunks.some(c => freshIdsRemaining.has(c.chunk_id))) continue;
+        const entries: ResolvedEntry[] = [];
+        let coverable = true;
+        for (const c of note.chunks) {
+            const e = scan.map.get(c.chunk_id);
+            if (!e) {
+                coverable = false;
+                break;
+            }
+            entries.push(e);
+        }
+        if (!coverable) continue;
+        candidates.push({ note, entries });
+        needed += entries.length;
+    }
+    return { candidates, needed };
+}
+
+async function hydrateCandidates(deps: HydrateDeps, candidates: Candidate[]): Promise<TierHydrateResult> {
+    if (candidates.length === 0) {
+        return { needed: 0, hydrated: 0, skippedPartialNotes: 0, hydratedNotePaths: [], hydratedIds: [] };
+    }
+    const { adapter, indexDir } = deps;
+    const byShard = new Map<string, ResolvedEntry[]>();
+    for (const cand of candidates) {
+        for (const e of cand.entries) {
+            const key = `${e.shard}.${e.seq}`;
+            const arr = byShard.get(key);
+            if (arr) arr.push(e);
+            else byShard.set(key, [e]);
+        }
+    }
+    const tierCache = new Map<string, ReturnType<typeof decodeRecord> | null>();
+    const entryKey = (e: ResolvedEntry): string => `${e.shard}.${e.seq}.${e.off}`;
+    for (const [, entries] of byShard) {
+        const first = entries[0];
+        const buf = await adapter.readBinary(shardPathFor(indexDir, first.shard, first.seq)).catch(() => null);
+        for (const e of entries) {
+            if (buf && isOffsetInRange(buf.byteLength, e.off)) {
+                try { tierCache.set(entryKey(e), decodeRecord(buf, e.off, e.dim)); }
+                catch { tierCache.set(entryKey(e), null); }
+            } else tierCache.set(entryKey(e), null);
+        }
+    }
+    const batchSize = deps.batchSize ?? 500;
+    let pendingChunks: Chunk[] = [];
+    let pendingTiers: { q: QuantVec; bin: Uint8Array }[] = [];
+    const flush = async (): Promise<void> => {
+        if (pendingChunks.length === 0) return;
+        await deps.putQuantized(pendingChunks, pendingTiers);
+        pendingChunks = [];
+        pendingTiers = [];
+    };
+    let hydrated = 0;
+    let skippedPartialNotes = 0;
+    const hydratedIds: string[] = [];
+    const fileRecords: Array<{ note_path: string; mtimeMs: number; chunk_ids: string[]; contentHash?: string }> = [];
+    for (const cand of candidates) {
+        const tiers = cand.entries.map(e => tierCache.get(entryKey(e)) ?? null);
+        if (tiers.some(t => t === null)) {
+            skippedPartialNotes++;
+            continue;
+        }
+        for (let i = 0; i < cand.note.chunks.length; i++) {
+            const t = tiers[i]!;
+            pendingChunks.push(cand.note.chunks[i]);
+            pendingTiers.push({ q: { q: t.q, s: t.s }, bin: t.sign });
+            hydratedIds.push(cand.note.chunks[i].chunk_id);
+            hydrated++;
+            if (pendingChunks.length >= batchSize) await flush();
+        }
+        fileRecords.push({
+            note_path: cand.note.notePath,
+            mtimeMs: cand.note.mtimeMs,
+            chunk_ids: cand.note.chunks.map(c => c.chunk_id),
+            contentHash: cand.note.contentHash,
+        });
+    }
+    await flush();
+    for (const rec of fileRecords) await deps.putFileRecord(rec);
+    return {
+        needed: candidates.reduce((n, c) => n + c.entries.length, 0),
+        hydrated,
+        skippedPartialNotes,
+        hydratedNotePaths: fileRecords.map(r => r.note_path),
+        hydratedIds,
+    };
+}
+
+async function hydrateFromSidecarGreedy(
+    deps: HydrateDeps,
+    scan: { map: Map<string, ResolvedEntry> },
+    existing: Set<string>,
+    freshIds: Set<string>,
+    accepted: string[],
+    refused: number,
+    peerAhead: boolean,
+    bg: { bgMean?: number; bgStd?: number },
+): Promise<HydrateResult> {
+    const empty: HydrateResult = {
+        scanned: scan.map.size,
+        needed: 0,
+        hydrated: 0,
+        skippedPartialNotes: 0,
+        refusedProducers: refused,
+        acceptedProducers: accepted.length,
+        peerAhead,
+        hydratedNotePaths: [],
+        ...bg,
+    };
+    const hydrateStartMs = Date.now();
+    const allFiles = await deps.listHydrateFiles!();
+    let freshIdsRemaining = new Set(freshIds);
+    const processedPaths = new Set<string>();
+    let tiersRun = 0;
+    let stoppedEarly = false;
+    let stopReason: string | null = null;
+    let goodEnoughReleased = false;
+    let firstGoodMs: number | null = null;
+    const greedyStart = performance.now();
+    let totalNeeded = 0;
+    let totalHydrated = 0;
+    let totalSkippedPartial = 0;
+    const allHydratedPaths: string[] = [];
+
+    for (const tier of HYDRATE_TIERS) {
+        if (freshIdsRemaining.size === 0) {
+            stoppedEarly = true;
+            stopReason = 'freshIds-empty';
+            break;
+        }
+        const tierStart = performance.now();
+        let tierFiles: HydrateFileRef[];
+        if (tier.days == null) {
+            tierFiles = allFiles.filter(f => !processedPaths.has(f.path));
+        } else {
+            const cutoffMs = hydrateStartMs - tier.days * 86_400_000;
+            tierFiles = allFiles.filter(f => f.mtimeMs >= cutoffMs && !processedPaths.has(f.path));
+        }
+        for (const f of tierFiles) processedPaths.add(f.path);
+        if (tierFiles.length === 0) continue;
+
+        const live = await deps.reChunkSubset!(tierFiles, () => freshIdsRemaining.size === 0);
+        const { candidates, needed: tierNeeded } = selectCandidates(live, scan, existing, freshIdsRemaining);
+        const tierResult = await hydrateCandidates(deps, candidates);
+        for (const id of tierResult.hydratedIds) existing.add(id);
+        for (const id of tierResult.hydratedIds) freshIdsRemaining.delete(id);
+
+        totalNeeded += tierNeeded;
+        totalHydrated += tierResult.hydrated;
+        totalSkippedPartial += tierResult.skippedPartialNotes;
+        allHydratedPaths.push(...tierResult.hydratedNotePaths);
+        tiersRun++;
+
+        const gateReleased = !goodEnoughReleased
+            && (tier.id === 'hydrate-tier-3d' || freshIdsRemaining.size === 0)
+            && (tierResult.hydrated > 0 || freshIdsRemaining.size === 0);
+        if (gateReleased) {
+            deps.onGoodEnough?.();
+            goodEnoughReleased = true;
+            if (firstGoodMs == null) firstGoodMs = Math.round(performance.now() - greedyStart);
+        }
+
+        const tierDetail: HydrateTierCompleteDetail = {
+            tier: tier.id,
+            filesWalked: tierFiles.length,
+            chunksProduced: live.reduce((n, note) => n + note.chunks.length, 0),
+            needed: tierNeeded,
+            hydrated: tierResult.hydrated,
+            freshIdsRemaining: freshIdsRemaining.size,
+            durationMs: Math.round(performance.now() - tierStart),
+            gateReleased,
+        };
+        deps.onTierComplete?.(tierDetail);
+        deps.log?.('sidecar-hydrate-tier', tierDetail);
+
+        if (freshIdsRemaining.size === 0) {
+            stoppedEarly = true;
+            stopReason = 'freshIds-empty';
+            break;
+        }
+    }
+
+    deps.log?.('sidecar-hydrate-greedy', {
+        tiersRun,
+        stoppedEarly,
+        reason: stopReason,
+        T_first_good_ms: firstGoodMs,
+        T_hydrate_total_ms: Math.round(performance.now() - greedyStart),
+    });
+
+    const result: HydrateResult = {
+        ...bg,
+        scanned: scan.map.size,
+        needed: totalNeeded,
+        hydrated: totalHydrated,
+        skippedPartialNotes: totalSkippedPartial,
+        refusedProducers: refused,
+        acceptedProducers: accepted.length,
+        peerAhead,
+        hydratedNotePaths: allHydratedPaths,
+    };
+    deps.log?.('sidecar-hydrate', result);
+    return result;
+}
+
 export async function hydrateFromSidecar(deps: HydrateDeps): Promise<HydrateResult> {
     const { adapter, indexDir, expect } = deps;
     const empty: HydrateResult = { scanned: 0, needed: 0, hydrated: 0, skippedPartialNotes: 0, refusedProducers: 0, acceptedProducers: 0, peerAhead: false, hydratedNotePaths: [] };
@@ -231,98 +495,29 @@ export async function hydrateFromSidecar(deps: HydrateDeps): Promise<HydrateResu
         return r;
     }
 
+    const freshIds = new Set<string>();
+    for (const id of scan.map.keys()) {
+        if (!existing.has(id)) freshIds.add(id);
+    }
+    const useGreedy = deps.greedyHydrate !== false
+        && deps.reChunkSubset != null
+        && deps.listHydrateFiles != null;
+    if (useGreedy) {
+        return hydrateFromSidecarGreedy(deps, scan, existing, freshIds, accepted, refused, peerAhead, bg);
+    }
+
     // 4. Re-chunk the live vault (the liveness oracle). `existing` already fetched above.
     const live = await deps.reChunk();
 
-    // 5. Select candidate notes: not already fully in IDB, and every live chunk
-    //    has a resolved sidecar entry. Collect their entries for grouped reads.
-    interface Candidate {
-        note: ReChunkedNote;
-        entries: ResolvedEntry[]; // aligned with note.chunks
-    }
-    const candidates: Candidate[] = [];
-    let needed = 0;
-    for (const note of live) {
-        if (note.chunks.length === 0) continue;
-        if (note.chunks.every(c => existing.has(c.chunk_id))) continue; // already indexed
-        const entries: ResolvedEntry[] = [];
-        let coverable = true;
-        for (const c of note.chunks) {
-            const e = scan.map.get(c.chunk_id);
-            if (!e) {
-                coverable = false; // not in the sidecar — leave to a model-backed embed
-                break;
-            }
-            entries.push(e);
-        }
-        if (!coverable) continue;
-        candidates.push({ note, entries });
-        needed += entries.length;
-    }
+    // 5–8. Select candidates and hydrate.
+    const { candidates, needed } = selectCandidates(live, scan, existing, freshIds);
     if (candidates.length === 0) {
         const r: HydrateResult = { ...empty, ...bg, scanned: scan.map.size, refusedProducers: refused, acceptedProducers: accepted.length, peerAhead };
         deps.log?.('sidecar-hydrate', r);
         return r;
     }
 
-    // 6. Group every needed entry by (shard, seq) so each bin is read ONCE.
-    const byShard = new Map<string, ResolvedEntry[]>();
-    for (const cand of candidates) {
-        for (const e of cand.entries) {
-            const key = `${e.shard}.${e.seq}`;
-            const arr = byShard.get(key);
-            if (arr) arr.push(e);
-            else byShard.set(key, [e]);
-        }
-    }
-
-    // 7. Read + validate + decode into a per-entry tier cache. Out-of-range or
-    //    missing-bin entries decode to null (partial arrival) — their notes are
-    //    skipped in step 8.
-    const tierCache = new Map<string, ReturnType<typeof decodeRecord> | null>();
-    const entryKey = (e: ResolvedEntry): string => `${e.shard}.${e.seq}.${e.off}`;
-    for (const [, entries] of byShard) {
-        const first = entries[0];
-        const buf = await adapter.readBinary(shardPathFor(indexDir, first.shard, first.seq)).catch(() => null);
-        for (const e of entries) {
-            if (buf && isOffsetInRange(buf.byteLength, e.off)) {
-                // dim mismatch or CRC failure (corrupt record) → null, skip the note.
-                try { tierCache.set(entryKey(e), decodeRecord(buf, e.off, e.dim)); }
-                catch { tierCache.set(entryKey(e), null); }
-            } else tierCache.set(entryKey(e), null);
-        }
-    }
-
-    // 8. Write each fully-covered note (all-or-nothing) in batches.
-    const batchSize = deps.batchSize ?? 500;
-    let pendingChunks: Chunk[] = [];
-    let pendingTiers: { q: QuantVec; bin: Uint8Array }[] = [];
-    const flush = async (): Promise<void> => {
-        if (pendingChunks.length === 0) return;
-        await deps.putQuantized(pendingChunks, pendingTiers);
-        pendingChunks = [];
-        pendingTiers = [];
-    };
-    let hydrated = 0;
-    let skippedPartialNotes = 0;
-    const fileRecords: Array<{ note_path: string; mtimeMs: number; chunk_ids: string[]; contentHash?: string }> = [];
-    for (const cand of candidates) {
-        const tiers = cand.entries.map(e => tierCache.get(entryKey(e)) ?? null);
-        if (tiers.some(t => t === null)) {
-            skippedPartialNotes++; // a chunk's bytes haven't synced yet — embed later, no file record
-            continue;
-        }
-        for (let i = 0; i < cand.note.chunks.length; i++) {
-            const t = tiers[i]!;
-            pendingChunks.push(cand.note.chunks[i]);
-            pendingTiers.push({ q: { q: t.q, s: t.s }, bin: t.sign });
-            hydrated++;
-            if (pendingChunks.length >= batchSize) await flush();
-        }
-        fileRecords.push({ note_path: cand.note.notePath, mtimeMs: cand.note.mtimeMs, chunk_ids: cand.note.chunks.map(c => c.chunk_id), contentHash: cand.note.contentHash });
-    }
-    await flush();
-    for (const rec of fileRecords) await deps.putFileRecord(rec);
+    const { hydrated, skippedPartialNotes, hydratedNotePaths } = await hydrateCandidates(deps, candidates);
 
     const result: HydrateResult = {
         ...bg,
@@ -333,7 +528,7 @@ export async function hydrateFromSidecar(deps: HydrateDeps): Promise<HydrateResu
         refusedProducers: refused,
         acceptedProducers: accepted.length,
         peerAhead,
-        hydratedNotePaths: fileRecords.map(r => r.note_path),
+        hydratedNotePaths,
     };
     deps.log?.('sidecar-hydrate', result);
     return result;
