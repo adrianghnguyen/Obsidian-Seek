@@ -24,7 +24,7 @@ import { LocalEmbedder, EMBEDDING_DIM, LEGACY_ENGLISH_MODEL_ID, MODEL_ID, PLUGIN
 import { SeekLogger } from './logger';
 import { Forensics } from './forensics';
 import { selectIndexBucket } from './iframe-runner';
-import { enforceTokenBudget, embedInput, type TokenBudgetResult } from './token-budget';
+import { enforceTokenBudget, embedInput, createBatchedTokenCounter, TOKEN_COUNTS_BATCH, type TokenBudgetResult } from './token-budget';
 import { concatPacked, topNIndices, packSignBits } from './binary';
 import { selectTopNIndices } from './select';
 import { poolCaps, POOL_FLOORS } from './pool';
@@ -2707,6 +2707,34 @@ export class SearchOrchestrator {
     // (hydrated:0 → fell back to a full on-device re-embed → iPhone jetsam; see
     // the 2026-06-14 forensics). Loads the tokenizer ONLY (a few MB, no ~250 MB
     // model) so the hydrate stays mobile-safe.
+    private async reChunkOneLiveFile(
+        f: TFile,
+        countTokens: (texts: string[]) => Promise<number[]>,
+        logLabel = 'reChunkLive',
+    ): Promise<{ note: ReChunkedNote | null; skipped: boolean; abortWalk: boolean }> {
+        let content: string;
+        try {
+            content = await this.app.vault.cachedRead(f);
+        } catch {
+            return { note: null, skipped: true, abortWalk: false };
+        }
+        let chunks = this.chunksFor(content, f.path, new Date(f.stat.mtime).toISOString());
+        if (chunks.length === 0) return { note: null, skipped: false, abortWalk: false };
+        try {
+            chunks = (await enforceTokenBudget(chunks, countTokens)).chunks;
+        } catch (e) {
+            await this.logger.appendError(`${logLabel}-tokenBudget:${f.path}`, e);
+            const abortWalk = e instanceof Error && /Neither model nor tokenizer loaded/i.test(e.message);
+            return { note: null, skipped: true, abortWalk };
+        }
+        if (chunks.length === 0) return { note: null, skipped: false, abortWalk: false };
+        return {
+            note: { notePath: f.path, mtimeMs: f.stat.mtime, chunks, contentHash: cyrb53Hex(content) },
+            skipped: false,
+            abortWalk: false,
+        };
+    }
+
     private async reChunkLive(): Promise<ReChunkedNote[]> {
         const t0 = performance.now();
         await this.embedder.ensureTokenizer();
@@ -2716,35 +2744,28 @@ export class SearchOrchestrator {
         let tokenCountsRpc = 0;
         let complete = true;
         let sinceYield = 0;
-        for (const f of this.indexableFiles().filter(f => this.shouldIndex(f.path))) {
+        const files = this.indexableFiles().filter(f => this.shouldIndex(f.path));
+        for (let i = 0; i < files.length; i += TOKEN_COUNTS_BATCH) {
             if (++sinceYield >= 8) { sinceYield = 0; await cheapYield(); }
-            filesWalked++;
-            let content: string;
-            try {
-                content = await this.app.vault.cachedRead(f);
-            } catch {
-                filesSkipped++;
-                continue;
-            }
-            let chunks = this.chunksFor(content, f.path, new Date(f.stat.mtime).toISOString());
-            if (chunks.length === 0) continue;
-            try {
-                tokenCountsRpc++;
-                chunks = (await enforceTokenBudget(chunks, ts => this.embedder.tokenCounts(ts))).chunks;
-            } catch (e) {
-                // Tokenizer hiccup on one note — skip its hydrate (it just embeds
-                // later via the catch-up); never abort the whole hydrate.
-                await this.logger.appendError(`reChunkLive-tokenBudget:${f.path}`, e);
-                filesSkipped++;
-                // Same unload/reload latch clear as collectLiveIds: further notes
-                // will all fail identically, so stop walking the vault.
-                if (e instanceof Error && /Neither model nor tokenizer loaded/i.test(e.message)) {
+            const batch = files.slice(i, i + TOKEN_COUNTS_BATCH);
+            const batcher = createBatchedTokenCounter(ts => this.embedder.tokenCounts(ts));
+            const results = await Promise.all(
+                batch.map(f => {
+                    filesWalked++;
+                    return this.reChunkOneLiveFile(f, batcher.countTokens);
+                }),
+            );
+            await batcher.flush();
+            tokenCountsRpc += batcher.getRpcCount();
+            for (const r of results) {
+                if (r.skipped) filesSkipped++;
+                if (r.note) out.push(r.note);
+                if (r.abortWalk) {
                     complete = false;
                     break;
                 }
-                continue;
             }
-            if (chunks.length > 0) out.push({ notePath: f.path, mtimeMs: f.stat.mtime, chunks, contentHash: cyrb53Hex(content) });
+            if (!complete) break;
         }
         void this.logger.append({
             type: 'rechunk-live',
@@ -2771,40 +2792,37 @@ export class SearchOrchestrator {
         let tokenCountsRpc = 0;
         let complete = true;
         let sinceYield = 0;
-        for (const ref of files) {
+        for (let i = 0; i < files.length; i += TOKEN_COUNTS_BATCH) {
             if (shouldStop?.()) {
                 complete = false;
                 break;
             }
             if (++sinceYield >= 8) { sinceYield = 0; await cheapYield(); }
-            const f = this.app.vault.getAbstractFileByPath(ref.path);
-            if (!(f instanceof TFile)) continue;
-            const file = f;
-            filesWalked++;
-            let content: string;
-            try {
-                content = await this.app.vault.cachedRead(file);
-            } catch {
-                filesSkipped++;
-                continue;
-            }
-            let chunks = this.chunksFor(content, file.path, new Date(file.stat.mtime).toISOString());
-            if (chunks.length === 0) continue;
-            try {
-                tokenCountsRpc++;
-                chunks = (await enforceTokenBudget(chunks, ts => this.embedder.tokenCounts(ts))).chunks;
-            } catch (e) {
-                await this.logger.appendError(`reChunkLiveSubset-tokenBudget:${file.path}`, e);
-                filesSkipped++;
-                if (e instanceof Error && /Neither model nor tokenizer loaded/i.test(e.message)) {
+            const batch = files.slice(i, i + TOKEN_COUNTS_BATCH);
+            const batcher = createBatchedTokenCounter(ts => this.embedder.tokenCounts(ts));
+            const results = await Promise.all(batch.map(async ref => {
+                if (shouldStop?.()) return { note: null as ReChunkedNote | null, skipped: false, abortWalk: false, stopped: true };
+                const f = this.app.vault.getAbstractFileByPath(ref.path);
+                if (!(f instanceof TFile)) return { note: null, skipped: false, abortWalk: false, stopped: false };
+                filesWalked++;
+                const r = await this.reChunkOneLiveFile(f, batcher.countTokens, 'reChunkLiveSubset');
+                return { ...r, stopped: false };
+            }));
+            await batcher.flush();
+            tokenCountsRpc += batcher.getRpcCount();
+            for (const r of results) {
+                if (r.stopped) {
                     complete = false;
                     break;
                 }
-                continue;
+                if (r.skipped) filesSkipped++;
+                if (r.note) out.push(r.note);
+                if (r.abortWalk) {
+                    complete = false;
+                    break;
+                }
             }
-            if (chunks.length > 0) {
-                out.push({ notePath: file.path, mtimeMs: file.stat.mtime, chunks, contentHash: cyrb53Hex(content) });
-            }
+            if (!complete) break;
             if (shouldStop?.()) {
                 complete = false;
                 break;
@@ -4433,6 +4451,58 @@ export class SearchOrchestrator {
     // dataGeneration, the stale build fails its generation check, and that
     // delta's own warm call (or the lazy path) rebuilds.
     //
+    // Post-eviction / fresh-process boot: rebuild the resident frame from IDB and
+    // load the persisted BM25 blob BEFORE reconcileOnLoad's first delta. Without
+    // this, applyDelta sees null frameCache/bm25Cache and declines into the cold
+    // full rebuild (~26 s mutex on large vaults). Embed-free — mirrors the search
+    // hot path's tryLoadPersistedBm25 gate (stamp mismatch → leave cold; reconcile
+    // falls back to rebuild: slow, never wrong).
+    //
+    // Frame is NOT persisted to IDB yet — ensureFrame() assembles it from
+    // chunk_meta + binary (+ optional int8 block). Only BM25 is restored from the
+    // bm25 store via persistBm25/getBm25.
+    async restorePersistedCachesBeforeReconcile(): Promise<{
+        frameRestored: boolean;
+        bm25Restored: boolean;
+        chunkCount: number;
+    }> {
+        const none = { frameRestored: false, bm25Restored: false, chunkCount: 0 };
+        try {
+            const frame = await this.ensureFrame();
+            if (!frame || frame.orderedChunks.length === 0) return none;
+            const orderedChunks = frame.orderedChunks;
+            if (!this.bm25CacheValid(orderedChunks)) {
+                await this.tryLoadPersistedBm25(orderedChunks);
+                if (!this.bm25CacheValid(orderedChunks)) {
+                    await this.tryLoadCrossDeviceBm25(orderedChunks);
+                }
+            }
+            const bm25Restored = this.bm25CacheValid(orderedChunks);
+            if (bm25Restored && this.bm25Cache && !frameBm25Coherent(frame, this.bm25Cache)) {
+                // Blob/frame drift too severe for incremental patch — drop BM25 only
+                // (keep the frame; bumping generation would discard it too).
+                this.bm25Cache = null;
+                this.bm25CacheGeneration = -1;
+                this.bm25CacheChunkCount = -1;
+                this.synonymCache = null;
+                this.forensics?.beat('persist-cache-restore', {
+                    frameRestored: true, bm25Restored: false, reason: 'incoherent',
+                    chunkCount: orderedChunks.length,
+                });
+                return { frameRestored: true, bm25Restored: false, chunkCount: orderedChunks.length };
+            }
+            this.forensics?.beat('persist-cache-restore', {
+                frameRestored: true,
+                bm25Restored,
+                chunkCount: orderedChunks.length,
+            });
+            return { frameRestored: true, bm25Restored, chunkCount: orderedChunks.length };
+        } catch (e) {
+            console.warn('[seek] persisted cache restore before reconcile failed (reconcile will cold-rebuild)', e);
+            return none;
+        }
+    }
+
     // Cold mobile (embedder unloaded) is special: we must NOT run the eager
     // ensureBm25 build — its getBodiesMap(ALL ids) IS the 18.6 s freeze, and
     // building multi-MB resident caches the user may never query violates the
