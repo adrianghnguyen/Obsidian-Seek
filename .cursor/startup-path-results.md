@@ -8,7 +8,7 @@ _Isolated per-path metrics from worktree verification. Never mix Run A (`cold-re
 |---------|---------------|-----------|-----------|-----------|---------|
 | G_small_delta | Peer changed 1–50 notes | ≤ 10–15 s | — | — | pending |
 | G_noop_sync | Peer churn, needed: 0 | ≤ 1.5 s | — | — | pending |
-| G_first_good | Recent notes searchable early | ≤ 10 s | — | — | pending |
+| G_first_good | Recent notes searchable early | ≤ 10 s | greedy-hydrate | — | blocked (no fresh ids) |
 | G_cold_recovery | Full cold hydrate | −15–35% chunk | — | — | pending |
 | G_ui_responsive | Editor usable during Starting | eval ≤ 2 s | — | — | pending |
 | G_eviction | After minimize / eviction | mutex ≤ 2 s | — | — | pending |
@@ -32,7 +32,11 @@ Goals: G_small_delta, G_first_good, G_noop_sync
 
 | scenario | T_start_ms | T_first_good_ms | files_walked | verdict |
 |----------|------------|-----------------|--------------|---------|
-| _pending_ | | | | |
+| Run A cold-restart (2026-08-28) | 1360 | null (120s cap) | null | **blocked** — skip-rechunk; greedy tiers never ran |
+
+Notes: session `b9ce028a`; sidecar-hydrate span 763ms; gate-test failed @ 13.6s; no `startup-gate` released. Needs controlled fresh-id or peer-delta scenario (G2/G3) to score SLOs.
+
+Artifacts: `.cursor/handoff/T1.json`, `.cursor/scorecards/greedy-hydrate-cold-restart-parsed.json`
 
 ### cheap-yield (`path/cheap-yield`)
 
@@ -40,7 +44,7 @@ Goals: G_ui_responsive
 
 | scenario | T_eval_p95_ms | T_start_ms (guard +10%) | verdict |
 |----------|---------------|-------------------------|---------|
-| _pending_ | | | |
+| _pending_ | | | code shipped @ 62a1786; measure after T1 fixture |
 
 ### batch-rpc (`path/batch-rpc`)
 
