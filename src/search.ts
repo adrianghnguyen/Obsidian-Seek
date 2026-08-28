@@ -2715,7 +2715,9 @@ export class SearchOrchestrator {
         let filesSkipped = 0;
         let tokenCountsRpc = 0;
         let complete = true;
+        let sinceYield = 0;
         for (const f of this.indexableFiles().filter(f => this.shouldIndex(f.path))) {
+            if (++sinceYield >= 8) { sinceYield = 0; await cheapYield(); }
             filesWalked++;
             let content: string;
             try {
