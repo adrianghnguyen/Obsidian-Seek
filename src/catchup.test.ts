@@ -5,7 +5,11 @@
 // that won't commit). All model-free via injected fakes.
 
 import { describe, it, expect } from 'vitest';
-import { drainCatchUp, type CatchUpDrainDeps } from './catchup';
+import {
+    drainCatchUp,
+    DESKTOP_CATCHUP_MAX_FILES_PER_BURST,
+    type CatchUpDrainDeps,
+} from './catchup';
 
 // Build deps over a mutable dirty-set "store". reindexDelta simulates the real
 // engine: per burst it commits up to maxFiles files of the list it was PASSED and
@@ -66,12 +70,13 @@ describe('drainCatchUp', () => {
         expect(h.getBursts()).toBe(4);            // 3+3+3+1
     });
 
-    it('desktop (unbounded) drains in a single burst', async () => {
-        const h = harness({ initialDirty: 10, maxFiles: undefined });
+    it('desktop (bounded) drains across paced bursts, not one monolith', async () => {
+        const h = harness({ initialDirty: 100, maxFiles: DESKTOP_CATCHUP_MAX_FILES_PER_BURST });
         const { pending } = await drainCatchUp(h.deps);
         expect(pending).toBe(false);
         expect(h.store.dirty).toHaveLength(0);
-        expect(h.getBursts()).toBe(1);
+        expect(h.getBursts()).toBe(3);            // ceil(100 / 40)
+        expect(h.getDeltas()).toBe(2);             // one sweep + confirm empty
     });
 
     it('is a no-op on an empty delta', async () => {

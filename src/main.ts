@@ -45,7 +45,13 @@ import { SeekSettingTab } from './settings-tab';
 import { collectPlatformInfo, isMobilePlatform, resolveDevice, recordActiveBackend, maybeDemoteOnCrash, getStartupWarm } from './platform';
 import { CompositorPacer } from './pacer';
 import { shouldUnloadEmbedder, type UnloadGateState } from './embedder-lifecycle';
-import { drainCatchUp, CATCHUP_MAX_FILES_PER_BURST, CATCHUP_BURST_BUDGET_MS } from './catchup';
+import {
+    drainCatchUp,
+    CATCHUP_MAX_FILES_PER_BURST,
+    CATCHUP_BURST_BUDGET_MS,
+    DESKTOP_CATCHUP_MAX_FILES_PER_BURST,
+    DESKTOP_CATCHUP_BURST_BUDGET_MS,
+} from './catchup';
 import { isKnownEmptyIndexWithNotes, shouldAutoDrainStartupCatchUp } from './startup-drain';
 import { TaskContextTracker, type TaskContext } from './task-context';
 import type { LongTaskEntry, MemoryPressureEntry, StorageSnapshotEntry, EvictionSuspectedEntry, AppLocalFetchEntry } from './types';
@@ -2139,8 +2145,9 @@ export default class SeekPlugin extends Plugin {
 
     // Drain cold-mobile deferred embeds once a search session ends and the model is
     // warm. Runs the work in safety-bounded, self-chaining bursts (drainCatchUp) so
-    // the foreground iOS embed can't saturate the shared process into a jetsam kill;
-    // desktop runs one unbounded burst (no caps). Fire-and-forget; cheap no-op
+    // the foreground iOS embed can't saturate the shared process into a jetsam kill,
+    // and desktop stays responsive while a large backlog drains. Fire-and-forget;
+    // cheap no-op
     // unless something was deferred (catchUpPending) and we're in a safe window.
     private runCatchUp(): void {
         if (!this.catchUpPending || this.catchUpRunning || !this.embedder.loaded || !this.orchestrator) return;
@@ -2202,8 +2209,8 @@ export default class SeekPlugin extends Plugin {
                     isHidden: () => activeDocument.hidden,
                     isSearchActive: () => this.indexingBlocked,
                     pace: () => pacer.pace(),
-                    maxFiles: mobile ? CATCHUP_MAX_FILES_PER_BURST : undefined,
-                    budgetMs: mobile ? CATCHUP_BURST_BUDGET_MS : undefined,
+                    maxFiles: mobile ? CATCHUP_MAX_FILES_PER_BURST : DESKTOP_CATCHUP_MAX_FILES_PER_BURST,
+                    budgetMs: mobile ? CATCHUP_BURST_BUDGET_MS : DESKTOP_CATCHUP_BURST_BUDGET_MS,
                 });
                 this.catchUpPending = pending;
             } catch (e) {
