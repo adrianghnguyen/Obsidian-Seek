@@ -21,6 +21,8 @@ Non-obvious notes:
 
 Configurable settings must always be available in the plugin options menu (Settings → Seek / `settings-tab.ts`). Do not add a user-tunable flag (synced `data.json` or per-device localStorage) without a corresponding control there. Hidden silent defaults are only for ratified non-user knobs already documented in `DEFAULT_SETTINGS`.
 
+User-facing features, fixes, and settings changes must add a bullet to `CHANGELOG.md` under the current `manifest.json` version in the same turn (voice and skip list: `.cursor/rules/changelog.mdc`). Do not bump the version unless asked.
+
 ## Upstream sync (this is a fork)
 
 This working copy is the **fork**, not the parent. Day-to-day push/PR work targets `origin` (`adrianghnguyen/Obsidian-Seek`). `upstream` is only for syncing parent releases.

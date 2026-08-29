@@ -1,0 +1,27 @@
+---
+description: User-facing Seek changes must update CHANGELOG.md in the current version
+alwaysApply: true
+---
+
+# Update CHANGELOG.md for user-facing work
+
+A user-visible feature, fix, or settings change is **not done** until `CHANGELOG.md` has a bullet under the **current** `manifest.json` version. Do this in the same turn as the code — do not wait to be asked.
+
+Skip: typos, comments, tests-only, docs-only, purely internal refactors with no behavior or UX change.
+
+## Where
+
+- Edit the existing `## X.Y.Z` section. Do not bump the version unless the user asks (fork version tracks upstream unless a fork-only patch is required).
+- Use `### Added`, `### Changed`, or `### Fixed` (create the heading if that version lacks it).
+- One concern per bullet. Fold into an existing bullet when it is the same user-facing change.
+
+## Voice (match 1.1.x)
+
+Bold lead-in that a user would recognize, then the problem, then what Seek does now. No issue numbers, file paths, or symbol names unless the user already sees them (a console warning, a settings label, a modal string).
+
+```markdown
+### Fixed
+- **Startup no longer treats a still-loading vault as a mass delete.** On a large vault, Seek could run catch-up before Obsidian had listed any notes. Catch-up now waits until the vault layout is ready.
+```
+
+Keep the version blurb's "No reindex is needed…" line unless the index format actually changed.
