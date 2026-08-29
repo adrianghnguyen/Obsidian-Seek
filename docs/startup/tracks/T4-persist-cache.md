@@ -4,7 +4,13 @@
 
 ## 1. Executive summary
 
-After process eviction or cold boot with null resident caches, Seek rebuilt frame + BM25 from IDB from scratch — holding the write mutex for tens of seconds (~16k chunk deletes). T4 persists BM25 to IDB, restores caches before reconcile delta, and guards truncated enumeration with `shouldDeferMassDelete()`. On the steady production path, **G_eviction mutex = 1951 ms** with incremental delta (**pass**, SLO ≤ 2 s). Frame is not yet persisted to IDB (~171 s cold `ensureFrame` remains). **Verdict:** pass on steady eviction; known limitations on 1-file fallback and frame restore.
+When Windows or Electron reclaims memory, Seek may lose its in-RAM search caches. The next boot can look like “rebuild everything from scratch” — search locked out while the plugin deletes and re-assembles tens of thousands of index chunks. Users experience this as a multi-minute stall after leaving Obsidian idle or minimizing it, even for a small edit afterward.
+
+The core concepts are **cache persistence**, **write mutex serialization**, and **cold vs incremental recovery**. Seek keeps a resident **frame** (chunk metadata + binary vectors) and a **BM25** text index in memory; after eviction they are null. Rebuilding under a single **write mutex** blocks both search and incremental updates. We initially suspected BM25 rebuild was the villain; measurement **falsified** that — BM25 fit is ~300 ms; the cost is **mass chunk deletes** and **frame assembly from IndexedDB**. A secondary trap was **incomplete enumeration** triggering false “mass delete everything” paths.
+
+T4 persists BM25 to IndexedDB, restores caches before reconcile, and guards truncated enumeration with `shouldDeferMassDelete()`. Steady eviction path: **1951 ms** mutex (SLO ≤ 2 s). Frame is not yet persisted (~171 s cold restore remains). **Verdict:** pass on steady path; partial on frame restore and 1-file fallback edge case.
+
+**Concepts worth researching:** process eviction / memory pressure · IndexedDB persistence · read-through vs write-through caches · mutex / lock contention · incremental vs full rebuild · MiniSearch / BM25 index lifecycle · false-positive deletion guards
 
 ## 2. Why the bottleneck existed
 
