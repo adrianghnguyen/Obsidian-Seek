@@ -921,7 +921,7 @@ export default class SeekPlugin extends Plugin {
                         // or bulk flush yields at its next batch boundary instead of
                         // making this call wait out the whole indexing pass (the
                         // modal gets the same preemption via its own edges).
-                        const { results } = await this.withQueryInFlight(async () => {
+                        const { results, entry } = await this.withQueryInFlight(async () => {
                             // No modal here to overlap the cold-start, so block on the
                             // model load (3–10 s first call) before querying — otherwise
                             // the orchestrator embeds against an unloaded model.
@@ -941,11 +941,12 @@ export default class SeekPlugin extends Plugin {
                                     score: r.score,
                                     excerpt: r.snippet ?? '',
                                 };
-                                if (r.nameEarlyPainted !== undefined) base.nameEarlyPainted = r.nameEarlyPainted;
-                                if (r.namePartialMs !== undefined) base.namePartialMs = r.namePartialMs;
                                 return base;
                             });
-                            return JSON.stringify({ results: mapped, query, count: mapped.length });
+                            const payload: Record<string, unknown> = { results: mapped, query, count: mapped.length };
+                            if (entry.nameEarlyPainted !== undefined) payload.nameEarlyPainted = entry.nameEarlyPainted;
+                            if (entry.namePartialMs !== undefined) payload.namePartialMs = entry.namePartialMs;
+                            return JSON.stringify(payload);
                         }
 
                         // ---- default: human-readable text ----------------------
