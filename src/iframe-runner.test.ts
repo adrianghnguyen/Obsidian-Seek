@@ -16,6 +16,66 @@ function withDeadIframe(): IframeRunner {
     return r;
 }
 
+describe('IframeRunner query-priority RPC queue (G_catchup_ux)', () => {
+    it('runs a query embed ahead of a queued index embedBatch', async () => {
+        const r = new IframeRunner();
+        const order: string[] = [];
+        const replies = new Map<string, { resolve: (v: unknown) => void }>();
+        (r as unknown as { iframe: { contentWindow: { postMessage: (msg: { id: string; type: string }) => void } } }).iframe = {
+            contentWindow: {
+                postMessage: (msg) => {
+                    order.push(msg.type);
+                    // Reply async so the queue can enqueue the second call first.
+                    queueMicrotask(() => {
+                        const p = (r as unknown as { pending: Map<string, { resolve: (v: unknown) => void }> }).pending.get(msg.id);
+                        if (!p) return;
+                        (r as unknown as { pending: Map<string, unknown> }).pending.delete(msg.id);
+                        if (msg.type === 'embed') p.resolve({ vector: new Float32Array(4), latencyMs: 1 });
+                        else p.resolve({ vectors: [new Float32Array(4)], latencyMs: 1 });
+                    });
+                },
+            },
+        };
+        const batchP = r.embedBatch(['a', 'b']);
+        const embedP = r.embed('query');
+        await Promise.all([batchP, embedP]);
+        // First post is whichever started the flight (batch was enqueued first).
+        // Second post must be embed if it was waiting — but batch was already in
+        // flight, so order is [embed-batch, embed]. Priority only reorders the
+        // *queue*, not a flight already posted.
+        expect(order).toEqual(['embed-batch', 'embed']);
+    });
+
+    it('when both are queued before the pump runs, embed posts before embed-batch', async () => {
+        const r = new IframeRunner();
+        const order: string[] = [];
+        // Hold the pump: mark busy so both enqueue without starting.
+        (r as unknown as { rpcBusy: boolean }).rpcBusy = true;
+        (r as unknown as { iframe: { contentWindow: { postMessage: (msg: { id: string; type: string }) => void } } }).iframe = {
+            contentWindow: {
+                postMessage: (msg) => {
+                    order.push(msg.type);
+                    queueMicrotask(() => {
+                        const pending = (r as unknown as { pending: Map<string, { resolve: (v: unknown) => void }> }).pending;
+                        const p = pending.get(msg.id);
+                        if (!p) return;
+                        pending.delete(msg.id);
+                        if (msg.type === 'embed') p.resolve({ vector: new Float32Array(4), latencyMs: 1 });
+                        else p.resolve({ vectors: [new Float32Array(4)], latencyMs: 1 });
+                    });
+                },
+            },
+        };
+        const batchP = r.embedBatch(['a']);
+        const embedP = r.embed('q');
+        (r as unknown as { rpcBusy: boolean }).rpcBusy = false;
+        (r as unknown as { pumpRpc: () => void }).pumpRpc();
+        await Promise.all([batchP, embedP]);
+        expect(order[0]).toBe('embed');
+        expect(order[1]).toBe('embed-batch');
+    });
+});
+
 describe('IframeRunner per-RPC timeout (F5)', () => {
     it('rejects a never-answered embedBatch with a recoverable TIMEOUT error', async () => {
         vi.useFakeTimers();

@@ -84,6 +84,8 @@ export interface HydrateDeps {
     listHydrateFiles?: () => Promise<HydrateFileRef[]>;
     /** Greedy hydrate: tier 0 committed — release search gate (P1). */
     onGoodEnough?: () => void;
+    /** Greedy hydrate: warm tokenizer in parallel with file-list wait. */
+    ensureTokenizer?: () => Promise<void>;
     onTierComplete?: (detail: HydrateTierCompleteDetail) => void;
     /** When true and reChunkSubset + listHydrateFiles are set, use tiered greedy hydrate. */
     greedyHydrate?: boolean;
@@ -228,7 +230,11 @@ function selectCandidates(
     return { candidates, needed };
 }
 
-async function hydrateCandidates(deps: HydrateDeps, candidates: Candidate[]): Promise<TierHydrateResult> {
+async function hydrateCandidates(
+    deps: HydrateDeps,
+    candidates: Candidate[],
+    hooks?: { onFirstCommit?: () => void },
+): Promise<TierHydrateResult> {
     if (candidates.length === 0) {
         return { needed: 0, hydrated: 0, skippedPartialNotes: 0, hydratedNotePaths: [], hydratedIds: [] };
     }
@@ -257,9 +263,14 @@ async function hydrateCandidates(deps: HydrateDeps, candidates: Candidate[]): Pr
     const batchSize = deps.batchSize ?? 500;
     let pendingChunks: Chunk[] = [];
     let pendingTiers: { q: QuantVec; bin: Uint8Array }[] = [];
+    let firstCommitFired = false;
     const flush = async (): Promise<void> => {
         if (pendingChunks.length === 0) return;
         await deps.putQuantized(pendingChunks, pendingTiers);
+        if (!firstCommitFired) {
+            firstCommitFired = true;
+            hooks?.onFirstCommit?.();
+        }
         pendingChunks = [];
         pendingTiers = [];
     };
@@ -321,7 +332,12 @@ async function hydrateFromSidecarGreedy(
         ...bg,
     };
     const hydrateStartMs = Date.now();
-    const allFiles = await deps.listHydrateFiles!();
+    const tokenizerReady = deps.ensureTokenizer?.() ?? Promise.resolve();
+    const allFilesPromise = deps.listHydrateFiles!();
+    const [allFiles] = await Promise.all([allFilesPromise, tokenizerReady]);
+    if (allFiles.length === 0 && freshIds.size > 0) {
+        deps.log?.('sidecar-hydrate-greedy-no-files', { freshIdsRemaining: freshIds.size });
+    }
     let freshIdsRemaining = new Set(freshIds);
     const processedPaths = new Set<string>();
     let tiersRun = 0;
@@ -352,22 +368,67 @@ async function hydrateFromSidecarGreedy(
         for (const f of tierFiles) processedPaths.add(f.path);
         if (tierFiles.length === 0) continue;
 
-        const live = await deps.reChunkSubset!(tierFiles, () => freshIdsRemaining.size === 0);
-        const { candidates, needed: tierNeeded } = selectCandidates(live, scan, existing, freshIdsRemaining);
-        const tierResult = await hydrateCandidates(deps, candidates);
-        for (const id of tierResult.hydratedIds) existing.add(id);
-        for (const id of tierResult.hydratedIds) freshIdsRemaining.delete(id);
+        let tierFilesWalked = 0;
+        let tierChunksProduced = 0;
+        let tierNeeded = 0;
+        let tierHydrated = 0;
+        let tierSkippedPartial = 0;
+        const tierHydratedPaths: string[] = [];
+        const tierHydratedIds: string[] = [];
+
+        const processRechunked = async (live: ReChunkedNote[]) => {
+            tierChunksProduced += live.reduce((n, note) => n + note.chunks.length, 0);
+            const { candidates, needed } = selectCandidates(live, scan, existing, freshIdsRemaining);
+            tierNeeded += needed;
+            const releaseOnFirstCommit = !goodEnoughReleased
+                && tier.id === 'hydrate-tier-3d'
+                && deps.onGoodEnough != null;
+            const result = await hydrateCandidates(deps, candidates, releaseOnFirstCommit ? {
+                onFirstCommit: () => {
+                    deps.onGoodEnough!();
+                    goodEnoughReleased = true;
+                    if (firstGoodMs == null) firstGoodMs = Math.round(performance.now() - greedyStart);
+                },
+            } : undefined);
+            for (const id of result.hydratedIds) existing.add(id);
+            for (const id of result.hydratedIds) freshIdsRemaining.delete(id);
+            tierHydrated += result.hydrated;
+            tierSkippedPartial += result.skippedPartialNotes;
+            tierHydratedPaths.push(...result.hydratedNotePaths);
+            tierHydratedIds.push(...result.hydratedIds);
+            return result;
+        };
+
+        if (tier.id === 'hydrate-tier-3d') {
+            // Id-bounded tier-0: walk mtime-newest files one-by-one; stop once the
+            // search gate releases (G2 peer-delta) instead of re-chunking every 3d file.
+            for (const ref of tierFiles) {
+                if (freshIdsRemaining.size === 0) break;
+                tierFilesWalked++;
+                const live = await deps.reChunkSubset!([ref], () => freshIdsRemaining.size === 0);
+                await processRechunked(live);
+                if (goodEnoughReleased) {
+                    stoppedEarly = true;
+                    stopReason = 'gate-released';
+                    break;
+                }
+            }
+        } else {
+            tierFilesWalked = tierFiles.length;
+            const live = await deps.reChunkSubset!(tierFiles, () => freshIdsRemaining.size === 0);
+            await processRechunked(live);
+        }
 
         totalNeeded += tierNeeded;
-        totalHydrated += tierResult.hydrated;
-        totalSkippedPartial += tierResult.skippedPartialNotes;
-        allHydratedPaths.push(...tierResult.hydratedNotePaths);
+        totalHydrated += tierHydrated;
+        totalSkippedPartial += tierSkippedPartial;
+        allHydratedPaths.push(...tierHydratedPaths);
         tiersRun++;
 
-        const gateReleased = !goodEnoughReleased
-            && (tier.id === 'hydrate-tier-3d' || freshIdsRemaining.size === 0)
-            && (tierResult.hydrated > 0 || freshIdsRemaining.size === 0);
-        if (gateReleased) {
+        const gateReleased = goodEnoughReleased
+            || ((tier.id === 'hydrate-tier-3d' || freshIdsRemaining.size === 0)
+            && (tierHydrated > 0 || freshIdsRemaining.size === 0));
+        if (gateReleased && !goodEnoughReleased) {
             deps.onGoodEnough?.();
             goodEnoughReleased = true;
             if (firstGoodMs == null) firstGoodMs = Math.round(performance.now() - greedyStart);
@@ -375,10 +436,10 @@ async function hydrateFromSidecarGreedy(
 
         const tierDetail: HydrateTierCompleteDetail = {
             tier: tier.id,
-            filesWalked: tierFiles.length,
-            chunksProduced: live.reduce((n, note) => n + note.chunks.length, 0),
+            filesWalked: tierFilesWalked,
+            chunksProduced: tierChunksProduced,
             needed: tierNeeded,
-            hydrated: tierResult.hydrated,
+            hydrated: tierHydrated,
             freshIdsRemaining: freshIdsRemaining.size,
             durationMs: Math.round(performance.now() - tierStart),
             gateReleased,
@@ -386,6 +447,9 @@ async function hydrateFromSidecarGreedy(
         deps.onTierComplete?.(tierDetail);
         deps.log?.('sidecar-hydrate-tier', tierDetail);
 
+        if (goodEnoughReleased && tier.id === 'hydrate-tier-3d') {
+            break;
+        }
         if (freshIdsRemaining.size === 0) {
             stoppedEarly = true;
             stopReason = 'freshIds-empty';

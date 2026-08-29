@@ -6,19 +6,24 @@
   "merged_into_compose": true,
   "compose_merge": "f4188f4",
   "worktree": "C:/Coding_projects/Obsidian-Seek-worktrees/batch-rpc",
-  "scenarios_run": [],
-  "scorecards": [],
+  "scenarios_run": ["persist-cache-g2-v2 cold-restart"],
+  "scorecards": [".cursor/scorecards/persist-cache-g2-v2-cold-restart-parsed.json"],
   "goals": {
     "G_small_delta": "n/a",
     "G_first_good": "n/a",
     "G_noop_sync": "n/a",
-    "G_cold_recovery": "pending",
+    "G_cold_recovery": "partial",
     "G_ui_responsive": "n/a",
     "G_eviction": "n/a",
     "G_catchup_chunk": "pending",
     "G_catchup_ux": "n/a"
   },
-  "metrics_p50": {},
+  "metrics_p50": {
+    "files_walked": 1,
+    "token_counts_rpc": 9,
+    "rechunk_duration_ms": 493,
+    "T_hydrate_ms": 149629
+  },
   "vs_baseline_pct": {},
   "implementation": {
     "TOKEN_COUNTS_BATCH": 8,
@@ -26,7 +31,7 @@
     "surfaces": ["reChunkLive", "reChunkLiveSubset"],
     "estimated_rpc_reduction": "~8x on single-chunk notes (4427 files -> ~554 RPCs)"
   },
-  "blockers": "Run A cold-restart with hasFreshId fixture needed to measure token_counts_rpc and T_hydrate_ms on vault.",
+  "blockers": "Delta rechunk path verified (1 file, 9 RPC). Full gate still dominated by sidecar scan (29378 files). G_catchup_chunk not isolated.",
   "deliverables": [
     "createBatchedTokenCounter + TOKEN_COUNTS_BATCH=8",
     "Parallel file batches in reChunkLive / reChunkLiveSubset",

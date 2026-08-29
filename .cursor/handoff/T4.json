@@ -1,19 +1,104 @@
 {
+
   "tree_id": "T4",
+
   "path_id": "persist-cache",
+
   "branch": "path/persist-cache",
+
   "commit": "2e4103d",
+
   "worktree": "C:/Coding_projects/Obsidian-Seek",
-  "scenarios_run": [],
+
+  "merged_into_compose": true,
+
+  "compose_at": "474dfb2",
+
+  "scenarios_run": ["post-reindex-cold-restart-1file-edit", "steady-state-reindex-idb-persist-1file-edit"],
+
   "scorecards": [],
+
   "goals": {
-    "G_eviction": "pending"
+
+    "G_small_delta": "n/a",
+
+    "G_first_good": "n/a",
+
+    "G_noop_sync": "n/a",
+
+    "G_cold_recovery": "n/a",
+
+    "G_ui_responsive": "n/a",
+
+    "G_eviction": "partial-fail",
+
+    "G_catchup_chunk": "n/a",
+
+    "G_catchup_ux": "n/a"
+
   },
-  "metrics_p50": {},
-  "blockers": "Run A post-eviction protocol (minimize 30s -> restart) to measure mutex_hold_ms",
+
+  "metrics_p50": {
+
+    "T_gate_release_ms": 825,
+
+    "restoreMs": 171185,
+
+    "restore_frameRestored": true,
+
+    "restore_bm25Restored": true,
+
+    "restore_chunkCount": 12661,
+
+    "delta_mutexHoldMs": 90333,
+
+    "delta_incremental": false,
+
+    "delta_fallback": "removal-body-missing",
+
+    "idb_persist_chunks_after_restart": 16738,
+
+    "steady_restoreMs": 203836,
+
+    "steady_pre_tombstones": 0
+
+  },
+
+  "implementation": {
+
+    "restorePersistedCachesBeforeReconcile": "main.ts reconcileOnLoad when dirty>0",
+
+    "bm25": "tryLoadPersistedBm25 from IDB bm25 store",
+
+    "frame": "ensureFrame from IDB meta+binary (not separately persisted)",
+
+    "tests": "persist-cache-startup.test.ts (3 cases, pass)"
+
+  },
+
+  "limitations": [
+
+    "Frame not persisted to IDB — ensureFrame ~171s on 12k chunks at cold restore",
+
+    "Vault 1-file delta hits removal-body-missing fallback (~90s), not incremental applyDelta",
+
+    "BM25 not restored on steady probe (bm25Restored: false); frame restore ~204s on 16k chunks"
+
+  ],
+
+  "blockers": "Fix removal-body-missing applyDelta fallback for 1-file edits after cold restore; frame persist would cut ~204s restore",
+
   "deliverables": [
-    "restorePersistedCachesBeforeReconcile",
+
+    "restorePersistedCachesBeforeReconcile()",
+
+    "persist-cache-restore forensics beat",
+
     "persist-cache-startup.test.ts",
-    "wired in main.ts onload before reconcileOnLoad"
+
+    "vault probe 2026-08-28 (restore pass, delta fail)"
+
   ]
+
 }
+

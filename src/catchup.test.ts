@@ -75,7 +75,7 @@ describe('drainCatchUp', () => {
         const { pending } = await drainCatchUp(h.deps);
         expect(pending).toBe(false);
         expect(h.store.dirty).toHaveLength(0);
-        expect(h.getBursts()).toBe(3);            // ceil(100 / 40)
+        expect(h.getBursts()).toBe(13);           // ceil(100 / 8)
         expect(h.getDeltas()).toBe(2);             // one sweep + confirm empty
     });
 

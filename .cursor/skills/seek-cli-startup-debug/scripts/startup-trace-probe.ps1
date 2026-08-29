@@ -42,7 +42,7 @@ function Get-Elapsed([datetime]$Start) {
 }
 
 $gateCode = @'
-(()=>{const s=app.plugins.plugins.seek;if(!s)return JSON.stringify({seek:false});const j=s.getIndexJob();return s.getIndexStats().then(st=>JSON.stringify({ver:s.manifest.version,warmPhase:s.indexWarmPhase,warmingUp:s.isIndexWarmingUp,uiHealth:s.indexUiHealth,indexHealth:s.indexHealthState,sidecarHydrating:!!s.sidecarHydrating,bootPending:!!s.indexBootPending,isIndexing:s.isIndexing,catchUpRunning:!!s.catchUpRunning,job:j?{done:j.done,total:j.total,remaining:Math.max(0,j.total-j.done)}:null,files:st.files,chunks:st.chunks}))})()
+(()=>{const s=app.plugins.plugins.seek;if(!s)return JSON.stringify({seek:false});const j=s.getIndexJob();return s.getIndexStats().then(st=>JSON.stringify({ver:s.manifest.version,warmPhase:s.indexWarmPhase,warmingUp:s.isIndexWarmingUp,uiHealth:s.indexUiHealth,indexHealth:s.indexHealthState,sidecarHydrating:!!s.sidecarHydrating,bootPending:!!s.indexBootPending,goodEnough:!!s.isIndexGoodEnough,isIndexing:s.isIndexing,catchUpRunning:!!s.catchUpRunning,job:j?{done:j.done,total:j.total,remaining:Math.max(0,j.total-j.done)}:null,files:st.files,chunks:st.chunks}))})()
 '@ -replace "`r`n|`n", ''
 
 $precheckCode = @'
@@ -145,9 +145,12 @@ while ((Get-Elapsed $start) -lt $MaxSeconds) {
 
     Write-Host "--- ${elapsed}s warmPhase=$($gateObj.warmPhase) uiHealth=$($gateObj.uiHealth) ---"
 
-    if ($Run -eq 'A' -and $gateStr -match '"warmPhase":null' -and $gateStr -notmatch '"bootPending":true' -and $elapsed -gt 5) {
-        Write-Host 'Run A: gate released (warmPhase null, bootPending false) - stopping'
-        break
+    if ($Run -eq 'A' -and $elapsed -gt 1) {
+        $gateReleased = ($gateStr -match '"warmPhase":null' -and $gateStr -notmatch '"bootPending":true') -or ($gateStr -match '"goodEnough":true')
+        if ($gateReleased) {
+            Write-Host 'Run A: gate released - stopping'
+            break
+        }
     }
     if ($Run -eq 'B' -and $isOk) {
         $rem = 0
