@@ -88,6 +88,8 @@ if ($Run -eq 'B') {
         Write-Host "  ${elapsed}s alive=$alive"
     } while ($elapsed -lt 30 -and ($alive -notmatch '"seek":true'))
     Run-Obsidian dev:debug on "vault=$Vault" | Out-Null
+    Write-Host 'dumpPerfConsole (cold-start ring → CDP)'
+    Run-Obsidian eval "vault=$Vault" 'code=app.plugins.plugins.seek.dumpPerfConsole()' | Out-Null
 }
 
 while ((Get-Elapsed $start) -lt $MaxSeconds) {
@@ -163,6 +165,10 @@ while ((Get-Elapsed $start) -lt $MaxSeconds) {
 
     Start-Sleep -Seconds 2
 }
+
+Write-Host 'dumpPerfConsole + dev:console (seek:perf)'
+Run-Obsidian eval "vault=$Vault" 'code=app.plugins.plugins.seek.dumpPerfConsole()' | Out-Null
+Run-Obsidian dev:console limit=150 level=info "vault=$Vault" | Out-Null
 
 Write-Host 'Generating logging report...'
 Run-Obsidian eval "vault=$Vault" 'code=app.plugins.plugins.seek.openLoggingReport().then(()=>"ok")' | Out-Null

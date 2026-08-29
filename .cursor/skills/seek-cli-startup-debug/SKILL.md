@@ -88,11 +88,49 @@ Run probes **serially** — never parallel eval/search storms (contaminates timi
    ```
 
 4. **Reattach debugger** (does NOT survive restart): `obsidian dev:debug on vault=Obsidian`
-5. Poll timeline every 2–3s for up to ~90s (large vaults may need longer) — use **gate bundle** probe each tick
-6. Capture `dev:console limit=150` and `dev:errors` at end
-7. Log to `.startup-probe.log` in repo root for clean parsing
+5. **Replay cold-start perf beats** into the CDP buffer (hydrate often finished before step 4):
 
-Optional helper: [scripts/startup-probe.ps1](scripts/startup-probe.ps1) runs steps 1–5 with serial probes.
+   ```powershell
+   obsidian eval vault=Obsidian code="app.plugins.plugins.seek.dumpPerfConsole()"
+   ```
+
+6. Poll timeline every 2–3s for up to ~90s (large vaults may need longer) — use **gate bundle** probe each tick
+7. Capture console with enough headroom for the ~80-line perf ring (docs default `limit` is 50):
+
+   ```powershell
+   obsidian dev:console limit=150 level=info vault=Obsidian
+   obsidian dev:errors vault=Obsidian
+   ```
+
+8. Log to `.startup-probe.log` in repo root for clean parsing
+
+Optional helper: [scripts/startup-probe.ps1](scripts/startup-probe.ps1) runs this protocol with serial probes.
+
+### `[seek:perf]` CLI telemetry
+
+Seek mirrors major timing beats to `console.info` as a **single string** per line:
+
+```text
+[seek:perf] {"type":"startup-span","span":"boot-ifi","phase":"end","durationMs":1234,...}
+```
+
+Types: `startup-span`, `startup-gate`, `index-complete`, `search`, `long-task`, `load`. Ring holds the last ~80 lines in memory.
+
+| Eval | Purpose |
+|------|---------|
+| `app.plugins.plugins.seek.dumpPerfConsole()` | Re-`console.info` the ring (after `dev:debug on`) |
+| `app.plugins.plugins.seek.clearPerfConsole()` | Empty the ring only (CDP buffer still needs `dev:console clear`) |
+
+Canonical capture (see [Obsidian CLI Developer commands](https://obsidian.md/help/cli#Developer%20commands)):
+
+```powershell
+obsidian dev:debug on vault=Obsidian
+obsidian dev:console clear vault=Obsidian
+obsidian eval vault=Obsidian code="app.plugins.plugins.seek.dumpPerfConsole()"
+obsidian dev:console limit=150 level=info vault=Obsidian
+```
+
+Warm path (debug already on): `plugin:reload id=seek` → exercise → `dev:console limit=150 level=info` (dump optional after clear).
 
 ## Startup trace probe (Run A / B + JSONL)
 
@@ -177,7 +215,7 @@ Approximate; vault-size dependent. Use gate bundle columns, not fixed seconds al
 | `warmPhase:'starting'` or `'restoring'` | hydrate IIFE | Sidecar restore / identity; search often `no results`, `chunks` may be 0 |
 | `warmPhase:null`, `uiHealth:'indexing'` | post-hydrate | `reconcileOnLoad` catch-up or `warmCaches`; job badge may show remaining |
 | `warmPhase:null`, `uiHealth:'ok'`, `chunks>0` | vault-size dependent | Index inventory stable; search should hit for good probe query |
-| Console (normal) | during warm | `[seek] model loaded with warnings on webgpu`, binary divergence, orphan drops |
+| Console (normal) | during warm | `[seek] …` warnings; `[seek:perf] {"type":"…"}` timing beats |
 | Console (actionable) | stranded | `[seek] index is EMPTY and the sidecar restored nothing` |
 
 ## Plugin reload probe (optional, separate battery)
@@ -208,6 +246,7 @@ Return a concise summary using this table plus verbatim Seek console lines.
 
 Also list:
 
+- Seek `[seek:perf]` lines (from `dev:console limit=150 level=info` after `dumpPerfConsole`)
 - Seek `[seek]` console lines verbatim (from `dev:console`)
 - Any `dev:errors` entries
 - Probe caveats (warm session skipped, vault size, parallel contamination, `warmCaches` not observable)
@@ -229,4 +268,6 @@ Writes vault-root `seek-report.md` (summary) and `.seek-artifacts/seek-report.js
 - Treating `seek:search` acceptance or absence of “still loading” as ready
 - Treating `no results` as ready when `uiHealth !== 'ok'` or `chunks === 0`
 - Expecting `dev:console` to work before `dev:debug on`
+- Capturing `dev:console` without `dumpPerfConsole()` after a cold restart (misses pre-reattach hydrate/boot beats)
+- Relying on default `dev:console` `limit` (50) when the perf ring alone can be ~80 lines
 - Running npm test/build as part of startup probe unless asked

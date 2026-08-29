@@ -52,6 +52,8 @@ do {
 
 Log "Reattaching debugger"
 Run-Obsidian dev:debug on "vault=$Vault" | Out-Null
+Log "Replaying [seek:perf] ring into CDP console"
+Run-Obsidian eval "vault=$Vault" 'code=app.plugins.plugins.seek.dumpPerfConsole()' | Out-Null
 
 $gateCode = @'
 (()=>{const s=app.plugins.plugins.seek;if(!s)return JSON.stringify({seek:false});const j=s.getIndexJob();return s.getIndexStats().then(st=>JSON.stringify({ver:s.manifest.version,warmPhase:s.indexWarmPhase,warmingUp:s.isIndexWarmingUp,uiHealth:s.indexUiHealth,indexHealth:s.indexHealthState,isIndexing:s.isIndexing,job:j?{done:j.done,total:j.total,remaining:Math.max(0,j.total-j.done)}:null,files:st.files,chunks:st.chunks}))})()
@@ -76,6 +78,7 @@ while ((Get-Elapsed $start) -lt $MaxSeconds) {
 }
 
 Log "Capturing console and errors"
-Run-Obsidian dev:console limit=150 "vault=$Vault"
+Run-Obsidian eval "vault=$Vault" 'code=app.plugins.plugins.seek.dumpPerfConsole()' | Out-Null
+Run-Obsidian dev:console limit=150 level=info "vault=$Vault"
 Run-Obsidian dev:errors "vault=$Vault"
 Log "=== Probe complete (${MaxSeconds}s window) - see $LogFile ==="
