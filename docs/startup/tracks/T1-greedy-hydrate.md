@@ -4,7 +4,13 @@
 
 ## 1. Executive summary
 
-When the sidecar introduced fresh chunk ids, Seek ran `reChunkLive()` on every indexable file (~4.4k × ~20 ms ≈ **88 s**) before releasing the search gate — even when only one peer note changed. T1 adds tiered mtime hydrate (`reChunkLiveSubset`), greedy stop when fresh ids are exhausted, and early `markIndexGoodEnough()` after tier 0. On the compose stack with the G2 fixture, **T_first_good = 403 ms** with **1 file walked** (SLO ≤ 10 s). **Verdict:** pass.
+Imagine you changed one note on your phone and your laptop re-read and re-indexed *every* note in your vault before search worked again — even though only one file actually changed. That is what users experienced when Seek saw “fresh” chunk ids from peer sync: the plugin treated a tiny delta like a full vault rebuild and blocked search for roughly **88 seconds** on a ~4.4k-note vault.
+
+Technically, the bottleneck was **O(n) work on an O(1) problem**. The sidecar hydrate path called `reChunkLive()` over the entire vault inside a single async IIFE, and the **startup gate** (`warmPhase: starting`) stayed closed until that loop finished. There was no **incremental oracle** (recency tiers, subset walks) and no **early gate release** — classic **all-or-nothing initialization** anti-pattern. Sync systems usually want “make search good enough for recent changes, finish the rest in the background.”
+
+T1 adds greedy tiered hydrate: process recent files first, release the gate after tier 0, stop when fresh ids are exhausted. On the G2 fixture, **T_first_good = 403 ms** with **1 file walked** (SLO ≤ 10 s). **Verdict:** pass.
+
+**Concepts worth researching:** incremental indexing vs full rebuild · startup gates / readiness probes · mtime-ordered work queues · peer sync sidecars · time-to-first-useful-result · big-O cost of vault walks
 
 ## 2. Why the bottleneck existed
 
