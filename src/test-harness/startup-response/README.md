@@ -23,6 +23,5 @@ hardware benchmark and cannot model Electron IndexedDB contention, WebGPU model
 load, iOS memory pressure, or Obsidian's vault-enumeration timing. Those remain
 runtime CLI checks.
 
-Tests marked `it.fails` are executable SLO contracts for known gaps. Vitest expects
-them to fail today. When production behavior satisfies one, Vitest reports an
-unexpected pass; remove `.fails` after validating and accepting the fix.
+The three-day coverage and modal retry cases are ordinary tests. They fail when
+production code regresses either part of the early-result contract.

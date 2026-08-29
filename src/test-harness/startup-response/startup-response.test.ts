@@ -47,7 +47,7 @@ describe('startup response without a live Obsidian vault', () => {
         expect(observation.hydrate.acceptedProducers).toBe(1);
     });
 
-    it.fails('covers every file modified in the last three days before releasing the SLO gate', async () => {
+    it('covers every file modified in the last three days before releasing the SLO gate', async () => {
         const harness = await startupHarness();
 
         const observation = await harness.hydrateRecentFirst();
@@ -66,7 +66,7 @@ describe('startup response without a live Obsidian vault', () => {
         expect(modal.statusRenders).toBe(1);
     });
 
-    it.fails('retries an active empty modal query when the first chunk becomes searchable', async () => {
+    it('retries an active empty modal query when the first chunk becomes searchable', async () => {
         const modal = new ModalResponseHarness();
         modal.primeWaitingQuery(SMALL_PEER_DELTA_FIXTURE.query);
 
