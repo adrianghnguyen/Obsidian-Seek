@@ -19,7 +19,52 @@ Non-obvious notes:
 - **Logging report (local debug):** Settings → Seek → Diagnostics → **Generate logging report**, or `obsidian eval vault=Obsidian code="app.plugins.plugins.seek.openLoggingReport().then(()=>'ok')"`. That is `SeekPlugin.openLoggingReport()` → `SeekLogger.writeReport()` (`src/main.ts`, `src/logger.ts`). It writes vault-root `seek-report.md` (human summary, opened in a leaf) and `.seek-artifacts/seek-report.json` (parse target: `sidecar-hydrate`, `index-complete` with `chunkDurationMs` / `embedDurationMs`, `rechunk-live`, `startup-span`, `startup-gate`, searches, errors; no note bodies). Honors `redactReport`. Prefer the JSON over `dev:console` for index/startup forensics — the CDP buffer often misses hydrate. The old command-palette `seek-generate-log` entry is gone. Obsidian CLI (`eval`, `seek:search`, `dev:console`, `dev:dom`) must stay **serial** — one session; parallel subagents queue behind each other and contaminate timings.
 - **Startup path worktrees:** Isolated checkouts under `C:\Coding_projects\Obsidian-Seek-worktrees\` (T4 = main repo). Setup: `.cursor/skills/seek-cli-startup-debug/scripts/setup-startup-worktrees.ps1`; deploy: `deploy-worktree-to-vault.ps1 -PathId <id>`. Registry: `.cursor/worktrees.json`. Measure via `startup-trace-probe.ps1` → `gate-trace.jsonl` + `parse-startup-trace.mjs` → `.cursor/scorecards/` and `.cursor/startup-path-results.md`.
 
-Configurable settings must always be available in the plugin options menu (Settings → Seek / `settings-tab.ts`). Do not add a user-tunable flag (synced `data.json` or per-device localStorage) without a corresponding control there. Hidden silent defaults are only for ratified non-user knobs already documented in `DEFAULT_SETTINGS`.
+## Sandbox vault — cold-boot / indexing CLI runs
+
+Dev vault (`Obsidian`, `C:\Obsidian\.obsidian\plugins\seek\`) is for day-to-day work. **Indexing and cold-start probes** that need a large corpus without touching the main vault use the sandbox:
+
+| | |
+|--|--|
+| Vault name (CLI) | `plugin-sandbox-Obsidian` |
+| Plugin path | `C:\plugin-sandbox-Obsidian\.obsidian\plugins\seek\` |
+| Corpus | ~3k markdown notes — good for cold-build vs catch-up timing |
+
+Copy the same three artifacts (`main.js`, `manifest.json`, `styles.css`) as the dev vault. Verify hashes match before probing.
+
+### Avoid debug interruptions (learned 2026-08-29)
+
+A cold-boot test runs `scheduleColdBuild()` → `runFullReindex({ skipConfirm: true })`. That pass holds the embedder iframe for many minutes. **Do not reload or disable Seek while it is running.**
+
+| Action during full reindex | Effect |
+|--------------------------|--------|
+| `plugin:reload id=seek` | **Aborts** the pass (`seek-full-reindex` / `iframe disposed` in logs); leaves a partial index (few files/chunks) |
+| `plugin:disable` / Obsidian restart | Same — torn-down iframe, incomplete IDB |
+| Polling `obsidian eval` every 10s | **OK** — read-only probes do not interrupt |
+
+After an aborted run, the sandbox often shows `uiHealth: error`, `index-identity-mismatch` (empty/partial meta), and **no** further indexing until you reset IDB and retry.
+
+**Wrong (aborts cold build):** disable → delete IDB → restart → `plugin:enable` → **`plugin:reload`** → poll.
+
+**Right (cold empty index → full reindex):**
+
+1. `obsidian plugin:disable id=seek vault=plugin-sandbox-Obsidian`
+2. Delete IndexedDB (plugin must be disabled so nothing holds the DB):
+
+   ```powershell
+   obsidian eval vault=plugin-sandbox-Obsidian code="(()=>{const id=app.appId||app.vault.getName();return 'seek-index:'+id})()"
+   # then, with that db name:
+   obsidian eval vault=plugin-sandbox-Obsidian code="new Promise((res)=>{const r=indexedDB.deleteDatabase('seek-index:<appId>');r.onsuccess=()=>res('deleted');r.onerror=()=>res('error');r.onblocked=()=>res('blocked')})"
+   ```
+
+3. `obsidian restart vault=plugin-sandbox-Obsidian` — wait until eval reports `alive`
+4. `obsidian plugin:enable id=seek vault=plugin-sandbox-Obsidian` — **do not reload**
+5. Poll serially (e.g. every 10s) for `getIndexJob().kind === 'full'` and rising `done`/`total` (~2998 notes)
+6. Confirm in `logs/seek-log-*.ndjson`: `index-complete` with `"mode":"full"`; final `getIndexStats()` ~2998 files; optional `seek:search` smoke
+
+Success on sandbox (2026-08-29, post cold-build routing): **~3 minutes** for ~3k notes on full path vs hours on old 8-file catch-up bursts.
+
+Keep all CLI (`eval`, `seek:search`, `dev:console`) **serial** on one Obsidian session. For first-load forensics, follow `.cursor/skills/seek-cli-startup-debug/SKILL.md` (restart first, then enable — not reload mid-pass).
+ (Settings → Seek / `settings-tab.ts`). Do not add a user-tunable flag (synced `data.json` or per-device localStorage) without a corresponding control there. Hidden silent defaults are only for ratified non-user knobs already documented in `DEFAULT_SETTINGS`.
 
 User-facing features, fixes, and settings changes must add a bullet to `CHANGELOG.md` under the current `manifest.json` version in the same turn (voice and skip list: `.cursor/rules/changelog.mdc`). Do not bump the version unless asked.
 
