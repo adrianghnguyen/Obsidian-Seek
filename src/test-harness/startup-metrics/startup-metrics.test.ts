@@ -47,7 +47,7 @@ describe('startup metric parser fixtures', () => {
         const scorecard = parseFixture();
 
         expect(scorecard.metrics.T_start_ms).toBe(3200);
-        expect(scorecard.metrics.long_task_hydrating_p50_ms).toBe(20);
+        expect(scorecard.metrics.long_task_hydrating_p50_ms).toBe(430);
     });
 
     it('reports actual eval latency p50, p95, max, and sample count', () => {

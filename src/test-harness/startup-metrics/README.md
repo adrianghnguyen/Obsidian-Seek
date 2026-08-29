@@ -14,3 +14,7 @@ Synthetic JSONL and logging-report fixtures cover:
 They do not measure Electron, IndexedDB, model, or vault performance. Live probes
 still provide those samples; this suite ensures the samples are interpreted and
 recorded correctly.
+
+Fixture long-task values are all above Seek's 250 ms recording threshold so every
+row could exist in a real report. The exact values remain parser sentinels, not
+latency targets or production baselines.
