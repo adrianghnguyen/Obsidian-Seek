@@ -1,0 +1,337 @@
+{
+    "queryCases":  [
+                       {
+                           "id":  "broad-emotional-regulation",
+                           "intent":  "many_answers_possible",
+                           "query":  "emotional regulation stressful experiences",
+                           "sourcePath":  "Notes/Emotional regulation helps us manage stressful experiences.md",
+                           "synthetic":  null,
+                           "expected":  {
+                                            "minCount":  1,
+                                            "rank1Path":  "Notes/Emotional regulation helps us manage emotional and stressful experiences.md"
+                                        }
+                       },
+                       {
+                           "id":  "broad-user-stories-design",
+                           "intent":  "many_answers_possible",
+                           "query":  "user stories product design",
+                           "sourcePath":  "Notes/User stories in product design.md",
+                           "synthetic":  null,
+                           "expected":  {
+                                            "minCount":  1,
+                                            "rank1Path":  "Notes/User stories in product design.md"
+                                        }
+                       },
+                       {
+                           "id":  "broad-cognitive-therapy",
+                           "intent":  "many_answers_possible",
+                           "query":  "cognitive based therapy",
+                           "sourcePath":  "Notes/Cognitive Based Therapy.md",
+                           "synthetic":  null,
+                           "expected":  {
+                                            "minCount":  1,
+                                            "rank1Path":  "Notes/Cognitive Based Therapy.md"
+                                        }
+                       },
+                       {
+                           "id":  "oov-xyzzy",
+                           "intent":  "no_answers_possible",
+                           "query":  "xyzzyplugh quantum flarn",
+                           "sourcePath":  null,
+                           "synthetic":  true,
+                           "expected":  {
+                                            "minCount":  1,
+                                            "rank1Path":  "Notes/Processes of chemistry and physics.md"
+                                        }
+                       },
+                       {
+                           "id":  "oov-uuid-token",
+                           "intent":  "no_answers_possible",
+                           "query":  "seek-oov-991827-alpha",
+                           "sourcePath":  null,
+                           "synthetic":  true,
+                           "expected":  {
+                                            "minCount":  1,
+                                            "rank1Path":  "Notes/Thoughts on the AlphaGo documentary.md"
+                                        }
+                       },
+                       {
+                           "id":  "oov-fake-tag",
+                           "intent":  "no_answers_possible",
+                           "query":  "seek-fixture-missing-tag",
+                           "sourcePath":  null,
+                           "synthetic":  true,
+                           "expected":  {
+                                            "minCount":  1,
+                                            "rank1Path":  "Notes/seek startup track reports.md"
+                                        }
+                       },
+                       {
+                           "id":  "ambig-notes-folder",
+                           "intent":  "one_ambiguous_query",
+                           "query":  "notes",
+                           "sourcePath":  "Notes/",
+                           "synthetic":  null,
+                           "expected":  {
+                                            "minCount":  1,
+                                            "rank1Path":  "_Query - Work in Progress Notes.md"
+                                        }
+                       },
+                       {
+                           "id":  "ambig-books-shelf",
+                           "intent":  "one_ambiguous_query",
+                           "query":  "books",
+                           "sourcePath":  "Notes/Books/",
+                           "synthetic":  null,
+                           "expected":  {
+                                            "minCount":  1,
+                                            "rank1Path":  "Notes/Books/Books.md"
+                                        }
+                       },
+                       {
+                           "id":  "ambig-how-to-prefix",
+                           "intent":  "one_ambiguous_query",
+                           "query":  "how to get",
+                           "sourcePath":  "Notes/How to get over someone.md",
+                           "synthetic":  null,
+                           "expected":  {
+                                            "minCount":  1,
+                                            "rank1Path":  "References/REF How to get started building a programming skill set.md"
+                                        }
+                       },
+                       {
+                           "id":  "name-millionaire-fastlane",
+                           "intent":  "known_item_name_paint",
+                           "query":  "millionaire fastlane",
+                           "sourcePath":  "Notes/The Millionaire Fastlane.md",
+                           "synthetic":  null,
+                           "expected":  {
+                                            "nameEarlyPainted":  true,
+                                            "minCount":  1,
+                                            "rank1Path":  "Notes/Books/The Millionaire Fastlane by MJ DeMarco.md"
+                                        }
+                       },
+                       {
+                           "id":  "name-matthew-immergut",
+                           "intent":  "known_item_name_paint",
+                           "query":  "matthew immergut",
+                           "sourcePath":  "Notes/Matthew Immergut.md",
+                           "synthetic":  null,
+                           "expected":  {
+                                            "nameEarlyPainted":  true,
+                                            "minCount":  1,
+                                            "rank1Path":  "Notes/Matthew Immergut.md"
+                                        }
+                       },
+                       {
+                           "id":  "name-control-systems",
+                           "intent":  "known_item_name_paint",
+                           "query":  "control systems theory",
+                           "sourcePath":  "Notes/Control Systems Theory.md",
+                           "synthetic":  null,
+                           "expected":  {
+                                            "nameEarlyPainted":  true,
+                                            "minCount":  1,
+                                            "rank1Path":  "Notes/Difference between control systems theory and dynamic systems theory.md"
+                                        }
+                       },
+                       {
+                           "id":  "alias-chen-alex",
+                           "intent":  "alias_prefix",
+                           "query":  "chen alex",
+                           "sourcePath":  "Notes/Alex Chen profile.md",
+                           "synthetic":  null,
+                           "expected":  {
+                                            "minCount":  1,
+                                            "rank1Path":  "Notes/Books/Rest by Alex Soojung-Kim Pang.md"
+                                        }
+                       },
+                       {
+                           "id":  "alias-pixel-cam",
+                           "intent":  "alias_prefix",
+                           "query":  "pixel cam",
+                           "sourcePath":  "Notes/Pixel camera review.md",
+                           "synthetic":  null,
+                           "expected":  {
+                                            "minCount":  1,
+                                            "rank1Path":  "Notes/Pixel 8 Pro.md"
+                                        }
+                       },
+                       {
+                           "id":  "alias-cedar-archive",
+                           "intent":  "alias_prefix",
+                           "query":  "cedar archive",
+                           "sourcePath":  "Notes/Cedar archive token.md",
+                           "synthetic":  null,
+                           "expected":  {
+                                            "minCount":  1,
+                                            "rank1Path":  "Notes/kreuzakt document archive.md"
+                                        }
+                       },
+                       {
+                           "id":  "needle-falsifiability",
+                           "intent":  "needle_in_haystack",
+                           "query":  "falsifiability principles progress",
+                           "sourcePath":  "Notes/Falsifiability and scientific progress.md",
+                           "synthetic":  null,
+                           "expected":  {
+                                            "minCount":  1,
+                                            "rank1Path":  "Notes/science progresses through the principles of falsifiability.md"
+                                        }
+                       },
+                       {
+                           "id":  "needle-greed-career",
+                           "intent":  "needle_in_haystack",
+                           "query":  "greed career success",
+                           "sourcePath":  "Notes/Greed for career success.md",
+                           "synthetic":  null,
+                           "expected":  {
+                                            "minCount":  1,
+                                            "rank1Path":  "Notes/Greed for career success.md"
+                                        }
+                       },
+                       {
+                           "id":  "needle-repetitive-thinking",
+                           "intent":  "needle_in_haystack",
+                           "query":  "repetitive thinking healthy coping",
+                           "sourcePath":  "Notes/Repetitive thinking as healthy coping.md",
+                           "synthetic":  null,
+                           "expected":  {
+                                            "minCount":  1,
+                                            "rank1Path":  "References/REF Emotional Awareness in Daily Life Exploring Its Potential Role in Repetitive Thinking and Healthy Coping.md"
+                                        }
+                       },
+                       {
+                           "id":  "filter-path-notes",
+                           "intent":  "filter_only_browse",
+                           "query":  "path:Notes/*",
+                           "sourcePath":  "Notes/",
+                           "synthetic":  null,
+                           "expected":  {
+                                            "minCount":  1,
+                                            "rank1Path":  "Notes/Cursor cloud agents and cloud environments.md"
+                                        }
+                       },
+                       {
+                           "id":  "filter-path-books",
+                           "intent":  "filter_only_browse",
+                           "query":  "path:Notes/Books/*",
+                           "sourcePath":  "Notes/Books/",
+                           "synthetic":  null,
+                           "expected":  {
+                                            "minCount":  1,
+                                            "rank1Path":  "Notes/Books/Structure and Interpretation of Computer Programs second edition by Harold Abelson Gerald Jay Sussman.md"
+                                        }
+                       },
+                       {
+                           "id":  "filter-path-admin",
+                           "intent":  "filter_only_browse",
+                           "query":  "path:Administrative/*",
+                           "sourcePath":  "Administrative/",
+                           "synthetic":  null,
+                           "expected":  {
+                                            "minCount":  0
+                                        }
+                       },
+                       {
+                           "id":  "gate-q1-starting",
+                           "intent":  "gate_blocked",
+                           "query":  "political neuroscience ideology",
+                           "sourcePath":  "Notes/Political neuroscience and ideology.md",
+                           "synthetic":  null,
+                           "expected":  {
+                                            "gateBlocked":  true,
+                                            "minCount":  1,
+                                            "rank1Path":  "Notes/Political neuroscience of ideology.md"
+                                        }
+                       },
+                       {
+                           "id":  "gate-q2-restoring",
+                           "intent":  "gate_blocked",
+                           "query":  "negative feelings perceived threat",
+                           "sourcePath":  "Notes/Negative feelings and perceived threat.md",
+                           "synthetic":  null,
+                           "expected":  {
+                                            "gateBlocked":  true,
+                                            "minCount":  1,
+                                            "rank1Path":  "Notes/Negative feelings and stress indicate perceived threat or challenges.md"
+                                        }
+                       },
+                       {
+                           "id":  "gate-q3-post-release",
+                           "intent":  "gate_blocked",
+                           "query":  "test early test often",
+                           "sourcePath":  "Notes/Test early test often.md",
+                           "synthetic":  null,
+                           "expected":  {
+                                            "minCount":  1,
+                                            "rank1Path":  "Notes/test early, test often..md"
+                                        }
+                       },
+                       {
+                           "id":  "super-a-then-b",
+                           "intent":  "superseded_query",
+                           "query":  "user stories product",
+                           "synthetic":  true,
+                           "expected":  {
+                                            "sequence":  true,
+                                            "minCount":  1
+                                        }
+                       },
+                       {
+                           "id":  "super-three-stutter",
+                           "intent":  "superseded_query",
+                           "query":  "emotional regulation",
+                           "synthetic":  true,
+                           "expected":  {
+                                            "sequence":  true,
+                                            "minCount":  1
+                                        }
+                       },
+                       {
+                           "id":  "super-long-then-name",
+                           "intent":  "superseded_query",
+                           "query":  "millionaire",
+                           "synthetic":  true,
+                           "expected":  {
+                                            "sequence":  true,
+                                            "minCount":  1
+                                        }
+                       },
+                       {
+                           "id":  "section-emotional-h2",
+                           "intent":  "section_hit",
+                           "query":  "helps manage feelings",
+                           "sourcePath":  "Notes/Emotional regulation helps us manage stressful experiences.md",
+                           "synthetic":  null,
+                           "expected":  {
+                                            "minCount":  1,
+                                            "rank1Path":  "Notes/Too many feelings lead to emotional overload.md"
+                                        }
+                       },
+                       {
+                           "id":  "section-company-template",
+                           "intent":  "section_hit",
+                           "query":  "company template",
+                           "sourcePath":  "Administrative/Templates/Company template.md",
+                           "synthetic":  null,
+                           "expected":  {
+                                            "minCount":  1,
+                                            "rank1Path":  "Notes/80,000 Hours - Career guide - Career planning template.md"
+                                        }
+                       },
+                       {
+                           "id":  "section-identify-nature",
+                           "intent":  "section_hit",
+                           "query":  "identifying with nature",
+                           "sourcePath":  "Notes/Books/Identifying with nature.md",
+                           "synthetic":  null,
+                           "expected":  {
+                                            "minCount":  1,
+                                            "rank1Path":  "Notes/Books/Identifying with nature.md"
+                                        }
+                       }
+                   ],
+    "vault":  "plugin-sandbox-Obsidian",
+    "version":  1
+}

@@ -9,6 +9,8 @@ Runtime probe of Seek **first-load / cold-start** behavior through the Obsidian 
 
 Defaults: vault `Obsidian`, plugin id `seek`, vault plugin path `C:\Obsidian\.obsidian\plugins\seek\`.
 
+**Related:** Multi-scenario baselines and functional probes — [seek-playbook-catalog](../seek-playbook-catalog/SKILL.md) (`run-scenario.ps1 -Id S1|F3`). This skill covers first-load forensics; the catalog dispatches repeatable S*/F* drivers.
+
 ## Golden rule
 
 **Always begin with `obsidian restart vault=Obsidian`** when investigating cold-start / first-load behavior. Warm-session baselines are misleading.

@@ -46,7 +46,7 @@ $gateCode = @'
 '@ -replace "`r`n|`n", ''
 
 $precheckCode = @'
-(()=>{const s=app.plugins.plugins.seek;if(!s)return JSON.stringify({ok:false,reason:"no-seek"});const j=s.getIndexJob();const rem=j?Math.max(0,j.total-j.done):0;return s.getIndexStats().then(st=>JSON.stringify({ok:s.indexUiHealth==="ok"&&s.indexWarmPhase===null&&rem===0,uiHealth:s.indexUiHealth,warmPhase:s.indexWarmPhase,remaining:rem,chunks:st.chunks}))})()
+(()=>{const s=app.plugins.plugins.seek;if(!s)return JSON.stringify({ok:false,reason:'no-seek'});const j=s.getIndexJob();const rem=j?Math.max(0,j.total-j.done):0;return s.getIndexStats().then(st=>JSON.stringify({ok:s.indexUiHealth==='ok'&&s.indexWarmPhase===null&&rem===0,uiHealth:s.indexUiHealth,warmPhase:s.indexWarmPhase,remaining:rem,chunks:st.chunks}))})()
 '@ -replace "`r`n|`n", ''
 
 Write-Host "=== startup-trace-probe run=$runLabel path=$PathId vault=$Vault sha=$gitSha ==="
@@ -89,7 +89,7 @@ if ($Run -eq 'B') {
         Write-Host "  ${elapsed}s alive=$alive"
     } while ($elapsed -lt 30 -and ($alive -notmatch '"seek":true'))
     Run-Obsidian dev:debug on "vault=$Vault" | Out-Null
-    Write-Host 'dumpPerfConsole (cold-start ring → CDP)'
+    Write-Host 'dumpPerfConsole (cold-start ring -> CDP)'
     Run-Obsidian eval "vault=$Vault" 'code=app.plugins.plugins.seek.dumpPerfConsole()' | Out-Null
 }
 
@@ -164,7 +164,7 @@ while ((Get-Elapsed $start) -lt $MaxSeconds) {
         $rem = 0
         if ($gateObj.job) { $rem = $gateObj.job.remaining }
         if ($rem -eq 0 -and $elapsed -gt 5) {
-            Write-Host 'Run B: idle ok — stopping'
+            Write-Host 'Run B: idle ok - stopping'
             break
         }
     }
@@ -177,7 +177,7 @@ Run-Obsidian eval "vault=$Vault" 'code=app.plugins.plugins.seek.dumpPerfConsole(
 Run-Obsidian dev:console limit=150 level=info "vault=$Vault" | Out-Null
 
 Write-Host 'Generating logging report...'
-Run-Obsidian eval "vault=$Vault" 'code=app.plugins.plugins.seek.openLoggingReport().then(()=>"ok")' | Out-Null
+Run-Obsidian eval "vault=$Vault" 'code=app.plugins.plugins.seek.openLoggingReport().then(()=>''ok'')' | Out-Null
 
 $dateTag = Get-Date -Format 'yyyyMMdd-HHmmss'
 $scoreDir = Join-Path $repoRoot '.cursor\scorecards'

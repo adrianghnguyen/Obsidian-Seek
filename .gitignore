@@ -23,3 +23,7 @@ experiments/
 .cursor/seek-report.json
 .cursor/gate-trace.jsonl
 .cursor/scorecards/
+.cursor/telemetry-screenshots/
+.cursor/functional-traces/
+.cursor/handoff/
+.cursor/skills/seek-playbook-catalog/fixtures/generated/
