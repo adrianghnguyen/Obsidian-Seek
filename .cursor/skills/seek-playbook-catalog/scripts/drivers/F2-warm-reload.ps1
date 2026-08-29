@@ -1,5 +1,5 @@
 param(
-    [string]$Vault = 'Obsidian',
+    [string]$Vault = 'seek-functional',
     [int]$SampleIndex = 1
 )
 

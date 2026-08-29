@@ -1,5 +1,5 @@
 param(
-    [string]$Vault = 'Obsidian',
+    [string]$Vault = 'seek-functional',
     [string]$Query = 'alex che',
     [int]$SampleIndex = 1
 )
@@ -15,7 +15,7 @@ $raw = Invoke-ObsidianCli -Args @('seek:search', "query=$Query", 'format=json', 
 $elapsedMs = [math]::Round(((Get-Date) - $start).TotalMilliseconds)
 
 try {
-    $parsed = $raw | ConvertFrom-Json
+    $parsed = Get-SeekSearchJson -Output $raw
 } catch {
     Write-Error "Failed to parse seek:search JSON: $raw"
     exit 1

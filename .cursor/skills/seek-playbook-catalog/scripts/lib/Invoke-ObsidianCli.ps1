@@ -13,6 +13,17 @@ function Get-ObsidianEvalResult {
     ($Output -split "`n" | Where-Object { $_ -match '^\s*=>\s*' } | ForEach-Object { $_ -replace '^\s*=>\s*', '' }) -join ''
 }
 
+function Get-SeekSearchJson {
+    param([string]$Output)
+    $line = Get-ObsidianEvalResult -Output $Output
+    if (-not $line) {
+        $candidates = @($Output -split "`n" | Where-Object { $_.Trim().StartsWith('{') })
+        $line = $candidates[-1]
+    }
+    if (-not $line) { throw "No JSON in seek:search output: $Output" }
+    return $line | ConvertFrom-Json
+}
+
 function Invoke-ObsidianEval {
     param(
         [Parameter(Mandatory = $true)]

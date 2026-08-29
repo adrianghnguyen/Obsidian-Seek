@@ -65,7 +65,7 @@ foreach ($case in $cases) {
     }
 
     try {
-        $parsed = $raw | ConvertFrom-Json
+        $parsed = Get-SeekSearchJson -Output $raw
     } catch {
         Write-Host "FAIL $($case.id): invalid JSON"
         $line.pass = $false
