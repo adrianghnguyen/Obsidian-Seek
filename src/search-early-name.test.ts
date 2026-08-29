@@ -40,12 +40,12 @@ describe('search early name paint', () => {
         const s = await boot();
         await index(s, 50);
 
-        const filename = await s.orch.search('alex 1x1', 5);
+        const filename = await s.orch.search('alex 1x1', 5, undefined, () => {});
         expect(filename.results[0]?.note_path).toBe('Meetings/Alex 1x1 2026-05-19.md');
         expect(filename.entry.nameEarlyPainted).toBe(true);
         expect(filename.entry.nameHitCount).toBeGreaterThan(0);
 
-        const alias = await s.orch.search('alex che', 5);
+        const alias = await s.orch.search('alex che', 5, undefined, () => {});
         expect(alias.results[0]?.note_path).toBe('People/Alex Chen.md');
         expect(alias.entry.nameEarlyPainted).toBe(true);
 
