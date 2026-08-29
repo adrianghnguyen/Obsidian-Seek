@@ -1,0 +1,194 @@
+{
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "S1",
+      "name": "Cold start",
+      "category": "performance",
+      "status": "stub",
+      "vaultDefault": "plugin-sandbox-Obsidian",
+      "driverScript": "scripts/drivers/S1-cold-start.ps1",
+      "executionMode": "cli",
+      "duration": "~3 min sandbox",
+      "detailSkill": "seek-telemetry-playbook"
+    },
+    {
+      "id": "S2",
+      "name": "Incremental indexing",
+      "category": "performance",
+      "status": "stub",
+      "vaultDefault": "Obsidian",
+      "driverScript": "scripts/drivers/S2-incremental.ps1",
+      "executionMode": "cli",
+      "duration": "~90s",
+      "detailSkill": "seek-telemetry-playbook"
+    },
+    {
+      "id": "S3",
+      "name": "Startup first good",
+      "category": "performance",
+      "status": "stub",
+      "vaultDefault": "Obsidian",
+      "driverScript": "scripts/drivers/S3-first-paint.ps1",
+      "executionMode": "cli",
+      "duration": "~90s",
+      "detailSkill": "seek-telemetry-playbook"
+    },
+    {
+      "id": "S4",
+      "name": "Greedy hydrate",
+      "category": "performance",
+      "status": "stub",
+      "vaultDefault": "Obsidian",
+      "driverScript": "scripts/drivers/S4-greedy-hydrate.ps1",
+      "executionMode": "cli",
+      "duration": "~90s",
+      "detailSkill": "seek-telemetry-playbook"
+    },
+    {
+      "id": "S5",
+      "name": "Needle in haystack",
+      "category": "performance",
+      "status": "stub",
+      "vaultDefault": "Obsidian",
+      "driverScript": "scripts/drivers/S5-needle.ps1",
+      "executionMode": "cli",
+      "duration": "~30s",
+      "detailSkill": "seek-telemetry-playbook"
+    },
+    {
+      "id": "S6",
+      "name": "Known-item early paint",
+      "category": "performance",
+      "status": "stub",
+      "vaultDefault": "seek-functional",
+      "driverScript": "scripts/drivers/S6-early-name-paint.ps1",
+      "executionMode": "cli",
+      "duration": "~30s",
+      "detailSkill": "seek-telemetry-playbook"
+    },
+    {
+      "id": "S7",
+      "name": "Query supersession",
+      "category": "performance",
+      "status": "stub",
+      "vaultDefault": "Obsidian",
+      "driverScript": "scripts/drivers/S7-query-supersession.ps1",
+      "executionMode": "cli+eval",
+      "duration": "~30s",
+      "detailSkill": "seek-telemetry-playbook"
+    },
+    {
+      "id": "F1",
+      "name": "Cold restart → index boot",
+      "category": "functional",
+      "status": "stub",
+      "vaultDefault": "plugin-sandbox-Obsidian",
+      "driverScript": "scripts/drivers/F1-cold-boot.ps1",
+      "executionMode": "cli",
+      "duration": "~3 min",
+      "detailSkill": "seek-functional-telemetry"
+    },
+    {
+      "id": "F2",
+      "name": "Warm plugin reload",
+      "category": "functional",
+      "status": "stub",
+      "vaultDefault": "seek-functional",
+      "driverScript": "scripts/drivers/F2-warm-reload.ps1",
+      "executionMode": "cli",
+      "duration": "~60s",
+      "detailSkill": "seek-functional-telemetry"
+    },
+    {
+      "id": "F3",
+      "name": "Headless search",
+      "category": "functional",
+      "status": "stub",
+      "vaultDefault": "seek-functional",
+      "driverScript": "scripts/drivers/F3-headless-search.ps1",
+      "fixtureSetDefault": "minimal",
+      "fixtureQueries": "fixtures/minimal/functional-queries.json",
+      "executionMode": "cli",
+      "duration": "~30s",
+      "detailSkill": "seek-functional-telemetry"
+    },
+    {
+      "id": "F4",
+      "name": "Open result",
+      "category": "functional",
+      "status": "stub",
+      "vaultDefault": "seek-functional",
+      "driverScript": "scripts/drivers/F4-open-result.ps1",
+      "executionMode": "cli+eval",
+      "duration": "~30s",
+      "detailSkill": "seek-functional-telemetry"
+    },
+    {
+      "id": "F5",
+      "name": "Insert link (CLI)",
+      "category": "functional",
+      "status": "stub",
+      "vaultDefault": "seek-functional",
+      "driverScript": "scripts/drivers/F5-insert-link.ps1",
+      "executionMode": "cli+eval",
+      "duration": "~30s",
+      "detailSkill": "seek-functional-telemetry"
+    },
+    {
+      "id": "F6",
+      "name": "Modal search UI",
+      "category": "functional",
+      "status": "stub",
+      "vaultDefault": "seek-functional",
+      "driverScript": "scripts/drivers/F6-modal-search.ps1",
+      "executionMode": "cli+eval+screenshot",
+      "duration": "~60s",
+      "detailSkill": "seek-functional-telemetry"
+    },
+    {
+      "id": "F7",
+      "name": "Modal insert (Alt+Enter)",
+      "category": "functional",
+      "status": "stub",
+      "vaultDefault": "seek-functional",
+      "driverScript": "scripts/drivers/F7-modal-insert.ps1",
+      "executionMode": "cli+eval+screenshot",
+      "duration": "~60s",
+      "detailSkill": "seek-functional-telemetry"
+    },
+    {
+      "id": "F8",
+      "name": "Search during catch-up",
+      "category": "functional",
+      "status": "stub",
+      "vaultDefault": "plugin-sandbox-Obsidian",
+      "driverScript": "scripts/drivers/F8-catchup-search.ps1",
+      "executionMode": "cli",
+      "duration": "~2 min",
+      "detailSkill": "seek-functional-telemetry"
+    },
+    {
+      "id": "F9",
+      "name": "Modal early name paint",
+      "category": "functional",
+      "status": "stub",
+      "vaultDefault": "seek-functional",
+      "driverScript": "scripts/drivers/F9-modal-early-paint.ps1",
+      "executionMode": "cli+eval+screenshot",
+      "duration": "~60s",
+      "detailSkill": "seek-functional-telemetry"
+    },
+    {
+      "id": "F10",
+      "name": "Rapid query cancel",
+      "category": "functional",
+      "status": "stub",
+      "vaultDefault": "Obsidian",
+      "driverScript": "scripts/drivers/F10-rapid-query-cancel.ps1",
+      "executionMode": "cli+eval",
+      "duration": "~30s",
+      "detailSkill": "seek-functional-telemetry"
+    }
+  ]
+}
