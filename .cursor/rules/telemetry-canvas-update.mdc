@@ -48,5 +48,5 @@ Use `Emit-CanvasRunJson.ps1` field names as the schema reference. Prefer editing
 
 - Canvas TypeScript check reports no errors.
 - User can open the canvas beside chat and see the new run(s) and deviation plots for scenarios with `n ≥ 2` samples.
-- After `run-all-scenarios.ps1`, run `export-canvas-baseline.ps1` then splice `gen-canvas-ts-block.py` output into `sandbox-run-history.canvas.tsx` (or hand-update `RUNS` + `SCENARIO_VIOLIN`).
+- After `run-all-scenarios.ps1`, run `export-canvas-baseline.ps1` then `splice-canvas-baseline.py` (or `gen-canvas-ts-block.py` output) into `sandbox-run-history.canvas.tsx` (update `RUNS` + `SCENARIO_CHART`).
 - **3-sample baselines:** full drivers should show `n=3` in overview table and one **error-bar chart** per test id with y-axis range local to that scenario only (do not pool S6/F3/S1/F2 on one axis).

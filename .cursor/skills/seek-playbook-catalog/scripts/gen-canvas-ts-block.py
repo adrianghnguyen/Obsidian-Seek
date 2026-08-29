@@ -31,7 +31,8 @@ def ts_val(v, indent=0):
     return json.dumps(v)
 
 stub_ids = snip["stubScenarioIds"]
-print("/** 3-sample baseline batch 2026-08-29 · git 094e112 · export-canvas-baseline.ps1 */")
+sha = snip.get("gitSha") or json.loads((repo / ".cursor/canvas-baseline-export.json").read_text(encoding="utf-8-sig")).get("gitSha", "unknown")
+print(f"/** Canvas baseline export - git {sha} - export-canvas-baseline.ps1 */")
 print("const STUB_SCENARIO_IDS: RunScenarioId[] = " + ts_val(stub_ids) + ";")
 print("")
 print("type ScenarioChartSpec = { unit: string; metric: ScenarioMetricKey; series: { label: string; values: number[] }[] };")
