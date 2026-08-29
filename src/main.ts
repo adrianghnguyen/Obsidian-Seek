@@ -304,6 +304,8 @@ export default class SeekPlugin extends Plugin {
         return null;
     }
     get isIndexWarmingUp(): boolean { return this.indexWarmPhase != null; }
+    /** True once tier-0 or post-hydrate gate released search (CLI probes). */
+    get isIndexGoodEnough(): boolean { return this.indexGoodEnough; }
 
     /** Same health the status-bar item uses — Settings and the search modal must match it. */
     get indexUiHealth(): IndexStatusHealth {
@@ -633,14 +635,11 @@ export default class SeekPlugin extends Plugin {
             //     the gap is only un-touched, externally-changed notes — an accepted
             //     freshness trade for not auto-nuking, and the banner says so.
             if (!identityHandled) {
-                // T4 persist-cache: load IDB-resident frame + BM25 before the first
-                // reconcile delta so applyDelta can patch instead of cold rebuild.
-                try {
-                    await this.orchestrator.restorePersistedCachesBeforeReconcile();
-                } catch (e) {
-                    await this.logger.appendError('persist-cache-restore', e).catch(() => {});
-                }
-                await this.reconcileOnLoad();
+                // Greedy hydrate may have already released the gate during tier-0.
+                // Skip-rechunk boots must not wait on reconcileOnLoad (mtime sweep +
+                // ensureFrame can take minutes on large vaults with a dirty set).
+                if (!this.indexGoodEnough) this.markIndexGoodEnough();
+                void this.reconcileOnLoad().catch(e => this.logger.appendError('reconcileOnLoad', e).catch(() => {}));
             }
             // Prime BM25/frame after the store is populated so a clean launch does
             // not wait for the first search, gated by the per-device "Warm caches
@@ -656,18 +655,12 @@ export default class SeekPlugin extends Plugin {
                 phase: 'end',
                 durationMs: bootDurationMs,
             }).catch(() => {});
-            if (getStartupWarm()) {
-                try {
-                    await this.orchestrator.warmCaches('startup');
-                } finally {
-                    this.indexBootPending = false;
-                    await this.logStartupGateReleased();
-                    await this.touchIndexInventory();
-                }
-            } else {
+            if (!this.indexGoodEnough) {
                 this.indexBootPending = false;
                 await this.logStartupGateReleased();
                 await this.touchIndexInventory();
+            } else {
+                void this.touchIndexInventory();
             }
             // Empty store + live notes: desktop must drain without opening Search.
             // Covers identity-nuke-then-empty-hydrate and boot races that skip
@@ -1519,6 +1512,10 @@ export default class SeekPlugin extends Plugin {
             // next tick (build done, identity stamped) handles it. This is the fix for
             // the large-vault loop where a 415s reindex outlived the 300s poll.
             if (this.isIndexBusy()) return;
+            // Skip the first poll after cold boot: the 5-min timer can fire while
+            // catch-up is still loading the model, and sidecar/orphan work racing a
+            // deferred delta has wiped populated indexes (G_eviction 2026-08-28).
+            if (performance.now() - this.bootStartMs < 6 * 60 * 1000) return;
             if (await this.enforceIndexIdentity()) return;
             const hydrated = await this.withSidecarHydrate(() => this.orchestrator.reconcileSidecarIfChanged());
             this.applySidecarWait(hydrated);
@@ -1883,16 +1880,39 @@ export default class SeekPlugin extends Plugin {
     // missed by a crash. Deletes/moves apply immediately (model-free). Edits are
     // DEFERRED at this step (embed: false); desktop then auto-drains via
     // scheduleStartupCatchUp without opening Search. Mobile stays lazy.
-    private async reconcileOnLoad(): Promise<void> {
-        if (!this.orchestrator) return;
+  /** @returns true when reconcile applied a non-empty delta (restore + reindex). */
+    private async reconcileOnLoad(): Promise<boolean> {
+        if (!this.orchestrator) return false;
         this.pushTaskContext('reconcile');
         try {
             const { dirty, deleted } = await this.orchestrator.computeDelta();
-            if (dirty.length === 0 && deleted.length === 0) return;
-            await this.orchestrator.reindexDelta(dirty, deleted, { embed: false });
-            if (dirty.length > 0) this.catchUpPending = true;
+            if (dirty.length === 0 && deleted.length === 0) return false;
+            // Kick off model load + catch-up drain immediately — restorePersistedCaches
+            // can take minutes on a large vault and must not delay this (G_eviction
+            // probe 2026-08-28: catchUpPending latched only after ~4 min restore).
+            if (dirty.length > 0) {
+                this.catchUpPending = true;
+                this.syncWarmDeferred();
+                this.scheduleStartupCatchUp();
+            }
+            // T4 persist-cache: restore before reconcile only when structural deletes
+            // need applyDelta (embed:false still patches the frame for deleted paths).
+            // Dirty-only deferrals skip restore here — catch-up pays it once on embed.
+            if (deleted.length > 0) {
+                try {
+                    await this.orchestrator.restorePersistedCachesBeforeReconcile();
+                } catch (e) {
+                    await this.logger.appendError('persist-cache-restore', e).catch(() => {});
+                }
+                await this.orchestrator.reindexDelta(dirty, deleted, { embed: false });
+            }
+            // Dirty-only: do NOT run embed:false reindexDelta here. That pass held the
+            // write lock across thousands of files and blocked pre-catchup warmCaches /
+            // seek:search behind IDB (G_catchup_ux). Catch-up embeds the dirty set.
+            return true;
         } catch (e) {
             await this.logger.appendError('reconcileOnLoad', e).catch(() => {});
+            return true;
         } finally {
             this.popTaskContext('reconcile');
             void this.touchIndexInventory();
@@ -1934,6 +1954,11 @@ export default class SeekPlugin extends Plugin {
     private async withQueryInFlight<T>(fn: () => Promise<T>): Promise<T> {
         this.onQueryInFlight(true);
         try {
+            // indexingBlocked → catch-up shouldContinue aborts at the next file
+            // boundary. Do NOT wait for catchUpRunning here: that waited out whole
+            // bursts (20s+) before the query embed was even queued. IframeRunner
+            // single-flights RPCs with query priority so embed jumps ahead of
+            // queued embed-batch/token-counts (G_catchup_ux).
             return await fn();
         } finally {
             this.onQueryInFlight(false);
@@ -1993,9 +2018,15 @@ export default class SeekPlugin extends Plugin {
         void this.logStartupGateReleased();
         void this.touchIndexInventory();
         this.refreshIndexStatusBar();
-        if (getStartupWarm() && this.orchestrator) {
+        this.syncWarmDeferred();
+        if (getStartupWarm() && this.orchestrator && !this.catchUpPending && !this.catchUpRunning) {
             void this.orchestrator.warmCaches('startup-good-enough');
         }
+    }
+
+    /** Tell the orchestrator to defer background warm while catch-up holds IDB. */
+    private syncWarmDeferred(): void {
+        this.orchestrator?.setWarmDeferred(this.catchUpPending || this.catchUpRunning);
     }
 
     private async withSidecarHydrate<T>(fn: () => Promise<T>): Promise<T> {
@@ -2159,8 +2190,14 @@ export default class SeekPlugin extends Plugin {
     // cheap no-op
     // unless something was deferred (catchUpPending) and we're in a safe window.
     private runCatchUp(): void {
-        if (!this.catchUpPending || this.catchUpRunning || !this.embedder.loaded || !this.orchestrator) return;
-        if (activeDocument.hidden || this.indexingBlocked) return;  // never start in a bad window (typing OR a query in flight)
+        if (!this.catchUpPending || this.catchUpRunning || !this.orchestrator) return;
+        if (!this.embedder.loaded) {
+            this.scheduleStartupCatchUp();
+            return;
+        }
+        // Desktop drains in background (headless CLI, minimized window). Mobile
+        // stays lazy while hidden — main-thread embed jank (G_catchup_ux probe).
+        if ((isMobilePlatform() && activeDocument.hidden) || this.indexingBlocked) return;
         // Peer-ahead grind-stop: while a newer-version peer index exists, draining the
         // deferred backlog would re-embed (on the iOS main thread) chunks this build will
         // discard the moment it updates. Leave catchUpPending set so the drain resumes
@@ -2168,6 +2205,7 @@ export default class SeekPlugin extends Plugin {
         // loop behind the 2026-06-28 mobile bog-down: v7 phone grinding against a v8 sidecar.)
         if (isMobilePlatform() && this.orchestrator.peerAhead) return;
         this.catchUpRunning = true;
+        this.syncWarmDeferred();
         const orchestrator = this.orchestrator;
         const mobile = isMobilePlatform();
         const pacer = new CompositorPacer();
@@ -2177,6 +2215,9 @@ export default class SeekPlugin extends Plugin {
             let passTotal = 0;
             let committed = 0;
             try {
+                // Drain first — never block on warm/restore (G_catchup_ux). Search
+                // serves stale frame / persisted BM25 during bursts; warm runs after
+                // idle or on the search hot path.
                 const { pending } = await drainCatchUp({
                     computeDelta: async () => {
                         const d = await orchestrator.computeDelta();
@@ -2228,9 +2269,16 @@ export default class SeekPlugin extends Plugin {
             } finally {
                 this.popTaskContext('catchup');
                 this.catchUpRunning = false;
+                this.syncWarmDeferred();
                 if (jobId != null) this.indexProgress.hide(jobId);
                 else this.refreshIndexStatusBar();
                 void this.touchIndexInventory();
+                if (!this.catchUpPending && this.orchestrator && getStartupWarm()) {
+                    void this.orchestrator.warmCaches('post-catchup').catch(() => {});
+                }
+                if (this.catchUpPending && (!isMobilePlatform() || !activeDocument.hidden) && !this.indexingBlocked) {
+                    void pacer.pace().then(() => this.runCatchUp());
+                }
             }
         })();
     }

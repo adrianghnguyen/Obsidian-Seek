@@ -242,6 +242,14 @@ export class IframeRunner {
     // embedder re-wires it across teardown() which swaps the runner.
     onEvent: ((event: IframeEvent) => void) | null = null;
 
+    // Single-flight RPC pump with query priority. The child pipeline is not safe
+    // for concurrent forwards: an in-flight embed-batch (catch-up) + a query
+    // embed used to contend and hang seek:search for 30s+ (G_catchup_ux). Queue
+    // model RPCs one-at-a-time; `embed` jumps ahead of index traffic.
+    private rpcBusy = false;
+    private queryRpcQueue: Array<() => void> = [];
+    private indexRpcQueue: Array<() => void> = [];
+
     async init(): Promise<IframeInit> {
         const result: IframeInit = {
             buildTimestamp: __BUILD_TS__,
@@ -346,24 +354,47 @@ export class IframeRunner {
         if (!this.iframe?.contentWindow) {
             return Promise.reject(new Error('iframe not initialized'));
         }
-        const id = (crypto as { randomUUID?: () => string }).randomUUID
-            ? (crypto as { randomUUID: () => string }).randomUUID()
-            : `id-${Date.now()}-${Math.random()}`;
+        const priority: 'query' | 'index' = type === 'embed' ? 'query' : 'index';
         return new Promise<T>((resolve, reject) => {
-            // Backstop a dead/silent child (jetsam kill, WebGPU device loss): if
-            // no reply lands in time, reject with a RECOVERABLE 'TIMEOUT' so the
-            // embed catch recycles+retries instead of hanging. Cleared in the
-            // message listener the instant the real reply arrives.
-            const timer = window.setTimeout(() => {
-                if (!this.pending.delete(id)) return;
-                reject(Object.assign(
-                    new Error(`iframe RPC '${type}' timed out after ${timeoutMs}ms`),
-                    { code: 'TIMEOUT' },
-                ));
-            }, timeoutMs);
-            this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
-            this.iframe!.contentWindow!.postMessage({ id, type, payload }, '*');
+            const start = () => {
+                const id = (crypto as { randomUUID?: () => string }).randomUUID
+                    ? (crypto as { randomUUID: () => string }).randomUUID()
+                    : `id-${Date.now()}-${Math.random()}`;
+                const timer = window.setTimeout(() => {
+                    if (!this.pending.delete(id)) return;
+                    this.rpcBusy = false;
+                    this.pumpRpc();
+                    reject(Object.assign(
+                        new Error(`iframe RPC '${type}' timed out after ${timeoutMs}ms`),
+                        { code: 'TIMEOUT' },
+                    ));
+                }, timeoutMs);
+                this.pending.set(id, {
+                    resolve: (v: unknown) => {
+                        this.rpcBusy = false;
+                        this.pumpRpc();
+                        resolve(v as T);
+                    },
+                    reject: (e: Error) => {
+                        this.rpcBusy = false;
+                        this.pumpRpc();
+                        reject(e);
+                    },
+                    timer,
+                });
+                this.iframe!.contentWindow!.postMessage({ id, type, payload }, '*');
+            };
+            (priority === 'query' ? this.queryRpcQueue : this.indexRpcQueue).push(start);
+            this.pumpRpc();
         });
+    }
+
+    private pumpRpc(): void {
+        if (this.rpcBusy) return;
+        const next = this.queryRpcQueue.shift() ?? this.indexRpcQueue.shift();
+        if (!next) return;
+        this.rpcBusy = true;
+        next();
     }
 
     // skipWarmup: parent decision based on the localStorage fingerprint cache
@@ -435,6 +466,9 @@ export class IframeRunner {
         // resurrects a zombie iframe + reloads ~250 MB into a dead plugin) from
         // a recoverable error (SafeInt overflow / TIMEOUT → recycle+retry).
         // Clear each pending timer first so a timeout can't fire post-rejection.
+        this.queryRpcQueue = [];
+        this.indexRpcQueue = [];
+        this.rpcBusy = false;
         for (const [, p] of this.pending) {
             if (p.timer) window.clearTimeout(p.timer);
             p.reject(Object.assign(new Error('iframe disposed'), { code: 'DISPOSED' }));
@@ -449,6 +483,9 @@ export class IframeRunner {
     // 'DISPOSED' (which would unwind the reindex). The caller's recycle() then
     // replaces the now-dead-device iframe.
     failInflight(message: string): void {
+        this.queryRpcQueue = [];
+        this.indexRpcQueue = [];
+        this.rpcBusy = false;
         for (const [, p] of this.pending) {
             if (p.timer) window.clearTimeout(p.timer);
             p.reject(new Error(message));
