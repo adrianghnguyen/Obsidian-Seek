@@ -1612,8 +1612,12 @@ export class SearchOrchestrator {
         if (liveCount === 0) return true;
         // Partial vault enumeration: deleted ≈ (stored − live) fakes a mass removal
         // (G_eviction 2026-08-28: live 4026 / stored 4473 → 447 spurious deletes).
+        // Require a LARGE gap — when novel≈0, deleted ≡ stored−live always, so a
+        // small real delete set (12 fixture leftovers on a 4.4k vault) must not
+        // trip this arm.
         const enumGap = storedSize - liveCount;
-        if (enumGap > 0 && liveCount >= 50
+        const minSuspiciousGap = Math.max(50, storedSize * 0.05);
+        if (enumGap >= minSuspiciousGap && liveCount >= 50
             && deletedCount >= enumGap * 0.85
             && deletedCount <= enumGap * 1.15) {
             return true;

@@ -164,6 +164,10 @@ describe('quota + preempt scenarios (Tier-2)', () => {
         expect(defer(4473, 4026, 447)).toBe(true);
         expect(defer(4473, 4026, 100)).toBe(false);
         expect(defer(100, 0, 100)).toBe(true);
+        // Small real deletes with novel≈0: deleted ≡ stored−live by set math, but
+        // the gap is tiny — must NOT defer (2026-08-29: 12 G_eviction fixtures).
+        expect(defer(4480, 4468, 12)).toBe(false);
+        expect(defer(4480, 0, 4480)).toBe(true);
     });
 
     // ── S4: fallback observability ──────────────────────────────────────────
