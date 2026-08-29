@@ -4,7 +4,13 @@
 
 ## 1. Executive summary
 
-Startup optimization work had no reproducible measurement layer: cold-restart and warm-reload numbers were mixed, hydrate/gate/catch-up phases were invisible in logs, and feature tracks could not be compared fairly. T0 adds a serial CLI probe protocol, schema v17 forensics, scorecard parsing, and isolated worktrees so each path is measured with one `main.js` in the vault at a time. This track is infrastructure only (no user-facing SLO); it enabled all subsequent T1–T6 verification. **Verdict:** shipped — Run A baseline recorded (`T_start` ≈ 16.2 s on skip-rechunk boot).
+If you restart Obsidian and search feels “stuck on Starting” for a minute, the first question is: *which part* of startup is slow — loading the plugin, syncing notes from a peer, building the search index, or catching up after a reload? Before this track, we could not answer that reliably. Numbers from “restart Obsidian” and “reload the plugin” were mixed in the same tables, so a team might optimize catch-up behavior while the real problem was cold-start hydrate, or vice versa.
+
+From an engineering standpoint, the bottleneck was **missing observability and experimental controls**, not a single slow function. Seek’s startup spans several phases (hydrate, gate release, catch-up drain), each triggered by different events. Without structured logging (forensics beats), a serial probe protocol, and isolated git worktrees, every optimization branch risked **confounding variables** — measuring the wrong run type, a polluted vault state, or the wrong build of `main.js`. That is a classic **measurement validity** problem: you cannot improve what you cannot isolate.
+
+T0 adds the measurement layer: Run A (cold restart) vs Run B (warm reload), NDJSON gate traces, scorecard parsers, and one deployed branch at a time. This track ships no user-facing speedup; it makes T1–T6 trustworthy. **Verdict:** shipped — Run A baseline recorded (`T_start` ≈ 16.2 s on skip-rechunk boot).
+
+**Concepts worth researching:** observability / structured logging · A/B vs confounded experiments · cold start vs warm path · git worktrees for parallel feature validation · SLOs and p50 metrics · CDP / devtools buffer limits
 
 ## 2. Why the bottleneck existed
 
