@@ -7,30 +7,28 @@ file: dev-log-history.md
 
 ## standing
 
-branch: fix-seek-index-modal
-remote: origin/fix-seek-index-modal
+branch: main
+remote: origin/main
 status: open
-tag: startup
+tag: catch-up
+tag: unload
 tag: cli
-tag: webgpu
-tag: ui
-file: src/index-notice.ts
-file: src/startup-drain.ts
+tag: startup
 file: src/main.ts
-file: src/index-status-bar.ts
-file: src/iframe-runner.ts
-file: .cursor/skills/seek-cli-startup-debug/scripts/startup-probe.ps1
-sym: resolveIndexUiStatus
-sym: resolveCliSearchGate
-sym: retainIndexInventory
-sym: shouldAutoDrainStartupCatchUp
-sym: scheduleStartupCatchUp
-sym: beginIndexJob
-sym: isChromiumPowerPreferenceAdapterWarning
-sym: stripGpuPowerPreference
-sym: isKnownEmptyIndexWithNotes
-found: 2026-08-22 vault functional UI verify PASS on 1.1.4
-open: none
+file: src/search.ts
+file: src/logger.ts
+file: src/index-store.ts
+sym: runCatchUp
+sym: onunload
+sym: appendError
+sym: isStoreClosedError
+sym: computeDelta
+sym: indexableLiveFilesWhenStored
+sym: vaultIndexEventsReady
+found: vault console flooded by zombie runCatchUp after plugin:reload
+found: computeDelta mass-delete warn is boot race live=0 not a real wipe
+open: stop catch-up self-chain on unloading or STORE_NOT_OPENED
+open: re-enable Seek in vault and confirm no mass-delete warn on cold restart
 exclude: idb-cross-device
 exclude: sidecar-protocol
 exclude: webgpu-device-lost-mobile
@@ -365,3 +363,64 @@ did: replace em-dash with ASCII hyphen in startup-probe.ps1
 did: abort collectLiveIds and reChunkLive on that error after one log
 did: patch personal obsidian-plugin-debug skill with settings tabs DOM screenshot PowerShell tips
 was-wrong: 2026-08-22-functional-ui-verify left those two open
+
+---
+
+## 2026-08-29 catchup-zombie-console-noise
+
+id: 2026-08-29-catchup-zombie-console-noise
+date: 2026-08-29
+status: open
+tag: catch-up
+tag: unload
+tag: cli
+file: src/main.ts
+file: src/logger.ts
+file: src/index-store.ts
+sym: runCatchUp
+sym: onunload
+sym: appendError
+sym: isStoreClosedError
+sym: STORE_NOT_OPENED
+cmd: obsidian dev:console
+cmd: obsidian plugin:reload
+found: live Seek store open catchUpPending false while console errors IndexStore not opened every ~1s
+found: after dev:console clear errors keep arriving; live session f0c8d881 healthy
+found: NDJSON only 15 errors (disk dedupe) vs endless console.error pairs
+found: recent plugin:reload at 12:19 and 12:36 left async catch-up alive
+found: rechunk-live 270 NDJSON rows in one session mostly filesWalked=1 secondary disk noise
+found: .cursor/debug-c78c01.log is stale Jul auto-note-mover agent ingest not live
+rca: onunload closes store and dispose orchestrator but does not cancel runCatchUp
+rca: catch on STORE_NOT_OPENED sets catchUpPending true then finally self-chains pace then runCatchUp forever on unloaded instance
+rca: appendError always console.error unthrottled even when NDJSON aggregates repeats
+did: vault log + live CDP probe + zombie clear test
+open: gate runCatchUp on unloading and treat isStoreClosedError as terminal stop not retry
+
+---
+
+## 2026-08-29 mass-delete-live-zero
+
+id: 2026-08-29-mass-delete-live-zero
+date: 2026-08-29
+status: open
+tag: startup
+tag: catch-up
+file: src/search.ts
+file: src/main.ts
+sym: computeDelta
+sym: shouldDeferMassDelete
+sym: indexableLiveFilesWhenStored
+sym: reconcileOnLoad
+sym: vaultIndexEventsReady
+cmd: obsidian restart
+found: computeDelta warn stored 4468 live 0 deleted 4468 on main vault boot
+found: getMarkdownFiles later 4528 then 3057 vault enum still filling
+found: after first-fix restart job 4528 done 0 isIndexing true no job kind
+found: Seek then disabled in vault only three community plugins left
+rca: reconcileOnLoad ran before vault markdown list populated
+rca: indexableLiveFilesWhenStored broke immediately on live=0 so never waited
+rca: vault.on create during adapter enum queued every note as dirty bulk flush
+did: wait onLayoutReady before reconcileOnLoad
+did: poll while shouldDeferMassDelete still true including live=0
+did: ignore vault create delete rename until vaultIndexEventsReady
+open: re-enable Seek and confirm no mass-delete warn and no 4k bulk flush on cold restart

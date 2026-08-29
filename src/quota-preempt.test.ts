@@ -157,6 +157,34 @@ describe('quota + preempt scenarios (Tier-2)', () => {
         }
     }, 10_000);
 
+    it('computeDelta waits for an empty live list to populate instead of deferring', async () => {
+        const s = await boot();
+        s.vault.write('a.md', 'seed', 1000);
+        await s.coldStart();
+        const orch = s.orch as unknown as { indexableLiveFiles(): ReturnType<typeof s.vault.getMarkdownFiles> };
+        const real = orch.indexableLiveFiles.bind(orch);
+        let calls = 0;
+        const spy = vi.spyOn(orch, 'indexableLiveFiles').mockImplementation(() => {
+            calls++;
+            return calls < 4 ? [] : real();
+        });
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        vi.useFakeTimers();
+        try {
+            const pending = s.orch.computeDelta();
+            await vi.advanceTimersByTimeAsync(2500);
+            const { dirty, deleted } = await pending;
+            expect(deleted).toEqual([]);
+            expect(dirty).toEqual([]);
+            expect(warn).not.toHaveBeenCalled();
+            expect(calls).toBeGreaterThanOrEqual(4);
+        } finally {
+            spy.mockRestore();
+            warn.mockRestore();
+            vi.useRealTimers();
+        }
+    }, 10_000);
+
     it('shouldDeferMassDelete catches partial enumeration gap (G_eviction 2026-08-28)', async () => {
         const s = await boot();
         const defer = (s.orch as unknown as { shouldDeferMassDelete(a: number, b: number, c: number): boolean })

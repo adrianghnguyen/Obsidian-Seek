@@ -205,6 +205,11 @@ export default class SeekPlugin extends Plugin {
     // the real catch-up and these are just a live-session optimization.
     private dirtyQueue = new Set<string>();
     private deletedQueue = new Set<string>();
+    // False until onLayoutReady: vault.on('create') fires for every existing note
+    // while the adapter is still enumerating. Those are not real creates — they
+    // queued the whole vault as dirty (main vault 2026-08-29: 4528-note bulk flush)
+    // and made computeDelta see live:0 vs thousands stored.
+    private vaultIndexEventsReady = false;
     private lastActiveFile: TFile | null = null;
     private idleTimer: number | null = null;   // 5-min debounce for edits
     private structTimer: number | null = null;  // short debounce for deletes/moves
@@ -686,6 +691,7 @@ export default class SeekPlugin extends Plugin {
         })();
 
         this.app.workspace.onLayoutReady(() => {
+            this.vaultIndexEventsReady = true;
             if (shouldAutoDrainStartupCatchUp({
                 mobile: isMobilePlatform(),
                 catchUpPending: this.catchUpPending,
@@ -1049,6 +1055,7 @@ export default class SeekPlugin extends Plugin {
 
     onunload() {
         this.unloading = true;
+        this.vaultIndexEventsReady = false;
         // First thing, synchronously: a session whose record isn't closed at
         // next boot reads as a crash. Reload/disable/quit all pass through here.
         this.forensics?.markCleanEnd();
@@ -1696,17 +1703,22 @@ export default class SeekPlugin extends Plugin {
             if (left) void this.enqueueIfDirty(left);
         }));
 
-        // Structural events — discrete, rare, no blur equivalent.
+        // Structural events — discrete, rare, no blur equivalent. Gated on
+        // vaultIndexEventsReady so the initial adapter enumeration is not treated
+        // as thousands of creates (reconcileOnLoad diffs the settled vault).
         this.registerEvent(this.app.vault.on('create', (f) => {
+            if (!this.vaultIndexEventsReady) return;
             if (f instanceof TFile && isIndexableFile(f, this.settings.indexBases)) { this.dirtyQueue.add(f.path); this.scheduleFlush(); }
         }));
         this.registerEvent(this.app.vault.on('delete', (f) => {
+            if (!this.vaultIndexEventsReady) return;
             if (!(f instanceof TFile) || !isIndexableFile(f, this.settings.indexBases)) return;
             this.deletedQueue.add(f.path);
             this.dirtyQueue.delete(f.path);
             this.flushStructuralSoon();
         }));
         this.registerEvent(this.app.vault.on('rename', (f, oldPath) => {
+            if (!this.vaultIndexEventsReady) return;
             // Drop the old path (covers plain rename, move, and move-into-ignored
             // = soft-delete) and index the new one. shouldIndex/reindexDelta decide
             // the archive/un-archive outcome by destination.
@@ -1895,6 +1907,11 @@ export default class SeekPlugin extends Plugin {
         if (!this.orchestrator) return false;
         this.pushTaskContext('reconcile');
         try {
+            // Fast skip-rechunk boots can finish hydrate before Obsidian has
+            // populated getMarkdownFiles() — computeDelta then sees live:0 and
+            // defers the whole sweep (stored 4468 / live 0 on the main vault).
+            // Already-ready workspaces invoke the callback immediately.
+            await this.whenLayoutReady();
             const { dirty, deleted } = await this.orchestrator.computeDelta();
             if (dirty.length === 0 && deleted.length === 0) return false;
             // Kick off model load + catch-up drain immediately — restorePersistedCaches
@@ -2096,6 +2113,12 @@ export default class SeekPlugin extends Plugin {
     /** Clear the Seek perf ring (does not clear the CDP console buffer — use `dev:console clear`). */
     clearPerfConsole(): void {
         seekPerf.clear();
+    }
+
+    private whenLayoutReady(): Promise<void> {
+        const ws = this.app.workspace as { onLayoutReady?: (cb: () => void) => void };
+        if (typeof ws.onLayoutReady !== 'function') return Promise.resolve();
+        return new Promise(resolve => ws.onLayoutReady!(() => resolve()));
     }
 
     private indexableNoteCount(): number {

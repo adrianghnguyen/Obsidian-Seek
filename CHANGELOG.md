@@ -10,6 +10,9 @@ Search-modal honesty while the index is still coming up. No reindex is needed, s
 - **Search no longer says the vault isn’t indexed while Seek is still restoring or building the index.** Opening search during sidecar hydrate, a pending first-time embed, or a full rebuild shows a waiting state instead of “Your vault isn’t indexed yet” or “No notes match.” Index status is an icon and short label in the footer next to esc; the query-row chip is gone.
 - **Indexing progress lives in the status bar**, not a sticky toast. The item shows quantized percent for the current full or incremental pass (5% steps). Hover reuses the Settings index card (files, chunks, last index) plus this-pass counts. Single-note saves do not. Completion notices are unchanged.
 
+### Fixed
+- **Startup no longer treats a still-loading vault as a mass delete.** On a large vault, Seek could run its catch-up pass before Obsidian had listed any notes, see thousands of indexed files and zero live files, and log `deferring suspicious mass-delete sweep`. The index was kept, but every existing note then arrived as a `create` and queued a full re-embed. Catch-up now waits until the vault layout is ready, retries while the file list looks truncated, and ignores create/delete/rename until that point so boot enumeration is not mistaken for new notes.
+
 ## 1.1.3
 
 Performance release for editing notes in a large vault, prompted by a community bug report and the diagnostics shared with it. Thank you! No reindex is needed, since the index format is unchanged.

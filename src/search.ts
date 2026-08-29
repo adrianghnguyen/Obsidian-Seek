@@ -1635,8 +1635,15 @@ export class SearchOrchestrator {
     private async indexableLiveFilesWhenStored(storedSize: number): Promise<TFile[]> {
         let live = this.indexableLiveFiles();
         if (storedSize === 0) return live;
+        // Wait only while the snapshot still looks like truncated enumeration
+        // (empty OR a large stored−live gap). A few leftover stored paths are
+        // real deletes — do not burn 2s on every computeDelta for those.
+        // live===0 MUST wait: that is the boot race (G_eviction / main vault
+        // 2026-08-29: stored 4468, live 0). Bailing immediately skipped the
+        // poll and reconcileOnLoad applied neither deletes nor dirty.
         for (let i = 0; i < 40; i++) {
-            if (live.length >= storedSize || live.length === 0) break;
+            const enumDeleted = Math.max(0, storedSize - live.length);
+            if (!this.shouldDeferMassDelete(storedSize, live.length, enumDeleted)) break;
             await new Promise(r => setTimeout(r, 50));
             live = this.indexableLiveFiles();
         }
@@ -1686,6 +1693,7 @@ export class SearchOrchestrator {
         if (this.shouldDeferMassDelete(stored.size, live.length, deleted.length)) {
             console.warn('[seek] computeDelta: deferring suspicious mass-delete sweep', {
                 stored: stored.size, live: live.length, deleted: deleted.length,
+                markdown: this.app.vault.getMarkdownFiles().length,
             });
             return { dirty, deleted: [] };
         }
