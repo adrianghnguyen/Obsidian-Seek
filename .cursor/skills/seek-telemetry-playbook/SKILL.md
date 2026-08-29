@@ -22,12 +22,12 @@ Companion to [seek-cli-startup-debug](../seek-cli-startup-debug/SKILL.md) for ti
 | ID | Story | Driver | Vault | Key metrics |
 |----|-------|--------|-------|-------------|
 | S1 | Cold start / full reindex | `S1-cold-start.ps1` | sandbox or dev | T_start_ms, T_hydrate_ms |
-| S2 | Incremental catch-up | `S2-incremental.ps1` (stub) | dev + G2 fixture | T_drain_total_ms |
-| S3 | First good search after boot | `S3-first-paint.ps1` (stub) | dev G2 | T_first_good_ms |
-| S4 | Greedy hydrate walk | `S4-greedy-hydrate.ps1` (stub) | dev G2 | files_walked |
-| S5 | Needle rank-1 | `S5-needle.ps1` (stub) | sandbox | T_search_ms |
+| S2 | Incremental catch-up | `S2-incremental.ps1` | dev + G2 fixture | T_drain_total_ms |
+| S3 | First good search after boot | `S3-first-paint.ps1` | dev G2 | T_first_good_ms |
+| S4 | Greedy hydrate walk | `S4-greedy-hydrate.ps1` | dev G2 | files_walked |
+| S5 | Needle rank-1 | `S5-needle.ps1` | sandbox | T_search_ms |
 | S6 | Known-item early paint | `S6-early-name-paint.ps1` | dev | namePartialMs, nameEarlyPainted |
-| S7 | Query supersession | `S7-query-supersession.ps1` (stub) | dev | latest query wins |
+| S7 | Query supersession | `S7-query-supersession.ps1` | dev | latest query wins |
 
 ## Workflow
 

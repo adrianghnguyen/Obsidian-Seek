@@ -23,16 +23,16 @@ description: Functional user-flow telemetry F1–F10 — cold boot, warm reload,
 
 | ID | Flow | Mode | Status |
 |----|------|------|--------|
-| F1 | Restart → index → search ready | cli | stub |
+| F1 | Restart → index → search ready | cli | **full** |
 | F2 | Warm reload → search | cli | **full** |
 | F3 | Headless `seek:search` vs expected | cli | **full** |
-| F4 | seek:open → active file | cli+eval | stub |
-| F5 | seek:insert-link | cli+eval | stub |
-| F6 | Modal search + restore retry | cli+eval+screenshot | stub |
-| F7 | Modal Alt+Enter insert | cli+eval+screenshot | stub |
-| F8 | Search during catch-up | cli | stub |
-| F9 | Modal early name paint | cli+eval+screenshot | stub |
-| F10 | Rapid query cancel | cli+eval | stub |
+| F4 | seek:open → active file | cli+eval | **full** |
+| F5 | seek:insert-link | cli+eval | **full** |
+| F6 | Modal search + restore retry | cli+eval+screenshot | **full** |
+| F7 | Modal Alt+Enter insert | cli+eval+screenshot | **full** |
+| F8 | Search during catch-up | cli | **full** |
+| F9 | Modal early name paint | cli+eval+screenshot | **full** |
+| F10 | Rapid query cancel | cli+eval | **full** |
 
 ## F3 pass criteria
 

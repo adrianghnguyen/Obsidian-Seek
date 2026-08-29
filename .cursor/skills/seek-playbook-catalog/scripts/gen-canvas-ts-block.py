@@ -34,16 +34,16 @@ stub_ids = snip["stubScenarioIds"]
 print("/** 3-sample baseline batch 2026-08-29 · git 094e112 · export-canvas-baseline.ps1 */")
 print("const STUB_SCENARIO_IDS: RunScenarioId[] = " + ts_val(stub_ids) + ";")
 print("")
-print("type ScenarioViolinSpec = { unit: string; metric: ScenarioMetricKey; series: { label: string; values: number[] }[] };")
+print("type ScenarioChartSpec = { unit: string; metric: ScenarioMetricKey; series: { label: string; values: number[] }[] };")
 print("")
 print("/** Y-axis range is scoped per test id (one chart per scenario). */")
-print("const SCENARIO_VIOLIN: Partial<Record<RunScenarioId, ScenarioViolinSpec>> = " + ts_val({
+print("const SCENARIO_CHART: Partial<Record<RunScenarioId, ScenarioChartSpec>> = " + ts_val({
     k: {
         "unit": v["unit"],
         "metric": v["metric"],
         "series": v["series"],
     }
-    for k, v in snip["violinByScenario"].items()
+    for k, v in snip.get("chartByScenario", snip.get("violinByScenario", {})).items()
 }) + ";")
 print("")
 
