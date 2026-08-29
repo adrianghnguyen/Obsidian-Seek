@@ -1,0 +1,52 @@
+---
+description: When running Seek telemetry or playbook scenarios, find the matching canvas and update RUNS, traces, and deviation charts
+globs: .cursor/skills/seek-playbook-catalog/**,.cursor/skills/seek-telemetry-playbook/**,.cursor/skills/seek-functional-telemetry/**,.cursor/skills/seek-cli-startup-debug/**,.cursor/gate-trace.jsonl,.cursor/functional-traces/**,.cursor/playbook-run-failures.md
+alwaysApply: false
+---
+
+# Telemetry → canvas update
+
+Playbook or startup telemetry work is **not done** until the appropriate canvas reflects the new runs — not when traces exist only on disk.
+
+## Pick the canvas
+
+| Work | Canvas (Cursor managed path) |
+|------|------------------------------|
+| **S1–S7, F1–F10** playbook baselines | `C:\Users\tilou\.cursor\projects\c-Coding-projects-Obsidian-Seek\canvases\sandbox-run-history.canvas.tsx` |
+| Startup track probes (T0–T6, worktrees) | `…/canvases/startup-tracks.canvas.tsx` or `startup-report.canvas.tsx` |
+| Architecture / design only | `docs/seek-architecture.canvas.tsx` — **do not** append RUNS here |
+
+When unsure, default to **sandbox-run-history** for anything dispatched via `run-scenario.ps1` or `run-all-scenarios.ps1`.
+
+## Before editing
+
+1. Read the canvas skill: `~/.cursor/skills-cursor/canvas/SKILL.md`.
+2. Read the target `.canvas.tsx` — match existing `SandboxRun` / `RUNS[]` shape and any embedded distribution constants (e.g. `F3_RUN_LATENCIES_MS`).
+3. Pull metrics from authoritative artifacts:
+   - `.cursor/functional-traces/<Id>/`
+   - `.cursor/gate-trace.jsonl`
+   - `.cursor/scorecards/` (when present)
+   - Driver stdout / `.cursor/playbook-run-failures.md`
+
+## What to update
+
+- **`RUNS[]`** — append or replace bad runs after discard; one entry per sample with `scenarioId`, `outcome`, `metrics`, `gitSha`, `artifacts`, `protocolSteps`.
+- **Deviation charts** — when multiple runs exist for a scenario, refresh violin/KDE inputs (per-run latency arrays, S6 `namePartialMs`, F2 `T_first_good_ms`, etc.). Do not leave stale distributions after a new batch.
+- **Overview stats** — derive from `RUNS`; do not hand-maintain counts that contradict traces.
+- **Stub scenarios** — leave pending; do not fabricate RUNS for `status: stub` drivers.
+
+Use `Emit-CanvasRunJson.ps1` field names as the schema reference. Prefer editing the canvas file directly over telling the user to paste JSON.
+
+## Do not
+
+- Commit canvas files (outside git repo).
+- Render empty chart sections — omit or hide when `n = 0`.
+- Use hardcoded hex colors — `useHostTheme()` / `theme.category` only.
+- Skip canvas update because `playbook-run-failures.md` was written — the markdown log and canvas serve different purposes.
+
+## Finish check
+
+- Canvas TypeScript check reports no errors.
+- User can open the canvas beside chat and see the new run(s) and deviation plots for scenarios with `n ≥ 2` samples.
+- After `run-all-scenarios.ps1`, run `export-canvas-baseline.ps1` then splice `gen-canvas-ts-block.py` output into `sandbox-run-history.canvas.tsx` (or hand-update `RUNS` + `SCENARIO_VIOLIN`).
+- **3-sample baselines:** full drivers should show `n=3` in overview table and one **error-bar chart** per test id with y-axis range local to that scenario only (do not pool S6/F3/S1/F2 on one axis).

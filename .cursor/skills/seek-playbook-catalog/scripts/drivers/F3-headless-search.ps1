@@ -44,7 +44,7 @@ $passed = 0
 
 foreach ($case in $cases) {
     if ($case.expected.sequence -eq $true) {
-        Write-Host "SKIP $($case.id) — sequence case (driver stub for gate/supersession)"
+        Write-Host "SKIP $($case.id) - sequence case (driver stub for gate/supersession)"
         $skipped++
         continue
     }
@@ -89,11 +89,11 @@ foreach ($case in $cases) {
 
     if ($null -ne $case.expected.minCount -and $count -lt [int]$case.expected.minCount) {
         $ok = $false
-        $reasons += "count $count < minCount $($case.expected.minCount)"
+        $reasons += "count $count below minCount $($case.expected.minCount)"
     }
     if ($null -ne $case.expected.maxCount -and $count -gt [int]$case.expected.maxCount) {
         $ok = $false
-        $reasons += "count $count > maxCount $($case.expected.maxCount)"
+        $reasons += "count $count above maxCount $($case.expected.maxCount)"
     }
     if ($case.expected.rank1Path -and $rank1Path -ne $case.expected.rank1Path) {
         $ok = $false

@@ -14,6 +14,6 @@ if (-not (Test-Path $probeScript)) {
     exit 1
 }
 
-Write-Host "S1 cold start — delegating to startup-trace-probe Run $Run vault=$Vault sample=$SampleIndex"
+Write-Host "S1 cold start - delegating to startup-trace-probe Run $Run vault=$Vault sample=$SampleIndex"
 & $probeScript -Run $Run -Vault $Vault -PathId "S1-sample$SampleIndex"
 exit $LASTEXITCODE

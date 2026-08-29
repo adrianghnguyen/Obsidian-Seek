@@ -941,6 +941,8 @@ export default class SeekPlugin extends Plugin {
                                     score: r.score,
                                     excerpt: r.snippet ?? '',
                                 };
+                                if (r.nameEarlyPainted !== undefined) base.nameEarlyPainted = r.nameEarlyPainted;
+                                if (r.namePartialMs !== undefined) base.namePartialMs = r.namePartialMs;
                                 return base;
                             });
                             return JSON.stringify({ results: mapped, query, count: mapped.length });

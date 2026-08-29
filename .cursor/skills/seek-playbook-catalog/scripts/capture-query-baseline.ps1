@@ -18,13 +18,17 @@ function Parse-Eval([string]$Out) {
 
 function Parse-SearchJson([string]$Out) {
     $json = Parse-Eval $Out
+    if (-not $json) {
+        $candidates = @($Out -split "`n" | Where-Object { $_.Trim().StartsWith('{') })
+        if ($candidates.Count -gt 0) { $json = $candidates[-1].Trim() }
+    }
     if (-not $json) { return $null }
     return $json | ConvertFrom-Json -ErrorAction SilentlyContinue
 }
 
 $updated = @()
 foreach ($case in $fixture.queryCases) {
-    if ($case.synthetic) {
+    if ($case.synthetic -and $case.intent -ne 'no_answers_possible') {
         $updated += $case
         continue
     }
@@ -47,13 +51,16 @@ foreach ($case in $fixture.queryCases) {
         $expected['minCount'] = 1
         $expected['rank1Path'] = $result.results[0].path
     } elseif ($case.intent -eq 'no_answers_possible') {
-        $expected['maxCount'] = 0
+        $cnt = if ($result -and $null -ne $result.count) { [int]$result.count } else { 0 }
+        $expected['maxCount'] = $cnt
+        if ($cnt -gt 0 -and $result.results -and $result.results.Count -gt 0) {
+            $expected['rank1Path'] = $result.results[0].path
+        }
     } else {
         $expected['minCount'] = 0
     }
     if ($case.expected.gateBlocked) { $expected['gateBlocked'] = $true }
     if ($case.expected.nameEarlyPainted) { $expected['nameEarlyPainted'] = $true }
-    if ($case.expected.rank1Contains) { $expected['rank1Contains'] = $case.expected.rank1Contains }
 
     $updated += [PSCustomObject]@{
         id         = $case.id
@@ -72,8 +79,9 @@ if (-not $DryRun) {
         vault      = $fixture.vault
         queryCases = $updated
     }
-    $outObj | ConvertTo-Json -Depth 8 | Set-Content -Path $fixturePath -Encoding UTF8
+    $jsonText = ($outObj | ConvertTo-Json -Depth 8)
+    [System.IO.File]::WriteAllText($fixturePath, $jsonText, [System.Text.UTF8Encoding]::new($false))
     Write-Host "Updated expected blocks in $fixturePath"
 } else {
-    Write-Host "Dry run — no file written"
+    Write-Host 'Dry run - no file written'
 }

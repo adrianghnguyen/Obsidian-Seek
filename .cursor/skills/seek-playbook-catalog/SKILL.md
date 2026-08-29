@@ -55,4 +55,4 @@ Functional queries: 10 intents × 3 cases = 30 globally distinct query strings. 
 
 ## Canvas
 
-Local dashboard: `sandbox-run-history.canvas.tsx` (Cursor canvases folder). Empty `RUNS[]` until drivers append via `Emit-CanvasRunJson.ps1`.
+Local dashboard: `sandbox-run-history.canvas.tsx` (Cursor canvases folder). After any batch or scenario run, update `RUNS[]` and deviation charts per [`.cursor/rules/telemetry-canvas-update.mdc`](../../rules/telemetry-canvas-update.mdc). Schema reference: `Emit-CanvasRunJson.ps1`.
