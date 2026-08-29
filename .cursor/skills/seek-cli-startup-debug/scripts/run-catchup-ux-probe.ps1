@@ -1,15 +1,19 @@
 # G_catchup_ux — atomic 4k-backlog warm-reload probe.
-# Clears file records (chunks kept), reloads immediately, measures T_first_hit while remaining > 0.
+# Stales file records (chunks kept), reloads immediately, measures completed
+# T_first_hit while remaining > 0, then continues through drain completion so
+# first-hit latency and total throughput come from the same run.
 #
 # Usage:
 #   .\run-catchup-ux-probe.ps1                    # 4k backlog (default)
 #   .\run-catchup-ux-probe.ps1 -Mode small-delta  # edit one note only (protocol §6)
+#   .\run-catchup-ux-probe.ps1 -SearchQuery known-fixture-term
 
 param(
     [ValidateSet('backlog-4k', 'small-delta')]
     [string]$Mode = 'backlog-4k',
     [string]$Vault = 'Obsidian',
     [string]$PathId = 'persist-cache',
+    [string]$SearchQuery = 'probe',
     [int]$MaxSeconds = 600,
     [int]$FirstHitSloMs = 30000
 )
@@ -25,6 +29,21 @@ finally { Pop-Location }
 function Invoke-Eval([string]$Code) {
     $raw = (& obsidian eval "vault=$Vault" "code=$Code" 2>&1 | Out-String).Trim()
     return ($raw -split "`n" | Where-Object { $_ -match '^\s*=>\s*' } | ForEach-Object { $_ -replace '^\s*=>\s*', '' }) -join ''
+}
+
+function Get-SearchHitCount([string]$Out) {
+    foreach ($line in (($Out -split "`n") | Select-Object -Last 20)) {
+        $candidate = ($line -replace '^\s*=>\s*', '').Trim()
+        if ($candidate -notmatch '^\[') { continue }
+        try {
+            $parsed = $candidate | ConvertFrom-Json -ErrorAction Stop
+            if ($null -eq $parsed) { return 0 }
+            return @($parsed).Count
+        } catch {
+            # Ignore non-JSON console lines and keep looking.
+        }
+    }
+    return 0
 }
 
 function Write-Jsonl([hashtable]$Obj) {
@@ -75,7 +94,6 @@ if ($Mode -eq 'backlog-4k') {
 $start = Get-Date
 Write-Host 'plugin:reload (immediate — no gap after fixture)'
 & obsidian plugin:reload id=seek "vault=$Vault" | Out-Null
-Start-Sleep -Seconds 2
 & obsidian dev:debug on "vault=$Vault" | Out-Null
 
 $firstHitMs = $null
@@ -83,8 +101,10 @@ $drainMs = $null
 $jobTotalFirst = $null
 
 while (((Get-Date) - $start).TotalSeconds -lt $MaxSeconds) {
-    $elapsedMs = [math]::Round(((Get-Date) - $start).TotalMilliseconds)
+    $gateEvalStarted = Get-Date
     $gateStr = Invoke-Eval $gateCode
+    $gateEvalMs = [math]::Round(((Get-Date) - $gateEvalStarted).TotalMilliseconds)
+    $elapsedMs = [math]::Round(((Get-Date) - $start).TotalMilliseconds)
     $gateObj = $gateStr | ConvertFrom-Json -ErrorAction SilentlyContinue
     $rem = 0
     if ($gateObj.job) { $rem = $gateObj.job.remaining }
@@ -99,21 +119,25 @@ while (((Get-Date) - $start).TotalSeconds -lt $MaxSeconds) {
 
     # T_first_hit: useful search while backlog still draining (chunks already present).
     if ($null -eq $firstHitMs -and $hydrateDone -and $chunks -gt 0 -and $rem -gt 0) {
-        $searchOut = (& obsidian seek:search query=probe limit=1 "vault=$Vault" 2>&1 | Out-String).Trim()
+        $searchStarted = Get-Date
+        $searchOut = (& obsidian seek:search "query=$SearchQuery" limit=1 format=json "vault=$Vault" 2>&1 | Out-String).Trim()
+        $searchDurationMs = [math]::Round(((Get-Date) - $searchStarted).TotalMilliseconds)
+        $searchCompletedMs = [math]::Round(((Get-Date) - $start).TotalMilliseconds)
         $snippet = ($searchOut -split "`n" | Select-Object -First 4) -join ' / '
-        if ($snippet -notmatch 'not ready' -and $snippet -notmatch 'not initialized' -and $snippet -match '\d\.\d') {
-            $firstHitMs = $elapsedMs
+        $hitCount = Get-SearchHitCount $searchOut
+        if ($hitCount -gt 0) {
+            # End-to-end from reload start through completed search. The old probe
+            # stamped elapsed BEFORE seek:search, excluding the blocking duration.
+            $firstHitMs = $searchCompletedMs
             Write-Jsonl @{
-                ts = (Get-Date).ToString('o'); elapsed_s = [math]::Round($elapsedMs / 1000, 2)
+                ts = (Get-Date).ToString('o'); elapsed_s = [math]::Round($firstHitMs / 1000, 2)
                 run = 'warm-reload'; path_id = $PathId; git_sha = $gitSha
                 event = 'first-search'; gate = $gateObj; search = $snippet
                 remaining_at_hit = $rem
+                gate_eval_ms = $gateEvalMs
+                search_duration_ms = $searchDurationMs
             }
-            Write-Host "FIRST_HIT ${firstHitMs}ms remaining=$rem"
-            if ($firstHitMs -le $FirstHitSloMs) {
-                Write-Host "T_first_hit_ms=$firstHitMs T_drain_ms= job_total=$jobTotalFirst verdict=pass (SLO ${FirstHitSloMs}ms)"
-                exit 0
-            }
+            Write-Host "FIRST_HIT ${firstHitMs}ms search=${searchDurationMs}ms remaining=$rem"
         }
     }
 
@@ -129,7 +153,11 @@ while (((Get-Date) - $start).TotalSeconds -lt $MaxSeconds) {
 }
 
 $verdict = 'fail'
-if ($null -ne $firstHitMs -and $firstHitMs -le $FirstHitSloMs) { $verdict = 'pass' }
+if ($null -ne $firstHitMs -and $firstHitMs -le $FirstHitSloMs -and $null -ne $drainMs) {
+    $verdict = 'pass'
+} elseif ($null -ne $firstHitMs -and $firstHitMs -le $FirstHitSloMs) {
+    $verdict = 'partial'
+}
 
 Write-Host "T_first_hit_ms=$firstHitMs T_drain_ms=$drainMs job_total=$jobTotalFirst verdict=$verdict (SLO ${FirstHitSloMs}ms)"
 

@@ -1,0 +1,8 @@
+{"run":"warm-reload","path_id":"other","git_sha":"warmsha","event":"gate-test","elapsed_s":7,"eval_ms":999,"gate":{"warmPhase":"starting","uiHealth":"starting"}}
+{"run":"warm-reload","path_id":"other","git_sha":"warmsha","event":"first-search","elapsed_s":9,"eval_ms":999,"gate":{"warmPhase":null,"uiHealth":"ok"}}
+{"run":"cold-restart","path_id":"track-a","git_sha":"coldsha","event":"poll","elapsed_s":1,"eval_ms":100,"gate":{"warmPhase":"starting","uiHealth":"starting"}}
+{"run":"cold-restart","path_id":"track-a","git_sha":"coldsha","event":"gate-test","elapsed_s":1.5,"eval_ms":200,"gate":{"warmPhase":"starting","uiHealth":"starting"}}
+{"run":"cold-restart","path_id":"track-a","git_sha":"coldsha","event":"poll","elapsed_s":2,"eval_ms":200,"gate":{"warmPhase":"starting","uiHealth":"starting"}}
+{"run":"cold-restart","path_id":"track-a","git_sha":"coldsha","event":"poll","elapsed_s":3,"eval_ms":300,"gate":{"warmPhase":"starting","uiHealth":"starting"}}
+{"run":"cold-restart","path_id":"track-a","git_sha":"coldsha","event":"poll","elapsed_s":4,"eval_ms":400,"gate":{"warmPhase":"starting","uiHealth":"starting"}}
+{"run":"cold-restart","path_id":"track-a","git_sha":"coldsha","event":"poll","elapsed_s":5,"eval_ms":500,"gate":{"warmPhase":null,"uiHealth":"ok"}}

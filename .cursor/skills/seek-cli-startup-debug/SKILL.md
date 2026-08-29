@@ -144,7 +144,7 @@ For hypothesis scorecards and path worktrees, use [scripts/startup-trace-probe.p
 .\.cursor\skills\seek-cli-startup-debug\scripts\startup-trace-probe.ps1 -Run B -PathId baseline
 ```
 
-Emits `.cursor/gate-trace.jsonl` (one JSON object per line: `path_id`, `git_sha`, `elapsed_s`, `gate`, optional `search`). Copies `.seek-artifacts/seek-report.json` to `.cursor/scorecards/<path>-<run>-<timestamp>.json`.
+Emits `.cursor/gate-trace.jsonl` (one JSON object per line: `path_id`, `git_sha`, `elapsed_s`, `eval_ms`, `gate`, optional `search`). Run B aborts when its idle precheck fails. Copies `.seek-artifacts/seek-report.json` to `.cursor/scorecards/<path>-<run>-<timestamp>.json`.
 
 Parse with [scripts/parse-startup-trace.mjs](scripts/parse-startup-trace.mjs):
 
@@ -155,6 +155,10 @@ node .\.cursor\skills\seek-cli-startup-debug\scripts\parse-startup-trace.mjs `
   --path baseline --run cold-restart `
   --baseline .cursor\baseline-cold
 ```
+
+Parsed scorecards report actual gate-eval `T_eval_p50_ms`, `T_eval_p95_ms`,
+`T_eval_max_ms`, and `T_eval_n`. Hydrating long-task duration is a separate
+`long_task_hydrating_p50_ms` metric and must not be labeled eval latency.
 
 **Worktree deploy:** one isolated checkout per path under `C:\Coding_projects\Obsidian-Seek-worktrees\` (T4 = main repo). Vault holds a single `main.js`.
 

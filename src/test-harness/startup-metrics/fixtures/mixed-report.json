@@ -1,0 +1,57 @@
+{
+  "thisSession": "session-current",
+  "entries": [
+    {
+      "type": "init",
+      "timestamp": "2026-08-29T10:00:00.000Z",
+      "sessionId": "session-current"
+    },
+    {
+      "type": "startup-gate",
+      "event": "released",
+      "elapsedMs": 3200,
+      "timestamp": "2026-08-29T10:00:03.200Z",
+      "sessionId": "session-current"
+    },
+    {
+      "type": "long-task",
+      "context": "hydrating",
+      "durationMs": 275,
+      "timestamp": "2026-08-29T10:00:01.000Z",
+      "sessionId": "session-current"
+    },
+    {
+      "type": "long-task",
+      "context": "hydrating",
+      "durationMs": 430,
+      "timestamp": "2026-08-29T10:00:02.000Z",
+      "sessionId": "session-current"
+    },
+    {
+      "type": "long-task",
+      "context": "hydrating",
+      "durationMs": 900,
+      "timestamp": "2026-08-29T10:00:03.000Z",
+      "sessionId": "session-current"
+    },
+    {
+      "type": "init",
+      "timestamp": "2026-08-29T11:00:00.000Z",
+      "sessionId": "session-peer"
+    },
+    {
+      "type": "startup-gate",
+      "event": "released",
+      "elapsedMs": 9000,
+      "timestamp": "2026-08-29T11:00:09.000Z",
+      "sessionId": "session-peer"
+    },
+    {
+      "type": "long-task",
+      "context": "hydrating",
+      "durationMs": 5000,
+      "timestamp": "2026-08-29T11:00:05.000Z",
+      "sessionId": "session-peer"
+    }
+  ]
+}
