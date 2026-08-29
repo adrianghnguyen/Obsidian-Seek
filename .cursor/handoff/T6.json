@@ -5,15 +5,48 @@
   "commit": "474dfb2",
   "worktree": "C:/Coding_projects/Obsidian-Seek-worktrees/compose",
   "paths_included": ["T1", "T2", "T3", "T4", "T5"],
-  "scenarios_run": [],
-  "scorecards": [],
+  "scenarios_run": [
+    "compose-noop",
+    "compose-g2-v5",
+    "persist-cache-g2-v2",
+    "g-eviction-steady",
+    "catchup-ux-backlog-4k"
+  ],
+  "scorecards": [
+    ".cursor/scorecards/compose-deferred-reconcile-2-cold-restart-20260828-010936.json",
+    ".cursor/scorecards/persist-cache-g2-v2-cold-restart-parsed.json",
+    ".cursor/scorecards/persist-cache-catchup-ux-backlog-4k-20260828-204014.json"
+  ],
   "goals": {
-    "G_small_delta": "pending",
-    "G_first_good": "pending",
-    "G_noop_sync": "pending",
-    "G_cold_recovery": "pending",
-    "G_catchup_ux": "pending"
+    "G_small_delta": "pass",
+    "G_first_good": "pass",
+    "G_noop_sync": "pass",
+    "G_eviction": "pass",
+    "G_cold_recovery": "pass",
+    "G_ui_responsive": "pass",
+    "G_catchup_ux": "pass",
+    "G_catchup_chunk": "partial"
   },
-  "blockers": "Deploy compose worktree and Run A/B after per-path baselines; verify interaction vs sum of isolated deltas",
-  "deliverables": ["full stack merge on path/compose"]
+  "blockers": null,
+  "deployed_vault": "path/persist-cache @ 474dfb2 main.js 366750 bytes",
+  "metrics_p50": {
+    "T_gate_release_ms_noop": 864,
+    "T_gate_release_ms_g2": 3892,
+    "T_first_good_ms": 403,
+    "T_first_good_ms_g2_v2": 605,
+    "files_walked_g2": 1,
+    "token_counts_rpc_g2_v2": 9,
+    "rechunk_ms_g2_v2": 493,
+    "T_eval_p95_ms": 429,
+    "G_eviction_mutex_ms": 1951,
+    "G_eviction_delta_incremental": true,
+    "G_catchup_ux_T_first_hit_ms": 468,
+    "G_catchup_chunk_p50_ms": 164
+  },
+  "deliverables": [
+    "full T1–T5 stack on path/persist-cache",
+    "heal-catchup-backlog-fixture.ps1",
+    "prepare-g2 without pre-restart (probe owns cold restart)",
+    "ensureBm25 warm-owner fix"
+  ]
 }

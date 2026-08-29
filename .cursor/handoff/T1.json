@@ -4,15 +4,17 @@
   "branch": "path/greedy-hydrate",
   "commit": "159970a",
   "worktree": "C:/Coding_projects/Obsidian-Seek-worktrees/greedy-hydrate",
-  "scenarios_run": ["Run A cold-restart"],
+  "merged_into_compose": true,
+  "measured_on": "compose stack (main repo) @ build 2026-08-28T05:30:54",
+  "scenarios_run": ["Run A cold-restart", "G2 fixture v5"],
   "scorecards": [
     ".cursor/scorecards/greedy-hydrate-cold-restart-parsed.json",
-    ".cursor/scorecards/greedy-hydrate-cold-restart-20260828-002906.json"
+    ".cursor/scorecards/compose-noop-v5-cold-restart-20260828-014023.json"
   ],
   "goals": {
-    "G_small_delta": "not_run",
-    "G_first_good": "fail",
-    "G_noop_sync": "not_run",
+    "G_small_delta": "pass",
+    "G_first_good": "pass",
+    "G_noop_sync": "pass",
     "G_cold_recovery": "n/a",
     "G_ui_responsive": "n/a",
     "G_eviction": "n/a",
@@ -20,24 +22,22 @@
     "G_catchup_ux": "n/a"
   },
   "metrics_p50": {
-    "T_start_ms": 1360,
-    "T_gate_test_ms": 13560,
-    "T_first_good_ms": null,
-    "T_hydrate_ms": null,
-    "sidecar_hydrate_span_ms": 763,
-    "files_walked": null,
+    "T_gate_release_ms": 3892,
+    "T_first_good_ms": 403,
+    "T_hydrate_total_ms": 934,
+    "files_walked_tier0": 1,
+    "hydrated_tier0": 2,
+    "greedy_stop_reason": "gate-released",
     "schema_version": 18
   },
-  "vs_baseline_pct": {},
-  "blockers": "Same as T0 skip-rechunk path: vault boot had no fresh ids — sidecar-hydrate completed in 763ms without rechunk-live, so greedy tier schedule never ran (zero sidecar-hydrate-tier / sidecar-hydrate-greedy in seek-report). Cold-restart probe hit MaxSeconds 120 with warmPhase=starting, bootPending=true, seek:search gate-test failed at 13.6s; no startup-gate released in session b9ce028a. Index file count fell 4277→838 during poll window (long reindex), so G_first_good SLO (≤10s) not measurable for greedy path.",
+  "blockers": "G_small_delta uses same G2 fixture path; isolated greedy-hydrate worktree not re-measured",
   "deliverables": [
-    "startup-trace-probe.ps1 Run A -PathId greedy-hydrate",
-    "parse-startup-trace.mjs → greedy-hydrate-cold-restart-parsed.json",
-    "seek-report.json session b9ce028a (startup-span sidecar-hydrate only)",
-    "startup-path-results.md greedy-hydrate row",
-    "T1.json handoff"
+    "per-file tier-3d + early onFirstCommit gate",
+    "listHydrateFilesForGreedy poll",
+    "prepare-g2-fresh-id-fixture.ps1",
+    "compose G2 v5 session 37751f65"
   ],
-  "session_id": "b9ce028a-ef04-4dea-bae3-7442d70bddb9",
-  "greedy_tiers_fired": false,
-  "gate_release_in_probe": false
+  "session_id": "37751f65-0c00-413b-be2c-cc263454dcf2",
+  "greedy_tiers_fired": true,
+  "gate_release_in_probe": true
 }
