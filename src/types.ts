@@ -1162,6 +1162,20 @@ export interface SearchEntry {
     // generator hot path and the timestamp+query pair is already unique
     // in practice.
     searchId: string;
+    // Name-prefilter telemetry (optional so rows predating early paint still parse).
+    nameMatchMs?: number;
+    nameHitCount?: number;
+    nameEarlyPainted?: boolean;
+    // t0 → onPartial fire (perceived TTFR). 0 / absent when no early paint.
+    namePartialMs?: number;
+}
+
+// First-page callback from search() — name hits only, before embed/binary finish.
+export interface SearchPartial {
+    results: ScoredChunk[];
+    source: 'name';
+    nameHitCount: number;
+    cleanedQuery: string;
 }
 
 // Emitted when the user clicks a search result. Captures both the chosen

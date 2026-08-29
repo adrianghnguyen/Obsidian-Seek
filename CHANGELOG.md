@@ -7,6 +7,7 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 Search-modal honesty while the index is still coming up. No reindex is needed, since the index format is unchanged.
 
 ### Changed
+- **Known-item search paints sooner.** Typing a note name or alias — including a partial last word, like `alex che` for “Alex Chen” — shows those matches before the semantic pass finishes. Keyword scoring starts without waiting on the query embedding. Full ranking still runs and can reorder the list.
 - **Search no longer says the vault isn’t indexed while Seek is still restoring or building the index.** Opening search during sidecar hydrate, a pending first-time embed, or a full rebuild shows a waiting state instead of “Your vault isn’t indexed yet” or “No notes match.” Index status is an icon and short label in the footer next to esc; the query-row chip is gone.
 - **Indexing progress lives in the status bar**, not a sticky toast. The item shows quantized percent for the current full or incremental pass (5% steps). Hover reuses the Settings index card (files, chunks, last index) plus this-pass counts. Single-note saves do not. Completion notices are unchanged.
 - **Empty indexes now build through the fast full-reindex path on desktop.** A vault with no saved index (fresh install, sandbox reset, or cleared IndexedDB) previously indexed every note through throttled catch-up bursts — hours on a large vault. Seek now routes that case to a full reindex without the per-burst cap.

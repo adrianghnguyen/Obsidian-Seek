@@ -28,7 +28,8 @@ import {
     type InsertLinkMode,
 } from './insert-link';
 import { applySearchModalSize } from './search-modal-size';
-import { matchTitleAlias } from './fusion';
+import { matchTitleAlias, matchNamePrefix } from './fusion';
+import type { SearchPartial } from './types';
 import { dedupeAliasesAgainstBasename, sliceResultAliases } from './result-aliases';
 import type { RecentSearches } from './recents';
 import { indexLoadSpec, indexFooterStatus, isIndexWaitKind, type IndexLoadKind, type IndexLoadState } from './index-notice';
@@ -219,6 +220,9 @@ export class SeekSearchModal extends Modal {
     private vaultTagSet: Set<string> = new Set();
     private timer: number | null = null;
     private currentSearch = 0;
+    // Cleaned query for alias highlight while an early name-page is showing
+    // (latestSearchEntry is still the previous search until fusion returns).
+    private earlyCleanedQuery = '';
     // The currently displayed, ordered results — the array the keyboard model
     // indexes into via `selectedIndex`.
     private currentResults: ScoredChunk[] = [];
@@ -686,6 +690,7 @@ export class SeekSearchModal extends Modal {
             // so a click/capture can't reference results that aren't shown.
             this.currentSearch++;
             this.latestSearchEntry = null;
+            this.earlyCleanedQuery = '';
             this.renderEmpty();
             return;
         }
@@ -727,10 +732,17 @@ export class SeekSearchModal extends Modal {
         this.beginInFlight();
         try {
             this.setSearching();
+            this.earlyCleanedQuery = '';
             const { results, entry } = await this.orchestrator.search(
                 query,
                 MAX_RESULTS,
                 undefined,
+                (partial: SearchPartial) => {
+                    if (id !== this.currentSearch || this.closed) return;
+                    this.earlyCleanedQuery = partial.cleanedQuery;
+                    this.latestResultsShown = partial.results;
+                    this.renderResults(partial.results);
+                },
                 controller.signal,
             );
             // Stale (a newer query landed) or the modal closed mid-search — in
@@ -739,6 +751,7 @@ export class SeekSearchModal extends Modal {
             // IntersectionObserver that onClose already ran and will never
             // disconnect.
             if (id !== this.currentSearch || this.closed) return;
+            this.earlyCleanedQuery = '';
             this.latestSearchEntry = entry;
             this.latestResultsShown = results;
             this.latestSearchCompletedAt = performance.now();
@@ -1204,7 +1217,7 @@ export class SeekSearchModal extends Modal {
         if (row.titleEl.textContent !== title) row.titleEl.setText(title);
 
         const showAliases = this.settings.showResultAliases;
-        const cleanedQuery = (this.latestSearchEntry?.cleanedQuery ?? '').trim();
+        const cleanedQuery = (this.latestSearchEntry?.cleanedQuery ?? this.earlyCleanedQuery ?? '').trim();
         const hasTextQuery = cleanedQuery.length > 0;
 
         const aliasSig = r.note_path + '\x1e' + (r.metadata?.aliases ?? []).join('\x1e');
@@ -1221,6 +1234,14 @@ export class SeekSearchModal extends Modal {
             basenameCoverage = m.basenameCoverage;
             aliasCoverage = m.aliasCoverage;
             matchedAlias = m.aliasCoverage > 0 ? m.bestAlias : null;
+            if (!matchedAlias) {
+                const prefix = matchNamePrefix(cleanedQuery, title, r.metadata?.aliases ?? []);
+                if (prefix.bestAlias) {
+                    matchedAlias = prefix.bestAlias;
+                    aliasCoverage = prefix.aliasScore;
+                }
+                if (prefix.basenameScore > basenameCoverage) basenameCoverage = prefix.basenameScore;
+            }
         }
 
         const allAliases = showAliases

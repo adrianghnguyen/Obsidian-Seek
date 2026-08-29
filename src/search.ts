@@ -8,7 +8,7 @@
 
 import type { App } from 'obsidian';
 import { Notice, TFile } from 'obsidian'; // value imports: reindexDelta uses `instanceof TFile`; the quota gate toasts
-import type { Chunk, ChunkMeta, ScoredChunk, SearchEntry, IndexCompleteEntry, IndexProgressEntry, ResetEntry, DeltaApplyEntry, QueryFilters, FilterContext, SeekSettings, MemorySnapshot } from './types';
+import type { Chunk, ChunkMeta, ScoredChunk, SearchEntry, SearchPartial, IndexCompleteEntry, IndexProgressEntry, ResetEntry, DeltaApplyEntry, QueryFilters, FilterContext, SeekSettings, MemorySnapshot } from './types';
 import { snapshotMemory, memoryDelta, distributionStats } from './types';
 import { MarkdownChunker, cyrb53Hex } from './chunker';
 import { cleanDenseText } from './dense-clean';
@@ -18,6 +18,7 @@ import { buildSynonymMap, chunkDeclaresAlias, SYNONYM_WEIGHT, type SynonymMap } 
 import { TaskContextTracker } from './task-context';
 import { rank, cosineScores, DEFAULT_RANKING_CONFIG } from './ranker';
 import { browseOrder, recencyDate } from './fusion';
+import { collectNameHits, shouldEarlyPaint } from './name-match';
 import { IndexStore, nukeDatabase, classifyFileDelta, findOrphanChunkIds, isStoreClosedError, isQuotaError, stripContent, META_SCHEMA_VERSION, type MetaConfig, type FileRecord } from './index-store';
 import { INDEX_QUOTA_MSG } from './index-notice';
 import { LocalEmbedder, EMBEDDING_DIM, LEGACY_ENGLISH_MODEL_ID, MODEL_ID, PLUGIN_VERSION } from './embedder';
@@ -3597,10 +3598,16 @@ export class SearchOrchestrator {
     // (2026-07-02 review). Passing the override as a call-local argument
     // instead makes overlapping searches independent by construction — no
     // shared mutable state, so nothing to race or leak.
+    //
+    // onPartial: optional first-paint callback. Fired once with high-confidence
+    // basename/alias hits (prefix-aware last token) BEFORE query embed and the
+    // binary scan finish, so the modal can show a useful row on a known-item
+    // keystroke. Final fused results still come from the returned promise.
     async search(
         query: string,
         topK = 10,
         recencyOverride?: RecencyOverride,
+        onPartial?: (partial: SearchPartial) => void | Promise<void>,
         signal?: AbortSignal,
     ): Promise<{ results: ScoredChunk[]; entry: SearchEntry }> {
         const throwIfAborted = (): void => {
@@ -3747,7 +3754,7 @@ export class SearchOrchestrator {
             return { results, entry };
         }
 
-        // ---- S0.5: query embedding ------------------------------------
+        // ---- S0.5: query embedding (overlapped with name + BM25) --------
         // granite-r2 is symmetric (no query/doc prompt), so the query takes the
         // SAME pass as the doc side. As of v8 (2026-06-28) the doc side is no
         // longer raw: cleanDenseBody/cleanDenseText run in the chunker (wikilinks
@@ -3758,60 +3765,72 @@ export class SearchOrchestrator {
         // keeps the raw cleanedQuery: seekTokenize fragments that same syntax
         // symmetrically on both index and query side, so the lexical channel
         // needs no parallel cleaning pass.)
-        const qStart = performance.now();
-        const embedded = await this.embedder.embed(cleanDenseText(cleanedQuery), signal);
-        const queryVec = embedded.vector;
-        const iframeEmbedMs = embedded.iframeLatencyMs;
-        const queryEmbedMs = performance.now() - qStart;
-
-        // Vector sanity: a NaN/Inf query embedding (WASM numeric fault, torn
-        // model load) poisons every cosine downstream — comparisons all come
-        // back false and results render in frame order scored 0, which reads as
-        // silent ranking corruption rather than an error. Every dense score
-        // derives from this one vector, so this single gate closes the class;
-        // embed() declines to cache a non-finite vector, so a retry re-embeds.
-        if (!queryVec.every(Number.isFinite)) {
-            await this.logger.appendError(
-                'searchQueryVectorNonFinite',
-                new Error(`Query embedding contains non-finite values (dim ${queryVec.length}) — corrupt embedder output; retry the search.`),
-            );
-            const entry: SearchEntry = this.emptySearchEntry(query, cleanedQuery, filters, topK, searchId, idbReadMs, performance.now() - t0);
-            await this.appendSearchTelemetry(entry);
-            return { results: [], entry };
-        }
-
-        // Dim sanity: the binary index was packed at the dim of whatever the
-        // last reindex wrote. If the live model now emits a different dim, the
-        // asymmetric scorer will throw — surface the actionable error instead
-        // of letting it crash the search.
-        if (bytesPerVec !== ((queryVec.length + 7) >> 3)) {
-            await this.logger.appendError(
-                'searchDimMismatch',
-                new Error(
-                    `Binary index was packed for ${bytesPerVec * 8}-d vectors but the loaded model emits ` +
-                    `${queryVec.length}-d. Run "Seek: Full reindex" to rebuild.`,
-                ),
-            );
-            const entry: SearchEntry = this.emptySearchEntry(query, cleanedQuery, filters, topK, searchId, idbReadMs, performance.now() - t0);
-            await this.appendSearchTelemetry(entry);
-            return { results: [], entry };
-        }
-
-        // ---- S1a: binary candidate-gen (off-thread when available) ------
-        // Asymmetric float·sign-bit dot product across the whole resident index.
-        // The score order is what matters (asymmetric is a biased estimator of
-        // cosine — see binary.ts) so we use it only to pick the top-N; the actual
-        // relevance score in stage 2 comes from real cosine.
         //
-        // Dispatched as a promise so the worker's O(corpus) scan OVERLAPS the
-        // main-thread BM25 + recency work below; awaited just before the union.
-        // binaryCandidatesAsync resolves to the IDENTICAL indices the synchronous
-        // path would (the shared binaryCandidates), via the worker or its fallback.
-        const binaryStart = performance.now();
-        const binaryPromise = binaryCandidatesAsync(
-            this.binaryWorker, frameGen, queryVec, activePacked,
-            orderedChunks.length, bytesPerVec, caps.binary, mask ?? null,
-        );
+        // The embed promise starts NOW so BM25 + the name prefilter run on the
+        // main thread while the iframe works. Binary still needs the query
+        // vector — it launches in embed's then() so it overlaps leftover BM25
+        // when embed is the faster of the two.
+        const qStart = performance.now();
+        type EmbedOk = { ok: true; vector: Float32Array; iframeLatencyMs: number; queryEmbedMs: number };
+        type EmbedFail = { ok: false; reason: 'nonfinite' | 'dim'; dim: number; iframeLatencyMs: number; queryEmbedMs: number };
+        let binaryStart = 0;
+        let binaryPromise: Promise<number[]> | null = null;
+        const embedPromise: Promise<EmbedOk | EmbedFail> = this.embedder.embed(cleanDenseText(cleanedQuery), signal).then(embedded => {
+            const queryEmbedMs = performance.now() - qStart;
+            const queryVec = embedded.vector;
+            if (!queryVec.every(Number.isFinite)) {
+                return { ok: false, reason: 'nonfinite' as const, dim: queryVec.length, iframeLatencyMs: embedded.iframeLatencyMs, queryEmbedMs };
+            }
+            if (bytesPerVec !== ((queryVec.length + 7) >> 3)) {
+                return { ok: false, reason: 'dim' as const, dim: queryVec.length, iframeLatencyMs: embedded.iframeLatencyMs, queryEmbedMs };
+            }
+            binaryStart = performance.now();
+            binaryPromise = binaryCandidatesAsync(
+                this.binaryWorker, frameGen, queryVec, activePacked,
+                orderedChunks.length, bytesPerVec, caps.binary, mask ?? null,
+            );
+            return { ok: true, vector: queryVec, iframeLatencyMs: embedded.iframeLatencyMs, queryEmbedMs };
+        });
+
+        // ---- S0.6: name prefilter (early paint) -------------------------
+        // Note-level basename/alias scan. O(files), not O(chunks). A confident
+        // hit set paints via onPartial before embed/binary resolve; topical
+        // queries with no name coverage skip this and wait for fusion.
+        const nameStart = performance.now();
+        const nameHits = collectNameHits(orderedChunks, cleanedQuery, mask);
+        const nameMatchMs = performance.now() - nameStart;
+        let nameEarlyPainted = false;
+        let namePartialMs = 0;
+        if (onPartial && shouldEarlyPaint(nameHits)) {
+            const titleBoost = this.settings.navTitleBoost;
+            const early: ScoredChunk[] = nameHits.slice(0, topK).map(h => {
+                const c = orderedChunks[h.index];
+                return {
+                    ...c,
+                    content: '',
+                    score: h.score,
+                    ranking_signals: {
+                        dense: 0, bm25: 0, hybrid: 0, recency: 0,
+                        title_boost: titleBoost * h.score,
+                        denseRaw: 0,
+                    },
+                    lexicalOnly: true,
+                };
+            });
+            await this.hydrateBodies(early);
+            const snippetChars = SNIPPET_PREVIEW_LIMITS[this.settings.snippetPreview].chars;
+            const passageTerms = buildPassageTerms(cleanedQuery, () => 0);
+            for (const r of early) r.snippet = makeSnippet(r.content, passageTerms, snippetChars);
+            namePartialMs = performance.now() - t0;
+            nameEarlyPainted = true;
+            await onPartial({
+                results: early,
+                source: 'name',
+                nameHitCount: nameHits.length,
+                cleanedQuery,
+            });
+            await cheapYield();
+        }
 
         // ---- S1b: BM25 candidate-gen (cached) ---------------------------
         // BM25 fits over orderedChunks (parallel to the binary array — same
@@ -3889,12 +3908,41 @@ export class SearchOrchestrator {
         // lifting via recency_weight (see ranker.ts DEFAULT_RANKING_CONFIG).
         const recencyTopIdx = this.topByRecency(orderedChunks, caps.recency, mask);
 
-        // Await the (possibly off-thread) binary candidates now that the main
-        // thread has finished BM25 + recency. binaryMs spans the dispatch→await
-        // window, so it reflects time-to-availability (incl. the overlap), not
-        // raw scan cost. Identical indices to the synchronous path.
-        const binaryTopIdx = await binaryPromise;
-        const binaryMs = performance.now() - binaryStart;
+        // Embed may still be in flight (BM25 overlapped it). Binary launches
+        // from embed's then() — await embed first so a non-finite/dim failure
+        // does not wait on a scan that never started.
+        const embedded = await embedPromise;
+        const queryEmbedMs = embedded.queryEmbedMs;
+        const iframeEmbedMs = embedded.iframeLatencyMs;
+        if (!embedded.ok) {
+            if (embedded.reason === 'nonfinite') {
+                await this.logger.appendError(
+                    'searchQueryVectorNonFinite',
+                    new Error(`Query embedding contains non-finite values (dim ${embedded.dim}) — corrupt embedder output; retry the search.`),
+                );
+            } else {
+                await this.logger.appendError(
+                    'searchDimMismatch',
+                    new Error(
+                        `Binary index was packed for ${bytesPerVec * 8}-d vectors but the loaded model emits ` +
+                        `${embedded.dim}-d. Run "Seek: Full reindex" to rebuild.`,
+                    ),
+                );
+            }
+            const entry: SearchEntry = this.emptySearchEntry(query, cleanedQuery, filters, topK, searchId, idbReadMs, performance.now() - t0);
+            entry.nameMatchMs = parseFloat(nameMatchMs.toFixed(2));
+            entry.nameHitCount = nameHits.length;
+            entry.nameEarlyPainted = nameEarlyPainted;
+            entry.namePartialMs = parseFloat(namePartialMs.toFixed(2));
+            await this.appendSearchTelemetry(entry);
+            return { results: [], entry };
+        }
+        const queryVec = embedded.vector;
+
+        // Await the (possibly off-thread) binary candidates. binaryMs spans
+        // dispatch→await (overlap with leftover BM25 included), not raw scan cost.
+        const binaryTopIdx = binaryPromise ? await binaryPromise : [];
+        const binaryMs = binaryStart > 0 ? performance.now() - binaryStart : 0;
 
         // ---- S1 union ---------------------------------------------------
         // Per-arm counts measure the unique contribution of each arm BEFORE
@@ -4102,6 +4150,10 @@ export class SearchOrchestrator {
             synonymExpansion: synEnabled,
             searchableProperties: this.settings.searchableProperties,
             headingsField: this.settings.headingsField,
+            nameMatchMs: parseFloat(nameMatchMs.toFixed(2)),
+            nameHitCount: nameHits.length,
+            nameEarlyPainted,
+            namePartialMs: parseFloat(namePartialMs.toFixed(2)),
             // Theoretical BM25 bound for this query (0 = bound had no opinion →
             // fusion used the empirical-max fallback). Diagnoses weak-lexical
             // queries: max(rawBm25)/bm25Bound is the channel's confidence.
@@ -4880,6 +4932,7 @@ export class SearchOrchestrator {
             candidateUnionSize: 0,
             binaryCacheHit: false,
             rawDenseTop5: [], rawBm25Top5: [], fusedTop50: [],
+            nameMatchMs: 0, nameHitCount: 0, nameEarlyPainted: false, namePartialMs: 0,
             alpha: this.settings.denseWeight,
             recencyWeight: this.settings.recencyEpsilon,
             recencyKey: this.settings.recencyKey,

@@ -412,6 +412,93 @@ export function matchTitleAlias(query: string, basename: string, aliases: string
     return { basenameCoverage, bestAlias, aliasCoverage };
 }
 
+// Prefix-aware name match for early paint / known-item gating.
+// Same analyzer as titleMatchBoost (seekTokenize + depluralize + stopword drop),
+// but the LAST query token may prefix a title/alias token (min 2 chars). Earlier
+// tokens stay exact. Mid-word typing ("alex che" → "Alex Chen") is the class
+// titleMatchBoost rejects. BM25's PREFIX_LAST_TOKEN is ≥3 and runs over every
+// field including body; this is name-only so a short prefix is safe.
+export const NAME_PREFIX_MIN = 2;
+
+export function queryTokenList(query: string): string[] {
+    const collect = (dropStopwords: boolean): string[] => {
+        const out: string[] = [];
+        for (const raw of seekTokenize(query)) {
+            const m = raw.toLowerCase();
+            for (const t of hasCjk(m) ? segmentCjkToken(m) : [foldDiacritics(m)]) {
+                if (dropStopwords && ENGLISH_STOPWORDS.has(t)) continue;
+                out.push(depluralize(t));
+            }
+        }
+        return out;
+    };
+    const dropped = collect(true);
+    return dropped.length > 0 ? dropped : collect(false);
+}
+
+function scoreNameTokens(qTokens: string[], name: string): number {
+    if (qTokens.length === 0) return 0;
+    const canonical = tokenSet(name);
+    if (canonical.size === 0) return 0;
+    const matchable = tokenSet(name, false, true);
+
+    const last = qTokens[qTokens.length - 1];
+    const earlier = qTokens.slice(0, -1);
+    for (const t of earlier) {
+        if (!matchable.has(t)) return 0;
+    }
+
+    let lastWeight = 0;
+    if (matchable.has(last)) {
+        lastWeight = 1;
+    } else if (last.length >= NAME_PREFIX_MIN) {
+        let bestRatio = 0;
+        for (const nt of matchable) {
+            if (nt.length > last.length && nt.startsWith(last)) {
+                bestRatio = Math.max(bestRatio, last.length / nt.length);
+            }
+        }
+        if (bestRatio <= 0) return 0;
+        lastWeight = 0.25 + 0.75 * bestRatio;
+    } else {
+        return 0;
+    }
+
+    const inter = earlier.length + lastWeight;
+    const precision = Math.min(1, inter / canonical.size);
+    return lastWeight < 1 ? precision * 0.9 : precision;
+}
+
+export interface NamePrefixMatch {
+    score: number;
+    basenameScore: number;
+    bestAlias: string | null;
+    aliasScore: number;
+}
+
+export function matchNamePrefix(query: string, basename: string, aliases: string[]): NamePrefixMatch {
+    const qTokens = queryTokenList(query);
+    if (qTokens.length === 0) {
+        return { score: 0, basenameScore: 0, bestAlias: null, aliasScore: 0 };
+    }
+    const basenameScore = scoreNameTokens(qTokens, basename);
+    let bestAlias: string | null = null;
+    let aliasScore = 0;
+    for (const alias of aliases) {
+        const s = scoreNameTokens(qTokens, String(alias));
+        if (s > aliasScore) {
+            aliasScore = s;
+            bestAlias = String(alias);
+        }
+    }
+    return {
+        score: Math.max(basenameScore, aliasScore),
+        basenameScore,
+        bestAlias: aliasScore > 0 ? bestAlias : null,
+        aliasScore,
+    };
+}
+
 export function titleMatchBoost(query: string, chunks: TitleBoostChunk[], boost = 0.8): Float64Array {
     const out = new Float64Array(chunks.length);
     const qTokens = queryTokensForTitleMatch(query);
