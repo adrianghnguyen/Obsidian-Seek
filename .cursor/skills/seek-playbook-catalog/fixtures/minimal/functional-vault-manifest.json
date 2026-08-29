@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "vault": "seek-functional",
+  "notes": [
+    { "path": "People/Alex Chen.md", "title": "Alex Chen", "aliases": ["AC"], "probeToken": "seek-probe-001" },
+    { "path": "Meetings/Alex 1x1 2026-05-19.md", "title": "Alex 1x1 2026-05-19", "probeToken": "seek-probe-002" },
+    { "path": "Gadgets/Pixel.md", "title": "Pixel", "probeToken": "seek-probe-003" },
+    { "path": "Archive/Needle Cedar.md", "title": "Needle Cedar", "probeToken": "seek-probe-004" },
+    { "path": "Work/User Stories.md", "title": "User Stories", "probeToken": "seek-probe-005" },
+    { "path": "Science/Falsifiability.md", "title": "Falsifiability", "probeToken": "seek-probe-006" },
+    { "path": "Books/Control Systems.md", "title": "Control Systems Theory", "probeToken": "seek-probe-007" },
+    { "path": "Notes/Broad Topic A.md", "probeToken": "seek-probe-008" },
+    { "path": "Notes/Broad Topic B.md", "probeToken": "seek-probe-009" },
+    { "path": "Notes/Broad Topic C.md", "probeToken": "seek-probe-010" },
+    { "path": "Admin/Template Company.md", "probeToken": "seek-probe-011" },
+    { "path": "Books/Nature Identity.md", "probeToken": "seek-probe-012" },
+    { "path": "Notes/How To Get Over.md", "probeToken": "seek-probe-013" },
+    { "path": "Notes/Books Shelf Alpha.md", "probeToken": "seek-probe-014" },
+    { "path": "Notes/Books Shelf Beta.md", "probeToken": "seek-probe-015" }
+  ]
+}
