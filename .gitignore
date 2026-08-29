@@ -26,4 +26,10 @@ experiments/
 .cursor/telemetry-screenshots/
 .cursor/functional-traces/
 .cursor/handoff/
+# Canvas export pipeline (local only; canvas .tsx lives in Cursor managed folder)
+.cursor/canvas-baseline-export.json
+.cursor/canvas-baseline-snippet.json
+.cursor/canvas-ts-block.txt
+.cursor/playbook-run-results.json
+.cursor/playbook-run-failures.md
 .cursor/skills/seek-playbook-catalog/fixtures/generated/
