@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
     IndexStatusBar,
+    extendIndexPassTotal,
     parseIndexedProgress,
     quantizePercent,
 } from './index-status-bar';
@@ -102,6 +103,17 @@ describe('quantizePercent', () => {
         expect(quantizePercent(0, 4)).toBe(0);
         expect(quantizePercent(4, 4)).toBe(100);
         expect(quantizePercent(2, 5)).toBe(40);
+    });
+});
+
+describe('extendIndexPassTotal', () => {
+    it('keeps committed progress when new edits enlarge the dirty set', () => {
+        expect(extendIndexPassTotal(50, 100, 55)).toBe(105);
+        expect(extendIndexPassTotal(50, 100, 50)).toBe(100);
+    });
+
+    it('never shrinks the pass total', () => {
+        expect(extendIndexPassTotal(80, 100, 15)).toBe(100);
     });
 });
 

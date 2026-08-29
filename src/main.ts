@@ -39,7 +39,7 @@ import {
     resolveInsertLinkSubpath,
 } from './insert-link';
 import { indexBannerSpec, resolveIndexLoadPhase, resolveCliSearchGate, resolveIndexUiStatus, resolveSidecarWait, retainIndexInventory, INDEX_STALE_MSG, INDEX_SYNCING_MSG, INDEX_PEER_AHEAD_MSG, type DegradedReason, type IndexLoadState } from './index-notice';
-import { IndexStatusBar, parseIndexedProgress } from './index-status-bar';
+import { IndexStatusBar, extendIndexPassTotal, parseIndexedProgress } from './index-status-bar';
 import type { IndexJobKind, IndexStatusHealth, IndexStatusJob } from './index-status-card';
 import { SeekSettingTab } from './settings-tab';
 import { collectPlatformInfo, isMobilePlatform, resolveDevice, recordActiveBackend, maybeDemoteOnCrash, getStartupWarm } from './platform';
@@ -47,12 +47,14 @@ import { CompositorPacer } from './pacer';
 import { shouldUnloadEmbedder, type UnloadGateState } from './embedder-lifecycle';
 import {
     drainCatchUp,
-    CATCHUP_MAX_FILES_PER_BURST,
-    CATCHUP_BURST_BUDGET_MS,
-    DESKTOP_CATCHUP_MAX_FILES_PER_BURST,
-    DESKTOP_CATCHUP_BURST_BUDGET_MS,
 } from './catchup';
-import { isKnownEmptyIndexWithNotes, shouldAutoDrainStartupCatchUp } from './startup-drain';
+import {
+    isKnownEmptyIndexWithNotes,
+    shouldAutoDrainStartupCatchUp,
+    resolveIndexBuildMode,
+    catchUpBurstLimits,
+    type IndexBuildMode,
+} from './startup-drain';
 import { TaskContextTracker, type TaskContext } from './task-context';
 import { seekPerf } from './perf-console';
 import type { LongTaskEntry, MemoryPressureEntry, StorageSnapshotEntry, EvictionSuspectedEntry, AppLocalFetchEntry } from './types';
@@ -217,6 +219,10 @@ export default class SeekPlugin extends Plugin {
     private flushing = false;                    // flushDirty re-entrancy guard
     private catchUpPending = false;              // cold-mobile deferred an embed
     private catchUpRunning = false;              // runCatchUp re-entrancy guard
+    private coldBuildScheduled = false;          // scheduleColdBuild single-flight
+    private persistCacheRestoredThisBoot = false; // restorePersistedCachesBeforeReconcile once
+    /** Live catch-up pass shown on the status bar — survives burst pauses and self-chains. */
+    private catchUpJob: { id: number; passTotal: number; committed: number } | null = null;
     // True from construct until the onload sidecar/reconcile IIFE finishes, so the
     // search modal cannot latch "isn't indexed yet" on an empty store mid-hydrate.
     private indexBootPending = true;
@@ -368,6 +374,36 @@ export default class SeekPlugin extends Plugin {
         const id = this.nextIndexJobId++;
         this.indexProgress.show(total, label, { id, kind });
         return id;
+    }
+
+    private catchUpJobLabel(total: number): string {
+        return `Seek: indexing ${total.toLocaleString()} notes…`;
+    }
+
+    /** Start or extend the catch-up coordinator job without resetting committed progress. */
+    private syncCatchUpJob(dirtyCount: number): void {
+        if (dirtyCount <= 0) return;
+        if (this.catchUpJob == null) {
+            const id = this.beginIndexJob('catchup', dirtyCount, this.catchUpJobLabel(dirtyCount));
+            this.catchUpJob = { id, passTotal: dirtyCount, committed: 0 };
+            return;
+        }
+        const passTotal = extendIndexPassTotal(this.catchUpJob.committed, this.catchUpJob.passTotal, dirtyCount);
+        if (passTotal !== this.catchUpJob.passTotal) {
+            this.catchUpJob.passTotal = passTotal;
+            this.indexProgress.update(
+                this.catchUpJob.committed,
+                passTotal,
+                this.catchUpJobLabel(passTotal),
+                this.catchUpJob.id,
+            );
+        }
+    }
+
+    private finishCatchUpJob(): void {
+        if (this.catchUpJob == null) return;
+        this.indexProgress.hide(this.catchUpJob.id);
+        this.catchUpJob = null;
     }
 
     /** Readiness gate for seek:search / seek:open / seek:insert-link — null when search may run. */
@@ -679,27 +715,13 @@ export default class SeekPlugin extends Plugin {
             // Empty store + live notes: desktop must drain without opening Search.
             // Covers identity-nuke-then-empty-hydrate and boot races that skip
             // reconcileOnLoad's pending flag.
-            if (shouldAutoDrainStartupCatchUp({
-                mobile: isMobilePlatform(),
-                catchUpPending: this.catchUpPending,
-                emptyIndexWithNotes: isKnownEmptyIndexWithNotes(this.indexInventoryChunks, this.indexableNoteCount()),
-            })) {
-                this.catchUpPending = true;
-            }
-            this.scheduleStartupCatchUp();
+            this.applyPostBootIndexScheduling();
         }
         })();
 
         this.app.workspace.onLayoutReady(() => {
             this.vaultIndexEventsReady = true;
-            if (shouldAutoDrainStartupCatchUp({
-                mobile: isMobilePlatform(),
-                catchUpPending: this.catchUpPending,
-                emptyIndexWithNotes: isKnownEmptyIndexWithNotes(this.indexInventoryChunks, this.indexableNoteCount()),
-            })) {
-                this.catchUpPending = true;
-            }
-            this.scheduleStartupCatchUp();
+            this.applyPostBootIndexScheduling();
         });
 
         // Periodic sidecar reconcile: remote arrivals don't fire vault events for
@@ -1800,6 +1822,7 @@ export default class SeekPlugin extends Plugin {
         if (this.dirtyQueue.size === 0 && this.deletedQueue.size === 0) return;
         this.flushing = true;
         let bulkProgress = false;
+        let bulkJobId: number | null = null;
         // Span the whole drain: the incremental path was the biggest un-wrapped
         // jank source (issue #5 — all its long tasks logged as 'idle').
         this.pushTaskContext('indexing');
@@ -1840,13 +1863,15 @@ export default class SeekPlugin extends Plugin {
                 // embed is deferred (nothing to count). A live query aborts the burst
                 // (shouldContinue); hide the bar so it can reopen on the drain.
                 if (!deferEmbed) {
-                    this.indexProgress.show(dirty.length, `Seek: indexing ${dirty.length} changed notes…`);
+                    bulkJobId = this.beginIndexJob('catchup', dirty.length, `Seek: indexing ${dirty.length} changed notes…`);
                     bulkProgress = true;
                 }
                 const result = await orchestrator.reindexDelta(dirty, deleted, {
                     embed: !deferEmbed,
                     shouldContinue: () => !this.indexingBlocked,
-                    onProgress: deferEmbed ? undefined : (msg) => this.indexProgress.updateFromProgress(msg),
+                    onProgress: deferEmbed ? undefined : (msg) => {
+                        if (bulkJobId != null) this.indexProgress.updateFromProgress(msg, bulkJobId);
+                    },
                 });
                 // Summary counts what actually committed — an embed preempted by a
                 // query reports the partial total honestly; the drain finishes the
@@ -1891,8 +1916,8 @@ export default class SeekPlugin extends Plugin {
         } finally {
             this.popTaskContext('indexing');
             this.flushing = false;
-            if (bulkProgress) this.indexProgress.hide();
-            else this.refreshIndexStatusBar();
+            if (bulkJobId != null) this.indexProgress.hide(bulkJobId);
+            else if (!bulkProgress) this.refreshIndexStatusBar();
             void this.touchIndexInventory();
         }
     }
@@ -1914,13 +1939,20 @@ export default class SeekPlugin extends Plugin {
             await this.whenLayoutReady();
             const { dirty, deleted } = await this.orchestrator.computeDelta();
             if (dirty.length === 0 && deleted.length === 0) return false;
-            // Kick off model load + catch-up drain immediately — restorePersistedCaches
-            // can take minutes on a large vault and must not delay this (G_eviction
-            // probe 2026-08-28: catchUpPending latched only after ~4 min restore).
-            if (dirty.length > 0) {
-                this.catchUpPending = true;
-                this.syncWarmDeferred();
-                this.scheduleStartupCatchUp();
+            let storedFiles = 0;
+            try {
+                storedFiles = (await this.store.count()).files;
+            } catch { /* treat as empty store */ }
+            const buildMode = resolveIndexBuildMode({
+                inventoryChunks: this.indexInventoryChunks,
+                noteCount: this.indexableNoteCount(),
+                dirtyCount: dirty.length,
+                storedFiles,
+            });
+            if (buildMode === 'cold') {
+                this.scheduleIndexBuild('cold');
+            } else if (buildMode === 'catchup') {
+                this.scheduleIndexBuild('catchup');
             }
             // T4 persist-cache: restore before reconcile only when structural deletes
             // need applyDelta (embed:false still patches the frame for deleted paths).
@@ -2264,56 +2296,58 @@ export default class SeekPlugin extends Plugin {
         const pacer = new CompositorPacer();
         void (async () => {
             this.pushTaskContext('catchup');
-            let jobId: number | null = null;
-            let passTotal = 0;
-            let committed = 0;
             try {
+                if (!this.persistCacheRestoredThisBoot && (this.indexInventoryChunks ?? 0) > 0) {
+                    this.persistCacheRestoredThisBoot = true;
+                    try {
+                        await orchestrator.restorePersistedCachesBeforeReconcile();
+                    } catch (e) {
+                        await this.logger.appendError('persist-cache-restore', e).catch(() => {});
+                    }
+                }
+                const burst = catchUpBurstLimits({
+                    mobile,
+                    burstMaxFiles: this.settings.catchUpBurstMaxFiles,
+                });
                 // Drain first — never block on warm/restore (G_catchup_ux). Search
                 // serves stale frame / persisted BM25 during bursts; warm runs after
                 // idle or on the search hot path.
                 const { pending } = await drainCatchUp({
                     computeDelta: async () => {
                         const d = await orchestrator.computeDelta();
-                        if (d.dirty.length > 0) {
-                            if (jobId == null) {
-                                passTotal = d.dirty.length;
-                                jobId = this.beginIndexJob('catchup', passTotal, `Seek: indexing ${passTotal} notes…`);
-                            } else if (d.dirty.length > Math.max(0, passTotal - committed)) {
-                                this.indexProgress.hide(jobId);
-                                committed = 0;
-                                passTotal = d.dirty.length;
-                                jobId = this.beginIndexJob('catchup', passTotal, `Seek: indexing ${passTotal} notes…`);
-                            }
-                        }
+                        if (d.dirty.length > 0) this.syncCatchUpJob(d.dirty.length);
                         return d;
                     },
                     reindexDelta: async (d, del, opts) => {
                         const r = await orchestrator.reindexDelta(d, del, {
                             ...opts,
                             onProgress: (msg) => {
+                                const job = this.catchUpJob;
+                                if (!job) return;
                                 const p = parseIndexedProgress(msg);
                                 this.indexProgress.update(
-                                    committed + (p?.files ?? 0),
-                                    passTotal || d.length,
+                                    job.committed + (p?.files ?? 0),
+                                    job.passTotal,
                                     msg,
-                                    jobId ?? undefined,
+                                    job.id,
                                 );
                             },
                         });
-                        committed += r.committedPaths.length;
-                        if (jobId != null) {
+                        if (this.catchUpJob) {
+                            this.catchUpJob.committed += r.committedPaths.length;
+                            const { committed, passTotal, id } = this.catchUpJob;
                             const label = this.indexingBlocked
                                 ? `Seek: indexing paused · ${committed} / ${passTotal}`
                                 : `Seek: indexing ${committed} / ${passTotal} notes…`;
-                            this.indexProgress.update(committed, passTotal, label, jobId);
+                            this.indexProgress.update(committed, passTotal, label, id);
                         }
                         return r;
                     },
                     isHidden: () => activeDocument.hidden,
                     isSearchActive: () => this.indexingBlocked,
                     pace: () => pacer.pace(),
-                    maxFiles: mobile ? CATCHUP_MAX_FILES_PER_BURST : DESKTOP_CATCHUP_MAX_FILES_PER_BURST,
-                    budgetMs: mobile ? CATCHUP_BURST_BUDGET_MS : DESKTOP_CATCHUP_BURST_BUDGET_MS,
+                    maxFiles: burst.maxFiles,
+                    budgetMs: burst.budgetMs,
                 });
                 this.catchUpPending = pending;
             } catch (e) {
@@ -2323,8 +2357,8 @@ export default class SeekPlugin extends Plugin {
                 this.popTaskContext('catchup');
                 this.catchUpRunning = false;
                 this.syncWarmDeferred();
-                if (jobId != null) this.indexProgress.hide(jobId);
-                else this.refreshIndexStatusBar();
+                if (!this.catchUpPending) this.finishCatchUpJob();
+                else this.indexProgress.refreshIdle();
                 void this.touchIndexInventory();
                 if (!this.catchUpPending && this.orchestrator && getStartupWarm()) {
                     void this.orchestrator.warmCaches('post-catchup').catch(() => {});
@@ -2338,6 +2372,61 @@ export default class SeekPlugin extends Plugin {
 
     // After boot reconciliation, desktop loads the model and drains pending
     // embeds without opening Search. Mobile stays lazy (jetsam / heap).
+    private applyPostBootIndexScheduling(): void {
+        const empty = isKnownEmptyIndexWithNotes(this.indexInventoryChunks, this.indexableNoteCount());
+        if (empty && !isMobilePlatform()) {
+            this.scheduleIndexBuild('cold');
+            return;
+        }
+        if (shouldAutoDrainStartupCatchUp({
+            mobile: isMobilePlatform(),
+            catchUpPending: this.catchUpPending,
+        }) && this.catchUpPending) {
+            this.scheduleIndexBuild('catchup');
+        }
+    }
+
+    private scheduleIndexBuild(mode: IndexBuildMode): void {
+        if (mode === 'idle') return;
+        if (isMobilePlatform()) {
+            if (mode === 'catchup') this.catchUpPending = true;
+            return;
+        }
+        if (mode === 'cold') {
+            if (this.coldBuildScheduled || this.orchestrator?.isWriting()) return;
+            this.coldBuildScheduled = true;
+            void this.scheduleColdBuild();
+            return;
+        }
+        this.catchUpPending = true;
+        this.syncWarmDeferred();
+        this.scheduleStartupCatchUp();
+    }
+
+    private async scheduleColdBuild(): Promise<void> {
+        if (isMobilePlatform() || !this.orchestrator) {
+            this.coldBuildScheduled = false;
+            return;
+        }
+        const pacer = new CompositorPacer();
+        try {
+            await pacer.pace();
+            await this.ensureModelLoaded();
+            this.catchUpPending = false;
+            const ok = await this.runFullReindex({ skipConfirm: true });
+            if (!ok && !this.orchestrator.isWriting()) {
+                this.catchUpPending = true;
+                this.scheduleStartupCatchUp();
+            }
+        } catch (e) {
+            await this.logger.appendError('cold-build', e).catch(() => {});
+            this.catchUpPending = true;
+            this.scheduleStartupCatchUp();
+        } finally {
+            this.coldBuildScheduled = false;
+        }
+    }
+
     private scheduleStartupCatchUp(): void {
         if (!shouldAutoDrainStartupCatchUp({
             mobile: isMobilePlatform(),

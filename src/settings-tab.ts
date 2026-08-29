@@ -22,10 +22,13 @@ import { DEFAULT_SETTINGS, MATCH_STRENGTH_MIN_NOTES } from './types';
 import { renderIndexStatusCard } from './index-status-card';
 import {
     getBackendOverride, setBackendOverride, isWebgpuDemoted, clearWebgpuDemoted,
-    getStartupWarm, setStartupWarm,
+    getStartupWarm, setStartupWarm, isMobilePlatform,
     type BackendChoice,
 } from './platform';
 import { enumerateDatePropertyNames } from './prop-types';
+import {
+    clampCatchUpBurstMaxFiles,
+} from './startup-drain';
 
 // Real repo/social URLs for the About footer.
 const GITHUB_URL = 'https://github.com/tooape/Obsidian-Seek-prototype';
@@ -254,6 +257,21 @@ export class SeekSettingTab extends PluginSettingTab {
             .setName('Honor excluded folders')
             .setDesc("Skip files in Obsidian's Settings → Files & Links → Excluded files (e.g. Archive). Takes effect on the next full reindex.")
             .addToggle(t => t.setValue(this.s.honorIgnoredFolders).onChange(async v => { this.s.honorIgnoredFolders = v; await this.save(); }));
+
+        if (!isMobilePlatform()) {
+            new Setting(adv)
+                .setName('Catch-up batch size')
+                .setDesc(`Number of notes indexed per background batch while catching up. Higher values finish backlog faster; lower values keep search more responsive during indexing. Default ${DEFAULT_SETTINGS.catchUpBurstMaxFiles}.`)
+                .addText(text => text
+                    .setPlaceholder(String(DEFAULT_SETTINGS.catchUpBurstMaxFiles))
+                    .setValue(String(this.s.catchUpBurstMaxFiles))
+                    .onChange(async v => {
+                        const n = clampCatchUpBurstMaxFiles(Number(v));
+                        this.s.catchUpBurstMaxFiles = n;
+                        text.setValue(String(n));
+                        await this.save();
+                    }));
+        }
 
         // Live search always uses this device's IndexedDB. The toggle only controls
         // whether Seek also writes/hydrates vault index files (sidecar) for Sync/iOS.

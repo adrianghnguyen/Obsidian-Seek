@@ -29,6 +29,11 @@ export function quantizePercent(done: number, total: number, step = 5): number {
     return Math.min(100, Math.floor(raw / step) * step);
 }
 
+/** Grow a catch-up pass total when new edits arrive mid-drain — keeps committed progress. */
+export function extendIndexPassTotal(committed: number, passTotal: number, dirtyCount: number): number {
+    return Math.max(passTotal, committed + Math.max(0, dirtyCount));
+}
+
 export interface IndexStatusBarHooks {
     getStats: () => Promise<IndexStatusCardStats>;
     getHealth: () => IndexStatusHealth;
