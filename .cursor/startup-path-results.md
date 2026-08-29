@@ -2,6 +2,8 @@
 
 _Isolated per-path metrics from worktree verification. Never mix Run A (`cold-restart`) and Run B (`warm-reload`) in one table._
 
+**Per-track PR reports:** [docs/startup/tracks/README.md](../docs/startup/tracks/README.md) (T0–T6, one file per open PR).
+
 ## Worktrees (vault singleton)
 
 Only one `main.js` in `C:\Obsidian\.obsidian\plugins\seek\` at measure time. Build/deploy from the path's worktree:
