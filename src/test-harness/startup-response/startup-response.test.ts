@@ -29,9 +29,9 @@ describe('startup response without a live Obsidian vault', () => {
 
         expect(observation.gateAtMs).not.toBeNull();
         expect(observation.gateAtMs!).toBeLessThan(SLO_MS);
-        expect(observation.walkedPaths).toEqual([
-            SMALL_PEER_DELTA_FIXTURE.expectedFirstPath,
-        ]);
+        expect(observation.walkedPaths).toEqual(
+            recentFixturePaths(SMALL_PEER_DELTA_FIXTURE),
+        );
         expect(results[0]).toBe(SMALL_PEER_DELTA_FIXTURE.expectedFirstPath);
     });
 
@@ -40,10 +40,10 @@ describe('startup response without a live Obsidian vault', () => {
 
         const observation = await harness.hydrateRecentFirst();
 
-        expect(observation.hydrate.hydrated).toBe(1);
-        expect(observation.searchablePaths).toEqual([
-            SMALL_PEER_DELTA_FIXTURE.expectedFirstPath,
-        ]);
+        expect(observation.hydrate.hydrated).toBe(2);
+        expect(observation.searchablePaths).toEqual(
+            recentFixturePaths(SMALL_PEER_DELTA_FIXTURE).sort(),
+        );
         expect(observation.hydrate.acceptedProducers).toBe(1);
     });
 

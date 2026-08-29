@@ -263,6 +263,9 @@ export class SeekSearchModal extends Modal {
     private loadKind: IndexLoadKind = 'resting';
     private lastJobRemaining: number | null = null;
     private loadPoll: number | null = null;
+    // Prevent the 750 ms index poll from retrying the same empty query repeatedly.
+    // A new chunk count or a wait→searchable phase transition creates a new key.
+    private lastAutoRetryKey: string | null = null;
     // Footer index-status cluster (always present, left of esc). Null until
     // buildFooter; cleared in onClose so a late poll can't paint detached DOM.
     private footStatusEl: HTMLElement | null = null;
@@ -658,7 +661,10 @@ export class SeekSearchModal extends Modal {
         // at the old rank (and skew click-log rank telemetry). Same-query
         // re-renders keep the selection (the clamp in renderResults handles a
         // shrunken result count).
-        if (query !== this.lastQuery) this.selectedIndex = 0;
+        if (query !== this.lastQuery) {
+            this.selectedIndex = 0;
+            this.lastAutoRetryKey = null;
+        }
         this.lastQuery = query;
         // The user is typing → still an active session; (re)arm the settle debounce
         // so catch-up only drains once they pause. Covers both real and cleared
@@ -838,20 +844,42 @@ export class SeekSearchModal extends Modal {
     // whenever we'd otherwise show the empty-index onboarding screen, so a background
     // build that populates a freshly opened (still-empty) index self-clears the screen
     // without a reopen. Re-runnable + idempotent. A null count (store unreadable
-    // mid-init) leaves the flag untouched. Only the RESTING copy is repainted — a live
-    // query is left to the next keystroke's search, never stomped here.
+    // mid-init) leaves the flag untouched. An active query that previously returned
+    // empty is retried once per new coverage/phase state.
     private async checkIndexState(): Promise<void> {
         const chunks = await this.orchestrator.indexedChunkCount();
         if (this.closed) return;
+        const previousChunkCount = this.lastChunkCount;
+        const prevKind = this.loadKind;
         if (chunks != null) this.lastChunkCount = chunks;
         const spec = this.currentLoadSpec();
-        const prevKind = this.loadKind;
         const remaining = jobRemaining(this.getIndexLoadState?.()?.job);
         const remainingChanged = remaining !== this.lastJobRemaining;
         this.loadKind = spec.kind;
         this.lastJobRemaining = remaining;
         this.indexEmpty = spec.kind === 'onboarding';
         this.syncFooterStatus();
+
+        // A query can legitimately return empty while greedy hydrate has no
+        // searchable chunks yet. Re-run it when the poll observes new coverage
+        // or the startup wait clears; otherwise the user must type again even
+        // though the requested note just became searchable in the background.
+        const chunksGrew = chunks != null && chunks > 0
+            && (previousChunkCount == null || chunks > previousChunkCount);
+        const waitCleared = isIndexWaitKind(prevKind) && !isIndexWaitKind(spec.kind);
+        const retryKey = `${this.lastQuery}\u0000${chunks ?? 'unknown'}\u0000${spec.kind}`;
+        if (
+            this.lastQuery.trim()
+            && this.currentResults.length === 0
+            && this.inFlight === 0
+            && (chunksGrew || waitCleared)
+            && retryKey !== this.lastAutoRetryKey
+        ) {
+            this.lastAutoRetryKey = retryKey;
+            this.scheduleSearch(this.lastQuery, true);
+            return;
+        }
+
         if (spec.kind === prevKind && !remainingChanged) return;
         if (!this.lastQuery.trim()) this.renderEmpty();
         else if (this.currentResults.length === 0) this.renderEmptyQuery(spec.kind);
