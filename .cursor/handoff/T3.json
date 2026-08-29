@@ -1,0 +1,36 @@
+{
+  "tree_id": "T3",
+  "path_id": "batch-rpc",
+  "branch": "path/batch-rpc",
+  "commit": "00d404c",
+  "merged_into_compose": true,
+  "compose_merge": "f4188f4",
+  "worktree": "C:/Coding_projects/Obsidian-Seek-worktrees/batch-rpc",
+  "scenarios_run": [],
+  "scorecards": [],
+  "goals": {
+    "G_small_delta": "n/a",
+    "G_first_good": "n/a",
+    "G_noop_sync": "n/a",
+    "G_cold_recovery": "pending",
+    "G_ui_responsive": "n/a",
+    "G_eviction": "n/a",
+    "G_catchup_chunk": "pending",
+    "G_catchup_ux": "n/a"
+  },
+  "metrics_p50": {},
+  "vs_baseline_pct": {},
+  "implementation": {
+    "TOKEN_COUNTS_BATCH": 8,
+    "createBatchedTokenCounter": "token-budget.ts",
+    "surfaces": ["reChunkLive", "reChunkLiveSubset"],
+    "estimated_rpc_reduction": "~8x on single-chunk notes (4427 files -> ~554 RPCs)"
+  },
+  "blockers": "Run A cold-restart with hasFreshId fixture needed to measure token_counts_rpc and T_hydrate_ms on vault.",
+  "deliverables": [
+    "createBatchedTokenCounter + TOKEN_COUNTS_BATCH=8",
+    "Parallel file batches in reChunkLive / reChunkLiveSubset",
+    "tokenCountsRpc telemetry reflects actual RPC count",
+    "token-budget.test.ts batching + chunk_id parity tests"
+  ]
+}

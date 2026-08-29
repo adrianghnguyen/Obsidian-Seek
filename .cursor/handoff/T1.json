@@ -1,0 +1,43 @@
+﻿{
+  "tree_id": "T1",
+  "path_id": "greedy-hydrate",
+  "branch": "path/greedy-hydrate",
+  "commit": "159970a",
+  "worktree": "C:/Coding_projects/Obsidian-Seek-worktrees/greedy-hydrate",
+  "scenarios_run": ["Run A cold-restart"],
+  "scorecards": [
+    ".cursor/scorecards/greedy-hydrate-cold-restart-parsed.json",
+    ".cursor/scorecards/greedy-hydrate-cold-restart-20260828-002906.json"
+  ],
+  "goals": {
+    "G_small_delta": "not_run",
+    "G_first_good": "fail",
+    "G_noop_sync": "not_run",
+    "G_cold_recovery": "n/a",
+    "G_ui_responsive": "n/a",
+    "G_eviction": "n/a",
+    "G_catchup_chunk": "n/a",
+    "G_catchup_ux": "n/a"
+  },
+  "metrics_p50": {
+    "T_start_ms": 1360,
+    "T_gate_test_ms": 13560,
+    "T_first_good_ms": null,
+    "T_hydrate_ms": null,
+    "sidecar_hydrate_span_ms": 763,
+    "files_walked": null,
+    "schema_version": 18
+  },
+  "vs_baseline_pct": {},
+  "blockers": "Same as T0 skip-rechunk path: vault boot had no fresh ids — sidecar-hydrate completed in 763ms without rechunk-live, so greedy tier schedule never ran (zero sidecar-hydrate-tier / sidecar-hydrate-greedy in seek-report). Cold-restart probe hit MaxSeconds 120 with warmPhase=starting, bootPending=true, seek:search gate-test failed at 13.6s; no startup-gate released in session b9ce028a. Index file count fell 4277→838 during poll window (long reindex), so G_first_good SLO (≤10s) not measurable for greedy path.",
+  "deliverables": [
+    "startup-trace-probe.ps1 Run A -PathId greedy-hydrate",
+    "parse-startup-trace.mjs → greedy-hydrate-cold-restart-parsed.json",
+    "seek-report.json session b9ce028a (startup-span sidecar-hydrate only)",
+    "startup-path-results.md greedy-hydrate row",
+    "T1.json handoff"
+  ],
+  "session_id": "b9ce028a-ef04-4dea-bae3-7442d70bddb9",
+  "greedy_tiers_fired": false,
+  "gate_release_in_probe": false
+}

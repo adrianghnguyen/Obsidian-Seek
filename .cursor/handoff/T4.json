@@ -1,0 +1,19 @@
+{
+  "tree_id": "T4",
+  "path_id": "persist-cache",
+  "branch": "path/persist-cache",
+  "commit": "2e4103d",
+  "worktree": "C:/Coding_projects/Obsidian-Seek",
+  "scenarios_run": [],
+  "scorecards": [],
+  "goals": {
+    "G_eviction": "pending"
+  },
+  "metrics_p50": {},
+  "blockers": "Run A post-eviction protocol (minimize 30s -> restart) to measure mutex_hold_ms",
+  "deliverables": [
+    "restorePersistedCachesBeforeReconcile",
+    "persist-cache-startup.test.ts",
+    "wired in main.ts onload before reconcileOnLoad"
+  ]
+}

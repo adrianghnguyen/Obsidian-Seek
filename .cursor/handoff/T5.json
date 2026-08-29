@@ -1,0 +1,33 @@
+{
+  "tree_id": "T5",
+  "path_id": "burst-cap",
+  "branch": "path/burst-cap",
+  "commit": "2894abf",
+  "merged_into_compose": true,
+  "worktree": "C:/Coding_projects/Obsidian-Seek-worktrees/burst-cap",
+  "scenarios_run": [],
+  "scorecards": [],
+  "goals": {
+    "G_small_delta": "n/a",
+    "G_first_good": "n/a",
+    "G_noop_sync": "n/a",
+    "G_cold_recovery": "n/a",
+    "G_ui_responsive": "n/a",
+    "G_eviction": "n/a",
+    "G_catchup_chunk": "n/a",
+    "G_catchup_ux": "pending"
+  },
+  "metrics_p50": {},
+  "vs_baseline_pct": {},
+  "constants": {
+    "DESKTOP_CATCHUP_MAX_FILES_PER_BURST": 40,
+    "DESKTOP_CATCHUP_BURST_BUDGET_MS": 15000
+  },
+  "blockers": "Run B warm-reload measure pending — needs idle vault then plugin:reload to score T_first_hit ≤30s with large backlog.",
+  "deliverables": [
+    "DESKTOP_CATCHUP_MAX_FILES_PER_BURST = 40",
+    "DESKTOP_CATCHUP_BURST_BUDGET_MS = 15000",
+    "runCatchUp passes caps on desktop",
+    "catchup.test.ts desktop bounded drain case"
+  ]
+}

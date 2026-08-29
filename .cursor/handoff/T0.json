@@ -3,7 +3,7 @@
   "path_id": "trace-infra",
   "branch": "startup/trace-infra",
   "commit": "uncommitted",
-  "worktree": "C:/Coding_projects/Obsidian-Seek",
+  "worktree": "C:/Coding_projects/Obsidian-Seek-worktrees/trace-infra",
   "scenarios_run": ["Run A cold-restart", "Run B warm-reload"],
   "scorecards": [
     ".cursor/scorecards/baseline-cold-restart-parsed.json",
