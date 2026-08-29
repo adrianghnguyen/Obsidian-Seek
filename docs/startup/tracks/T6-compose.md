@@ -4,7 +4,13 @@
 
 ## 1. Executive summary
 
-Stacking T1–T5 without integration caused regressions: noop sync blocked ~200 s, catch-up and restore raced on IDB, and search hung during large backlogs. T6 integrates deferred reconcile, drain-first catch-up, query-priority iframe RPC, warmDeferred, mass-delete guards, and ensureBm25 warm-owner fix into one vault-deployable stack. **7/8 goals pass** on Obsidian vault probes; `G_catchup_chunk` is **partial** (p50 164 ms/burst, no baseline A/B). Deployed `main.js` 366,750 B on `path/persist-cache`. **Verdict:** objective complete.
+Individual optimizations can each look successful in isolation yet break the product when combined — like tuning three departments separately until nobody can ship an order. Seek’s startup stack (greedy hydrate, batch RPC, persist restore, burst cap, yield) passed local tests on separate branches, but the merged vault regressed: noop peer sync blocked ~**200 s**, catch-up and restore fought over the database, and search timed out during backlog drain.
+
+The underlying software concepts are **system integration**, **shared mutable state**, and **boot orchestration**. Multiple async pipelines (`reconcileOnLoad`, `restorePersistedCaches`, `runCatchUp`, `warmCaches`) raced on the same **IndexedDB mutex** and **iframe runner** without a unified policy for *when* each runs. That produces **emergent deadlocks and double work** — e.g. awaiting full warm before drain, or reconcile blocking the gate when `needed: 0`. Integration testing across feature flags is as important as unit-level perf wins.
+
+T6 wires one boot story: deferred reconcile, drain-first catch-up, query-priority iframe, `warmDeferred`, mass-delete guards, ensureBm25 fix. **7/8 goals pass** on vault (noop **864 ms**, G2 **605 ms**, UI **429 ms**). **Verdict:** objective complete; `G_catchup_chunk` partial.
+
+**Concepts worth researching:** integration vs unit performance testing · async boot orchestration · race conditions on shared stores · feature interaction matrix · deferred work / `void` fire-and-forget reconcile · idempotent warm paths · SLO regression guards
 
 ## 2. Why the bottleneck existed
 
