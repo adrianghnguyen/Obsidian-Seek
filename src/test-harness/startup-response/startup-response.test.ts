@@ -57,6 +57,15 @@ describe('startup response without a live Obsidian vault', () => {
         );
     });
 
+    it('drives the real modal poll when the index changes from empty to searchable', async () => {
+        const modal = new ModalResponseHarness();
+        modal.primeWaitingQuery(SMALL_PEER_DELTA_FIXTURE.query);
+
+        await modal.commitFirstChunkAndPoll();
+
+        expect(modal.statusRenders).toBe(1);
+    });
+
     it.fails('retries an active empty modal query when the first chunk becomes searchable', async () => {
         const modal = new ModalResponseHarness();
         modal.primeWaitingQuery(SMALL_PEER_DELTA_FIXTURE.query);
