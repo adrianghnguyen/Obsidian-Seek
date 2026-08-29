@@ -4,7 +4,13 @@
 
 ## 1. Executive summary
 
-Each file in `reChunkLive` invoked `embedder.tokenCounts()` as a **separate iframe RPC**. On ~4.4k single-chunk notes that is ~4.4k round-trips — a large fraction of the ~28–32 s chunk phase. T3 batches up to 8 texts per RPC via `createBatchedTokenCounter()`. On the G2 v2 delta path, RPC count dropped **4462 → 9** with **493 ms** rechunk (1 file walked). Full cold gate is still dominated by sidecar jsonl scan (~149 s). **Verdict:** pass on delta path; **partial** on full `T_hydrate` gate.
+Seek’s embedding model runs inside an isolated **iframe** (a separate JavaScript context for security and WASM). Every time the indexer asked “how many tokens is this note?” it sent a separate message across that boundary — like making 4,400 individual phone calls instead of one conference call with eight people per line. On a ~4.4k-note vault, that overhead alone consumed a large slice of the ~28–32 s chunk phase.
+
+The bottleneck is **RPC amplification** (Remote Procedure Call): **chatty cross-boundary APIs**. Each `tokenCounts()` call pays fixed latency (serialization, postMessage, iframe scheduling) regardless of payload size. When work is embarrassingly parallel per file but the transport is serial, total time scales with **number of round-trips**, not amount of text — the **N+1 calls** antipattern applied to indexing. Batching amortizes fixed cost across multiple texts in one RPC.
+
+T3 batches up to 8 texts per `token-counts` call via `createBatchedTokenCounter()`. On the G2 v2 delta path: **4462 → 9** RPCs, **493 ms** rechunk. Full cold gate still ~149 s (sidecar scan, not RPC-bound). **Verdict:** pass on delta path; partial on full hydrate gate.
+
+**Concepts worth researching:** RPC / IPC overhead · batching and amortization · iframe isolation in Electron · N+1 query (or call) problem · postMessage latency · tokenizer pipelines in ML plugins
 
 ## 2. Why the bottleneck existed
 
