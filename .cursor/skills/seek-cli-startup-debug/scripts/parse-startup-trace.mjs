@@ -10,7 +10,7 @@
 
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '../../../..');
@@ -47,10 +47,15 @@ function readJsonl(path) {
         .filter(Boolean);
 }
 
-function p50(nums) {
+function percentile(nums, quantile) {
     if (!nums.length) return null;
     const s = [...nums].sort((a, b) => a - b);
-    return s[Math.floor(s.length / 2)];
+    const index = Math.min(s.length - 1, Math.max(0, Math.ceil(s.length * quantile) - 1));
+    return s[index];
+}
+
+function p50(nums) {
+    return percentile(nums, 0.5);
 }
 
 function pctDelta(base, val) {
@@ -63,10 +68,20 @@ function latestSessionId(report) {
     return inits.at(-1)?.sessionId ?? null;
 }
 
+function selectedSessionId(report) {
+    return report.thisSession ?? latestSessionId(report);
+}
+
 function sessionEntries(report) {
-    const sid = latestSessionId(report);
+    const sid = selectedSessionId(report);
     if (!sid) return report.entries ?? [];
-    return (report.entries ?? []).filter(e => e.sessionId === sid || !e.sessionId);
+    const scoped = (report.entries ?? []).filter(e => e.sessionId === sid);
+    // Legacy reports predate session stamping. Fall back only when there are no
+    // rows for the report's declared session; never mix sessionless/peer rows
+    // into a modern report.
+    return scoped.length > 0
+        ? scoped
+        : (report.entries ?? []).filter(e => !e.sessionId);
 }
 
 function extractFromReport(report) {
@@ -83,7 +98,7 @@ function extractFromReport(report) {
     const bootEnd = spans.filter(e => e.span === 'boot-ifi' && e.phase === 'end').at(-1);
     const hydrateSpan = spans.filter(e => e.span === 'sidecar-hydrate' && e.phase === 'end').at(-1);
     const longTasks = byType('long-task');
-    const evalP95 = (() => {
+    const longTaskHydratingP50 = (() => {
         const hydrating = longTasks.filter(t => t.context === 'hydrating').map(t => t.durationMs);
         return p50(hydrating);
     })();
@@ -109,7 +124,7 @@ function extractFromReport(report) {
         files_walked: lastRechunk?.filesWalked ?? null,
         token_counts_rpc: lastRechunk?.tokenCountsRpc ?? null,
         rechunk_duration_ms: lastRechunk?.durationMs ?? null,
-        long_task_hydrating_p50_ms: evalP95,
+        long_task_hydrating_p50_ms: longTaskHydratingP50,
         mutex_hold_ms: lastDelta?.mutexHoldMs ?? null,
         delta_incremental: lastDelta?.appliedIncrementally ?? null,
         chunk_ms: lastIndex?.chunkDurationMs ?? null,
@@ -118,12 +133,16 @@ function extractFromReport(report) {
     };
 }
 
-function extractFromJsonl(lines, runFilter) {
-    const polls = lines.filter(l => l.event === 'poll' && (!runFilter || l.run === runFilter));
-    const gateTest = lines.find(l => l.event === 'gate-test');
-    const firstSearch = lines.find(l => l.event === 'first-search');
+function extractFromJsonl(lines, runFilter, pathFilter) {
+    const scoped = lines.filter(l =>
+        (!runFilter || l.run === runFilter)
+        && (!pathFilter || l.path_id === pathFilter));
+    const polls = scoped.filter(l => l.event === 'poll');
+    const gateTest = scoped.find(l => l.event === 'gate-test');
+    const firstSearch = scoped.find(l => l.event === 'first-search');
     const startPoll = polls.find(p => p.gate?.warmPhase === 'starting' || p.gate?.uiHealth === 'starting');
     const endPoll = [...polls].reverse().find(p => p.gate?.warmPhase == null && p.gate?.uiHealth === 'ok');
+    const evalMs = polls.map(p => p.eval_ms).filter(v => typeof v === 'number');
     const T_start_s = endPoll?.elapsed_s ?? null;
     const T_gate_test_s = gateTest?.elapsed_s ?? null;
     const T_first_search_s = firstSearch?.elapsed_s ?? null;
@@ -134,9 +153,13 @@ function extractFromJsonl(lines, runFilter) {
         T_first_search_s,
         job_total: jobFirst?.gate?.job?.total ?? null,
         job_remaining_first: jobFirst?.gate?.job?.remaining ?? null,
-        git_sha: lines[0]?.git_sha ?? null,
-        path_id: lines[0]?.path_id ?? null,
-        run: lines[0]?.run ?? null,
+        eval_p50_ms: percentile(evalMs, 0.5),
+        eval_p95_ms: percentile(evalMs, 0.95),
+        eval_max_ms: evalMs.length ? Math.max(...evalMs) : null,
+        eval_n: evalMs.length,
+        git_sha: scoped[0]?.git_sha ?? null,
+        path_id: scoped[0]?.path_id ?? null,
+        run: scoped[0]?.run ?? null,
     };
 }
 
@@ -171,7 +194,7 @@ function main() {
         : { entries: [] };
 
     const fromReport = extractFromReport(report);
-    const fromJsonl = extractFromJsonl(lines, runFilter);
+    const fromJsonl = extractFromJsonl(lines, runFilter, args.path);
 
     const metrics = {
         T_start_ms: fromReport.T_start_ms ?? (fromJsonl.T_start_s != null ? Math.round(fromJsonl.T_start_s * 1000) : null),
@@ -184,7 +207,11 @@ function main() {
         files_walked: fromReport.files_walked,
         token_counts_rpc: fromReport.token_counts_rpc,
         rechunk_duration_ms: fromReport.rechunk_duration_ms,
-        T_eval_p95_ms: fromReport.long_task_hydrating_p50_ms,
+        T_eval_p50_ms: fromJsonl.eval_p50_ms,
+        T_eval_p95_ms: fromJsonl.eval_p95_ms,
+        T_eval_max_ms: fromJsonl.eval_max_ms,
+        T_eval_n: fromJsonl.eval_n,
+        long_task_hydrating_p50_ms: fromReport.long_task_hydrating_p50_ms,
         mutex_hold_ms: fromReport.mutex_hold_ms,
         T_chunk_ms: fromReport.chunk_ms,
         T_embed_ms: fromReport.embed_ms,
@@ -205,7 +232,7 @@ function main() {
         git_sha: fromJsonl.git_sha,
         run: runFilter,
         scenario: 'default',
-        session_id: latestSessionId(report),
+        session_id: selectedSessionId(report),
         metrics,
         vs_baseline_pct,
         goals: {},
@@ -221,4 +248,15 @@ function main() {
     console.error(`Wrote ${outPath}`);
 }
 
-main();
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+    main();
+}
+
+export {
+    extractFromJsonl,
+    extractFromReport,
+    p50,
+    percentile,
+    selectedSessionId,
+    sessionEntries,
+};

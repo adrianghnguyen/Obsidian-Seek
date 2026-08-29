@@ -83,6 +83,8 @@ describe('startup probe measurement contracts', () => {
 
         expect(source).toContain('$searchDurationMs');
         expect(source).toContain('search_duration_ms = $searchDurationMs');
+        expect(source).toContain('format=json');
+        expect(source).not.toContain("$snippet -match '\\d\\.\\d'");
         expect(source).not.toMatch(
             /if \(\$firstHitMs -le \$FirstHitSloMs\) \{[\s\S]{0,300}?exit 0/,
         );

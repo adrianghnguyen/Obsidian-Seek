@@ -69,7 +69,8 @@ if ($Run -eq 'B') {
         precheck = ($pre | ConvertFrom-Json -ErrorAction SilentlyContinue)
     } | Out-Null
     if ($pre -notmatch 'ok.:true') {
-        Write-Host "WARN: vault not idle - precheck=$pre"
+        Write-Host "FAIL: vault not idle - precheck=$pre"
+        exit 1
     }
     Run-Obsidian dev:console clear "vault=$Vault" | Out-Null
     Run-Obsidian dev:errors clear "vault=$Vault" | Out-Null
@@ -93,8 +94,10 @@ if ($Run -eq 'B') {
 }
 
 while ((Get-Elapsed $start) -lt $MaxSeconds) {
-    $elapsed = Get-Elapsed $start
+    $evalStart = Get-Date
     $gateRaw = Run-Obsidian eval "vault=$Vault" "code=$gateCode"
+    $evalMs = [math]::Round(((Get-Date) - $evalStart).TotalMilliseconds, 1)
+    $elapsed = Get-Elapsed $start
     $gateStr = Parse-Eval $gateRaw
     $gateObj = $null
     try { $gateObj = $gateStr | ConvertFrom-Json } catch { $gateObj = @{ raw = $gateStr } }
@@ -116,6 +119,7 @@ while ((Get-Elapsed $start) -lt $MaxSeconds) {
             event      = 'gate-test'
             gate       = $gateObj
             search     = $searchSnippet
+            eval_ms    = $evalMs
         } | Out-Null
     }
 
@@ -132,6 +136,7 @@ while ((Get-Elapsed $start) -lt $MaxSeconds) {
             event      = 'first-search'
             gate       = $gateObj
             search     = $searchSnippet
+            eval_ms    = $evalMs
         } | Out-Null
     }
 
@@ -143,9 +148,10 @@ while ((Get-Elapsed $start) -lt $MaxSeconds) {
         git_sha   = $gitSha
         event     = 'poll'
         gate      = $gateObj
+        eval_ms   = $evalMs
     } | Out-Null
 
-    Write-Host "--- ${elapsed}s warmPhase=$($gateObj.warmPhase) uiHealth=$($gateObj.uiHealth) ---"
+    Write-Host "--- ${elapsed}s eval=${evalMs}ms warmPhase=$($gateObj.warmPhase) uiHealth=$($gateObj.uiHealth) ---"
 
     if ($Run -eq 'A' -and $elapsed -gt 1) {
         $gateReleased = ($gateStr -match '"warmPhase":null' -and $gateStr -notmatch '"bootPending":true') -or ($gateStr -match '"goodEnough":true')
