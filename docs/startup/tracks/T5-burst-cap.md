@@ -4,7 +4,13 @@
 
 ## 1. Executive summary
 
-On warm reload with ~4k dirty files, catch-up held the shared iframe and IDB write lock for long bursts — blocking `seek:search` for 30+ seconds. T5 caps desktop catch-up bursts (**8 files / 4 s**, down from 40 / 15 s) so search can return hits while the Indexing badge still shows backlog. **T_first_hit = 468 ms** (warm caches) and **10.8 s** (warmDeferred probe); SLO ≤ 30 s. **Verdict:** pass. Additional UX fixes (query-priority RPC, warmDeferred) ship in PR #14 (T6).
+After a reload, Seek may need to index thousands of notes that changed while you were away — the “Indexing…” badge with a huge remaining count. Users do not need the backlog to hit zero before search is useful; they need **the first relevant result within seconds** while indexing continues in the background. Before this track, search could hang 30+ seconds because indexing hogged shared resources.
+
+Engineering-wise, this is **resource sharing and scheduling fairness**. Catch-up indexing and live search competed for the same **iframe embedder** (one RPC pump) and the same **IndexedDB write lock**. Large bursts (40 files / 15 s) maximized throughput for the indexer but starved query **`embed`** requests — classic **head-of-line blocking**. The fix space splits into **batch size** (how much work per slice) vs **priority inversion** (query jumps queue), addressed further in T6.
+
+T5 shrinks desktop bursts to **8 files / 4 s** so the indexer yields more often. **T_first_hit = 468 ms** / **10.8 s** (SLO ≤ 30 s). Total drain time is unchanged; earlier first hit is the win. **Verdict:** pass. Query-priority RPC and `warmDeferred` ship in PR #14.
+
+**Concepts worth researching:** backpressure and burst limits · priority queues / multi-lane RPC · producer–consumer contention · time-to-first-byte (TTFB) for search · background job scheduling · IndexedDB transaction locking
 
 ## 2. Why the bottleneck existed
 
