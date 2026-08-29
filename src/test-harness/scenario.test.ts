@@ -90,7 +90,7 @@ describe('Tier-2 scenario harness', () => {
         const controller = new AbortController();
         controller.abort();
 
-        await expect(s.orch.search('superseded query', 5, undefined, controller.signal))
+        await expect(s.orch.search('superseded query', 5, undefined, undefined, controller.signal))
             .rejects.toMatchObject({ name: 'AbortError' });
         expect(spy).not.toHaveBeenCalled();
     });
