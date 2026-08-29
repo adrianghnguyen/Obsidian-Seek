@@ -86,6 +86,14 @@ describe('TaskContextTracker', () => {
         expect(tr.attribute(50, 30)).toBe('search');
     });
 
+    it('attributes hydrating span for sidecar hydrate', () => {
+        const clock = makeClock();
+        const tr = new TaskContextTracker(clock.now);
+        clock.set(0); tr.push('hydrating');
+        clock.set(5000); tr.pop('hydrating');
+        expect(tr.attribute(1000, 2000)).toBe('hydrating');
+    });
+
     it('prunes old closed spans but never open ones', () => {
         const clock = makeClock();
         const tr = new TaskContextTracker(clock.now);

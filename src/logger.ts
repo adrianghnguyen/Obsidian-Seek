@@ -12,8 +12,8 @@
 //   .obsidian/plugins/seek/logs/seek-log-<deviceId>.ndjson      — append-only stream of LogEntry rows
 //   .obsidian/plugins/seek/logs/seek-init-<deviceId>.json       — overwritten each load with last init payload
 //   .obsidian/plugins/seek/logs/seek-captures-<deviceId>.ndjson — LEGACY relevance-debug captures; no longer written, only swept in from the vault root
-//   seek-report.json                                            — generated on demand: full structured diagnostic (all devices merged), the parse target
-//   seek-report.md                                              — generated on demand: ~20-line human summary pointing at seek-report.json; kept at vault root so it can be opened
+//   .seek-artifacts/seek-report.json                          — generated on demand: full structured diagnostic (parse target; not at vault root)
+//   seek-report.md                                              — generated on demand: human summary at vault root; points at the JSON in .seek-artifacts/
 //   seek-log.ndjson                                             — LEGACY pre-v9 shared file; migrated into LOG_DIR, read into the
 //                                                                 report (attributed to deviceId 'legacy'), never written
 //
@@ -33,7 +33,7 @@ import type { App } from 'obsidian';
 import type {
     LogEntry, LogMeta, InitEntry, PlatformEntry,
     IndexCompleteEntry, SearchEntry, ErrorEntry,
-    CrashDetectedEntry, DeltaApplyEntry, LoadEntry, LongTaskEntry,
+    CrashDetectedEntry, DeltaApplyEntry, LoadEntry, LongTaskEntry, RechunkLiveEntry,
 } from './types';
 import { LOG_SCHEMA_VERSION } from './types';
 import { isMobilePlatform } from './platform';
@@ -56,10 +56,12 @@ function logDirFor(pluginId: string): string { return `.obsidian/plugins/${plugi
 // resolves files outside the config folder). Safe under iCloud because it's never
 // appended to from two devices at once.
 const REPORT_PATH = 'seek-report.md';
-// The full structured diagnostic, written alongside the .md summary on each report
-// generation. One JSON object (a metadata header + a flat, type-tagged `entries`
-// array) — the parse target for jq / pandas; the .md is just a human glance over it.
-const REPORT_JSON_PATH = 'seek-report.json';
+// Full structured diagnostic — kept under a hidden artifacts dir so the vault
+// root stays a single human-readable summary (.md). Safe under iCloud because
+// report generation is single-writer-at-a-time, full-overwrite.
+export const REPORT_ARTIFACTS_DIR = '.seek-artifacts';
+export const REPORT_JSON_PATH = `${REPORT_ARTIFACTS_DIR}/seek-report.json`;
+const LEGACY_REPORT_JSON_PATH = 'seek-report.json';
 // Per-type recency caps for the generated report (NOT the raw NDJSON, which keeps
 // everything and is bounded separately by rotateIfOversize). The report is a recent-
 // activity snapshot kept small enough to email + parse fast; high-volume types keep
@@ -75,6 +77,9 @@ const REPORT_CAPS: Record<string, number> = {
     'index-complete': 100,
     'delta-apply': 100,
     'sidecar-hydrate': 50,
+    'rechunk-live': 20,
+    'startup-span': 50,
+    'startup-gate': 20,
     'memory-pressure': 100,
     'long-task': 100,
     'storage-snapshot': 50,
@@ -238,6 +243,26 @@ export class SeekLogger {
     // mkdir LOG_DIR if absent. Idempotent and best-effort: the parent
     // .obsidian/plugins/seek folder always exists (the plugin loads from it), so
     // this only ever creates the leaf 'logs'. Called before every first write.
+    private async ensureArtifactsDir(): Promise<void> {
+        const adapter = this.app.vault.adapter;
+        if (await adapter.exists(REPORT_ARTIFACTS_DIR).catch(() => false)) return;
+        await adapter.mkdir(REPORT_ARTIFACTS_DIR).catch(() => {});
+    }
+
+    // One-time move of seek-report.json off the vault root (pre-artifacts-dir builds).
+    private async migrateLegacyReportJson(): Promise<void> {
+        const adapter = this.app.vault.adapter;
+        if (!(await adapter.exists(LEGACY_REPORT_JSON_PATH).catch(() => false))) return;
+        await this.ensureArtifactsDir();
+        if (!(await adapter.exists(REPORT_JSON_PATH).catch(() => false))) {
+            try {
+                await adapter.rename(LEGACY_REPORT_JSON_PATH, REPORT_JSON_PATH);
+                return;
+            } catch { /* fall through to remove stale root copy */ }
+        }
+        await adapter.remove(LEGACY_REPORT_JSON_PATH).catch(() => {});
+    }
+
     private async ensureDir(): Promise<void> {
         const adapter = this.app.vault.adapter;
         if (await adapter.exists(this.logDir).catch(() => false)) return;
@@ -824,6 +849,16 @@ export class SeekLogger {
                 lines.push(`- fallbacks (full cache rebuild): ${parts}`);
             }
         }
+        const rechunks = filterByType<RechunkLiveEntry>(d.entries, 'rechunk-live');
+        if (rechunks.length > 0) {
+            const last = rechunks[rechunks.length - 1];
+            lines.push('\n## reChunkLive (hydrate oracle)');
+            lines.push(`- Last pass: ${last.filesWalked} files walked · ${last.tokenCountsRpc} tokenizer RPCs · ${(last.durationMs / 1000).toFixed(1)} s · complete=${last.complete}`);
+            const hydratingMs = longTasks.filter(t => t.context === 'hydrating').reduce((s, t) => s + t.durationMs, 0);
+            if (hydratingMs > 0) {
+                lines.push(`- Long tasks attributed to \`hydrating\`: ${(hydratingMs / 1000).toFixed(1)} s`);
+            }
+        }
         if (crashes.length > 0) {
             const c = crashes[crashes.length - 1];
             lines.push('\n## ⚠️ Last Crash');
@@ -836,13 +871,13 @@ export class SeekLogger {
         return lines.join('\n') + '\n';
     }
 
-    // Write both report artifacts to the vault root from a single data build: the full
-    // structured seek-report.json (the parse target) and a short seek-report.md human
-    // summary. Returns the .md path — that's what opens in Obsidian, and it points the
-    // reader at the .json.
+    // Write the summary to the vault root and the full JSON under .seek-artifacts/.
+    // Returns the .md path — that's what opens in Obsidian.
     async writeReport(redact = false): Promise<string> {
-        const adapter = this.app.vault.adapter;
         const data = await this.buildReportData(redact);
+        await this.migrateLegacyReportJson();
+        await this.ensureArtifactsDir();
+        const adapter = this.app.vault.adapter;
         await adapter.write(REPORT_JSON_PATH, JSON.stringify(data, null, 2));
         await adapter.write(REPORT_PATH, this.summarize(data));
         return REPORT_PATH;

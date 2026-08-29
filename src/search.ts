@@ -142,7 +142,6 @@ const QUOTA_NOTICE_MIN_INTERVAL_MS = 5 * 60_000;
 // "where did my note go" complaint should be added here.
 const EXCLUDED_PATHS = new Set([
     'seek-report.md',
-    'seek-report.json',
     'spike-report.md',
 ]);
 const EXCLUDED_PREFIXES = [
@@ -150,6 +149,7 @@ const EXCLUDED_PREFIXES = [
     // generated reports tend to share these stems.
     'spike-init',
     'seek-init',
+    '.seek-artifacts/',
 ];
 
 // Honor Obsidian's user-configured "Excluded files" (Settings → Files & Links).
@@ -2703,32 +2703,51 @@ export class SearchOrchestrator {
     // the 2026-06-14 forensics). Loads the tokenizer ONLY (a few MB, no ~250 MB
     // model) so the hydrate stays mobile-safe.
     private async reChunkLive(): Promise<ReChunkedNote[]> {
+        const t0 = performance.now();
         await this.embedder.ensureTokenizer();
         const out: ReChunkedNote[] = [];
+        let filesWalked = 0;
+        let filesSkipped = 0;
+        let tokenCountsRpc = 0;
+        let complete = true;
         for (const f of this.indexableFiles().filter(f => this.shouldIndex(f.path))) {
+            filesWalked++;
             let content: string;
             try {
                 content = await this.app.vault.cachedRead(f);
             } catch {
+                filesSkipped++;
                 continue;
             }
             let chunks = this.chunksFor(content, f.path, new Date(f.stat.mtime).toISOString());
             if (chunks.length === 0) continue;
             try {
+                tokenCountsRpc++;
                 chunks = (await enforceTokenBudget(chunks, ts => this.embedder.tokenCounts(ts))).chunks;
             } catch (e) {
                 // Tokenizer hiccup on one note — skip its hydrate (it just embeds
                 // later via the catch-up); never abort the whole hydrate.
                 await this.logger.appendError(`reChunkLive-tokenBudget:${f.path}`, e);
+                filesSkipped++;
                 // Same unload/reload latch clear as collectLiveIds: further notes
                 // will all fail identically, so stop walking the vault.
                 if (e instanceof Error && /Neither model nor tokenizer loaded/i.test(e.message)) {
+                    complete = false;
                     break;
                 }
                 continue;
             }
             if (chunks.length > 0) out.push({ notePath: f.path, mtimeMs: f.stat.mtime, chunks, contentHash: cyrb53Hex(content) });
         }
+        void this.logger.append({
+            type: 'rechunk-live',
+            timestamp: new Date().toISOString(),
+            filesWalked,
+            filesSkipped,
+            tokenCountsRpc,
+            durationMs: Math.round(performance.now() - t0),
+            complete,
+        }).catch(() => {});
         return out;
     }
 

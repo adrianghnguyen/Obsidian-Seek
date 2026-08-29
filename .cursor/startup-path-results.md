@@ -1,0 +1,75 @@
+# Startup path results (living scoreboard)
+
+_Isolated per-path metrics from worktree verification. Never mix Run A (`cold-restart`) and Run B (`warm-reload`) in one table._
+
+## Goal coverage
+
+| goal_id | User scenario | SLO (p50) | best_path | p50_value | verdict |
+|---------|---------------|-----------|-----------|-----------|---------|
+| G_small_delta | Peer changed 1–50 notes | ≤ 10–15 s | — | — | pending |
+| G_noop_sync | Peer churn, needed: 0 | ≤ 1.5 s | — | — | pending |
+| G_first_good | Recent notes searchable early | ≤ 10 s | — | — | pending |
+| G_cold_recovery | Full cold hydrate | −15–35% chunk | — | — | pending |
+| G_ui_responsive | Editor usable during Starting | eval ≤ 2 s | — | — | pending |
+| G_eviction | After minimize / eviction | mutex ≤ 2 s | — | — | pending |
+| G_catchup_chunk | Large catch-up chunk phase | −20% chunk | — | — | pending |
+| G_catchup_ux | 4k backlog, search early | T_first_hit ≤ 30 s | — | — | pending |
+
+## Baseline (T0 trace-infra)
+
+| label | run | date | T_start_ms | T_hydrate_ms | files_walked | token_counts_rpc | T_eval_p95_ms | notes |
+|-------|-----|------|------------|--------------|--------------|------------------|---------------|-------|
+| baseline | cold-restart | 2026-08-27 | 16170 (latest session) | — (skip rechunk) | null | null | — | schema v17; no fresh ids |
+| baseline | warm-reload | 2026-08-27 | — | — | — | — | — | vault mid-hydrate; job.total 4462 |
+
+Artifacts: `.cursor/baseline-cold/`, `.cursor/baseline-warm/`, `.cursor/handoff/T0.json`
+
+## Per-path results (isolated)
+
+### greedy-hydrate (`path/greedy-hydrate`)
+
+Goals: G_small_delta, G_first_good, G_noop_sync
+
+| scenario | T_start_ms | T_first_good_ms | files_walked | verdict |
+|----------|------------|-----------------|--------------|---------|
+| _pending_ | | | | |
+
+### cheap-yield (`path/cheap-yield`)
+
+Goals: G_ui_responsive
+
+| scenario | T_eval_p95_ms | T_start_ms (guard +10%) | verdict |
+|----------|---------------|-------------------------|---------|
+| _pending_ | | | |
+
+### batch-rpc (`path/batch-rpc`)
+
+Goals: G_cold_recovery, G_catchup_chunk
+
+| run | token_counts_rpc | T_hydrate_ms | T_chunk_ms | verdict |
+|-----|------------------|--------------|------------|---------|
+| _pending_ | | | | |
+
+### persist-cache (`path/persist-cache`)
+
+Goals: G_eviction
+
+| scenario | mutex_hold_ms | delta_incremental | verdict |
+|----------|---------------|---------------------|---------|
+| _pending_ | | | |
+
+### burst-cap (`path/burst-cap`)
+
+Goals: G_catchup_ux
+
+| scenario | T_first_hit_ms | T_drain_total_ms | verdict |
+|----------|----------------|------------------|---------|
+| _pending_ | | | |
+
+## Compose (`path/compose`)
+
+| paths_included | goal | expected_combo | actual_combo | interaction | ship? |
+|----------------|------|----------------|--------------|-------------|-------|
+| _pending_ | | | | | |
+
+Handoffs: `.cursor/handoff/T1.json` … `T6.json`

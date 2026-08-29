@@ -1,0 +1,37 @@
+{
+  "tree_id": "T0",
+  "path_id": "trace-infra",
+  "branch": "startup/trace-infra",
+  "commit": "uncommitted",
+  "worktree": "C:/Coding_projects/Obsidian-Seek",
+  "scenarios_run": ["Run A cold-restart", "Run B warm-reload"],
+  "scorecards": [
+    ".cursor/scorecards/baseline-cold-restart-parsed.json",
+    ".cursor/scorecards/baseline-warm-reload-parsed.json"
+  ],
+  "goals": {
+    "G_small_delta": "n/a",
+    "G_noop_sync": "n/a",
+    "G_first_good": "n/a",
+    "G_cold_recovery": "n/a",
+    "G_ui_responsive": "n/a",
+    "G_eviction": "n/a",
+    "G_catchup_chunk": "n/a",
+    "G_catchup_ux": "n/a"
+  },
+  "metrics_p50": {
+    "T_start_ms": 16170,
+    "files_walked": null,
+    "schema_version": 17
+  },
+  "vs_baseline_pct": {},
+  "blockers": "rechunk-live only emitted when hasFreshId triggers reChunkLive; this vault boot skipped rechunk (no fresh ids). Run B precheck failed — vault was mid-hydrate from prior session.",
+  "deliverables": [
+    "startup-trace-probe.ps1",
+    "parse-startup-trace.mjs",
+    "schema v17: rechunk-live, startup-span, startup-gate",
+    "TaskContext: hydrating",
+    "startup-path-results.md",
+    "doc updates"
+  ]
+}

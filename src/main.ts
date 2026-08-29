@@ -25,7 +25,7 @@ import { sweepOrphanTmpFiles } from './sidecar';
 import type { SeekSettings, IndexCompleteEntry, ModelDeliveryEntry } from './types';
 import { DEFAULT_SETTINGS, migrateSettings } from './types';
 import { IndexStore, indexDbPrefix } from './index-store';
-import { SeekLogger } from './logger';
+import { SeekLogger, REPORT_ARTIFACTS_DIR } from './logger';
 import { Forensics } from './forensics';
 import { RecentSearches } from './recents';
 import { SearchOrchestrator, driftRecoveryDecision, shouldIndexPath, type RecencyOverride } from './search';
@@ -209,6 +209,8 @@ export default class SeekPlugin extends Plugin {
     // search modal cannot latch "isn't indexed yet" on an empty store mid-hydrate.
     private indexBootPending = true;
     private sidecarHydrating = false;
+    // performance.now() at boot IIFE start — used for startup-gate elapsedMs.
+    private bootStartMs = 0;
     private waitingForSidecar = false;
     // Last known indexed file/chunk counts for sync status-bar health (null = not probed yet).
     private indexInventoryFiles: number | null = null;
@@ -554,6 +556,13 @@ export default class SeekPlugin extends Plugin {
         // load never blocks. sweepOrphanTmpFiles first cleans any crashed atomic
         // write. Each step is gated/no-op when the sidecar is disabled.
         this.sidecarHydrating = false;
+        this.bootStartMs = performance.now();
+        void this.logger.append({
+            type: 'startup-span',
+            timestamp: new Date().toISOString(),
+            span: 'boot-ifi',
+            phase: 'start',
+        }).catch(() => {});
         void (async () => {
             try {
             let identityHandled = false;
@@ -617,15 +626,25 @@ export default class SeekPlugin extends Plugin {
             // does not need the embedder; mobile no-ops until the model is loaded.
         } finally {
             this.sidecarHydrating = false;
+            const bootDurationMs = Math.round(performance.now() - this.bootStartMs);
+            void this.logger.append({
+                type: 'startup-span',
+                timestamp: new Date().toISOString(),
+                span: 'boot-ifi',
+                phase: 'end',
+                durationMs: bootDurationMs,
+            }).catch(() => {});
             if (getStartupWarm()) {
                 try {
                     await this.orchestrator.warmCaches('startup');
                 } finally {
                     this.indexBootPending = false;
+                    await this.logStartupGateReleased();
                     await this.touchIndexInventory();
                 }
             } else {
                 this.indexBootPending = false;
+                await this.logStartupGateReleased();
                 await this.touchIndexInventory();
             }
             // Empty store + live notes: desktop must drain without opening Search.
@@ -1585,7 +1604,7 @@ export default class SeekPlugin extends Plugin {
             const path = await this.logger.writeReport(this.settings.redactReport);
             const file = this.app.vault.getAbstractFileByPath(path);
             if (file instanceof TFile) await this.app.workspace.getLeaf(false).openFile(file);
-            new Notice(`Seek: report written — ${path} (summary) + seek-report.json (full data)`, 6000);
+            new Notice(`Seek: report written — ${path} (summary; full JSON in ${REPORT_ARTIFACTS_DIR}/)`, 6000);
         } catch (e) {
             await this.logger.appendError('generate-log', e);
             new Notice('Seek: could not write the logging report — see the developer console.', 6000);
@@ -1947,13 +1966,41 @@ export default class SeekPlugin extends Plugin {
 
     private async withSidecarHydrate<T>(fn: () => Promise<T>): Promise<T> {
         this.sidecarHydrating = true;
+        this.pushTaskContext('hydrating');
         this.refreshIndexStatusBar();
+        const spanStart = performance.now();
+        void this.logger.append({
+            type: 'startup-span',
+            timestamp: new Date().toISOString(),
+            span: 'sidecar-hydrate',
+            phase: 'start',
+        }).catch(() => {});
         try {
             return await fn();
         } finally {
+            const durationMs = Math.round(performance.now() - spanStart);
+            void this.logger.append({
+                type: 'startup-span',
+                timestamp: new Date().toISOString(),
+                span: 'sidecar-hydrate',
+                phase: 'end',
+                durationMs,
+            }).catch(() => {});
+            this.popTaskContext('hydrating');
             this.sidecarHydrating = false;
             this.refreshIndexStatusBar();
         }
+    }
+
+    private async logStartupGateReleased(): Promise<void> {
+        await this.logger.append({
+            type: 'startup-gate',
+            timestamp: new Date().toISOString(),
+            event: 'released',
+            warmPhase: this.indexWarmPhase,
+            uiHealth: this.indexUiHealth,
+            elapsedMs: Math.round(performance.now() - this.bootStartMs),
+        }).catch(() => {});
     }
 
     private indexableNoteCount(): number {

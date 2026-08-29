@@ -1,0 +1,30 @@
+{
+  "path_id": "baseline",
+  "git_sha": "b848121",
+  "run": "warm-reload",
+  "scenario": "default",
+  "session_id": "052866b1-b935-4580-9680-376cfb39be45",
+  "metrics": {
+    "T_start_ms": null,
+    "T_hydrate_ms": null,
+    "T_gate_test_ms": null,
+    "T_first_search_ms": null,
+    "needed": null,
+    "scanned": 3,
+    "hydrated": null,
+    "files_walked": null,
+    "token_counts_rpc": null,
+    "rechunk_duration_ms": null,
+    "T_eval_p95_ms": null,
+    "mutex_hold_ms": null,
+    "T_chunk_ms": null,
+    "T_embed_ms": null,
+    "job_total": 4462
+  },
+  "vs_baseline_pct": {},
+  "goals": {},
+  "sources": {
+    "jsonl": "C:\\Coding_projects\\Obsidian-Seek\\.cursor\\gate-trace.jsonl",
+    "report": "C:\\Obsidian\\seek-report.json"
+  }
+}
