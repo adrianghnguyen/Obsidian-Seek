@@ -57,11 +57,31 @@ describe('startup response without a live Obsidian vault', () => {
         );
     });
 
-    it('retries an active empty modal query when the first chunk becomes searchable', async () => {
+    it('stays within the recent-window operation budget before gate release', async () => {
+        const harness = await startupHarness();
+        const recentPaths = recentFixturePaths(SMALL_PEER_DELTA_FIXTURE);
+
+        const observation = await harness.hydrateRecentFirst();
+
+        expect(observation.walkedPaths).toHaveLength(recentPaths.length);
+        expect(observation.work).toEqual({
+            fullRechunkCalls: 0,
+            subsetCalls: recentPaths.length,
+            chunkCommits: recentPaths.length,
+            fileRecordCommits: recentPaths.length,
+        });
+    });
+
+    it('retries exactly once when the first chunk becomes searchable', async () => {
         const modal = new ModalResponseHarness();
         modal.primeWaitingQuery(SMALL_PEER_DELTA_FIXTURE.query);
 
+        await modal.pollCurrentState();
+        expect(modal.retriedQueries).toEqual([]);
+
         await modal.commitFirstChunkAndPoll();
+        await modal.pollCurrentState();
+        await modal.pollCurrentState();
 
         expect(modal.retriedQueries).toEqual([SMALL_PEER_DELTA_FIXTURE.query]);
     });

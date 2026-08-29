@@ -78,4 +78,8 @@ export class ModalResponseHarness {
         this.phase = 'idle';
         await this.modal.checkIndexState();
     }
+
+    async pollCurrentState(): Promise<void> {
+        await this.modal.checkIndexState();
+    }
 }

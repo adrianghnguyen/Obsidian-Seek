@@ -32,6 +32,12 @@ export interface StartupHydrateObservation {
     walkedPaths: string[];
     searchablePaths: string[];
     hydrate: HydrateResult;
+    work: {
+        fullRechunkCalls: number;
+        subsetCalls: number;
+        chunkCommits: number;
+        fileRecordCommits: number;
+    };
 }
 
 const DEFAULT_COSTS: StartupCostFixture = {
@@ -64,6 +70,10 @@ export class StartupResponseHarness {
     private logicalMs = 0;
     private gateAtMs: number | null = null;
     private readonly walkedPaths: string[] = [];
+    private fullRechunkCalls = 0;
+    private subsetCalls = 0;
+    private chunkCommits = 0;
+    private fileRecordCommits = 0;
     private orchestrator: SearchOrchestrator | null = null;
 
     constructor(
@@ -94,6 +104,12 @@ export class StartupResponseHarness {
             walkedPaths: [...this.walkedPaths],
             searchablePaths,
             hydrate,
+            work: {
+                fullRechunkCalls: this.fullRechunkCalls,
+                subsetCalls: this.subsetCalls,
+                chunkCommits: this.chunkCommits,
+                fileRecordCommits: this.fileRecordCommits,
+            },
         };
     }
 
@@ -130,8 +146,12 @@ export class StartupResponseHarness {
             adapter: this.adapter.asDataAdapter(),
             indexDir: INDEX_DIR,
             expect: expectationFor(),
-            reChunk: async () => this.fixture.notes.map(note => this.rechunked(note)),
+            reChunk: async () => {
+                this.fullRechunkCalls++;
+                return this.fixture.notes.map(note => this.rechunked(note));
+            },
             reChunkSubset: async files => {
+                this.subsetCalls++;
                 const out: ReChunkedNote[] = [];
                 for (const file of files) {
                     const note = notes.get(file.path);
@@ -151,10 +171,14 @@ export class StartupResponseHarness {
                 (await this.store.listAllMeta()).map(chunk => chunk.chunk_id),
             ),
             putQuantized: async (chunks, tiers) => {
+                this.chunkCommits++;
                 this.logicalMs += this.costs.commitMs;
                 await this.store.putBatchQuantized(chunks, tiers);
             },
-            putFileRecord: record => this.store.putFileRecord(record),
+            putFileRecord: async record => {
+                this.fileRecordCommits++;
+                await this.store.putFileRecord(record);
+            },
             onGoodEnough: () => {
                 if (this.gateAtMs === null) this.gateAtMs = this.logicalMs;
             },
