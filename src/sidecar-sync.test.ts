@@ -514,4 +514,41 @@ describe('probePeerAhead', () => {
         expect(probe).toBe(hydrate.peerAhead);
         expect(probe).toBe(true);
     });
+
+    it('greedy hydrate re-chunks only tier-0 files and stops when fresh ids are satisfied', async () => {
+        const a = new FakeAdapter();
+        const now = Date.now();
+        const notes: NoteSpec[] = [
+            { path: 'recent.md', mtime: now, ids: ['r1'] },
+            { path: 'old.md', mtime: now - 30 * 86_400_000, ids: ['o1'] },
+        ];
+        await seedSidecar(a, 'desktop-aaa', notes);
+
+        const subsetPaths: string[][] = [];
+        let goodEnough = false;
+        const { deps, store } = makeDeps(a, notes, {
+            existingIds: async () => new Set(['o1']),
+            greedyHydrate: true,
+            listHydrateFiles: async () => [
+                { path: 'recent.md', mtimeMs: now },
+                { path: 'old.md', mtimeMs: now - 30 * 86_400_000 },
+            ],
+            reChunkSubset: async files => {
+                subsetPaths.push(files.map(f => f.path));
+                return files.map(ref => {
+                    const n = notes.find(x => x.path === ref.path)!;
+                    return { notePath: n.path, mtimeMs: n.mtime, chunks: n.ids.map(id => chunk(id, n.path)) };
+                });
+            },
+            reChunk: async () => { throw new Error('full reChunk should not run'); },
+            onGoodEnough: () => { goodEnough = true; },
+        });
+        const r = await hydrateFromSidecar(deps);
+
+        expect(r.hydrated).toBe(1);
+        expect(store.has('r1')).toBe(true);
+        expect(goodEnough).toBe(true);
+        expect(subsetPaths.length).toBe(1);
+        expect(subsetPaths[0]).toEqual(['recent.md']);
+    });
 });

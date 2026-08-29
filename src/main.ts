@@ -208,6 +208,7 @@ export default class SeekPlugin extends Plugin {
     // True from construct until the onload sidecar/reconcile IIFE finishes, so the
     // search modal cannot latch "isn't indexed yet" on an empty store mid-hydrate.
     private indexBootPending = true;
+    private indexGoodEnough = false;
     private sidecarHydrating = false;
     // performance.now() at boot IIFE start — used for startup-gate elapsedMs.
     private bootStartMs = 0;
@@ -288,6 +289,10 @@ export default class SeekPlugin extends Plugin {
     get isIndexing(): boolean { return this.currentTaskContext === 'indexing'; }
     /** Boot / sidecar-restore phase for explicit status copy. Null when idle. */
     get indexWarmPhase(): 'starting' | 'restoring' | null {
+        if (this.indexGoodEnough) {
+            if (this.waitingForSidecar) return 'restoring';
+            return null;
+        }
         if (this.waitingForSidecar || (this.sidecarHydrating && !this.indexBootPending)) return 'restoring';
         if (this.indexBootPending || this.sidecarHydrating) return 'starting';
         return null;
@@ -308,6 +313,7 @@ export default class SeekPlugin extends Plugin {
         return resolveIndexUiStatus({
             booting: this.indexBootPending,
             hydrating: this.sidecarHydrating,
+            goodEnough: this.indexGoodEnough,
             waitingForSidecar: this.waitingForSidecar,
             peerSyncPending: this.peerSyncPending,
             health: this.indexHealth,
@@ -538,6 +544,7 @@ export default class SeekPlugin extends Plugin {
         // fires when persistent frame/BM25 drift survives the cooldown, and we drive the
         // embed-free recovery ladder from the plugin (which owns scheduling + gating).
         this.orchestrator.setPersistentDriftHandler(() => this.onPersistentDrift());
+        this.orchestrator.setGoodEnoughHandler(() => this.markIndexGoodEnough());
         this.addSettingTab(new SeekSettingTab(this.app, this));
         this.indexProgress.mount(this.addStatusBarItem(), {
             getStats: () => this.getIndexStats(),
@@ -1940,7 +1947,7 @@ export default class SeekPlugin extends Plugin {
     private indexLoadState(): IndexLoadState {
         return {
             phase: resolveIndexLoadPhase({
-                hydrating: this.indexBootPending || this.sidecarHydrating,
+                hydrating: (this.indexBootPending || this.sidecarHydrating) && !this.indexGoodEnough,
                 catchUpPending: this.catchUpPending,
                 catchUpRunning: this.catchUpRunning,
                 flushing: this.flushing,
@@ -1962,6 +1969,18 @@ export default class SeekPlugin extends Plugin {
         this.waitingForSidecar = resolveSidecarWait(result, this.indexInventoryChunks);
         if (result.hydrated > 0) void this.touchIndexInventory();
         else this.refreshIndexStatusBar();
+    }
+
+    private markIndexGoodEnough(): void {
+        if (this.indexGoodEnough) return;
+        this.indexGoodEnough = true;
+        this.indexBootPending = false;
+        void this.logStartupGateReleased();
+        void this.touchIndexInventory();
+        this.refreshIndexStatusBar();
+        if (getStartupWarm() && this.orchestrator) {
+            void this.orchestrator.warmCaches('startup-good-enough');
+        }
     }
 
     private async withSidecarHydrate<T>(fn: () => Promise<T>): Promise<T> {

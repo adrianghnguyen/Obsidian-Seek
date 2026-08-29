@@ -181,6 +181,8 @@ export interface IndexUiStatusInput {
     booting: boolean;
     /** Actual sidecar hydrate in flight (startup, periodic, identity, drift). */
     hydrating: boolean;
+    /** Greedy hydrate: tier 0 done — search gate released, background tiers continue. */
+    goodEnough?: boolean;
     waitingForSidecar: boolean;
     peerSyncPending: boolean;
     health: IndexHealth;
@@ -200,9 +202,13 @@ export interface IndexUiStatusInput {
  * Cache warming is invisible here (search stays usable on a populated index).
  */
 export function resolveIndexUiStatus(input: IndexUiStatusInput): IndexUiStatus {
-    if (input.waitingForSidecar || input.peerSyncPending || (input.hydrating && !input.booting)) {
+    if (input.waitingForSidecar || input.peerSyncPending) {
         return 'restoring';
     }
+    if (input.goodEnough && input.hydrating && !input.booting) {
+        return 'indexing';
+    }
+    if (input.hydrating && !input.booting) return 'restoring';
     if (input.booting || input.hydrating) return 'starting';
     if (input.health === 'degraded' || input.reason === 'peer-ahead') return 'error';
     if (input.indexing || (input.job != null && input.job.total > 0)) return 'indexing';
