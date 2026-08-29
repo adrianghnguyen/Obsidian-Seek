@@ -1,31 +1,34 @@
+# List all playbook scenarios from playbook-scenarios.json
 param(
-    [switch]$Json
+    [ValidateSet('table', 'json')]
+    [string]$Format = 'table'
 )
 
 $ErrorActionPreference = 'Stop'
-$skillRoot = Split-Path $PSScriptRoot -Parent
-$registryPath = Join-Path $skillRoot 'playbook-scenarios.json'
+$catalogRoot = Split-Path $PSScriptRoot -Parent
+$registryPath = Join-Path $catalogRoot 'playbook-scenarios.json'
+
 if (-not (Test-Path $registryPath)) {
     Write-Error "Registry not found: $registryPath"
     exit 1
 }
 
-$data = Get-Content $registryPath -Raw | ConvertFrom-Json
-$rows = @()
-foreach ($s in $data.scenarios) {
-    $rows += [PSCustomObject]@{
-        id     = $s.id
-        name   = $s.name
-        driver = $s.driverScript
-        mode   = $s.executionMode
-        status = $s.status
-        vault  = $s.vaultDefault
+$registry = Get-Content $registryPath -Raw | ConvertFrom-Json
+$rows = @($registry.scenarios | ForEach-Object {
+    [PSCustomObject]@{
+        id       = $_.id
+        name     = $_.name
+        category = $_.category
+        status   = $_.status
+        mode     = $_.executionMode
+        vault    = $_.vaultDefault
+        driver   = $_.driverScript
     }
-}
+})
 
-if ($Json) {
+if ($Format -eq 'json') {
     $rows | ConvertTo-Json -Depth 4
 } else {
-    $rows | Format-Table -AutoSize id, name, driver, mode, status, vault
-    Write-Host "Total: $($rows.Count) scenarios"
+    $rows | Format-Table -AutoSize id, name, category, status, mode, vault, driver
+    Write-Host "`nTotal: $($rows.Count) scenarios"
 }

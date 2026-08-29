@@ -1,51 +1,58 @@
+---
+name: seek-playbook-catalog
+description: Master index and dispatch for Seek telemetry scenarios (S1–S7 performance, F1–F10 functional). Use list-scenarios.ps1 to enumerate; run-scenario.ps1 -Id to execute drivers. Entry point before seek-telemetry-playbook or seek-functional-telemetry detail skills.
+---
+
 # Seek playbook catalog
 
-Entry point for agents running Seek telemetry and functional scenarios. Lists all **S1–S7** (performance) and **F1–F10** (functional) scenarios and dispatches to driver scripts.
+**Start here** for baseline runs. Lists all scenarios and routes to shell drivers — no chat improvisation.
 
-## Quick start
+## Quick commands
 
 ```powershell
-# List all scenarios
 .\.cursor\skills\seek-playbook-catalog\scripts\list-scenarios.ps1
-
-# Run a scenario (stub drivers fail clearly until implemented)
-.\.cursor\skills\seek-playbook-catalog\scripts\run-scenario.ps1 -Id F3 -Vault seek-functional
-.\.cursor\skills\seek-playbook-catalog\scripts\run-scenario.ps1 -Id S1 -Vault plugin-sandbox-Obsidian -SampleIndex 2
+.\.cursor\skills\seek-playbook-catalog\scripts\run-scenario.ps1 -Id F3 -FixtureSet full -AllQueryCases
+.\.cursor\skills\seek-playbook-catalog\scripts\run-scenario.ps1 -Id S1 -Vault plugin-sandbox-Obsidian -Run A
 ```
 
 ## Execution layers
 
-1. **Shell driver** (`.ps1`) — orchestrates steps, writes trace JSONL, exit 0 = pass
-2. **Obsidian CLI** — `obsidian restart | eval | seek:search | seek:open | …`
-3. **Optional screenshot** — `obsidian dev:screenshot path=<gitignored dir>`
-4. **Parse + canvas emit** — `Emit-CanvasRunJson.ps1` → append to canvas `RUNS[]`
+```
+Layer 1 — Shell driver (.ps1)     orchestrates steps, writes trace JSONL, exit 0/1
+Layer 2 — Obsidian CLI            restart | eval | seek:search | seek:open | …
+Layer 3 — Optional screenshot     obsidian dev:screenshot → .cursor/telemetry-screenshots/ (gitignored)
+Layer 4 — Parse + canvas emit     Emit-CanvasRunJson.ps1 → append RUNS in canvas
+```
 
-**Serial CLI rule:** one Obsidian session; no parallel eval (see `seek-cli-startup-debug`).
+**Serial CLI rule:** one Obsidian session; never parallel eval (see `seek-cli-startup-debug`).
 
 ## Registry
 
-Machine-readable registry: `playbook-scenarios.json`. Columns:
+Machine-readable: [`playbook-scenarios.json`](playbook-scenarios.json)
 
 | Column | Meaning |
 |--------|---------|
-| `id` | `S1` … `S7`, `F1` … `F10` |
-| `name` | Short label |
-| `driverScript` | Relative path under this skill |
-| `vaultDefault` | Default vault CLI name |
-| `executionMode` | `cli`, `cli+eval`, `cli+eval+screenshot` |
-| `status` | `stub` or `full` |
+| `id` | `S1`–`S7`, `F1`–`F10` |
+| `status` | `full` = driver implemented; `stub` = fails loudly |
+| `driverScript` | Relative to this skill folder |
+| `vaultDefault` | Obsidian CLI vault name |
 | `detailSkill` | `seek-telemetry-playbook` (S*) or `seek-functional-telemetry` (F*) |
 
 ## Detail playbooks
 
-- **Performance timing (S*):** `.cursor/skills/seek-telemetry-playbook/SKILL.md`
-- **Functional user flows (F*):** `.cursor/skills/seek-functional-telemetry/SKILL.md`
-- **Startup CLI probes:** `.cursor/skills/seek-cli-startup-debug/SKILL.md`
-
-## Canvas
-
-Run history dashboard: `canvases/sandbox-run-history.canvas.tsx` (Seek telemetry baselines). Drivers append via `Emit-CanvasRunJson.ps1`.
+- **Performance S1–S7:** [`.cursor/skills/seek-telemetry-playbook/SKILL.md`](../seek-telemetry-playbook/SKILL.md)
+- **Functional F1–F10:** [`.cursor/skills/seek-functional-telemetry/SKILL.md`](../seek-functional-telemetry/SKILL.md)
+- **CLI startup probes:** [`.cursor/skills/seek-cli-startup-debug/SKILL.md`](../seek-cli-startup-debug/SKILL.md)
 
 ## Fixtures
 
-Functional query matrix: `fixtures/minimal/` and `fixtures/full/functional-queries.json` — validated by `src/test-harness/functional-telemetry/validate-fixture.test.ts`.
+```
+fixtures/minimal/   — seeded seek-functional corpus (~15 notes)
+fixtures/full/      — plugin-sandbox-Obsidian (~3k notes) query matrix
+```
+
+Functional queries: 10 intents × 3 cases = 30 globally distinct query strings. Validated by `src/test-harness/functional-telemetry/validate-fixture.test.ts`.
+
+## Canvas
+
+Local dashboard: `sandbox-run-history.canvas.tsx` (Cursor canvases folder). Empty `RUNS[]` until drivers append via `Emit-CanvasRunJson.ps1`.

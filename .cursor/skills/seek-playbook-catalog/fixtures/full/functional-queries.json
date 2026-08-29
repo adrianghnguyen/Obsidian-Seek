@@ -1,5 +1,216 @@
 {
   "version": 1,
   "vault": "plugin-sandbox-Obsidian",
-  "queryCases": []
+  "queryCases": [
+    {
+      "id": "broad-emotional-regulation",
+      "intent": "many_answers_possible",
+      "query": "emotional regulation stressful experiences",
+      "sourcePath": "Notes/Emotional regulation helps us manage stressful experiences.md",
+      "expected": { "minCount": 3, "rank1Path": "Notes/Emotional regulation helps us manage stressful experiences.md" }
+    },
+    {
+      "id": "broad-user-stories-design",
+      "intent": "many_answers_possible",
+      "query": "user stories product design",
+      "sourcePath": "Notes/User stories in product design.md",
+      "expected": { "minCount": 2, "rank1Path": "Notes/User stories in product design.md" }
+    },
+    {
+      "id": "broad-cognitive-therapy",
+      "intent": "many_answers_possible",
+      "query": "cognitive based therapy",
+      "sourcePath": "Notes/Cognitive Based Therapy.md",
+      "expected": { "minCount": 1, "rank1Path": "Notes/Cognitive Based Therapy.md" }
+    },
+    {
+      "id": "oov-xyzzy",
+      "intent": "no_answers_possible",
+      "query": "xyzzyplugh quantum flarn",
+      "synthetic": true,
+      "expected": { "maxCount": 0 }
+    },
+    {
+      "id": "oov-uuid-token",
+      "intent": "no_answers_possible",
+      "query": "seek-oov-991827-alpha",
+      "synthetic": true,
+      "expected": { "maxCount": 0 }
+    },
+    {
+      "id": "oov-fake-tag",
+      "intent": "no_answers_possible",
+      "query": "seek-fixture-missing-tag",
+      "synthetic": true,
+      "expected": { "maxCount": 0 }
+    },
+    {
+      "id": "ambig-notes-folder",
+      "intent": "one_ambiguous_query",
+      "query": "notes",
+      "sourcePath": "Notes/",
+      "expected": { "minCount": 5 }
+    },
+    {
+      "id": "ambig-books-shelf",
+      "intent": "one_ambiguous_query",
+      "query": "books",
+      "sourcePath": "Notes/Books/",
+      "expected": { "minCount": 2 }
+    },
+    {
+      "id": "ambig-how-to-prefix",
+      "intent": "one_ambiguous_query",
+      "query": "how to get",
+      "sourcePath": "Notes/How to get over someone.md",
+      "expected": { "minCount": 2 }
+    },
+    {
+      "id": "name-millionaire-fastlane",
+      "intent": "known_item_name_paint",
+      "query": "millionaire fastlane",
+      "sourcePath": "Notes/The Millionaire Fastlane.md",
+      "expected": { "minCount": 1, "rank1Path": "Notes/The Millionaire Fastlane.md", "nameEarlyPainted": true }
+    },
+    {
+      "id": "name-matthew-immergut",
+      "intent": "known_item_name_paint",
+      "query": "matthew immergut",
+      "sourcePath": "Notes/Matthew Immergut.md",
+      "expected": { "minCount": 1, "rank1Path": "Notes/Matthew Immergut.md", "nameEarlyPainted": true }
+    },
+    {
+      "id": "name-control-systems",
+      "intent": "known_item_name_paint",
+      "query": "control systems theory",
+      "sourcePath": "Notes/Control Systems Theory.md",
+      "expected": { "minCount": 1, "rank1Path": "Notes/Control Systems Theory.md", "nameEarlyPainted": true }
+    },
+    {
+      "id": "alias-chen-alex",
+      "intent": "alias_prefix",
+      "query": "chen alex",
+      "sourcePath": "Notes/Alex Chen profile.md",
+      "expected": { "minCount": 1, "rank1Contains": "Alex" }
+    },
+    {
+      "id": "alias-pixel-cam",
+      "intent": "alias_prefix",
+      "query": "pixel cam",
+      "sourcePath": "Notes/Pixel camera review.md",
+      "expected": { "minCount": 1, "rank1Contains": "Pixel" }
+    },
+    {
+      "id": "alias-cedar-archive",
+      "intent": "alias_prefix",
+      "query": "cedar archive",
+      "sourcePath": "Notes/Cedar archive token.md",
+      "expected": { "minCount": 1, "rank1Contains": "Cedar" }
+    },
+    {
+      "id": "needle-falsifiability",
+      "intent": "needle_in_haystack",
+      "query": "falsifiability principles progress",
+      "sourcePath": "Notes/Falsifiability and scientific progress.md",
+      "expected": { "minCount": 1, "rank1Path": "Notes/Falsifiability and scientific progress.md" }
+    },
+    {
+      "id": "needle-greed-career",
+      "intent": "needle_in_haystack",
+      "query": "greed career success",
+      "sourcePath": "Notes/Greed for career success.md",
+      "expected": { "minCount": 1, "rank1Path": "Notes/Greed for career success.md" }
+    },
+    {
+      "id": "needle-repetitive-thinking",
+      "intent": "needle_in_haystack",
+      "query": "repetitive thinking healthy coping",
+      "sourcePath": "Notes/Repetitive thinking as healthy coping.md",
+      "expected": { "minCount": 1, "rank1Path": "Notes/Repetitive thinking as healthy coping.md" }
+    },
+    {
+      "id": "filter-path-notes",
+      "intent": "filter_only_browse",
+      "query": "path:Notes/*",
+      "sourcePath": "Notes/",
+      "expected": { "minCount": 1 }
+    },
+    {
+      "id": "filter-path-books",
+      "intent": "filter_only_browse",
+      "query": "path:Notes/Books/*",
+      "sourcePath": "Notes/Books/",
+      "expected": { "minCount": 1 }
+    },
+    {
+      "id": "filter-path-admin",
+      "intent": "filter_only_browse",
+      "query": "path:Administrative/*",
+      "sourcePath": "Administrative/",
+      "expected": { "minCount": 1 }
+    },
+    {
+      "id": "gate-q1-starting",
+      "intent": "gate_blocked",
+      "query": "political neuroscience ideology",
+      "sourcePath": "Notes/Political neuroscience and ideology.md",
+      "expected": { "gateBlocked": true }
+    },
+    {
+      "id": "gate-q2-restoring",
+      "intent": "gate_blocked",
+      "query": "negative feelings perceived threat",
+      "sourcePath": "Notes/Negative feelings and perceived threat.md",
+      "expected": { "gateBlocked": true }
+    },
+    {
+      "id": "gate-q3-post-release",
+      "intent": "gate_blocked",
+      "query": "test early test often",
+      "sourcePath": "Notes/Test early test often.md",
+      "expected": { "ready": true, "minCount": 1 }
+    },
+    {
+      "id": "super-a-then-b",
+      "intent": "superseded_query",
+      "query": "user stories product",
+      "synthetic": true,
+      "expected": { "sequence": true, "minCount": 1 }
+    },
+    {
+      "id": "super-three-stutter",
+      "intent": "superseded_query",
+      "query": "emotional regulation",
+      "synthetic": true,
+      "expected": { "sequence": true, "minCount": 1 }
+    },
+    {
+      "id": "super-long-then-name",
+      "intent": "superseded_query",
+      "query": "millionaire",
+      "synthetic": true,
+      "expected": { "sequence": true, "minCount": 1 }
+    },
+    {
+      "id": "section-emotional-h2",
+      "intent": "section_hit",
+      "query": "helps manage feelings",
+      "sourcePath": "Notes/Emotional regulation helps us manage stressful experiences.md",
+      "expected": { "minCount": 1, "rank1Contains": "Emotional" }
+    },
+    {
+      "id": "section-company-template",
+      "intent": "section_hit",
+      "query": "company template",
+      "sourcePath": "Administrative/Templates/Company template.md",
+      "expected": { "minCount": 1, "rank1Contains": "template" }
+    },
+    {
+      "id": "section-identify-nature",
+      "intent": "section_hit",
+      "query": "identifying with nature",
+      "sourcePath": "Notes/Books/Identifying with nature.md",
+      "expected": { "minCount": 1, "rank1Contains": "nature" }
+    }
+  ]
 }

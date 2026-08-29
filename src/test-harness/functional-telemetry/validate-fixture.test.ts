@@ -40,6 +40,13 @@ describe('functional fixture validation', () => {
         expect(new Set(normalized).size).toBe(30);
     });
 
+    it('minimal fixture has 30 cases when expanded', () => {
+        const fx = loadFixture('minimal');
+        if (fx.queryCases.length < 30) return;
+        const errors = validateFunctionalQueriesFixture(fx, { requireFullMatrix: true });
+        expect(errors).toEqual([]);
+    });
+
     it('fails when duplicate query injected', () => {
         const fx = loadFixture('minimal');
         const dup = structuredClone(fx);

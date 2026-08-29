@@ -2,35 +2,215 @@
   "version": 1,
   "vault": "seek-functional",
   "queryCases": [
-    { "id": "min-broad-001", "intent": "many_answers_possible", "query": "seek-probe-008 broad alpha", "sourcePath": "Notes/Broad Topic A.md", "expected": { "minCount": 1, "rank1Contains": "seek-probe-008" } },
-    { "id": "min-broad-002", "intent": "many_answers_possible", "query": "seek-probe-009 broad beta", "sourcePath": "Notes/Broad Topic B.md", "expected": { "minCount": 1 } },
-    { "id": "min-broad-003", "intent": "many_answers_possible", "query": "seek-probe-010 broad gamma", "sourcePath": "Notes/Broad Topic C.md", "expected": { "minCount": 1 } },
-    { "id": "min-oov-001", "intent": "no_answers_possible", "query": "seek-oov-minimal-zeta-001", "expected": { "maxCount": 0 } },
-    { "id": "min-oov-002", "intent": "no_answers_possible", "query": "seek-oov-minimal-zeta-002", "expected": { "maxCount": 0 } },
-    { "id": "min-oov-003", "intent": "no_answers_possible", "query": "seek-oov-minimal-zeta-003", "expected": { "maxCount": 0 } },
-    { "id": "min-ambig-001", "intent": "one_ambiguous_query", "query": "alex", "expected": { "minCount": 2 } },
-    { "id": "min-ambig-002", "intent": "one_ambiguous_query", "query": "books shelf", "expected": { "minCount": 2 } },
-    { "id": "min-ambig-003", "intent": "one_ambiguous_query", "query": "how to get", "expected": { "minCount": 1 } },
-    { "id": "min-name-001", "intent": "known_item_name_paint", "query": "alex chen", "sourcePath": "People/Alex Chen.md", "expected": { "minCount": 1, "rank1Path": "People/Alex Chen.md" } },
-    { "id": "min-name-002", "intent": "known_item_name_paint", "query": "alex 1x1", "sourcePath": "Meetings/Alex 1x1 2026-05-19.md", "expected": { "minCount": 1 } },
-    { "id": "min-name-003", "intent": "known_item_name_paint", "query": "pixel camera", "sourcePath": "Gadgets/Pixel.md", "expected": { "minCount": 1, "rank1Contains": "Pixel" } },
-    { "id": "min-alias-001", "intent": "alias_prefix", "query": "alex ch", "expected": { "minCount": 1 } },
-    { "id": "min-alias-002", "intent": "alias_prefix", "query": "control sys", "expected": { "minCount": 1 } },
-    { "id": "min-alias-003", "intent": "alias_prefix", "query": "falsifi prin", "expected": { "minCount": 1 } },
-    { "id": "min-needle-001", "intent": "needle_in_haystack", "query": "seek-probe-004 cedar archive", "sourcePath": "Archive/Needle Cedar.md", "expected": { "minCount": 1 } },
-    { "id": "min-needle-002", "intent": "needle_in_haystack", "query": "seek-probe-005 user stories design", "sourcePath": "Work/User Stories.md", "expected": { "minCount": 1 } },
-    { "id": "min-needle-003", "intent": "needle_in_haystack", "query": "seek-probe-006 falsifiability science", "sourcePath": "Science/Falsifiability.md", "expected": { "minCount": 1 } },
-    { "id": "min-filter-001", "intent": "filter_only_browse", "query": "path:People/*", "expected": { "minCount": 1 } },
-    { "id": "min-filter-002", "intent": "filter_only_browse", "query": "path:Archive/*", "expected": { "minCount": 1 } },
-    { "id": "min-filter-003", "intent": "filter_only_browse", "query": "path:Work/*", "expected": { "minCount": 1 } },
-    { "id": "min-gate-001", "intent": "gate_blocked", "query": "seek-probe-007 gate starting", "expected": { "sequence": true, "ready": false } },
-    { "id": "min-gate-002", "intent": "gate_blocked", "query": "seek-probe-011 gate restoring", "expected": { "sequence": true, "ready": false } },
-    { "id": "min-gate-003", "intent": "gate_blocked", "query": "seek-probe-012 post release", "expected": { "sequence": true, "minCount": 1 } },
-    { "id": "min-super-001", "intent": "superseded_query", "query": "seek-probe-001", "expected": { "sequence": true } },
-    { "id": "min-super-002", "intent": "superseded_query", "query": "seek-probe-002", "expected": { "sequence": true } },
-    { "id": "min-super-003", "intent": "superseded_query", "query": "seek-probe-003", "expected": { "sequence": true } },
-    { "id": "min-section-001", "intent": "section_hit", "query": "seek-probe-011 company template", "sourcePath": "Admin/Template Company.md", "expected": { "minCount": 1 } },
-    { "id": "min-section-002", "intent": "section_hit", "query": "seek-probe-012 identifying nature", "sourcePath": "Books/Nature Identity.md", "expected": { "minCount": 1 } },
-    { "id": "min-section-003", "intent": "section_hit", "query": "seek-probe-013 how to get over", "sourcePath": "Notes/How To Get Over.md", "expected": { "minCount": 1 } }
+    {
+      "id": "broad-apollo-telemetry",
+      "intent": "many_answers_possible",
+      "query": "apollo launch checklist telemetry",
+      "sourcePath": "recent/apollo-today.md",
+      "expected": { "minCount": 1, "rank1Path": "recent/apollo-today.md" }
+    },
+    {
+      "id": "broad-banana-bread",
+      "intent": "many_answers_possible",
+      "query": "banana bread notes yesterday",
+      "sourcePath": "recent/banana-yesterday.md",
+      "expected": { "minCount": 1, "rank1Path": "recent/banana-yesterday.md" }
+    },
+    {
+      "id": "broad-user-stories-work",
+      "intent": "many_answers_possible",
+      "query": "user stories acceptance criteria",
+      "sourcePath": "Work/User Stories.md",
+      "expected": { "minCount": 1, "rank1Path": "Work/User Stories.md" }
+    },
+    {
+      "id": "oov-xyzzy-min",
+      "intent": "no_answers_possible",
+      "query": "xyzzyplugh quantum flarn",
+      "synthetic": true,
+      "expected": { "maxCount": 0 }
+    },
+    {
+      "id": "oov-probe-019",
+      "intent": "no_answers_possible",
+      "query": "seek-probe-019-nonexistent",
+      "synthetic": true,
+      "expected": { "maxCount": 0 }
+    },
+    {
+      "id": "oov-probe-020",
+      "intent": "no_answers_possible",
+      "query": "seek-probe-020-nonexistent",
+      "synthetic": true,
+      "expected": { "maxCount": 0 }
+    },
+    {
+      "id": "ambig-work-folder",
+      "intent": "one_ambiguous_query",
+      "query": "work",
+      "sourcePath": "Work/",
+      "expected": { "minCount": 1 }
+    },
+    {
+      "id": "ambig-notes-broad",
+      "intent": "one_ambiguous_query",
+      "query": "broad",
+      "sourcePath": "Notes/",
+      "expected": { "minCount": 2 }
+    },
+    {
+      "id": "ambig-how-to-get",
+      "intent": "one_ambiguous_query",
+      "query": "how to get",
+      "sourcePath": "Notes/How To Get Over.md",
+      "expected": { "minCount": 1 }
+    },
+    {
+      "id": "name-alex-chen",
+      "intent": "known_item_name_paint",
+      "query": "alex che",
+      "sourcePath": "People/Alex Chen.md",
+      "expected": { "minCount": 1, "rank1Path": "People/Alex Chen.md", "nameEarlyPainted": true }
+    },
+    {
+      "id": "name-alex-1x1",
+      "intent": "known_item_name_paint",
+      "query": "alex 1x1",
+      "sourcePath": "Meetings/Alex 1x1 2026-05-19.md",
+      "expected": { "minCount": 1, "rank1Path": "Meetings/Alex 1x1 2026-05-19.md", "nameEarlyPainted": true }
+    },
+    {
+      "id": "name-control-systems-min",
+      "intent": "known_item_name_paint",
+      "query": "control systems theory",
+      "sourcePath": "Books/Control Systems.md",
+      "expected": { "minCount": 1, "rank1Path": "Books/Control Systems.md", "nameEarlyPainted": true }
+    },
+    {
+      "id": "alias-ac-prefix",
+      "intent": "alias_prefix",
+      "query": "chen ac",
+      "sourcePath": "People/Alex Chen.md",
+      "expected": { "minCount": 1, "rank1Contains": "Alex" }
+    },
+    {
+      "id": "alias-pixel-review",
+      "intent": "alias_prefix",
+      "query": "pixel cam",
+      "sourcePath": "Gadgets/Pixel.md",
+      "expected": { "minCount": 1, "rank1Contains": "Pixel" }
+    },
+    {
+      "id": "alias-falsifiability",
+      "intent": "alias_prefix",
+      "query": "falsifiability sci",
+      "sourcePath": "Science/Falsifiability.md",
+      "expected": { "minCount": 1, "rank1Contains": "Falsifiability" }
+    },
+    {
+      "id": "needle-cedar-token",
+      "intent": "needle_in_haystack",
+      "query": "cedar archive retained searches",
+      "sourcePath": "Archive/Needle Cedar.md",
+      "expected": { "minCount": 1, "rank1Path": "Archive/Needle Cedar.md" }
+    },
+    {
+      "id": "needle-probe-016",
+      "intent": "needle_in_haystack",
+      "query": "seek-probe-016-buried-phrase",
+      "sourcePath": "Notes/Broad Topic A.md",
+      "expected": { "minCount": 1, "rank1Path": "Notes/Broad Topic A.md" }
+    },
+    {
+      "id": "needle-probe-017",
+      "intent": "needle_in_haystack",
+      "query": "seek-probe-017-buried-phrase",
+      "sourcePath": "Notes/Broad Topic B.md",
+      "expected": { "minCount": 1, "rank1Path": "Notes/Broad Topic B.md" }
+    },
+    {
+      "id": "filter-path-people",
+      "intent": "filter_only_browse",
+      "query": "path:People/*",
+      "sourcePath": "People/",
+      "expected": { "minCount": 1 }
+    },
+    {
+      "id": "filter-path-gadgets",
+      "intent": "filter_only_browse",
+      "query": "path:Gadgets/*",
+      "sourcePath": "Gadgets/",
+      "expected": { "minCount": 1 }
+    },
+    {
+      "id": "filter-path-archive",
+      "intent": "filter_only_browse",
+      "query": "path:Archive/*",
+      "sourcePath": "Archive/",
+      "expected": { "minCount": 1 }
+    },
+    {
+      "id": "gate-q1-apollo",
+      "intent": "gate_blocked",
+      "query": "apollo telemetry launch",
+      "sourcePath": "recent/apollo-today.md",
+      "expected": { "gateBlocked": true }
+    },
+    {
+      "id": "gate-q2-banana",
+      "intent": "gate_blocked",
+      "query": "banana bread yesterday",
+      "sourcePath": "recent/banana-yesterday.md",
+      "expected": { "gateBlocked": true }
+    },
+    {
+      "id": "gate-q3-post-release",
+      "intent": "gate_blocked",
+      "query": "cedar archive",
+      "sourcePath": "Archive/Needle Cedar.md",
+      "expected": { "ready": true, "minCount": 1 }
+    },
+    {
+      "id": "super-a-then-b-min",
+      "intent": "superseded_query",
+      "query": "user stories acceptance",
+      "synthetic": true,
+      "expected": { "sequence": true, "minCount": 1 }
+    },
+    {
+      "id": "super-three-stutter-min",
+      "intent": "superseded_query",
+      "query": "apollo telemetry",
+      "synthetic": true,
+      "expected": { "sequence": true, "minCount": 1 }
+    },
+    {
+      "id": "super-long-then-name-min",
+      "intent": "superseded_query",
+      "query": "alex",
+      "synthetic": true,
+      "expected": { "sequence": true, "minCount": 1 }
+    },
+    {
+      "id": "section-company-template-min",
+      "intent": "section_hit",
+      "query": "company template",
+      "sourcePath": "Admin/Template Company.md",
+      "expected": { "minCount": 1, "rank1Contains": "Template" }
+    },
+    {
+      "id": "section-nature-identity",
+      "intent": "section_hit",
+      "query": "identifying nature connection",
+      "sourcePath": "Books/Nature Identity.md",
+      "expected": { "minCount": 1, "rank1Contains": "Nature" }
+    },
+    {
+      "id": "section-probe-018",
+      "intent": "section_hit",
+      "query": "seek-probe-018-section-phrase",
+      "sourcePath": "Notes/Broad Topic C.md",
+      "expected": { "minCount": 1, "rank1Path": "Notes/Broad Topic C.md" }
+    }
   ]
 }
