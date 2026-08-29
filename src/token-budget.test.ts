@@ -27,6 +27,7 @@ import type { Chunk, ChunkMetadata } from './types';
 import {
     enforceTokenBudget, embedInput, overlapSeed, collapsePadding,
     PAD_RUN_MIN, MAX_COLLAPSED_CHARS_PER_TOKEN, TOKEN_BUDGET, type CountTokens,
+    createBatchedTokenCounter, TOKEN_COUNTS_BATCH,
 } from './token-budget';
 import { chunkIdFor } from './chunker';
 import { parseAtoms, normalizeNewlines, type Atom } from './atoms';
@@ -510,5 +511,31 @@ describe('padding collapse + count gate (issue #4)', () => {
         // every row survives, in order, exactly once (tables never overlap-seed)
         const emitted = r.chunks.flatMap(c => c.content.split('\n').slice(2));
         expect(emitted).toEqual(rows);
+    });
+});
+
+describe('createBatchedTokenCounter', () => {
+    it('coalesces parallel single-text calls into ceil(n/batch) RPCs', async () => {
+        let rpcs = 0;
+        const underlying: CountTokens = async texts => {
+            rpcs++;
+            return texts.map(t => t.length);
+        };
+        const batcher = createBatchedTokenCounter(underlying, 8);
+        await Promise.all(Array.from({ length: 16 }, (_, i) => batcher.countTokens([`t${i}`])));
+        await batcher.flush();
+        expect(rpcs).toBe(2);
+        expect(batcher.getRpcCount()).toBe(2);
+    });
+
+    it('preserves enforceTokenBudget chunk_ids vs direct counter', async () => {
+        const counter: CountTokens = async texts => texts.map(t => fakeCount(t));
+        const batcher = createBatchedTokenCounter(counter, TOKEN_COUNTS_BATCH);
+        const chunk = mkChunk({ content: 'word '.repeat(400) });
+        const direct = await enforceTokenBudget([chunk], counter, 128);
+        const batched = await enforceTokenBudget([chunk], batcher.countTokens, 128);
+        await batcher.flush();
+        expect(batched.chunks.map(c => c.chunk_id)).toEqual(direct.chunks.map(c => c.chunk_id));
+        expect(batcher.getRpcCount()).toBeGreaterThan(0);
     });
 });

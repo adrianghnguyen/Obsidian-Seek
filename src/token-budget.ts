@@ -74,6 +74,85 @@ import { parseAtoms, type Atom } from './atoms';
 // RPC); tests inject a deterministic fake.
 export type CountTokens = (texts: string[]) => Promise<number[]>;
 
+/** Batched wrapper for hydrate oracle walks — coalesces iframe tokenCounts RPCs. */
+export interface BatchedTokenCounter {
+    countTokens: CountTokens;
+    /** Drain any queued texts shorter than batchSize (end of a parallel file batch). */
+    flush(): Promise<void>;
+    getRpcCount(): number;
+}
+
+// Default batch width for reChunkLive — matches cheapYield cadence (search.ts).
+export const TOKEN_COUNTS_BATCH = 8;
+
+/**
+ * Accumulates countTokens requests and flushes full batches to `underlying`.
+ * Parallel enforceTokenBudget callers (reChunkLive file batches) coalesce in
+ * the same microtask tick before a partial flush; sequential calls within one
+ * note still get exact counts via a trailing partial flush.
+ */
+export function createBatchedTokenCounter(
+    underlying: CountTokens,
+    batchSize = TOKEN_COUNTS_BATCH,
+): BatchedTokenCounter {
+    if (batchSize < 1) throw new Error('batchSize must be >= 1');
+
+    type Slot = {
+        text: string;
+        resolve: (n: number) => void;
+        reject: (e: unknown) => void;
+    };
+    const queue: Slot[] = [];
+    let rpcCount = 0;
+    let sendChain: Promise<void> = Promise.resolve();
+
+    const sendBatch = async (n: number): Promise<void> => {
+        if (n <= 0) return;
+        const batch = queue.splice(0, n);
+        rpcCount++;
+        try {
+            const counts = await underlying(batch.map(s => s.text));
+            if (counts.length !== batch.length) {
+                throw new Error(`tokenCounts length mismatch: ${counts.length} !== ${batch.length}`);
+            }
+            for (let i = 0; i < batch.length; i++) batch[i].resolve(counts[i]);
+        } catch (e) {
+            for (const s of batch) s.reject(e);
+        }
+    };
+
+    const drain = async (allowPartial: boolean): Promise<void> => {
+        await Promise.resolve(); // let parallel countTokens enqueue in this tick
+        while (queue.length >= batchSize) {
+            await sendBatch(batchSize);
+        }
+        if (allowPartial && queue.length > 0) {
+            await sendBatch(queue.length);
+        }
+    };
+
+    const enqueue = (op: () => Promise<void>): Promise<void> => {
+        sendChain = sendChain.then(op, op);
+        return sendChain;
+    };
+
+    const countTokens: CountTokens = async (texts: string[]) => {
+        if (texts.length === 0) return [];
+        const promises = texts.map(text => new Promise<number>((resolve, reject) => {
+            queue.push({ text, resolve, reject });
+        }));
+        await enqueue(() => drain(false));
+        await enqueue(() => drain(true));
+        return Promise.all(promises);
+    };
+
+    return {
+        countTokens,
+        flush: () => enqueue(() => drain(true)),
+        getRpcCount: () => rpcCount,
+    };
+}
+
 // The dense embed window: SEQ_BUCKETS' last rung. Mirrored by convention
 // (importing iframe-runner here would drag the template string into tests).
 export const TOKEN_BUDGET = 512;
