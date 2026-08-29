@@ -345,6 +345,11 @@ export class SearchOrchestrator {
         return this.warming;
     }
 
+    /** Join startup/pre-catchup warm if already in flight (avoids parallel ensureFrame). */
+    async awaitWarmCachesIfInFlight(): Promise<void> {
+        if (this.warmPromise) await this.warmPromise;
+    }
+
     // Full reindex. Drops the database, walks all markdown, re-embeds everything.
     // Serialized against deltas via the write mutex (a delta mid-nuke would throw).
     async reindexAll(onProgress?: (msg: string) => void, opts: { shouldContinue?: () => boolean } = {}): Promise<IndexCompleteEntry> {
@@ -1134,6 +1139,12 @@ export class SearchOrchestrator {
                 continue;
             }
 
+            // Yield to a live query before the tokenizer/embed RPCs for this file
+            // (G_catchup_ux: seek:search shares the iframe with catch-up).
+            if (mode === 'incremental' && budget.shouldContinue !== undefined && !budget.shouldContinue()) {
+                break;
+            }
+
             // WS2.3 token-budget enforcement: re-pack any chunk whose embed
             // input exceeds the 512-token window (counted by the model's own
             // tokenizer — token-counts RPC) and capture the EXACT count of
@@ -1203,6 +1214,7 @@ export class SearchOrchestrator {
                     // still-unrewritten record deleteFile reads lists them too —
                     // double entries would inflate DeltaApplyEntry.removed.
                     await this.logger.appendError(`chunkDiff:${file.path}`, e);
+                    if (budget.removedBodiesSink) await this.captureRemovalBodies(file.path, budget.removedBodiesSink);
                     const alreadyRemoved = new Set(budget.removedSink);
                     const dropped = await this.store.deleteFile(file.path).catch(() => [] as string[]);
                     budget.removedSink.push(...dropped.filter(id => !alreadyRemoved.has(id)));
@@ -1589,12 +1601,48 @@ export class SearchOrchestrator {
     // (or were never indexed); `deleted` = previously-indexed paths now gone OR no
     // longer indexable (moved into an ignored folder, or honor-ignored toggled on)
     // — a single "not in the live indexable set" test covers both.
+    // Boot/sync races can briefly yield an empty vault enumeration or a live set
+    // far smaller than the persisted index. Applying the deleted sweep then marks
+    // every stored path gone and catch-up's first burst wipes the corpus (G_eviction
+    // probe 2026-08-28: removed≈16742, compaction-due fallback, 0 chunks).
+    private shouldDeferMassDelete(storedSize: number, liveCount: number, deletedCount: number): boolean {
+        if (storedSize === 0 || deletedCount === 0) return false;
+        if (liveCount === 0) return true;
+        // Partial vault enumeration: deleted ≈ (stored − live) fakes a mass removal
+        // (G_eviction 2026-08-28: live 4026 / stored 4473 → 447 spurious deletes).
+        const enumGap = storedSize - liveCount;
+        if (enumGap > 0 && liveCount >= 50
+            && deletedCount >= enumGap * 0.85
+            && deletedCount <= enumGap * 1.15) {
+            return true;
+        }
+        return storedSize >= 50
+            && deletedCount >= storedSize * 0.9
+            && liveCount < storedSize * 0.5;
+    }
+
+    private indexableLiveFiles(): TFile[] {
+        return this.indexableFiles().filter(f => this.shouldIndex(f.path));
+    }
+
+    /** Retry when the vault file list is still filling in (boot / sync). */
+    private async indexableLiveFilesWhenStored(storedSize: number): Promise<TFile[]> {
+        let live = this.indexableLiveFiles();
+        if (storedSize === 0) return live;
+        for (let i = 0; i < 40; i++) {
+            if (live.length >= storedSize || live.length === 0) break;
+            await new Promise(r => setTimeout(r, 50));
+            live = this.indexableLiveFiles();
+        }
+        return live;
+    }
+
     async computeDelta(): Promise<{ dirty: string[]; deleted: string[] }> {
         const records = await this.store.listFileRecords();
         const stored = new Map<string, FileRecord>();
         for (const r of records) stored.set(r.note_path, r);
 
-        const live = this.indexableFiles().filter(f => this.shouldIndex(f.path));
+        let live = await this.indexableLiveFilesWhenStored(stored.size);
         const livePaths = new Set(live.map(f => f.path));
 
         // mtime advanced ≠ edited. An iCloud / Drive sync re-stamps a synced
@@ -1628,6 +1676,12 @@ export class SearchOrchestrator {
         const deleted: string[] = [];
         for (const path of stored.keys()) {
             if (!livePaths.has(path)) deleted.push(path);
+        }
+        if (this.shouldDeferMassDelete(stored.size, live.length, deleted.length)) {
+            console.warn('[seek] computeDelta: deferring suspicious mass-delete sweep', {
+                stored: stored.size, live: live.length, deleted: deleted.length,
+            });
+            return { dirty, deleted: [] };
         }
         return { dirty, deleted };
     }
@@ -1789,7 +1843,20 @@ export class SearchOrchestrator {
                 // so harvest them FIRST; only worth it when this pass will embed.
                 const carryOver = new Map<string, { q: QuantVec; sign: Uint8Array }>();
                 const wantCarryOver = opts.embed && this.embedder.loaded;
-                if (wantCarryOver) await this.harvestCarryOverInto(carryOver, deletedPaths);
+                // Defense-in-depth: refuse a near-total structural drop when the live
+                // vault enumeration looks truncated (same guard as computeDelta).
+                let phase1Deletes = deletedPaths;
+                if (phase1Deletes.length > 0) {
+                    const storedCount = (await this.store.listFileRecords()).length;
+                    const liveCount = this.indexableLiveFiles().length;
+                    if (this.shouldDeferMassDelete(storedCount, liveCount, phase1Deletes.length)) {
+                        console.warn('[seek] reindexDelta: refusing suspicious mass-delete', {
+                            deleted: phase1Deletes.length, stored: storedCount, live: liveCount,
+                        });
+                        phase1Deletes = [];
+                    }
+                }
+                if (wantCarryOver) await this.harvestCarryOverInto(carryOver, phase1Deletes);
 
                 // The change-set the incremental cache path consumes: ids removed
                 // and chunks committed (filled by commitFile via addsSink). Three
@@ -1810,19 +1877,29 @@ export class SearchOrchestrator {
                 // when the resident caches are absent — that pass falls back to
                 // a full rebuild which never consults removal docs.
                 const removedBodies = new Map<string, string>();
-                const wantRemovalBodies = !!(this.frameCache && this.bm25Cache);
+                // Capture whenever the frame is resident — applyDelta may patch
+                // incrementally once BM25 is warm (restored or already live), and
+                // bodies must be read BEFORE deleteFile drops them from IDB.
+                const wantRemovalBodies = !!this.frameCache;
                 // In-place metadata patches from the engine's chunk-diff: id-stable
                 // chunks whose BM25-irrelevant metadata drifted (line numbers,
                 // dates). applyDelta swaps the frame rows; IDB was already updated.
                 const metaPatches: Array<{ id: string; meta: ChunkMeta }> = [];
                 // Phase 1: structural drops (no model).
                 let deletedChunks = 0;
-                for (const path of deletedPaths) {
+                for (const path of phase1Deletes) {
                     if (wantRemovalBodies) await this.captureRemovalBodies(path, removedBodies);
                     const ids = await this.store.deleteFile(path);
                     deletedChunks += ids.length;
                     removedIds.push(...ids);
                 }
+
+                // Drop currentDelta for the embed phase. Note embeds can take seconds
+                // per burst; holding currentDelta forced ensureFrame (and seek:search)
+                // to wait the whole burst out (G_catchup_ux). Warm frames stay valid
+                // until applyDelta below re-arms currentDelta for the cache patch.
+                release();
+                this.coord.currentDelta = null;
 
                 // Phase 2: embed dirty files (only when we can do it now).
                 const indexable = dirtyPaths.filter(p => this.shouldIndex(p));
@@ -1934,8 +2011,12 @@ export class SearchOrchestrator {
                 // (cold caches, index-shape flip, dim change, drift, or a due
                 // compaction). Sidecar-hydrated chunks are in `adds` too, so a dedup
                 // delta is incremental. Either way the next search sees a correct cache.
-                const mutated = deletedChunks > 0 || deletedPaths.length > 0 || embedded || sidecarHydrated > 0 || carriedOver > 0;
+                const mutated = deletedChunks > 0 || phase1Deletes.length > 0 || embedded || sidecarHydrated > 0 || carriedOver > 0;
                 if (mutated) {
+                    // Re-arm currentDelta around the cache patch so a concurrent
+                    // ensureFrame cold-miss waits for a consistent apply (not a
+                    // half-mutated frame). Embed phase above left it null.
+                    this.coord.currentDelta = new Promise<void>(r => { release = r; });
                     // F13 carry-over writes chunks the applyDelta change-set can't
                     // track (they bypass the model + the `adds` sink), so a delta that
                     // carried any vector over can't be patched incrementally — force
@@ -1951,6 +2032,7 @@ export class SearchOrchestrator {
                     this.lastDeltaFallbackReason = null;
                     if (!skippedBecause) {
                         const applyStart = performance.now();
+                        await this.fillRemovalBodiesFromStore(removedIds, removedBodies);
                         appliedIncrementally = await this.applyDelta(adds, removedIds, removedBodies, metaPatches);
                         applyDeltaMs = performance.now() - applyStart;
                     }
@@ -2010,7 +2092,7 @@ export class SearchOrchestrator {
                 //   no-forward-progress / drift signal. (Budget deferral is detected
                 //   instead by the shrinking dirty set on the next computeDelta, so it
                 //   needs no separate return field.)
-                return { deletedPaths: deletedPaths.length, deletedChunks, embedded, deferredEmbed, sidecarHydrated, carriedOver, committedPaths };
+                return { deletedPaths: phase1Deletes.length, deletedChunks, embedded, deferredEmbed, sidecarHydrated, carriedOver, committedPaths };
             } finally {
                 if (deltaTelemetry) deltaTelemetry.mutexHoldMs = parseFloat((performance.now() - mutexStart).toFixed(2));
                 release();
@@ -2091,6 +2173,17 @@ export class SearchOrchestrator {
         } catch { /* handled at applyDelta as 'removal-body-missing' */ }
     }
 
+    // Best-effort backfill for removal ids surfaced without a captured body
+    // (getBodiesMap returns present ids only; a partial capture must not leave
+    // removedSink ids body-less if the rows are still in IDB).
+    private async fillRemovalBodiesFromStore(removedIds: string[], sink: Map<string, string>): Promise<void> {
+        const missing = removedIds.filter(id => !sink.has(id));
+        if (missing.length === 0) return;
+        try {
+            for (const [id, body] of await this.store.getBodiesMap(missing)) sink.set(id, body);
+        } catch { /* applyDelta declines if still missing */ }
+    }
+
     // Chunk-diff plan for one dirty file (issue #5). Returns null when there is
     // no stored record (new file) — the caller embeds everything. On a plan:
     // stale rows are deleted (bodies captured first for the exact-removal
@@ -2128,6 +2221,10 @@ export class SearchOrchestrator {
         // the ids AFTER the IDB delete so the change-set only holds applied rows.
         if (staleIds.length > 0) {
             for (const [id, body] of await this.store.getBodiesMap(staleIds)) budget.removedBodiesSink.set(id, body);
+            const missingBodies = staleIds.filter(id => !budget.removedBodiesSink.has(id));
+            if (missingBodies.length > 0) {
+                throw new Error(`stale chunk bodies missing (${missingBodies.length})`);
+            }
             await this.store.deleteChunksByIds(staleIds);
             budget.removedSink.push(...staleIds);
         }
@@ -2849,6 +2946,17 @@ export class SearchOrchestrator {
             .sort((a, b) => b.mtimeMs - a.mtimeMs);
     }
 
+    // Greedy hydrate runs inside the boot IIFE, often before the vault file list is
+    // populated; an empty enumeration yields tiersRun:0 with fresh ids pending.
+    private async listHydrateFilesForGreedy(): Promise<Array<{ path: string; mtimeMs: number }>> {
+        for (let i = 0; i < 40; i++) {
+            const files = this.listHydrateFilesSorted();
+            if (files.length > 0) return files;
+            await new Promise(r => setTimeout(r, 50));
+        }
+        return this.listHydrateFilesSorted();
+    }
+
     // The live-vault chunk_id set + whether it is COMPLETE — the liveness oracle for
     // sidecar compaction. Mirrors reChunkLive's id pipeline (chunksFor THEN
     // enforceTokenBudget over indexableFiles, so ids match what indexing wrote for
@@ -3163,7 +3271,8 @@ export class SearchOrchestrator {
         return {
             ...base,
             greedyHydrate: true,
-            listHydrateFiles: async () => this.listHydrateFilesSorted(),
+            listHydrateFiles: () => this.listHydrateFilesForGreedy(),
+            ensureTokenizer: () => this.embedder.ensureTokenizer(),
             reChunkSubset: (files, shouldStop) => this.reChunkLiveSubset(files, shouldStop),
             onGoodEnough: () => {
                 this.invalidateBm25Cache();
@@ -3280,6 +3389,10 @@ export class SearchOrchestrator {
                 if (stale.length > 0) {
                     if (removedBodiesSink) {
                         for (const [id, body] of await this.store.getBodiesMap(stale)) removedBodiesSink.set(id, body);
+                        const missingBodies = stale.filter(id => !removedBodiesSink.has(id));
+                        if (missingBodies.length > 0) {
+                            throw new Error(`sidecar stale bodies missing (${missingBodies.length})`);
+                        }
                     }
                     await this.store.deleteChunksByIds(stale);
                     removedSink?.push(...stale);
@@ -3686,12 +3799,19 @@ export class SearchOrchestrator {
         // BM25 yet) — for a normal device with a local blob it never executes, so the
         // hot path pays zero. bm25Ms therefore times the load-or-fit, whichever ran.
         if (!this.bm25CacheValid(orderedChunks)) {
-            await this.tryLoadPersistedBm25(orderedChunks);
-            if (!this.bm25CacheValid(orderedChunks)) {
-                await this.tryLoadCrossDeviceBm25(orderedChunks);
+            if (!(this.bm25Cache && this.coord.isWriting())) {
+                await this.tryLoadPersistedBm25(orderedChunks);
+                if (!this.bm25CacheValid(orderedChunks)) {
+                    await this.tryLoadCrossDeviceBm25(orderedChunks);
+                }
             }
         }
         const bm25CacheHit = await this.ensureBm25(orderedChunks);
+        if (!this.bm25Cache) {
+            const entry = this.emptySearchEntry(query, cleanedQuery, filters, topK, searchId, idbReadMs, performance.now() - t0);
+            await this.logger.append(entry);
+            return { results: [], entry };
+        }
         // Query-entry drift guard (Seek scaling A1): the frame and BM25 index are
         // about to be jointly indexed by a single row id (the candidate union
         // below), so verify that coupling holds before trusting it. A trip should
@@ -4062,17 +4182,65 @@ export class SearchOrchestrator {
     // backfill yet). On a cache miss this is the one place that reads the full
     // chunk store (listAllChunks) and assembles the binary-aligned frame; on a
     // hit it returns immediately with zero IDB traffic.
-    private async ensureFrame(): Promise<ResidentFrame | null> {
-        // Wait out any in-flight delta so we read the fully-applied result, not a
-        // half-committed one (a multi-file delta isn't one atomic transaction).
-        // Loop, not check-once: a fresh delta can start before we wake, and we
-        // want to read with none in flight. The delta bumps dataGeneration on
-        // completion, so the cache check below then misses and rebuilds. No-op
-        // during a full reindex (currentDelta is null there) — its progressive
-        // "queryable as it fills" read is intended.
-        while (this.coord.currentDelta) { try { await this.coord.currentDelta; } catch { /* delta logged it */ } }
+    private async ensureFrame(opts?: { skipResidentInt8?: boolean; skipWarmJoin?: boolean }): Promise<ResidentFrame | null> {
+        // Join an in-flight warm (unless we ARE that warm) so search does not race
+        // a second listAllMeta against warmCaches and hang on IDB (G_catchup_ux).
+        if (!opts?.skipWarmJoin && !this.frameCache && this.warmPromise) {
+            await Promise.race([
+                this.warmPromise.catch(() => {}),
+                new Promise<void>(r => setTimeout(r, 8_000)),
+            ]);
+        }
+        {
+            const joined = this.frameCache;
+            if (joined && joined.generation === this.coord.generation) {
+                return joined;
+            }
+            if (joined && this.coord.isWriting()) {
+                return joined;
+            }
+        }
+        // Serve a warm generation-matched frame without waiting out an incremental
+        // delta. Catch-up holds currentDelta for a whole burst; pre-burst chunks
+        // stay searchable (chunk-diff keeps them until replaced).
         if (this.frameCache && this.frameCache.generation === this.coord.generation) {
             return this.frameCache;
+        }
+        // During catch-up/reindexDelta, runExclusive holds the IDB write lock for
+        // the whole burst. A generation-mismatched cold rebuild would listAllMeta
+        // behind that lock and hang seek:search for tens of seconds (G_catchup_ux).
+        // Prefer a briefly-stale resident frame while a writer is active.
+        if (this.frameCache && this.coord.isWriting()) {
+            return this.frameCache;
+        }
+        // Cold miss (or stale gen) while a delta holds the write mutex: never call
+        // listAllMeta under currentDelta — IDB readers block behind the writer.
+        // Wait the delta out, then re-check for a patched warm frame before rebuilding.
+        if (this.coord.currentDelta) {
+            while (this.coord.currentDelta) { try { await this.coord.currentDelta; } catch { /* delta logged it */ } }
+            if (this.frameCache && this.frameCache.generation === this.coord.generation) {
+                return this.frameCache;
+            }
+            if (this.frameCache && this.coord.isWriting()) {
+                return this.frameCache;
+            }
+        }
+        // No resident frame while a writer holds the IDB lock: wait it out before
+        // listAllMeta (otherwise the read tx stalls behind putBatch for the burst).
+        if (!this.frameCache && this.coord.isWriting()) {
+            const deadline = performance.now() + 30_000;
+            while (this.coord.isWriting() && performance.now() < deadline) {
+                await new Promise<void>(r => setTimeout(r, 40));
+            }
+        }
+        {
+            const afterWait = this.frameCache;
+            if (afterWait && afterWait.generation === this.coord.generation) {
+                return afterWait;
+            }
+            if (afterWait && this.coord.isWriting()) {
+                return afterWait;
+            }
         }
         // Capture the generation we're building against. A full reindex's
         // progressive read has NO currentDelta gate (the while loop above only
@@ -4138,7 +4306,7 @@ export class SearchOrchestrator {
         // binary tier's bytesPerVec (= ceil(d/8)); against a 16 MB budget the
         // ±7-bit slack is negligible and biases conservative.
         let resident: ReturnType<typeof buildResidentRerankBlock> = null;
-        if (residentInt8Enabled(orderedIds.length, bytesPerVec * 8)) {
+        if (!opts?.skipResidentInt8 && residentInt8Enabled(orderedIds.length, bytesPerVec * 8)) {
             const { ids: embIds, vecs: embVecs } = await this.store.listAllEmbeddings();
             const embById = new Map<string, QuantVec>();
             for (let i = 0; i < embIds.length; i++) embById.set(embIds[i], embVecs[i]);
@@ -4202,8 +4370,21 @@ export class SearchOrchestrator {
     }
 
     private async ensureBm25(orderedChunks: ChunkMeta[]): Promise<boolean> {
-        const hit = this.bm25CacheValid(orderedChunks);
+        let hit = this.bm25CacheValid(orderedChunks);
         if (!hit) {
+            // A warmCaches fit is already in flight — do not start a second
+            // getBodiesMap/fit (that hung seek:search 20s+). Also do not await
+            // the warm here: pre-catchup fit is 15–20s and would miss G_catchup_ux.
+            // Serve empty until warm stamps bm25Cache; the next keystroke hits.
+            if (this.warmPromise && !this.warming) {
+                return this.bm25CacheValid(orderedChunks);
+            }
+            // Writer holds the IDB lock (or no resident BM25 yet): never start
+            // getBodiesMap(all) here — it stalls behind putBatch / competes with
+            // warmCaches and hung seek:search for 15s+ (G_catchup_ux).
+            if (this.coord.isWriting()) {
+                return false;
+            }
             const propsEnabled = this.settings.searchableProperties;
             // boostedBm25 boosts the headings field to 4×, which is inert unless
             // the field is actually indexed — so the preset implies heading indexing.
@@ -4468,7 +4649,15 @@ export class SearchOrchestrator {
     }> {
         const none = { frameRestored: false, bm25Restored: false, chunkCount: 0 };
         try {
-            const frame = await this.ensureFrame();
+            // Join an in-flight warmCaches instead of a second ensureFrame/listAllMeta
+            // (startup warm + pre-catchup restore raced and hung rem=0 for minutes).
+            if (this.warmPromise) {
+                await Promise.race([
+                    this.warmPromise.catch(() => {}),
+                    new Promise<void>(r => setTimeout(r, 8_000)),
+                ]);
+            }
+            const frame = await this.ensureFrame({ skipWarmJoin: true, skipResidentInt8: true });
             if (!frame || frame.orderedChunks.length === 0) return none;
             const orderedChunks = frame.orderedChunks;
             if (!this.bm25CacheValid(orderedChunks)) {
@@ -4512,17 +4701,22 @@ export class SearchOrchestrator {
     // the cold-start blob fresh so the NEXT relaunch loads instead of refits. So on
     // cold mobile we persist-if-resident and stand down; desktop always warms.
     private warming = false;
+    /** When true, background warm triggers no-op (catch-up owns IDB). */
+    private warmDeferred = false;
+    setWarmDeferred(deferred: boolean): void { this.warmDeferred = deferred; }
+    /** In-flight warmCaches promise — concurrent callers await instead of no-op. */
+    private warmPromise: Promise<void> | null = null;
     async warmCaches(trigger: string): Promise<void> {
-        // A warm is already in flight — safe to return. invalidateBm25Cache()
-        // bumps dataGeneration BEFORE its paired warmCaches() call (see the delta /
-        // hydrate / reindex sites), so the active warm sees the newer generation in
-        // its loop guard below and rebuilds for it. The old bare `return` here
-        // silently DROPPED a superseded warm: a delta completing mid-warm bumped the
-        // generation, its warmCaches() hit this guard and bailed, and the in-flight
-        // warm finished one generation stale — leaving the cache cold until the next
-        // search ate the full ~280ms rebuild. That was the RACE/STALE miss class
-        // (~30% of cold misses in the desktop logs).
-        if (this.warming) return;
+        const bgWarm = trigger === 'startup' || trigger === 'startup-good-enough'
+            || trigger === 'pre-catchup' || trigger === 'modal-open';
+        if (this.warmDeferred && bgWarm) return;
+        // A warm is already in flight — await it so callers (pre-catchup) don't
+        // proceed thinking caches are ready when the first warm is still building
+        // or when a bare `return` dropped them (G_catchup_ux: drain started with
+        // a cold frame). invalidateBm25Cache() bumps dataGeneration BEFORE its
+        // paired warmCaches() call; the active warm sees the newer generation in
+        // its loop guard below and rebuilds for it.
+        if (this.warmPromise) return this.warmPromise;
         if (isMobilePlatform() && !this.embedder.loaded) {
             // Persist-if-resident, never build (see the method comment). The throttled
             // helper guards on frameCache at the live generation + a valid BM25 cache
@@ -4531,6 +4725,11 @@ export class SearchOrchestrator {
             this.maybePersistResidentBm25();
             return;
         }
+        this.warmPromise = this.runWarmCaches(trigger).finally(() => { this.warmPromise = null; });
+        return this.warmPromise;
+    }
+
+    private async runWarmCaches(trigger: string): Promise<void> {
         this.warming = true;
         // v16 (issue #5): name the trigger. The one unexplained artifact in
         // wlo2's full report was a mid-session 1.63 s bm25-warm refit whose
@@ -4545,11 +4744,22 @@ export class SearchOrchestrator {
             // Deltas are serialized on the write mutex and debounced by the flush
             // scheduler, so this converges in 1–2 passes under real editing.
             let warmedChunks: ChunkMeta[] | null = null;
+            const lightFrame = trigger === 'pre-catchup' || trigger === 'startup-good-enough'
+                || trigger === 'startup' || trigger === 'post-catchup';
+            const singlePass = lightFrame;
             do {
-                const frame = await this.ensureFrame();
+                const frame = await this.ensureFrame(
+                    lightFrame ? { skipResidentInt8: true, skipWarmJoin: true } : { skipWarmJoin: true },
+                );
                 if (!frame) break;
-                await this.ensureBm25(frame.orderedChunks);
+                if (!this.bm25CacheValid(frame.orderedChunks)) {
+                    await this.tryLoadPersistedBm25(frame.orderedChunks);
+                }
+                if (!this.bm25CacheValid(frame.orderedChunks) && !this.coord.isWriting()) {
+                    await this.ensureBm25(frame.orderedChunks);
+                }
                 warmedChunks = frame.orderedChunks;
+                if (singlePass) break;
             } while (this.bm25CacheGeneration !== this.coord.generation);
             // Persist the converged, warmed BM25 index so the next cold start can
             // skip fit() (fire-and-forget — the serialize + write ride this quiet

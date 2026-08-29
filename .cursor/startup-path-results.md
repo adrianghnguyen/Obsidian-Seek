@@ -88,12 +88,14 @@ Goals: G_eviction
 
 | scenario | mutex_hold_ms | delta_incremental | verdict |
 |----------|---------------|---------------------|---------|
-| _pending_ | | | WIP in stash |
+| _pending_ | | | code shipped @ 2e4103d; BM25 early-load before reconcile; measure post-eviction |
+
+Notes: `restorePersistedCachesBeforeReconcile()` — frame from IDB meta+binary, BM25 from `bm25` store. Frame not separately persisted.
 
 ## Compose (`path/compose`)
 
 | paths_included | goal | expected_combo | actual_combo | interaction | ship? |
 |----------------|------|----------------|--------------|-------------|-------|
-| T1+T2+T3+T4+T5 | quick startup | full stack | @ 2e4103d compose | worktrees isolated | building |
+| T1+T2+T3+T4+T5 | quick startup | full stack | @ 474dfb2 compose | worktrees isolated | ready to measure |
 
 Handoffs: `.cursor/handoff/T1.json` … `T6.json`

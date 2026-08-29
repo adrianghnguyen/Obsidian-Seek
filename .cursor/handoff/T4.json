@@ -4,16 +4,36 @@
   "branch": "path/persist-cache",
   "commit": "2e4103d",
   "worktree": "C:/Coding_projects/Obsidian-Seek",
+  "merged_into_compose": true,
+  "compose_at": "474dfb2",
   "scenarios_run": [],
   "scorecards": [],
   "goals": {
-    "G_eviction": "pending"
+    "G_small_delta": "n/a",
+    "G_first_good": "n/a",
+    "G_noop_sync": "n/a",
+    "G_cold_recovery": "n/a",
+    "G_ui_responsive": "n/a",
+    "G_eviction": "pending",
+    "G_catchup_chunk": "n/a",
+    "G_catchup_ux": "n/a"
   },
   "metrics_p50": {},
-  "blockers": "Run A post-eviction protocol (minimize 30s -> restart) to measure mutex_hold_ms",
+  "implementation": {
+    "restorePersistedCachesBeforeReconcile": "main.ts boot before reconcileOnLoad",
+    "bm25": "tryLoadPersistedBm25 from IDB bm25 store",
+    "frame": "ensureFrame from IDB meta+binary (not separately persisted)",
+    "tests": "persist-cache-startup.test.ts (3 cases)"
+  },
+  "limitations": [
+    "Frame not persisted to IDB — rebuilt via ensureFrame each cold boot",
+    "warmCaches does not call tryLoadPersistedBm25 on miss"
+  ],
+  "blockers": "Run A post-eviction protocol (minimize 30s -> restart) to measure mutex_hold_ms and appliedIncrementally",
   "deliverables": [
-    "restorePersistedCachesBeforeReconcile",
+    "restorePersistedCachesBeforeReconcile()",
+    "persist-cache-restore forensics beat",
     "persist-cache-startup.test.ts",
-    "wired in main.ts onload before reconcileOnLoad"
+    "1278 tests pass at ship"
   ]
 }

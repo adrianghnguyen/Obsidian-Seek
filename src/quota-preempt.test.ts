@@ -135,6 +135,37 @@ describe('quota + preempt scenarios (Tier-2)', () => {
         expect((await s.orch.computeDelta()).dirty).toEqual(['b.md']);  // still dirty — the drain re-fires it
     });
 
+    it('computeDelta defers mass-delete when the live vault list is empty', async () => {
+        const s = await boot();
+        s.vault.write('a.md', 'seed', 1000);
+        s.vault.write('b.md', 'other', 1000);
+        await s.coldStart();
+        const spy = vi.spyOn(s.orch as unknown as { indexableLiveFiles(): [] }, 'indexableLiveFiles').mockReturnValue([]);
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        vi.useFakeTimers();
+        try {
+            const pending = s.orch.computeDelta();
+            await vi.advanceTimersByTimeAsync(2500);
+            const { dirty, deleted } = await pending;
+            expect(deleted).toEqual([]);
+            expect(dirty).toEqual([]);
+            expect(warn).toHaveBeenCalled();
+        } finally {
+            spy.mockRestore();
+            warn.mockRestore();
+            vi.useRealTimers();
+        }
+    }, 10_000);
+
+    it('shouldDeferMassDelete catches partial enumeration gap (G_eviction 2026-08-28)', async () => {
+        const s = await boot();
+        const defer = (s.orch as unknown as { shouldDeferMassDelete(a: number, b: number, c: number): boolean })
+            .shouldDeferMassDelete.bind(s.orch);
+        expect(defer(4473, 4026, 447)).toBe(true);
+        expect(defer(4473, 4026, 100)).toBe(false);
+        expect(defer(100, 0, 100)).toBe(true);
+    });
+
     // ── S4: fallback observability ──────────────────────────────────────────
     // The tripwire contract: every declined incremental patch surfaces its reason
     // with a per-reason session count (the "is fallback churn real?" data), and
