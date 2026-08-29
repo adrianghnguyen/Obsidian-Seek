@@ -4,7 +4,13 @@
 
 ## 1. Executive summary
 
-During `reChunkLive` and greedy tier walks, the main thread ran tight loops (read → chunk → tokenCounts) with no scheduler yields. Obsidian felt frozen for tens of seconds during `Starting` even when total hydrate wall time was acceptable. T2 adds `cheapYield()` every 8 files in all live rechunk paths. **G_ui_responsive** measured **429 ms** eval p50 during Starting on the G2 v2 probe (SLO ≤ 2 s). **Verdict:** pass (UX improvement; ~0% faster total hydrate).
+Even when total startup time is acceptable, the app can *feel* broken: the window freezes, the editor ignores input, and “Starting…” sits on screen while a background loop crunches through thousands of files. Users care about **responsiveness** separately from **throughput** — a 60-second job that yields every few files feels better than a 55-second job that never lets the UI breathe.
+
+The engineering issue is **main-thread monopolization**. `reChunkLive` ran a tight synchronous chain (read file → chunk text → call tokenizer) on JavaScript’s single UI thread without **`scheduler.yield()`** or equivalent cooperative multitasking. In browser/Electron apps, long tasks block rendering and input; the **event loop** never gets a turn. We deliberately avoided the compositor’s `requestIdleCallback` pacer here because it is too coarse for sub-second search-wait scenarios — a tradeoff between **idle scheduling** and **interactive latency**.
+
+T2 inserts `cheapYield()` every 8 files — small pauses that let Obsidian stay usable during Starting. **G_ui_responsive:** **429 ms** eval p50 (SLO ≤ 2 s). Wall-clock hydrate is ~unchanged (~0% faster). **Verdict:** pass (UX, not raw speed).
+
+**Concepts worth researching:** event loop and long tasks · cooperative yielding (`scheduler.yield`) · UI thread vs worker threads · latency vs throughput · `requestIdleCallback` vs explicit yield · perceived performance
 
 ## 2. Why the bottleneck existed
 
