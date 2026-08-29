@@ -82,6 +82,19 @@ describe('Tier-2 scenario harness', () => {
         expect(results[0].note_path).toBe('pixel.md');
     });
 
+    it('an already-superseded query exits before embedding', async () => {
+        const s = await boot();
+        s.vault.write('pixel.md', 'the verge reviews the new google pixel phone camera', 1000);
+        await s.coldStart();
+        const spy = vi.spyOn(s.embedder, 'embed');
+        const controller = new AbortController();
+        controller.abort();
+
+        await expect(s.orch.search('superseded query', 5, undefined, controller.signal))
+            .rejects.toMatchObject({ name: 'AbortError' });
+        expect(spy).not.toHaveBeenCalled();
+    });
+
     // ── Scenario 4 — a read failure mid-pass skips one file, not the batch ───
     // The carryover NotFoundError family: a file vanishes BETWEEN the directory
     // listing and its read. embedAndCommitFiles must skip just that file

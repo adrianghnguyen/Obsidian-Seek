@@ -3597,7 +3597,18 @@ export class SearchOrchestrator {
     // (2026-07-02 review). Passing the override as a call-local argument
     // instead makes overlapping searches independent by construction — no
     // shared mutable state, so nothing to race or leak.
-    async search(query: string, topK = 10, recencyOverride?: RecencyOverride): Promise<{ results: ScoredChunk[]; entry: SearchEntry }> {
+    async search(
+        query: string,
+        topK = 10,
+        recencyOverride?: RecencyOverride,
+        signal?: AbortSignal,
+    ): Promise<{ results: ScoredChunk[]; entry: SearchEntry }> {
+        const throwIfAborted = (): void => {
+            if (signal?.aborted) {
+                throw Object.assign(new Error('Query superseded'), { name: 'AbortError', code: 'ABORTED' });
+            }
+        };
+        throwIfAborted();
         const t0 = performance.now();
         const searchId = `${Date.now()}-${query.slice(0, 20)}`;
 
@@ -3629,6 +3640,7 @@ export class SearchOrchestrator {
         const frameWasCached = !!(this.frameCache && this.frameCache.generation === this.coord.generation);
         const frame = await this.ensureFrame();
         const idbReadMs = performance.now() - idbStart;
+        throwIfAborted();
         // Frame and binary index are built together under one dataGeneration, so
         // a frame hit implies the binary index was served from cache too.
         const binaryCacheHitFlag = frameWasCached;
@@ -3747,7 +3759,7 @@ export class SearchOrchestrator {
         // symmetrically on both index and query side, so the lexical channel
         // needs no parallel cleaning pass.)
         const qStart = performance.now();
-        const embedded = await this.embedder.embed(cleanDenseText(cleanedQuery));
+        const embedded = await this.embedder.embed(cleanDenseText(cleanedQuery), signal);
         const queryVec = embedded.vector;
         const iframeEmbedMs = embedded.iframeLatencyMs;
         const queryEmbedMs = performance.now() - qStart;

@@ -407,7 +407,13 @@ export class LocalEmbedder {
         };
     }
 
-    async embed(text: string): Promise<EmbedTimed> {
+    async embed(text: string, signal?: AbortSignal): Promise<EmbedTimed> {
+        const throwIfAborted = (): void => {
+            if (signal?.aborted) {
+                throw Object.assign(new Error('Query superseded'), { name: 'AbortError', code: 'ABORTED' });
+            }
+        };
+        throwIfAborted();
         if (!this._loaded) {
             // A load()/recycle() is in flight (they share _loadPromise — see
             // recycle()) — e.g. a query fired while the indexer's SafeInt-overflow
@@ -420,13 +426,14 @@ export class LocalEmbedder {
             if (this._loadPromise) await this._loadPromise;
             if (!this._loaded) throw new Error('Model not loaded.');
         }
+        throwIfAborted();
         const hit = this.queryEmbedCache.get(text);
         if (hit !== undefined) {
             this.queryEmbedCache.delete(text);     // re-insert at tail → most-recent
             this.queryEmbedCache.set(text, hit);
             return { vector: hit, iframeLatencyMs: 0, cacheHit: true };
         }
-        const r = await this.runner.embed(text);
+        const r = await this.runner.embed(text, signal);
         // A non-finite vector (WASM numeric fault, torn model load) must not
         // enter the LRU: a cached NaN row would replay the poisoned vector on
         // every repeat of this query until eviction. Return it uncached — the

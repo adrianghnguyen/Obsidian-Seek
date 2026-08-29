@@ -386,6 +386,17 @@ describe('query-embed LRU cache', () => {
         expect(fr.calls()).toBe(2);
     });
 
+    it('does not return a cached vector to an aborted query', async () => {
+        const { e, fr } = mk();
+        await e.embed('superseded query');
+        const controller = new AbortController();
+        controller.abort();
+
+        await expect(e.embed('superseded query', controller.signal))
+            .rejects.toMatchObject({ name: 'AbortError' });
+        expect(fr.calls()).toBe(1);
+    });
+
     it('evicts the LRU head past the cap, and access protects an entry', async () => {
         const { e, fr } = mk();
         const MAX = (LocalEmbedder as unknown as { QUERY_EMBED_CACHE_MAX: number }).QUERY_EMBED_CACHE_MAX;

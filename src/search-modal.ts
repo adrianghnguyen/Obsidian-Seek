@@ -273,11 +273,14 @@ export class SeekSearchModal extends Modal {
     private footStatusLabelEl: HTMLElement | null = null;
 
     // Model-load decoupling. When `modelReady` is false, `runSearch` awaits
-    // `modelReadyPromise` before calling the orchestrator. The existing
-    // `currentSearch` counter doubles as a "pending query" collapsing mechanism.
+    // `modelReadyPromise` before calling the orchestrator.
     private modelReady: boolean;
     private modelReadyPromise: Promise<void>;
     private modelLoadError: Error | null = null;
+    // Latest-query-wins cancellation. The currentSearch counter prevents stale
+    // paints; this controller also stops superseded work before it reaches the
+    // serialized iframe queue, so rapid typing cannot build query debt.
+    private activeSearchAbort: AbortController | null = null;
 
     // Teardown for the mobile visualViewport listeners (keyboard-aware sizing).
     // Null on desktop / when visualViewport is unavailable.
@@ -488,6 +491,8 @@ export class SeekSearchModal extends Modal {
         if (this.currentResults.length > 0) this.captureRecent();
         if (this.timer != null) window.clearTimeout(this.timer);
         if (this.settleTimer != null) { window.clearTimeout(this.settleTimer); this.settleTimer = null; }
+        this.activeSearchAbort?.abort();
+        this.activeSearchAbort = null;
         // Session ended — trigger the catch-up drain (the backup window to the
         // settle timer). The plugin no-ops if the app is hidden / nothing pending.
         this.onSearchActivity?.(false);
@@ -664,6 +669,7 @@ export class SeekSearchModal extends Modal {
         if (query !== this.lastQuery) {
             this.selectedIndex = 0;
             this.lastAutoRetryKey = null;
+            this.activeSearchAbort?.abort();
         }
         this.lastQuery = query;
         // The user is typing → still an active session; (re)arm the settle debounce
@@ -715,10 +721,18 @@ export class SeekSearchModal extends Modal {
             this.modelReady = true;
         }
 
+        const controller = new AbortController();
+        this.activeSearchAbort?.abort();
+        this.activeSearchAbort = controller;
         this.beginInFlight();
         try {
             this.setSearching();
-            const { results, entry } = await this.orchestrator.search(query, MAX_RESULTS);
+            const { results, entry } = await this.orchestrator.search(
+                query,
+                MAX_RESULTS,
+                undefined,
+                controller.signal,
+            );
             // Stale (a newer query landed) or the modal closed mid-search — in
             // the closed case `renderResults` would otherwise paint into
             // detached DOM and (via updateSentinel) spin up a fresh
@@ -730,9 +744,11 @@ export class SeekSearchModal extends Modal {
             this.latestSearchCompletedAt = performance.now();
             this.renderResults(results);
         } catch (e) {
+            if (e instanceof Error && e.name === 'AbortError') return;
             if (id !== this.currentSearch || this.closed) return;
             this.renderStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
         } finally {
+            if (this.activeSearchAbort === controller) this.activeSearchAbort = null;
             this.endInFlight();
         }
     }

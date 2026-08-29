@@ -233,6 +233,10 @@ interface IframeMsg {
     event?: IframeEvent;
 }
 
+function queryAbortError(): Error {
+    return Object.assign(new Error('Query superseded'), { name: 'AbortError', code: 'ABORTED' });
+}
+
 export class IframeRunner {
     private iframe: HTMLIFrameElement | null = null;
     private pending = new Map<string, Pending>();
@@ -350,13 +354,28 @@ export class IframeRunner {
         });
     }
 
-    private send<T>(type: string, payload: unknown, timeoutMs: number = RPC_TIMEOUT_MS): Promise<T> {
+    private send<T>(
+        type: string,
+        payload: unknown,
+        timeoutMs: number = RPC_TIMEOUT_MS,
+        signal?: AbortSignal,
+    ): Promise<T> {
         if (!this.iframe?.contentWindow) {
             return Promise.reject(new Error('iframe not initialized'));
         }
+        if (signal?.aborted) return Promise.reject(queryAbortError());
         const priority: 'query' | 'index' = type === 'embed' ? 'query' : 'index';
         return new Promise<T>((resolve, reject) => {
+            let started = false;
+            let aborted = false;
+            const queue = priority === 'query' ? this.queryRpcQueue : this.indexRpcQueue;
+            const cleanupAbort = (): void => signal?.removeEventListener('abort', onAbort);
+            const rejectAborted = (): void => {
+                cleanupAbort();
+                reject(queryAbortError());
+            };
             const start = () => {
+                started = true;
                 const id = (crypto as { randomUUID?: () => string }).randomUUID
                     ? (crypto as { randomUUID: () => string }).randomUUID()
                     : `id-${Date.now()}-${Math.random()}`;
@@ -364,27 +383,44 @@ export class IframeRunner {
                     if (!this.pending.delete(id)) return;
                     this.rpcBusy = false;
                     this.pumpRpc();
-                    reject(Object.assign(
-                        new Error(`iframe RPC '${type}' timed out after ${timeoutMs}ms`),
-                        { code: 'TIMEOUT' },
-                    ));
+                    cleanupAbort();
+                    if (aborted) reject(queryAbortError());
+                    else {
+                        reject(Object.assign(
+                            new Error(`iframe RPC '${type}' timed out after ${timeoutMs}ms`),
+                            { code: 'TIMEOUT' },
+                        ));
+                    }
                 }, timeoutMs);
                 this.pending.set(id, {
                     resolve: (v: unknown) => {
                         this.rpcBusy = false;
                         this.pumpRpc();
-                        resolve(v as T);
+                        cleanupAbort();
+                        if (aborted) reject(queryAbortError());
+                        else resolve(v as T);
                     },
                     reject: (e: Error) => {
                         this.rpcBusy = false;
                         this.pumpRpc();
-                        reject(e);
+                        cleanupAbort();
+                        if (aborted) reject(queryAbortError());
+                        else reject(e);
                     },
                     timer,
                 });
                 this.iframe!.contentWindow!.postMessage({ id, type, payload }, '*');
             };
-            (priority === 'query' ? this.queryRpcQueue : this.indexRpcQueue).push(start);
+            const onAbort = (): void => {
+                aborted = true;
+                if (started) return;
+                const queuedAt = queue.indexOf(start);
+                if (queuedAt === -1) return;
+                queue.splice(queuedAt, 1);
+                rejectAborted();
+            };
+            signal?.addEventListener('abort', onAbort, { once: true });
+            queue.push(start);
             this.pumpRpc();
         });
     }
@@ -405,8 +441,8 @@ export class IframeRunner {
         return this.send<LoadResult>('load', { modelId, device, dtype, skipWarmup, revision: revision ?? null }, LOAD_RPC_TIMEOUT_MS);
     }
 
-    embed(text: string): Promise<EmbedResult> {
-        return this.send<EmbedResult>('embed', { text });
+    embed(text: string, signal?: AbortSignal): Promise<EmbedResult> {
+        return this.send<EmbedResult>('embed', { text }, RPC_TIMEOUT_MS, signal);
     }
 
     // bucket: the seq-ladder rung this batch was routed into by the parent's

@@ -74,6 +74,102 @@ describe('IframeRunner query-priority RPC queue (G_catchup_ux)', () => {
         expect(order[0]).toBe('embed');
         expect(order[1]).toBe('embed-batch');
     });
+
+    it('drops an aborted query before it reaches the iframe', async () => {
+        const r = new IframeRunner();
+        const postedQueries: string[] = [];
+        (r as unknown as { rpcBusy: boolean }).rpcBusy = true;
+        (r as unknown as { iframe: { contentWindow: { postMessage: (msg: { id: string; type: string; payload: { text?: string } }) => void } } }).iframe = {
+            contentWindow: {
+                postMessage: (msg) => {
+                    if (msg.type === 'embed') postedQueries.push(msg.payload.text ?? '');
+                    queueMicrotask(() => {
+                        const pending = (r as unknown as { pending: Map<string, { resolve: (v: unknown) => void }> }).pending;
+                        const p = pending.get(msg.id);
+                        if (!p) return;
+                        pending.delete(msg.id);
+                        p.resolve({ vector: new Float32Array(4), latencyMs: 1 });
+                    });
+                },
+            },
+        };
+
+        const staleController = new AbortController();
+        const stale = r.embed('stale query', staleController.signal);
+        const latest = r.embed('latest query');
+        staleController.abort();
+        (r as unknown as { rpcBusy: boolean }).rpcBusy = false;
+        (r as unknown as { pumpRpc: () => void }).pumpRpc();
+
+        await expect(stale).rejects.toMatchObject({ name: 'AbortError' });
+        await latest;
+        expect(postedQueries).toEqual(['latest query']);
+    });
+
+    it('finishes an active aborted RPC internally before starting the latest query', async () => {
+        const r = new IframeRunner();
+        const postedQueries: Array<{ id: string; text: string }> = [];
+        (r as unknown as { iframe: { contentWindow: { postMessage: (msg: { id: string; type: string; payload: { text?: string } }) => void } } }).iframe = {
+            contentWindow: {
+                postMessage: (msg) => {
+                    if (msg.type === 'embed') postedQueries.push({ id: msg.id, text: msg.payload.text ?? '' });
+                },
+            },
+        };
+
+        const staleController = new AbortController();
+        const stale = r.embed('stale query', staleController.signal);
+        const latest = r.embed('latest query');
+        staleController.abort();
+        expect(postedQueries.map(q => q.text)).toEqual(['stale query']);
+
+        const pending = (r as unknown as { pending: Map<string, { resolve: (v: unknown) => void }> }).pending;
+        pending.get(postedQueries[0].id)?.resolve({ vector: new Float32Array(4), latencyMs: 1 });
+        await expect(stale).rejects.toMatchObject({ name: 'AbortError' });
+        expect(postedQueries.map(q => q.text)).toEqual(['stale query', 'latest query']);
+
+        pending.get(postedQueries[1].id)?.resolve({ vector: new Float32Array(4), latencyMs: 1 });
+        await latest;
+    });
+
+    it('keeps a rapid superseded-query burst bounded to the latest queued embed', async () => {
+        const r = new IframeRunner();
+        const postedQueries: string[] = [];
+        (r as unknown as { rpcBusy: boolean }).rpcBusy = true;
+        (r as unknown as { iframe: { contentWindow: { postMessage: (msg: { id: string; type: string; payload: { text?: string } }) => void } } }).iframe = {
+            contentWindow: {
+                postMessage: (msg) => {
+                    if (msg.type === 'embed') postedQueries.push(msg.payload.text ?? '');
+                    queueMicrotask(() => {
+                        const pending = (r as unknown as { pending: Map<string, { resolve: (v: unknown) => void }> }).pending;
+                        const p = pending.get(msg.id);
+                        if (!p) return;
+                        pending.delete(msg.id);
+                        p.resolve({ vector: new Float32Array(4), latencyMs: 1 });
+                    });
+                },
+            },
+        };
+
+        const superseded: Array<Promise<string>> = [];
+        for (let i = 0; i < 50; i++) {
+            const controller = new AbortController();
+            superseded.push(r.embed(`stale ${i}`, controller.signal).then(
+                () => 'resolved',
+                error => error instanceof Error ? error.name : String(error),
+            ));
+            controller.abort();
+        }
+        const latest = r.embed('latest query');
+
+        expect((r as unknown as { queryRpcQueue: unknown[] }).queryRpcQueue).toHaveLength(1);
+        (r as unknown as { rpcBusy: boolean }).rpcBusy = false;
+        (r as unknown as { pumpRpc: () => void }).pumpRpc();
+
+        expect(await Promise.all(superseded)).toEqual(new Array(50).fill('AbortError'));
+        await latest;
+        expect(postedQueries).toEqual(['latest query']);
+    });
 });
 
 describe('IframeRunner per-RPC timeout (F5)', () => {
