@@ -54,6 +54,7 @@ import {
 } from './catchup';
 import { isKnownEmptyIndexWithNotes, shouldAutoDrainStartupCatchUp } from './startup-drain';
 import { TaskContextTracker, type TaskContext } from './task-context';
+import { seekPerf } from './perf-console';
 import type { LongTaskEntry, MemoryPressureEntry, StorageSnapshotEntry, EvictionSuspectedEntry, AppLocalFetchEntry } from './types';
 
 // Long-task threshold. PerformanceObserver fires for any task ≥50 ms by spec,
@@ -572,12 +573,16 @@ export default class SeekPlugin extends Plugin {
         // write. Each step is gated/no-op when the sidecar is disabled.
         this.sidecarHydrating = false;
         this.bootStartMs = performance.now();
-        void this.logger.append({
-            type: 'startup-span',
-            timestamp: new Date().toISOString(),
-            span: 'boot-ifi',
-            phase: 'start',
-        }).catch(() => {});
+        {
+            const span = {
+                type: 'startup-span' as const,
+                timestamp: new Date().toISOString(),
+                span: 'boot-ifi',
+                phase: 'start' as const,
+            };
+            seekPerf.recordStartupSpan(span);
+            void this.logger.append(span).catch(() => {});
+        }
         void (async () => {
             try {
             let identityHandled = false;
@@ -648,13 +653,17 @@ export default class SeekPlugin extends Plugin {
         } finally {
             this.sidecarHydrating = false;
             const bootDurationMs = Math.round(performance.now() - this.bootStartMs);
-            void this.logger.append({
-                type: 'startup-span',
-                timestamp: new Date().toISOString(),
-                span: 'boot-ifi',
-                phase: 'end',
-                durationMs: bootDurationMs,
-            }).catch(() => {});
+            {
+                const span = {
+                    type: 'startup-span' as const,
+                    timestamp: new Date().toISOString(),
+                    span: 'boot-ifi',
+                    phase: 'end' as const,
+                    durationMs: bootDurationMs,
+                };
+                seekPerf.recordStartupSpan(span);
+                void this.logger.append(span).catch(() => {});
+            }
             if (!this.indexGoodEnough) {
                 this.indexBootPending = false;
                 await this.logStartupGateReleased();
@@ -1266,6 +1275,7 @@ export default class SeekPlugin extends Plugin {
                 // fall back to WASM). Read at next boot by maybeDemoteOnCrash to
                 // decide whether an indexing-crash implicates WebGPU.
                 recordActiveBackend(entry.actualDevice);
+                seekPerf.recordLoad(entry);
                 await this.logger.append(entry);
                 await this.warnOnModelIndexDrift();
                 // Production model delivery (remote/Cache-API path only — the
@@ -2034,23 +2044,31 @@ export default class SeekPlugin extends Plugin {
         this.pushTaskContext('hydrating');
         this.refreshIndexStatusBar();
         const spanStart = performance.now();
-        void this.logger.append({
-            type: 'startup-span',
-            timestamp: new Date().toISOString(),
-            span: 'sidecar-hydrate',
-            phase: 'start',
-        }).catch(() => {});
+        {
+            const span = {
+                type: 'startup-span' as const,
+                timestamp: new Date().toISOString(),
+                span: 'sidecar-hydrate',
+                phase: 'start' as const,
+            };
+            seekPerf.recordStartupSpan(span);
+            void this.logger.append(span).catch(() => {});
+        }
         try {
             return await fn();
         } finally {
             const durationMs = Math.round(performance.now() - spanStart);
-            void this.logger.append({
-                type: 'startup-span',
-                timestamp: new Date().toISOString(),
-                span: 'sidecar-hydrate',
-                phase: 'end',
-                durationMs,
-            }).catch(() => {});
+            {
+                const span = {
+                    type: 'startup-span' as const,
+                    timestamp: new Date().toISOString(),
+                    span: 'sidecar-hydrate',
+                    phase: 'end' as const,
+                    durationMs,
+                };
+                seekPerf.recordStartupSpan(span);
+                void this.logger.append(span).catch(() => {});
+            }
             this.popTaskContext('hydrating');
             this.sidecarHydrating = false;
             this.refreshIndexStatusBar();
@@ -2058,14 +2076,26 @@ export default class SeekPlugin extends Plugin {
     }
 
     private async logStartupGateReleased(): Promise<void> {
-        await this.logger.append({
-            type: 'startup-gate',
+        const entry = {
+            type: 'startup-gate' as const,
             timestamp: new Date().toISOString(),
-            event: 'released',
+            event: 'released' as const,
             warmPhase: this.indexWarmPhase,
             uiHealth: this.indexUiHealth,
             elapsedMs: Math.round(performance.now() - this.bootStartMs),
-        }).catch(() => {});
+        };
+        seekPerf.recordStartupGate(entry);
+        await this.logger.append(entry).catch(() => {});
+    }
+
+    /** Replay in-memory `[seek:perf]` beats into the console for CLI `dev:console` after CDP reattach. */
+    dumpPerfConsole(): number {
+        return seekPerf.dump();
+    }
+
+    /** Clear the Seek perf ring (does not clear the CDP console buffer — use `dev:console clear`). */
+    clearPerfConsole(): void {
+        seekPerf.clear();
     }
 
     private indexableNoteCount(): number {
@@ -2715,6 +2745,7 @@ export default class SeekPlugin extends Plugin {
                         // whose phase popped before delivery (issue #5).
                         context: this.taskCtx.attribute(entry.startTime, entry.duration),
                     };
+                    seekPerf.recordLongTask(logEntry);
                     this.logger.append(logEntry).catch(() => {});
                 }
             });

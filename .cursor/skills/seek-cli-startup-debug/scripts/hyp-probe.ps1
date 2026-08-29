@@ -88,8 +88,9 @@ Log "Generate logging report"
 $rep = Run-Obsidian eval "vault=$Vault" 'code=app.plugins.plugins.seek.openLoggingReport().then(()=>"ok")'
 Log "  report=$(Parse-Eval $rep)"
 
-Log "Console snapshot"
-Run-Obsidian dev:console limit=80 "vault=$Vault" | Out-Null
+Log "Console snapshot ([seek:perf])"
+Run-Obsidian eval "vault=$Vault" 'code=app.plugins.plugins.seek.dumpPerfConsole()' | Out-Null
+Run-Obsidian dev:console limit=150 level=info "vault=$Vault" | Out-Null
 Log "Errors"
 Run-Obsidian dev:errors "vault=$Vault" | Out-Null
 Log "=== done ==="

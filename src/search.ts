@@ -22,6 +22,7 @@ import { IndexStore, nukeDatabase, classifyFileDelta, findOrphanChunkIds, isStor
 import { INDEX_QUOTA_MSG } from './index-notice';
 import { LocalEmbedder, EMBEDDING_DIM, LEGACY_ENGLISH_MODEL_ID, MODEL_ID, PLUGIN_VERSION } from './embedder';
 import { SeekLogger } from './logger';
+import { seekPerf } from './perf-console';
 import { Forensics } from './forensics';
 import { selectIndexBucket } from './iframe-runner';
 import { enforceTokenBudget, embedInput, createBatchedTokenCounter, TOKEN_COUNTS_BATCH, type TokenBudgetResult } from './token-budget';
@@ -1551,6 +1552,7 @@ export class SearchOrchestrator {
             mode, filesCommitted, chunks: totalChunks,
             dispatches: fDispatches, paddedTokens: fPaddedTokens,
         });
+        seekPerf.recordIndexComplete(entry);
         await this.logger.append(entry);
         return { entry, sidecarJob, quarantineUnwound };
     }
@@ -3621,7 +3623,7 @@ export class SearchOrchestrator {
 
         if (!frame) {
             const entry: SearchEntry = this.emptySearchEntry(query, cleanedQuery, filters, topK, searchId, idbReadMs, performance.now() - t0);
-            await this.logger.append(entry);
+            await this.appendSearchTelemetry(entry);
             return { results: [], entry };
         }
 
@@ -3717,7 +3719,7 @@ export class SearchOrchestrator {
             entry.totalChunks = orderedChunks.length;
             entry.candidateUnionSize = matchedChunks.length;
             entry.recencyCount = matchedChunks.length;
-            await this.logger.append(entry);
+            await this.appendSearchTelemetry(entry);
             return { results, entry };
         }
 
@@ -3750,7 +3752,7 @@ export class SearchOrchestrator {
                 new Error(`Query embedding contains non-finite values (dim ${queryVec.length}) — corrupt embedder output; retry the search.`),
             );
             const entry: SearchEntry = this.emptySearchEntry(query, cleanedQuery, filters, topK, searchId, idbReadMs, performance.now() - t0);
-            await this.logger.append(entry);
+            await this.appendSearchTelemetry(entry);
             return { results: [], entry };
         }
 
@@ -3767,7 +3769,7 @@ export class SearchOrchestrator {
                 ),
             );
             const entry: SearchEntry = this.emptySearchEntry(query, cleanedQuery, filters, topK, searchId, idbReadMs, performance.now() - t0);
-            await this.logger.append(entry);
+            await this.appendSearchTelemetry(entry);
             return { results: [], entry };
         }
 
@@ -3809,7 +3811,7 @@ export class SearchOrchestrator {
         const bm25CacheHit = await this.ensureBm25(orderedChunks);
         if (!this.bm25Cache) {
             const entry = this.emptySearchEntry(query, cleanedQuery, filters, topK, searchId, idbReadMs, performance.now() - t0);
-            await this.logger.append(entry);
+            await this.appendSearchTelemetry(entry);
             return { results: [], entry };
         }
         // Query-entry drift guard (Seek scaling A1): the frame and BM25 index are
@@ -3823,7 +3825,7 @@ export class SearchOrchestrator {
         if (this.bm25Cache && !frameBm25Coherent(frame, this.bm25Cache)) {
             this.onCoherenceDrift('search');
             const entry = this.emptySearchEntry(query, cleanedQuery, filters, topK, searchId, idbReadMs, performance.now() - t0);
-            await this.logger.append(entry);
+            await this.appendSearchTelemetry(entry);
             return { results: [], entry };
         }
         const synEnabled = this.settings.synonymExpansion;
@@ -4082,7 +4084,7 @@ export class SearchOrchestrator {
             bm25Bound: parseFloat(bm25Bound.toFixed(4)),
             searchId,
         };
-        await this.logger.append(entry);
+        await this.appendSearchTelemetry(entry);
 
         // Catch-up is deliberately NOT triggered here. Firing a foreground embed
         // per keystroke piled embed load onto the shared iOS WebContent process at
@@ -4816,6 +4818,11 @@ export class SearchOrchestrator {
             dates[i] = Number.isFinite(t) ? t : NaN;
         }
         return selectTopNIndices(n, k, i => dates[i], i => !Number.isNaN(dates[i]));
+    }
+
+    private async appendSearchTelemetry(entry: SearchEntry): Promise<void> {
+        seekPerf.recordSearch(entry);
+        await this.logger.append(entry);
     }
 
     private emptySearchEntry(
