@@ -3,29 +3,29 @@ name: Telemetry playbook baselines
 overview: Phased delivery on branch test/telemetry-playbook-baselines — subagent designs each phase, parent reviews, implement, verify, auto-commit. Playbook catalog, vault-polled fixtures, canvas, drivers.
 todos:
   - id: branch-setup
-    content: "Create test/telemetry-playbook-baselines from main; all phases commit here"
-    status: pending
+    content: Create test/telemetry-playbook-baselines from main; all phases commit here
+    status: completed
   - id: phase-0
-    content: "Phase 0 — Subagent design doc for infra (.gitignore, test harness stub); parent review; verify; commit"
-    status: pending
+    content: Phase 0 — Subagent design doc for infra (.gitignore, test harness stub); parent review; verify; commit
+    status: completed
   - id: phase-1
-    content: "Phase 1 — Canvas scaffold; verify in IDE; commit"
-    status: pending
+    content: Phase 1 — Canvas scaffold; verify in IDE; commit
+    status: completed
   - id: phase-2
-    content: "Phase 2 — Catalog skeleton (list-scenarios, run-scenario router, registry JSON); verify; commit"
-    status: pending
+    content: Phase 2 — Catalog skeleton (list-scenarios, run-scenario router, registry JSON); verify; commit
+    status: completed
   - id: phase-3
-    content: "Phase 3 — Fixture schema + validate-fixture.test.ts; verify npm test; commit"
-    status: pending
+    content: Phase 3 — Fixture schema + validate-fixture.test.ts; verify npm test; commit
+    status: completed
   - id: phase-4
-    content: "Phase 4 — sample-vault-queries + capture baseline → 30 distinct queries; verify; commit"
-    status: pending
+    content: Phase 4 — sample-vault-queries + capture baseline → 30 distinct queries; verify; commit
+    status: completed
   - id: phase-5
-    content: "Phase 5 — MVP drivers S1/F2/F3/S6 + detail skills; verify CLI; commit"
-    status: pending
+    content: Phase 5 — MVP drivers S1/F2/F3/S6 + detail skills; verify CLI; commit
+    status: completed
   - id: phase-6
-    content: "Phase 6 — Remaining drivers + F9/F10 stubs; AGENTS cross-links; verify; commit"
-    status: pending
+    content: Phase 6 — Remaining drivers + F9/F10 stubs; AGENTS cross-links; verify; commit
+    status: completed
 isProject: false
 ---
 
