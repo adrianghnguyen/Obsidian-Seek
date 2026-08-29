@@ -181,7 +181,7 @@ export interface IndexUiStatusInput {
     booting: boolean;
     /** Actual sidecar hydrate in flight (startup, periodic, identity, drift). */
     hydrating: boolean;
-    /** Greedy hydrate: tier 0 done — search gate released, background tiers continue. */
+    /** Greedy hydrate: three-day tier done — search gate released; older recovery may continue. */
     goodEnough?: boolean;
     waitingForSidecar: boolean;
     peerSyncPending: boolean;

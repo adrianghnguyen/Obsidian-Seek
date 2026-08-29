@@ -12,6 +12,7 @@ Search-modal honesty while the index is still coming up. No reindex is needed, s
 
 ### Fixed
 - **Startup no longer treats a still-loading vault as a mass delete.** On a large vault, Seek could run its catch-up pass before Obsidian had listed any notes, see thousands of indexed files and zero live files, and log `deferring suspicious mass-delete sweep`. The index was kept, but every existing note then arrived as a `create` and queued a full re-embed. Catch-up now waits until the vault layout is ready, retries while the file list looks truncated, and ignores create/delete/rename until that point so boot enumeration is not mistaken for new notes.
+- **Recent notes start appearing without another keystroke while Seek restores the index.** Startup previously declared its recent restore good enough after one note and an empty modal query stayed empty as more chunks arrived. Seek now restores every coverable note modified in the last three days before releasing the startup gate, automatically retries an active empty query as coverage grows, and leaves older recovery work in the background.
 
 ## 1.1.3
 

@@ -82,7 +82,7 @@ export interface HydrateDeps {
     reChunkSubset?: (files: HydrateFileRef[], shouldStop?: () => boolean) => Promise<ReChunkedNote[]>;
     /** Greedy hydrate: indexable files sorted mtime descending. */
     listHydrateFiles?: () => Promise<HydrateFileRef[]>;
-    /** Greedy hydrate: tier 0 committed — release search gate (P1). */
+    /** Greedy hydrate: three-day tier committed — release search gate (P1). */
     onGoodEnough?: () => void;
     /** Greedy hydrate: warm tokenizer in parallel with file-list wait. */
     ensureTokenizer?: () => Promise<void>;
@@ -233,7 +233,6 @@ function selectCandidates(
 async function hydrateCandidates(
     deps: HydrateDeps,
     candidates: Candidate[],
-    hooks?: { onFirstCommit?: () => void },
 ): Promise<TierHydrateResult> {
     if (candidates.length === 0) {
         return { needed: 0, hydrated: 0, skippedPartialNotes: 0, hydratedNotePaths: [], hydratedIds: [] };
@@ -263,14 +262,9 @@ async function hydrateCandidates(
     const batchSize = deps.batchSize ?? 500;
     let pendingChunks: Chunk[] = [];
     let pendingTiers: { q: QuantVec; bin: Uint8Array }[] = [];
-    let firstCommitFired = false;
     const flush = async (): Promise<void> => {
         if (pendingChunks.length === 0) return;
         await deps.putQuantized(pendingChunks, pendingTiers);
-        if (!firstCommitFired) {
-            firstCommitFired = true;
-            hooks?.onFirstCommit?.();
-        }
         pendingChunks = [];
         pendingTiers = [];
     };
@@ -380,16 +374,7 @@ async function hydrateFromSidecarGreedy(
             tierChunksProduced += live.reduce((n, note) => n + note.chunks.length, 0);
             const { candidates, needed } = selectCandidates(live, scan, existing, freshIdsRemaining);
             tierNeeded += needed;
-            const releaseOnFirstCommit = !goodEnoughReleased
-                && tier.id === 'hydrate-tier-3d'
-                && deps.onGoodEnough != null;
-            const result = await hydrateCandidates(deps, candidates, releaseOnFirstCommit ? {
-                onFirstCommit: () => {
-                    deps.onGoodEnough!();
-                    goodEnoughReleased = true;
-                    if (firstGoodMs == null) firstGoodMs = Math.round(performance.now() - greedyStart);
-                },
-            } : undefined);
+            const result = await hydrateCandidates(deps, candidates);
             for (const id of result.hydratedIds) existing.add(id);
             for (const id of result.hydratedIds) freshIdsRemaining.delete(id);
             tierHydrated += result.hydrated;
@@ -400,18 +385,15 @@ async function hydrateFromSidecarGreedy(
         };
 
         if (tier.id === 'hydrate-tier-3d') {
-            // Id-bounded tier-0: walk mtime-newest files one-by-one; stop once the
-            // search gate releases (G2 peer-delta) instead of re-chunking every 3d file.
+            // Walk the complete three-day tier in mtime order before declaring the
+            // startup index good enough. Each file commits independently, so the
+            // modal can surface early results as soon as its chunk-count poll sees
+            // them; the gate itself means every coverable recent file is now present.
             for (const ref of tierFiles) {
                 if (freshIdsRemaining.size === 0) break;
                 tierFilesWalked++;
                 const live = await deps.reChunkSubset!([ref], () => freshIdsRemaining.size === 0);
                 await processRechunked(live);
-                if (goodEnoughReleased) {
-                    stoppedEarly = true;
-                    stopReason = 'gate-released';
-                    break;
-                }
             }
         } else {
             tierFilesWalked = tierFiles.length;
@@ -448,6 +430,8 @@ async function hydrateFromSidecarGreedy(
         deps.log?.('sidecar-hydrate-tier', tierDetail);
 
         if (goodEnoughReleased && tier.id === 'hydrate-tier-3d') {
+            stoppedEarly = true;
+            stopReason = 'gate-released';
             break;
         }
         if (freshIdsRemaining.size === 0) {
