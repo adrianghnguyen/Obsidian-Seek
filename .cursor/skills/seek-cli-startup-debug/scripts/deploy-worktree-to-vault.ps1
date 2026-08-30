@@ -1,4 +1,4 @@
-# Build and deploy one startup-path worktree to the Obsidian vault (vault singleton).
+# Build and deploy one startup-path worktree to the sandbox vault (vault singleton).
 # Usage:
 #   .\deploy-worktree-to-vault.ps1 -PathId greedy-hydrate
 #   .\deploy-worktree-to-vault.ps1 -PathId compose -SkipTests
@@ -8,8 +8,8 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidateSet('trace-infra', 'greedy-hydrate', 'cheap-yield', 'batch-rpc', 'burst-cap', 'persist-cache', 'compose', 'baseline')]
     [string]$PathId,
-    [string]$Vault = 'Obsidian',
-    [string]$VaultPlugin = 'C:\Obsidian\.obsidian\plugins\seek',
+    [string]$Vault = 'plugin-sandbox-Obsidian',
+    [string]$VaultPlugin = 'C:\plugin-sandbox-Obsidian\.obsidian\plugins\seek',
     [switch]$SkipTests,
     [switch]$SkipTypecheck
 )

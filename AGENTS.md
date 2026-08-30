@@ -15,16 +15,25 @@ Non-obvious notes:
 - The `obsidian` npm package is **types-only** (`main: ""`). At build time esbuild externalizes it; under Vitest it is aliased to `src/test-stubs/obsidian.ts` (see `vitest.config.mts`). Only import runtime *values* from `obsidian` if that stub provides them.
 - Tests run on `fake-indexeddb` (a W3C-faithful IndexedDB) and a deterministic fake embedder — the real ~100 MB embedding model is never downloaded in tests/CI.
 - To exercise the real search pipeline (chunk → embed → store → BM25 fuse → rank) without Obsidian, use the Tier-2 harness in `src/test-harness/scenario.ts`: `Scenario` boots the real `SearchOrchestrator` + `IndexStore` over a fake vault/embedder, and `orch.search(query, k)` returns ranked results.
-- To run the built plugin in a real vault, copy `main.js`, `manifest.json`, and `styles.css` into `<vault>/.obsidian/plugins/seek/`. First real index downloads the embedding model from `huggingface.co` and the transformers.js runtime from `cdn.jsdelivr.net` (once per device). Deploy/reload/verify details: `.cursor/rules/deploy-and-verify.mdc` (vault path `C:\Obsidian\.obsidian\plugins\seek\`).
+- To run the built plugin in a real vault, copy `main.js`, `manifest.json`, and `styles.css` into `<vault>/.obsidian/plugins/seek/`. First real index downloads the embedding model from `huggingface.co` and the transformers.js runtime from `cdn.jsdelivr.net` (once per device). **Default deploy target:** sandbox `C:\plugin-sandbox-Obsidian\.obsidian\plugins\seek\` — see `.cursor/rules/deploy-and-verify.mdc` and `.cursor/rules/sandbox-vault-cli.mdc`. Production vault `Obsidian` is promotion-only.
 - **Visual verification:** UI, CSS, status-bar, modal, or settings changes need **screenshots**, not only `eval` or unit tests. Follow [`.cursor/skills/seek-visual-verify/SKILL.md`](.cursor/skills/seek-visual-verify/SKILL.md) — it lists which surface to capture (`Main`, `StatusBar`, `Settings`, `SearchModal`). Open Settings only when verifying Settings UI. Driver: `capture-surfaces.ps1` under that skill.
 - **Obsidian CLI — serial only (never block threads):** The CLI is a **single IPC queue** into one Obsidian process. **One `obsidian` command at a time** — wait for it to finish (or fail) before the next. Do **not** run parallel `eval`, `plugin:reload`, `dev:screenshot`, or `restart` in the same turn, across subagents, or in background shells. Chaining many CLI calls in one long script also wedges the queue if an early step hangs. Open/focus a vault with `Start-Process "obsidian://open?vault=<name>"` first; then run CLI **serially** with `vault=<name>`. If commands hang with no `=>` output for ~15s, **stop** — do not pile on more CLI. Kill the stuck shell, **quit Obsidian manually** (tray → Quit), reopen, then retry one `eval code="'alive'"` probe. When the IPC queue is wedged, `obsidian restart` often **never reaches** the app (Obsidian will not close). Prefer manual quit over CLI restart in that state. Reusable eval/reload driver: [`.cursor/skills/seek-cli-startup-debug/scripts/verify-vault-seek.ps1`](.cursor/skills/seek-cli-startup-debug/scripts/verify-vault-seek.ps1) (auto-launch, copy, reload, eval — no screenshots). Use `-NoLaunch` to require Obsidian already up. See `.cursor/rules/obsidian-multi-vault-cli.mdc` and `.cursor/skills/obsidian-plugin-debug/SKILL.md`.
-- **Logging report (local debug):** Settings → Seek → Diagnostics → **Generate logging report**, or `obsidian eval vault=Obsidian code="app.plugins.plugins.seek.openLoggingReport().then(()=>'ok')"`. That is `SeekPlugin.openLoggingReport()` → `SeekLogger.writeReport()` (`src/main.ts`, `src/logger.ts`). It writes vault-root `seek-report.md` (human summary, opened in a leaf) and `.seek-artifacts/seek-report.json` (parse target: `sidecar-hydrate`, `index-complete` with `chunkDurationMs` / `embedDurationMs`, `rechunk-live`, `startup-span`, `startup-gate`, searches, errors; no note bodies). Honors `redactReport`. Prefer the JSON over `dev:console` for index/startup forensics — the CDP buffer often misses hydrate. The old command-palette `seek-generate-log` entry is gone.
+- **Logging report (local debug):** Settings → Seek → Diagnostics → **Generate logging report**, or `obsidian eval vault=plugin-sandbox-Obsidian code="app.plugins.plugins.seek.openLoggingReport().then(()=>'ok')"` (use `vault=Obsidian` only when promoting/reproducing in production). That is `SeekPlugin.openLoggingReport()` → `SeekLogger.writeReport()` (`src/main.ts`, `src/logger.ts`). It writes vault-root `seek-report.md` (human summary, opened in a leaf) and `.seek-artifacts/seek-report.json` (parse target: `sidecar-hydrate`, `index-complete` with `chunkDurationMs` / `embedDurationMs`, `rechunk-live`, `startup-span`, `startup-gate`, searches, errors; no note bodies). Honors `redactReport`. Prefer the JSON over `dev:console` for index/startup forensics — the CDP buffer often misses hydrate. The old command-palette `seek-generate-log` entry is gone.
 - **Startup path worktrees:** Isolated checkouts under `C:\Coding_projects\Obsidian-Seek-worktrees\` (T4 = main repo). Setup: `.cursor/skills/seek-cli-startup-debug/scripts/setup-startup-worktrees.ps1`; deploy: `deploy-worktree-to-vault.ps1 -PathId <id>`. Registry: `.cursor/worktrees.json`. Measure via `startup-trace-probe.ps1` → `gate-trace.jsonl` + `parse-startup-trace.mjs` → `.cursor/scorecards/` and `.cursor/startup-path-results.md`.
 - **Telemetry playbook (S1–S7, F1–F10):** Master catalog [`.cursor/skills/seek-playbook-catalog/SKILL.md`](.cursor/skills/seek-playbook-catalog/SKILL.md) — `list-scenarios.ps1`, `run-scenario.ps1 -Id F3`. Performance detail: `seek-telemetry-playbook`; functional detail: `seek-functional-telemetry`. Canvas dashboard: `sandbox-run-history.canvas.tsx` (local Cursor canvases folder). **After telemetry runs, update that canvas per [`.cursor/rules/telemetry-canvas-update.mdc`](.cursor/rules/telemetry-canvas-update.mdc).**
 
+## Vault roles — sandbox default, Obsidian production
+
+| Vault (CLI) | Path | Role |
+|-------------|------|------|
+| `plugin-sandbox-Obsidian` | `C:\plugin-sandbox-Obsidian` | **Default** — routine deploy, reload, CLI verify, playbooks, cold-start at scale (~3k notes) |
+| `Obsidian` | `C:\Obsidian` | **Production** — personal notes; deploy **only** on explicit promotion or after merge to `main` + user request |
+
+Copy `main.js`, `manifest.json`, and `styles.css` to the sandbox plugin path for testing. Do **not** copy to `C:\Obsidian\.obsidian\plugins\seek\` during feature branches or routine task completion. Policy: `.cursor/rules/sandbox-vault-cli.mdc`.
+
 ## Sandbox vault — cold-boot / indexing CLI runs
 
-Dev vault (`Obsidian`, `C:\Obsidian\.obsidian\plugins\seek\`) is for day-to-day work. **Indexing and cold-start probes** that need a large corpus without touching the main vault use the sandbox:
+**Indexing and cold-start probes** use the sandbox (large corpus without touching production):
 
 | | |
 |--|--|
@@ -32,7 +41,7 @@ Dev vault (`Obsidian`, `C:\Obsidian\.obsidian\plugins\seek\`) is for day-to-day 
 | Plugin path | `C:\plugin-sandbox-Obsidian\.obsidian\plugins\seek\` |
 | Corpus | ~3k markdown notes — good for cold-build vs catch-up timing |
 
-Copy the same three artifacts (`main.js`, `manifest.json`, `styles.css`) as the dev vault. Verify hashes match before probing.
+Copy the same three artifacts (`main.js`, `manifest.json`, `styles.css`) to the sandbox plugin folder. Verify hashes match before probing.
 
 ### Avoid debug interruptions (learned 2026-08-29)
 
@@ -89,7 +98,7 @@ Every sync cycle:
 4. Resolve conflicts (heuristics below); **stop and ask the user** on ambiguous UX overlaps
 5. `npm ci` if lockfile changed → `npm run typecheck` → `npm test` → `npm run build`
 6. `git checkout main` → `git merge --ff-only sync/upstream-<version>` → `git push origin main`
-7. Deploy to the Obsidian vault (copy artifacts + reload/restart + verify)
+7. Deploy to **sandbox** (`plugin-sandbox-Obsidian`: copy artifacts + reload + verify); promote to `Obsidian` only when merged to `main` and user requests production
 8. Delete the temp branch when done
 
 Conflict heuristics:

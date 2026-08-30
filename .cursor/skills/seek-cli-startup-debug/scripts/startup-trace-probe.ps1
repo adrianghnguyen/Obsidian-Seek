@@ -7,7 +7,7 @@
 param(
     [ValidateSet('A', 'B')]
     [string]$Run = 'A',
-    [string]$Vault = 'Obsidian',
+    [string]$Vault = 'plugin-sandbox-Obsidian',
     [string]$PathId = 'baseline',
     [int]$MaxSeconds = 120,
     [string]$JsonlFile = ''
@@ -182,7 +182,7 @@ Run-Obsidian eval "vault=$Vault" 'code=app.plugins.plugins.seek.openLoggingRepor
 $dateTag = Get-Date -Format 'yyyyMMdd-HHmmss'
 $scoreDir = Join-Path $repoRoot '.cursor\scorecards'
 if (-not (Test-Path $scoreDir)) { New-Item -ItemType Directory -Path $scoreDir | Out-Null }
-$reportSrc = Join-Path "C:\Obsidian" '.seek-artifacts\seek-report.json'
+$reportSrc = Join-Path (switch ($Vault) { 'Obsidian' { 'C:\Obsidian' } default { 'C:\plugin-sandbox-Obsidian' } }) '.seek-artifacts\seek-report.json'
 if (Test-Path $reportSrc) {
     $dest = Join-Path $scoreDir "$PathId-$runLabel-$dateTag.json"
     Copy-Item $reportSrc $dest -Force

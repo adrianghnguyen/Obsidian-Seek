@@ -1,6 +1,6 @@
 # Hypothesis probe: serial restart + gates + status-bar DOM. No seek:search while Indexing.
 param(
-    [string]$Vault = "Obsidian",
+    [string]$Vault = "plugin-sandbox-Obsidian",
     [int]$MaxSeconds = 90,
     [string]$LogFile = ""
 )

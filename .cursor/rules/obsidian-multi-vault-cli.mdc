@@ -48,9 +48,9 @@ If IDB delete is `blocked`, tell the user: either close Seek in all vaults / qui
 
 ## Open vaults (this machine)
 
-| CLI name | Path |
-|----------|------|
-| `Obsidian` | `C:\Obsidian` |
-| `plugin-sandbox-Obsidian` | `C:\plugin-sandbox-Obsidian` |
+| CLI name | Path | Deploy default |
+|----------|------|----------------|
+| `plugin-sandbox-Obsidian` | `C:\plugin-sandbox-Obsidian` | **Yes** — routine copy, reload, CLI verify |
+| `Obsidian` | `C:\Obsidian` | **Promotion only** — manual request or post-merge-to-main (see `.cursor/rules/sandbox-vault-cli.mdc`) |
 
 Confirm target with `obsidian vault vault=<name>` or eval `app.vault.getName()` — do not assume the focused window.

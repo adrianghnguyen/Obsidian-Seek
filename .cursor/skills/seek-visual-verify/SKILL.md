@@ -11,6 +11,8 @@ Runtime proof for **what the user sees** in Obsidian. `eval` and unit tests are 
 
 **Related:** Low-level DOM/screenshot notes — [`obsidian-plugin-debug`](file:///C:/Users/tilou/.cursor/skills/obsidian-plugin-debug/SKILL.md). Deploy/reload first — [`.cursor/rules/deploy-and-verify.mdc`](../../rules/deploy-and-verify.mdc).
 
+**Default vault:** `plugin-sandbox-Obsidian`. Use `Obsidian` only for production promotion verification when the user explicitly requests it.
+
 ## When to run (agent checklist)
 
 Run this skill **after** deploy + `plugin:reload` when the task touches any of:
@@ -37,17 +39,17 @@ From repo root (PowerShell, **serial** — do not run alongside other `obsidian`
   -Surface Main, StatusBar
 
 .\.cursor\skills\seek-visual-verify\scripts\capture-surfaces.ps1 `
-  -Vault Obsidian `
+  -Vault plugin-sandbox-Obsidian `
   -Surface Settings
 
 .\.cursor\skills\seek-visual-verify\scripts\capture-surfaces.ps1 `
-  -Vault Obsidian `
+  -Vault plugin-sandbox-Obsidian `
   -Surface SearchModal
 ```
 
 | Parameter | Default | Notes |
 |-----------|---------|-------|
-| `-Vault` | `plugin-sandbox-Obsidian` | `Obsidian` or `plugin-sandbox-Obsidian` |
+| `-Vault` | `plugin-sandbox-Obsidian` | `Obsidian` = production promotion only |
 | `-Surface` | `Main` | `Main`, `StatusBar`, `Settings`, `SearchModal` (comma-separated or repeated) |
 | `-OutputDir` | `.seek-artifacts/visual-<vault>/` | Gitignored |
 | `-NoLaunch` | off | Fail if Obsidian not running |
@@ -69,8 +71,15 @@ Output files: `main.png`, `status-bar.png`, `seek-settings.png`, `search-modal.p
 Always: focus vault URI → focus Obsidian window → prepare target UI → **one** `dev:screenshot`:
 
 ```powershell
+Start-Process "obsidian://open?vault=plugin-sandbox-Obsidian"
+obsidian eval vault=plugin-sandbox-Obsidian code="app.commands.executeCommandById('seek:search')"
+obsidian dev:screenshot vault=plugin-sandbox-Obsidian path=C:\Coding_projects\Obsidian-Seek\.seek-artifacts\visual-plugin-sandbox-Obsidian\search-modal.png
+```
+
+Production promotion only:
+
+```powershell
 Start-Process "obsidian://open?vault=Obsidian"
-obsidian eval vault=Obsidian code="app.commands.executeCommandById('seek:search')"
 obsidian dev:screenshot vault=Obsidian path=C:\Coding_projects\Obsidian-Seek\.seek-artifacts\visual-Obsidian\search-modal.png
 ```
 
@@ -88,10 +97,11 @@ Close stacked modals before capturing a different surface (Escape / close Settin
 - **Screenshot without focus** — blank or wrong window (always run the driver or focus first).
 - **`-OpenSettings` for every verify** — only when the task changed Settings UI.
 - **Bundling into `verify-vault-seek.ps1`** — that script is eval/reload only; use this skill for visuals.
+- **Defaulting to production vault** — routine visual verify uses sandbox.
 
 ## Vault paths
 
-| CLI name | Path |
-|----------|------|
-| `Obsidian` | `C:\Obsidian` |
-| `plugin-sandbox-Obsidian` | `C:\plugin-sandbox-Obsidian` |
+| CLI name | Path | Deploy default |
+|----------|------|----------------|
+| `plugin-sandbox-Obsidian` | `C:\plugin-sandbox-Obsidian` | **Yes** |
+| `Obsidian` | `C:\Obsidian` | Promotion only |

@@ -7,13 +7,15 @@ description: Probes Seek first-load and startup behavior via the Obsidian CLI (o
 
 Runtime probe of Seek **first-load / cold-start** behavior through the Obsidian CLI. Do not run `npm test` / `npm run build` as part of this workflow unless the user asks.
 
-Defaults: vault `Obsidian`, plugin id `seek`, vault plugin path `C:\Obsidian\.obsidian\plugins\seek\`.
+Defaults: vault `plugin-sandbox-Obsidian`, plugin id `seek`, vault plugin path `C:\plugin-sandbox-Obsidian\.obsidian\plugins\seek\`.
+
+Use `vault=Obsidian` only when the user explicitly requests production repro or promotion (see `.cursor/rules/sandbox-vault-cli.mdc`).
 
 **Related:** Multi-scenario baselines and functional probes — [seek-playbook-catalog](../seek-playbook-catalog/SKILL.md) (`run-scenario.ps1 -Id S1|F3`). This skill covers first-load forensics; the catalog dispatches repeatable S*/F* drivers.
 
 ## Golden rule
 
-**Always begin with `obsidian restart vault=Obsidian`** when investigating cold-start / first-load behavior. Warm-session baselines are misleading.
+**Always begin with `obsidian restart vault=plugin-sandbox-Obsidian`** when investigating cold-start / first-load behavior. Warm-session baselines are misleading.
 
 ## Readiness gates (source of truth)
 
@@ -82,26 +84,26 @@ Prefer this checklist (all via public eval fields below):
 Run probes **serially** — never parallel eval/search storms (contaminates timing + console).
 
 1. Clear buffers: `dev:console clear`, `dev:errors clear`
-2. `obsidian restart vault=Obsidian`
+2. `obsidian restart vault=plugin-sandbox-Obsidian`
 3. Poll until alive (every 1–2s, typical ~5–8s):
 
    ```powershell
-   obsidian eval vault=Obsidian code="JSON.stringify({alive:true,seek:!!app.plugins.plugins.seek})"
+   obsidian eval vault=plugin-sandbox-Obsidian code="JSON.stringify({alive:true,seek:!!app.plugins.plugins.seek})"
    ```
 
-4. **Reattach debugger** (does NOT survive restart): `obsidian dev:debug on vault=Obsidian`
+4. **Reattach debugger** (does NOT survive restart): `obsidian dev:debug on vault=plugin-sandbox-Obsidian`
 5. **Replay cold-start perf beats** into the CDP buffer (hydrate often finished before step 4):
 
    ```powershell
-   obsidian eval vault=Obsidian code="app.plugins.plugins.seek.dumpPerfConsole()"
+   obsidian eval vault=plugin-sandbox-Obsidian code="app.plugins.plugins.seek.dumpPerfConsole()"
    ```
 
 6. Poll timeline every 2–3s for up to ~90s (large vaults may need longer) — use **gate bundle** probe each tick
 7. Capture console with enough headroom for the ~80-line perf ring (docs default `limit` is 50):
 
    ```powershell
-   obsidian dev:console limit=150 level=info vault=Obsidian
-   obsidian dev:errors vault=Obsidian
+   obsidian dev:console limit=150 level=info vault=plugin-sandbox-Obsidian
+   obsidian dev:errors vault=plugin-sandbox-Obsidian
    ```
 
 8. Log to `.startup-probe.log` in repo root for clean parsing
@@ -126,10 +128,10 @@ Types: `startup-span`, `startup-gate`, `index-complete`, `search`, `long-task`, 
 Canonical capture (see [Obsidian CLI Developer commands](https://obsidian.md/help/cli#Developer%20commands)):
 
 ```powershell
-obsidian dev:debug on vault=Obsidian
-obsidian dev:console clear vault=Obsidian
-obsidian eval vault=Obsidian code="app.plugins.plugins.seek.dumpPerfConsole()"
-obsidian dev:console limit=150 level=info vault=Obsidian
+obsidian dev:debug on vault=plugin-sandbox-Obsidian
+obsidian dev:console clear vault=plugin-sandbox-Obsidian
+obsidian eval vault=plugin-sandbox-Obsidian code="app.plugins.plugins.seek.dumpPerfConsole()"
+obsidian dev:console limit=150 level=info vault=plugin-sandbox-Obsidian
 ```
 
 Warm path (debug already on): `plugin:reload id=seek` → exercise → `dev:console limit=150 level=info` (dump optional after clear).
@@ -153,7 +155,7 @@ Parse with [scripts/parse-startup-trace.mjs](scripts/parse-startup-trace.mjs):
 ```powershell
 node .\.cursor\skills\seek-cli-startup-debug\scripts\parse-startup-trace.mjs `
   --jsonl .cursor\gate-trace.jsonl `
-  --report C:\Obsidian\.seek-artifacts\seek-report.json `
+  --report C:\plugin-sandbox-Obsidian\.seek-artifacts\seek-report.json `
   --path baseline --run cold-restart `
   --baseline .cursor\baseline-cold
 ```
@@ -200,13 +202,13 @@ Gate bundle (one eval per poll tick):
 Example one-liner:
 
 ```powershell
-obsidian eval vault=Obsidian code="app.plugins.plugins.seek.getIndexStats().then(x=>JSON.stringify({files:x.files,chunks:x.chunks}))" 2>&1 | Tee-Object -Append .startup-probe.log
+obsidian eval vault=plugin-sandbox-Obsidian code="app.plugins.plugins.seek.getIndexStats().then(x=>JSON.stringify({files:x.files,chunks:x.chunks}))" 2>&1 | Tee-Object -Append .startup-probe.log
 ```
 
 ## Search probe
 
 ```powershell
-obsidian seek:search query=probe limit=1 vault=Obsidian
+obsidian seek:search query=probe limit=1 vault=plugin-sandbox-Obsidian
 ```
 
 Run **after** gate bundle on the same tick. Interpret with the table above — `no results` during `warmPhase:'starting'|'restoring'` or `chunks:0` is expected; during `uiHealth:'ok'` with `chunks>0` it warrants investigation (stranded index, query mismatch, degraded index).
@@ -229,7 +231,7 @@ Approximate; vault-size dependent. Use gate bundle columns, not fixed seconds al
 Only after a **clean restart + stable index** (`uiHealth:'ok'`, stable chunks).
 
 1. Clear buffers
-2. `obsidian plugin:reload id=seek vault=Obsidian`
+2. `obsidian plugin:reload id=seek vault=plugin-sandbox-Obsidian`
 3. Poll gate bundle + search every 2–3s
 
 Reload can briefly return hits on a partial index, then `no results` or `uiHealth:'indexing'` during catch-up. **Never** run reload probe concurrently with restart probe.
@@ -262,7 +264,7 @@ Also list:
 The palette command is gone. Settings → Seek → Diagnostics → **Generate logging report**, or:
 
 ```powershell
-obsidian eval vault=Obsidian code="app.plugins.plugins.seek.openLoggingReport().then(()=>'ok')"
+obsidian eval vault=plugin-sandbox-Obsidian code="app.plugins.plugins.seek.openLoggingReport().then(()=>'ok')"
 ```
 
 Writes vault-root `seek-report.md` (summary) and `.seek-artifacts/seek-report.json` (full parse target). Prefer the JSON over `dev:console` for hydrate/index forensics. Do not call this mid-catch-up if eval is already contested.

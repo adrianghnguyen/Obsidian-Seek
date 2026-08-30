@@ -1,19 +1,29 @@
 ---
-description: Target plugin-sandbox-Obsidian directly — no vault picker modal; URI open, vault-scoped CLI
+description: Default deploy and CLI target is plugin-sandbox-Obsidian — no vault picker modal; URI open, vault-scoped CLI
 alwaysApply: true
 ---
 
-# Sandbox vault — direct targeting
+# Sandbox vault — default deploy and test target
 
-Cold-start probes, F3 full matrix, and large-corpus telemetry use the **sandbox**, not the dev vault.
+Routine build copy, reload, CLI verify, playbooks, and large-corpus telemetry use **`plugin-sandbox-Obsidian`**, not the production vault.
 
-| | |
-|--|--|
-| CLI vault name | `plugin-sandbox-Obsidian` |
-| Path | `C:\plugin-sandbox-Obsidian` |
-| Seek plugin path | `C:\plugin-sandbox-Obsidian\.obsidian\plugins\seek\` |
+## Vault roles
 
-Dev vault (`Obsidian`, `C:\Obsidian`) is for day-to-day work only unless the user asks for main vault.
+| CLI vault name | Path | Seek plugin path | Role |
+|----------------|------|------------------|------|
+| `plugin-sandbox-Obsidian` | `C:\plugin-sandbox-Obsidian` | `C:\plugin-sandbox-Obsidian\.obsidian\plugins\seek\` | **Default** — routine deploy, reload, CLI verify, playbooks, cold-start at scale |
+| `Obsidian` | `C:\Obsidian` | `C:\Obsidian\.obsidian\plugins\seek\` | **Production** — personal notes vault; deploy **only** on promotion (see below) |
+
+**Do not** copy `main.js`, `manifest.json`, or `styles.css` to `C:\Obsidian\.obsidian\plugins\seek\` during feature branches, PR review, or sandbox testing.
+
+### Production promotion (Obsidian only)
+
+Deploy to `Obsidian` **only** when:
+
+1. The user **explicitly** asks to promote/deploy to Obsidian, or
+2. A PR branch has been **merged into `main`** and production update is requested
+
+Agents must not auto-promote to Obsidian when a sandbox-verified task completes.
 
 ## Open / focus sandbox
 
@@ -25,9 +35,9 @@ Start-Process "obsidian://open?vault=plugin-sandbox-Obsidian"
 
 **Do not** use `obsidian command id=app:open-vault` — that opens the vault-picker modal, not the sandbox.
 
-## CLI — always scope to sandbox
+## CLI — always scope to sandbox (default)
 
-Every Obsidian CLI call for sandbox work must include `vault=plugin-sandbox-Obsidian`:
+Every routine Obsidian CLI call must include `vault=plugin-sandbox-Obsidian`:
 
 ```powershell
 obsidian eval vault=plugin-sandbox-Obsidian code="'alive'"
@@ -36,7 +46,9 @@ obsidian plugin:enable id=seek vault=plugin-sandbox-Obsidian
 obsidian seek:search vault=plugin-sandbox-Obsidian query="..." format=json
 ```
 
-**Do not** use `obsidian restart vault=…` for routine deploy/reload when the main vault may also be open — restart kills **all** Obsidian windows (see `obsidian-multi-vault-cli.mdc`).
+Use `vault=Obsidian` only for production promotion or when the user explicitly requests production repro.
+
+**Do not** use `obsidian restart vault=…` for routine deploy/reload when the production vault may also be open — restart kills **all** Obsidian windows (see `obsidian-multi-vault-cli.mdc`).
 
 Serial CLI only — one session; never parallel eval against the same vault.
 
@@ -50,3 +62,4 @@ Serial CLI only — one session; never parallel eval against the same vault.
 - Open sandbox via `app:open-vault` or other UI-picker commands when the goal is to land in the sandbox vault.
 - Run sandbox playbook drivers without `vault=plugin-sandbox-Obsidian` (or `-Vault plugin-sandbox-Obsidian` in `run-scenario.ps1`).
 - Assume the active Obsidian window is sandbox — confirm with `obsidian vault vault=plugin-sandbox-Obsidian` or eval `app.vault.getName()`.
+- Copy routine builds to the production vault without a promotion gate.

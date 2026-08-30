@@ -2,7 +2,7 @@
 # Usage (from repo root): .\.cursor\skills\seek-cli-startup-debug\scripts\startup-probe.ps1
 
 param(
-    [string]$Vault = "Obsidian",
+    [string]$Vault = "plugin-sandbox-Obsidian",
     [int]$MaxSeconds = 90,
     [string]$LogFile = ""
 )

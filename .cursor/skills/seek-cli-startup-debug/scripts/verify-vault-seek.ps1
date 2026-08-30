@@ -1,4 +1,5 @@
 # Serial vault verify: ensure Obsidian (launch if needed) -> open vault -> copy (optional) -> reload -> eval.
+# Default vault is plugin-sandbox-Obsidian; Obsidian is promotion-only (explicit user request or post-merge-to-main).
 # Visual screenshots are NOT part of this script — use seek-visual-verify skill + capture-surfaces.ps1.
 # One obsidian command at a time - never run this script in parallel with other CLI.
 #
