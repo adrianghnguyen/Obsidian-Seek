@@ -21,10 +21,11 @@ import type { App } from 'obsidian';
 import { LocalEmbedder, LOCAL_MODEL, LEGACY_ENGLISH_MODEL_ID, EMBEDDING_DIM } from './embedder';
 import { activeModelSpec, resolveOverrideSpec, evictStaleModelCaches, deleteModelCaches, probeModelDownloaded } from './model-registry';
 import { pluginIdentity, identityMatches, identityFromMeta } from './identity';
+import { isLoadGenerationCurrent, isSessionWorkCurrent } from './boot-session';
 import { sweepOrphanTmpFiles } from './sidecar';
 import type { SeekSettings, IndexCompleteEntry, ModelDeliveryEntry } from './types';
 import { DEFAULT_SETTINGS, migrateSettings } from './types';
-import { IndexStore, indexDbPrefix } from './index-store';
+import { IndexStore, indexDbPrefix, isTransientIdbUnavailable } from './index-store';
 import { SeekLogger, REPORT_ARTIFACTS_DIR } from './logger';
 import { Forensics } from './forensics';
 import { RecentSearches } from './recents';
@@ -462,6 +463,9 @@ export default class SeekPlugin extends Plugin {
     }
 
     async onload() {
+        this.unloading = false;
+        this.loadGeneration++;
+        const bootGen = this.loadGeneration;
         this.logger = new SeekLogger(this.app, this.manifest.id);
         // Sweep any pre-existing root-level seek-log/init/captures files into the
         // hidden LOG_DIR next to the index, THEN tail-truncate this device's log if it
@@ -474,7 +478,7 @@ export default class SeekPlugin extends Plugin {
         void this.logger.migrateRootFiles()
             .then(() => this.logger.rotateIfOversize())
             .then(() => this.logger.pruneOrphanLogs())
-            .catch(e => this.logger.appendError('logger-onload-maintenance', e).catch(() => {}));
+            .catch(e => this.appendErrorIfCurrent('logger-onload-maintenance', e, bootGen));
         // Load persisted settings (merge over defaults so new keys appear).
         // Mutate the existing object in place — the orchestrator holds this
         // same reference.
@@ -503,7 +507,13 @@ export default class SeekPlugin extends Plugin {
         // Scope the DB by PLUGIN id too (indexDbPrefix), not just the vault, so a
         // second Seek build in this vault (e.g. an id 'seek-prototype' dev build)
         // owns a separate database. id 'seek' → 'seek-index:<appId>', unchanged.
-        await this.store.open(vaultScope, indexDbPrefix(this.manifest.id));
+        try {
+            await this.store.open(vaultScope, indexDbPrefix(this.manifest.id));
+        } catch (e) {
+            // UnknownError ("backing store") must not escape onload — Obsidian logs
+            // that as "Plugin failure: seek". Boot IIFE retries via ensureStoreReady.
+            console.warn('[seek] index store open deferred:', e);
+        }
         void this.touchIndexInventory();
 
         // Crash forensics: synchronous localStorage breadcrumbs (vault-scoped
@@ -575,12 +585,14 @@ export default class SeekPlugin extends Plugin {
         // returns 0 immediately). Awaited because the orchestrator's first
         // search assumes the binary index is loadable — but the actual work
         // is ~5 ms for an empty store and ~100 ms for a 5k-chunk vault.
-        try {
-            await this.store.backfillBinaryIfMissing();
-        } catch (e) {
-            // Backfill failure isn't fatal: the user can rebuild via "Full
-            // reindex". Log it and continue plugin init.
-            await this.logger.appendError('binary-backfill', e);
+        if (this.store.isOpen()) {
+            try {
+                await this.store.backfillBinaryIfMissing();
+            } catch (e) {
+                if (!isTransientIdbUnavailable(e)) {
+                    await this.logger.appendError('binary-backfill', e);
+                }
+            }
         }
 
         // Sidecar index dir. CRITICAL: resolved from a LITERAL config-folder
@@ -630,6 +642,19 @@ export default class SeekPlugin extends Plugin {
         }
         void (async () => {
             try {
+            if (!this.isBootCurrent(bootGen)) return;
+            await this.ensureStoreReady().catch(e => {
+                if (!isTransientIdbUnavailable(e)) {
+                    this.appendErrorIfCurrent('store-open-boot', e, bootGen);
+                } else {
+                    console.warn('[seek] index store still locked after retry:', e);
+                }
+            });
+            if (!this.isBootCurrent(bootGen)) return;
+            if (!this.store.isOpen()) {
+                if (!this.indexGoodEnough) this.markIndexGoodEnough();
+                return;
+            }
             let identityHandled = false;
             try {
                 // One-time rev-3→4 migration: move an index written under the
@@ -651,6 +676,7 @@ export default class SeekPlugin extends Plugin {
                 // re-chunk or re-embed onto a stale-id index — the mobile jetsam path).
                 identityHandled = await this.enforceIndexIdentity();
                 if (!identityHandled) {
+                    if (!this.isBootCurrent(bootGen)) return;
                     // Gated, not unconditional: the persisted dir-signature lets a
                     // crash-relaunch with an unchanged vault skip the whole-vault
                     // re-chunk (the iOS 1fps loop), while an empty/evicted store
@@ -662,7 +688,9 @@ export default class SeekPlugin extends Plugin {
                     this.applyPeerAheadBanner();
                 }
             } catch (e) {
-                await this.logger.appendError('sidecar-hydrate-onload', e).catch(() => {});
+                if (this.isBootCurrent(bootGen) && !isTransientIdbUnavailable(e)) {
+                    await this.logger.appendError('sidecar-hydrate-onload', e).catch(() => {});
+                }
             }
             // Steer split-config Obsidian Sync users to the visible folder: the
             // one case the hidden literal path can't reach (a renamed config
@@ -689,13 +717,17 @@ export default class SeekPlugin extends Plugin {
                 // Skip-rechunk boots must not wait on reconcileOnLoad (mtime sweep +
                 // ensureFrame can take minutes on large vaults with a dirty set).
                 if (!this.indexGoodEnough) this.markIndexGoodEnough();
-                void this.reconcileOnLoad().catch(e => this.logger.appendError('reconcileOnLoad', e).catch(() => {}));
+                if (this.isBootCurrent(bootGen)) {
+                    void this.reconcileOnLoad(bootGen).catch(e =>
+                        this.appendErrorIfCurrent('reconcileOnLoad', e, bootGen));
+                }
             }
             // Prime BM25/frame after the store is populated so a clean launch does
             // not wait for the first search, gated by the per-device "Warm caches
             // on startup" setting (localStorage, never synced). Desktop warmCaches
             // does not need the embedder; mobile no-ops until the model is loaded.
         } finally {
+            if (!this.isBootCurrent(bootGen)) return;
             this.sidecarHydrating = false;
             const bootDurationMs = Math.round(performance.now() - this.bootStartMs);
             {
@@ -723,7 +755,9 @@ export default class SeekPlugin extends Plugin {
         }
         })();
 
+        const layoutGen = bootGen;
         this.app.workspace.onLayoutReady(() => {
+            if (!this.isBootCurrent(layoutGen)) return;
             this.vaultIndexEventsReady = true;
             this.applyPostBootIndexScheduling();
         });
@@ -759,14 +793,19 @@ export default class SeekPlugin extends Plugin {
         // live iframe (platform GPU probe, app-local probe), and the failure Notice
         // all ride this continuation instead of blocking app-open. The diagnostics
         // are DEFERRED, not removed — still dogfooding.
+        const initGen = this.loadGeneration;
         void this.embedder.init()
             .then(async (initEntry) => {
+                if (!this.isBootCurrent(initGen)) return;
                 await this.logger.writeInit(initEntry);
+                if (!this.isBootCurrent(initGen)) return;
                 await this.logger.append(initEntry);
 
+                if (!this.isBootCurrent(initGen)) return;
                 const platformInfo = await collectPlatformInfo();
                 await this.logger.append(platformInfo);
 
+                if (!this.isBootCurrent(initGen)) return;
                 // Boot-time storage snapshot. Week-over-week drops in storageUsedMB
                 // are the canary for Cache API / IDB eviction even when no cold-start
                 // outlier fires. Cheap — one navigator.storage.estimate().
@@ -775,13 +814,15 @@ export default class SeekPlugin extends Plugin {
                 // `app://local/...` capability probe. Runs once per session after
                 // iframe init (before any model load) so the result is available
                 // regardless of whether the user ever searches.
-                if (initEntry.iframeReady) {
-                    this.runAppLocalProbe().catch(e => this.logger.appendError('app-local-probe', e));
+                if (initEntry.iframeReady && this.isBootCurrent(initGen)) {
+                    this.runAppLocalProbe().catch(e =>
+                        this.appendErrorIfCurrent('app-local-probe', e, initGen));
                 }
 
                 // No success toast — readiness is signalled by the modal glyph
                 // brightening. Only a genuine failure interrupts: a dead iframe means
                 // no search will work, which is worth one toast.
+                if (!this.isBootCurrent(initGen)) return;
                 if (!initEntry.iframeReady || initEntry.error) {
                     new Notice(
                         `Seek: search engine failed to start${initEntry.error ? ` — ${initEntry.error.slice(0, 80)}` : ''}. See Settings → Seek → Generate logging report.`,
@@ -789,7 +830,7 @@ export default class SeekPlugin extends Plugin {
                     );
                 }
             })
-            .catch(e => this.logger.appendError('embedder-init-onload', e).catch(() => {}));
+            .catch(e => this.appendErrorIfCurrent('embedder-init-onload', e, initGen));
 
         // Auto-request persistent storage so iOS / Safari won't evict our
         // ~250 MB model cache + index under memory pressure. Best-effort.
@@ -1081,10 +1122,39 @@ export default class SeekPlugin extends Plugin {
     // Set true the instant onunload starts so async callbacks (the WebGPU
     // device-lost handler) can't resurrect a teardown-in-progress iframe.
     private unloading = false;
+    // Bumped on every onload/onunload so async boot work from a prior load aborts
+    // cleanly after plugin:reload (onunload can close the store mid-IIFE).
+    private loadGeneration = 0;
+
+    private isBootCurrent(gen: number): boolean {
+        return isLoadGenerationCurrent(gen, this.loadGeneration, this.unloading);
+    }
+
+    private isSessionWorkCurrent(capturedGen?: number): boolean {
+        return isSessionWorkCurrent(this.unloading, this.loadGeneration, capturedGen);
+    }
+
+    private appendErrorIfCurrent(context: string, e: unknown, capturedGen?: number): void {
+        if (!this.isSessionWorkCurrent(capturedGen)) return;
+        if (isTransientIdbUnavailable(e)) return;
+        void this.logger.appendError(context, e).catch(() => {});
+    }
+
+    private async ensureStoreReady(): Promise<void> {
+        await this.store.ensureOpen();
+    }
 
     onunload() {
+        this.loadGeneration++;
         this.unloading = true;
         this.vaultIndexEventsReady = false;
+        this.catchUpRunning = false;
+        this.flushing = false;
+        this.driftRecoveryRunning = false;
+        this.orphanSweepRunning = false;
+        this.sidecarCompactRunning = false;
+        this.sidecarCoalesceRunning = false;
+        this.coldBuildScheduled = false;
         // First thing, synchronously: a session whose record isn't closed at
         // next boot reads as a crash. Reload/disable/quit all pass through here.
         this.forensics?.markCleanEnd();
@@ -1545,6 +1615,8 @@ export default class SeekPlugin extends Plugin {
     // desktop publishes a matching sidecar; otherwise the normal dir-signature-gated
     // catch-up. Wired to the 5-min interval.
     private async periodicReconcile(): Promise<void> {
+        if (this.unloading) return;
+        const workGen = this.loadGeneration;
         // Span the whole poll: the sidecar reconcile, orphan sweep, and sidecar
         // compaction (a whole-vault re-chunk + tokenizer pass) all run here, and
         // none of their jank was attributed before (issue #5's 'idle' long-tasks).
@@ -1553,6 +1625,7 @@ export default class SeekPlugin extends Plugin {
         // mid-collectLiveIds (which read as a transient incomplete-rechunk).
         this.pushTaskContext('reconcile');
         try {
+            if (!this.isSessionWorkCurrent(workGen)) return;
             // Never poll while a build/delta is in flight: assessing identity or
             // hydrating a sidecar would race a writer whose meta is mid-stamp. The
             // next tick (build done, identity stamped) handles it. This is the fix for
@@ -1654,9 +1727,9 @@ export default class SeekPlugin extends Plugin {
                 }
             }
         } catch (e) {
-            await this.logger.appendError('periodic-reconcile', e).catch(() => {});
+            this.appendErrorIfCurrent('periodic-reconcile', e, workGen);
         } finally {
-            this.popTaskContext('reconcile');
+            if (this.isSessionWorkCurrent(workGen)) this.popTaskContext('reconcile');
         }
     }
 
@@ -1766,6 +1839,7 @@ export default class SeekPlugin extends Plugin {
     // indexed it (the mtime guard) — so navigating through notes to READ them
     // never triggers an embed. One quick IDB read per note-leave.
     private async enqueueIfDirty(file: TFile | null): Promise<void> {
+        if (this.unloading) return;
         if (!file || !isIndexableFile(file, this.settings.indexBases)) return;
         if (!this.orchestrator) return;
         try {
@@ -1775,7 +1849,7 @@ export default class SeekPlugin extends Plugin {
                 this.scheduleFlush();
             }
         } catch (e) {
-            await this.logger.appendError('enqueueIfDirty', e).catch(() => {});
+            this.appendErrorIfCurrent('enqueueIfDirty', e);
         }
     }
 
@@ -1806,7 +1880,9 @@ export default class SeekPlugin extends Plugin {
         // the unload predicate sees its settled state (not a half-armed queue);
         // any embeds the mobile flush deferred are re-found by computeDelta and
         // reloaded on the next foreground, so this never drops work.
-        if (isMobilePlatform()) void flushed.then(() => this.maybeUnloadEmbedder('background')).catch(() => {});
+        if (isMobilePlatform()) void flushed.then(() => {
+            if (!this.unloading) this.maybeUnloadEmbedder('background');
+        }).catch(() => {});
     }
 
     // Drain the dirty/deleted queues through one reindexDelta. Deletes/moves
@@ -1814,6 +1890,8 @@ export default class SeekPlugin extends Plugin {
     // desktop or a warm model, and defers on a cold mobile model (the edit's old
     // version stays searchable and the post-serve catch-up re-embeds it).
     private async flushDirty(): Promise<void> {
+        if (this.unloading) return;
+        const workGen = this.loadGeneration;
         if (this.flushing || !this.orchestrator) {
             // A timer fired while a flush was already running (the in-progress flush
             // snapshotted BEFORE these items, so they need their own cycle). Re-arm
@@ -1919,13 +1997,13 @@ export default class SeekPlugin extends Plugin {
                 if (current === dirtyMtimes.get(p)) this.dirtyQueue.delete(p);
             }
         } catch (e) {
-            await this.logger.appendError('flushDirty', e).catch(() => {});
+            this.appendErrorIfCurrent('flushDirty', e, workGen);
         } finally {
-            this.popTaskContext('indexing');
+            if (this.isSessionWorkCurrent(workGen)) this.popTaskContext('indexing');
             this.flushing = false;
             if (bulkJobId != null) this.indexProgress.hide(bulkJobId);
             else if (!bulkProgress) this.refreshIndexStatusBar();
-            void this.touchIndexInventory();
+            if (this.isSessionWorkCurrent(workGen)) void this.touchIndexInventory();
         }
     }
 
@@ -1935,17 +2013,18 @@ export default class SeekPlugin extends Plugin {
     // DEFERRED at this step (embed: false); desktop then auto-drains via
     // scheduleStartupCatchUp without opening Search. Mobile stays lazy.
   /** @returns true when reconcile applied a non-empty delta (restore + reindex). */
-    private async reconcileOnLoad(): Promise<boolean> {
-        if (!this.orchestrator) return false;
+    private async reconcileOnLoad(sessionGen?: number): Promise<boolean> {
+        const workGen = sessionGen ?? this.loadGeneration;
+        if (!this.isSessionWorkCurrent(workGen) || !this.orchestrator) return false;
+        await this.store.ensureOpen().catch(() => {});
+        if (!this.isSessionWorkCurrent(workGen) || !this.store.isOpen()) return false;
         this.pushTaskContext('reconcile');
         try {
-            // Fast skip-rechunk boots can finish hydrate before Obsidian has
-            // populated getMarkdownFiles() — computeDelta then sees live:0 and
-            // defers the whole sweep (stored 4468 / live 0 on the main vault).
-            // Already-ready workspaces invoke the callback immediately.
             await this.whenLayoutReady();
+            if (!this.isSessionWorkCurrent(workGen)) return false;
             const { dirty, deleted } = await this.orchestrator.computeDelta();
             if (dirty.length === 0 && deleted.length === 0) return false;
+            if (!this.isSessionWorkCurrent(workGen)) return false;
             let storedFiles = 0;
             try {
                 storedFiles = (await this.store.count()).files;
@@ -1968,8 +2047,9 @@ export default class SeekPlugin extends Plugin {
                 try {
                     await this.orchestrator.restorePersistedCachesBeforeReconcile();
                 } catch (e) {
-                    await this.logger.appendError('persist-cache-restore', e).catch(() => {});
+                    this.appendErrorIfCurrent('persist-cache-restore', e, workGen);
                 }
+                if (!this.isSessionWorkCurrent(workGen)) return false;
                 await this.orchestrator.reindexDelta(dirty, deleted, { embed: false });
             }
             // Dirty-only: do NOT run embed:false reindexDelta here. That pass held the
@@ -1977,11 +2057,13 @@ export default class SeekPlugin extends Plugin {
             // seek:search behind IDB (G_catchup_ux). Catch-up embeds the dirty set.
             return true;
         } catch (e) {
-            await this.logger.appendError('reconcileOnLoad', e).catch(() => {});
+            this.appendErrorIfCurrent('reconcileOnLoad', e, workGen);
             return true;
         } finally {
-            this.popTaskContext('reconcile');
-            void this.touchIndexInventory();
+            if (this.isSessionWorkCurrent(workGen)) {
+                this.popTaskContext('reconcile');
+                void this.touchIndexInventory();
+            }
         }
     }
 
@@ -2097,6 +2179,7 @@ export default class SeekPlugin extends Plugin {
     }
 
     private async withSidecarHydrate<T>(fn: () => Promise<T>): Promise<T> {
+        const hydrateGen = this.loadGeneration;
         this.sidecarHydrating = true;
         this.pushTaskContext('hydrating');
         this.refreshIndexStatusBar();
@@ -2114,6 +2197,9 @@ export default class SeekPlugin extends Plugin {
         try {
             return await fn();
         } finally {
+            if (!this.isSessionWorkCurrent(hydrateGen)) {
+                /* stale hydrate — leave UI state to the current session */
+            } else {
             const durationMs = Math.round(performance.now() - spanStart);
             {
                 const span = {
@@ -2129,6 +2215,7 @@ export default class SeekPlugin extends Plugin {
             this.popTaskContext('hydrating');
             this.sidecarHydrating = false;
             this.refreshIndexStatusBar();
+            }
         }
     }
 
@@ -2302,7 +2389,9 @@ export default class SeekPlugin extends Plugin {
         const orchestrator = this.orchestrator;
         const mobile = isMobilePlatform();
         const pacer = new CompositorPacer();
+        const workGen = this.loadGeneration;
         void (async () => {
+            if (!this.isSessionWorkCurrent(workGen)) return;
             this.pushTaskContext('catchup');
             try {
                 if (!this.persistCacheRestoredThisBoot && (this.indexInventoryChunks ?? 0) > 0) {
@@ -2359,9 +2448,13 @@ export default class SeekPlugin extends Plugin {
                 });
                 this.catchUpPending = pending;
             } catch (e) {
-                await this.logger.appendError('runCatchUp', e).catch(() => {});
-                this.catchUpPending = true;  // unknown state — let a later trigger retry
+                this.appendErrorIfCurrent('runCatchUp', e, workGen);
+                if (this.isSessionWorkCurrent(workGen)) this.catchUpPending = true;  // unknown state — let a later trigger retry
             } finally {
+                if (!this.isSessionWorkCurrent(workGen)) {
+                    this.catchUpRunning = false;
+                    return;
+                }
                 this.popTaskContext('catchup');
                 this.catchUpRunning = false;
                 this.syncWarmDeferred();
@@ -2381,6 +2474,7 @@ export default class SeekPlugin extends Plugin {
     // After boot reconciliation, desktop loads the model and drains pending
     // embeds without opening Search. Mobile stays lazy (jetsam / heap).
     private applyPostBootIndexScheduling(): void {
+        if (this.unloading) return;
         const empty = isKnownEmptyIndexWithNotes(this.indexInventoryChunks, this.indexableNoteCount());
         if (empty && !isMobilePlatform()) {
             this.scheduleIndexBuild('cold');
@@ -2414,15 +2508,19 @@ export default class SeekPlugin extends Plugin {
     }
 
     private async scheduleColdBuild(): Promise<void> {
+        const workGen = this.loadGeneration;
         if (isMobilePlatform() || !this.orchestrator) {
             this.coldBuildScheduled = false;
             return;
         }
         try {
             await cheapYield();
+            if (!this.isSessionWorkCurrent(workGen)) return;
             await this.ensureModelLoaded();
+            if (!this.isSessionWorkCurrent(workGen)) return;
             this.catchUpPending = false;
             const ok = await this.runFullReindex({ skipConfirm: true });
+            if (!this.isSessionWorkCurrent(workGen)) return;
             if (!ok && !this.orchestrator.isWriting()) {
                 await this.touchIndexInventory();
                 // A failed wipe must not kick a whole-vault catch-up while the
@@ -2433,11 +2531,13 @@ export default class SeekPlugin extends Plugin {
                 }
             }
         } catch (e) {
-            await this.logger.appendError('cold-build', e).catch(() => {});
-            this.catchUpPending = true;
-            this.scheduleStartupCatchUp();
+            this.appendErrorIfCurrent('cold-build', e, workGen);
+            if (this.isSessionWorkCurrent(workGen)) {
+                this.catchUpPending = true;
+                this.scheduleStartupCatchUp();
+            }
         } finally {
-            this.coldBuildScheduled = false;
+            if (this.isSessionWorkCurrent(workGen)) this.coldBuildScheduled = false;
         }
     }
 
@@ -2446,11 +2546,13 @@ export default class SeekPlugin extends Plugin {
             mobile: isMobilePlatform(),
             catchUpPending: this.catchUpPending,
         })) return;
+        const workGen = this.loadGeneration;
         const pacer = new CompositorPacer();
         void pacer.pace().then(async () => {
-            if (!this.catchUpPending) return;
+            if (!this.isSessionWorkCurrent(workGen) || !this.catchUpPending) return;
             try {
                 await this.ensureModelLoaded();
+                if (!this.isSessionWorkCurrent(workGen)) return;
                 this.runCatchUp();
             } catch {
                 // Leave catchUpPending set — visibility / next search retries.
@@ -2491,7 +2593,12 @@ export default class SeekPlugin extends Plugin {
         this.driftRecoveryRunning = true;
         this.indexHealth = 'recovering';
         const orchestrator = this.orchestrator;
+        const workGen = this.loadGeneration;
         void (async () => {
+            if (!this.isSessionWorkCurrent(workGen)) {
+                this.driftRecoveryRunning = false;
+                return;
+            }
             // The generation verifyCoherent actually evaluated; -1 until we reach verify.
             // A user-initiated full reindex (and any delta) runs OFF this ladder's write
             // mutex — warmCaches/verifyCoherent read the store un-serialized — so it can
@@ -2528,27 +2635,29 @@ export default class SeekPlugin extends Plugin {
                     }
                 }
             } catch (e) {
-                // verifyCoherent's IDB read throws if a concurrent reindex closed the
-                // store mid-read. Degrade only on a GENUINE failure; if a writer raced us
-                // (the generation advanced), defer — it owns the outcome, and a reindex's
-                // own completion re-clears health, so a stale 'degraded' can't stick.
-                if (verifiedGen < 0) {
+                if (!this.isSessionWorkCurrent(workGen)) {
+                    /* torn-down session — defer without logging */
+                } else if (verifiedGen < 0) {
                     // Threw before verify (e.g. a hydrate failure) — a real recovery error.
                     this.commitDriftHealth('degraded', orchestrator.currentGeneration());
-                    await this.logger.appendError('runDriftRecovery', e).catch(() => {});
+                    this.appendErrorIfCurrent('runDriftRecovery', e, workGen);
                 } else if (orchestrator.currentGeneration() === verifiedGen) {
                     // Verify threw with the generation unchanged — a real failure
                     // (corrupt store, not a concurrent writer).
                     this.commitDriftHealth('degraded', verifiedGen);
-                    await this.logger.appendError('runDriftRecovery', e).catch(() => {});
+                    this.appendErrorIfCurrent('runDriftRecovery', e, workGen);
                 } else {
                     // The generation advanced: a concurrent reindex/delta closed the store
                     // mid-verify and owns the outcome. Expected under the race — defer, and
                     // don't log it as an error (it isn't one).
                 }
             } finally {
-                this.driftRecoveryPending = false;
-                this.driftRecoveryRunning = false;
+                if (this.isSessionWorkCurrent(workGen)) {
+                    this.driftRecoveryPending = false;
+                    this.driftRecoveryRunning = false;
+                } else {
+                    this.driftRecoveryRunning = false;
+                }
             }
         })();
     }
@@ -2796,6 +2905,7 @@ export default class SeekPlugin extends Plugin {
     // async errors in event handlers / iframe message processing vanish.
     private wireGlobalErrorHandlers(): void {
         this.onError = (e: ErrorEvent) => {
+            if (this.unloading) return;
             // Only log if the error originates from our code. The renderer
             // process gets a lot of unrelated cross-plugin noise, and we
             // don't want to claim other plugins' errors as ours.
@@ -2804,6 +2914,7 @@ export default class SeekPlugin extends Plugin {
             this.logger.appendError('window.onerror', e.error ?? new Error(e.message)).catch(() => {});
         };
         this.onUnhandledRejection = (e: PromiseRejectionEvent) => {
+            if (this.unloading) return;
             const reason = e.reason instanceof Error ? e.reason : new Error(String(e.reason));
             const stackStr = reason.stack ?? '';
             // Same filter as above. False negatives are fine; false positives
@@ -2973,6 +3084,7 @@ export default class SeekPlugin extends Plugin {
     // resource URL; a red probe means Phase 3 has to transfer bytes via
     // postMessage. See seek-dataadapter-rearchitecture-plan §Phase 1.
     private async runAppLocalProbe(): Promise<void> {
+        if (this.unloading) return;
         const adapter = this.app.vault.adapter;
         // Site the probe inside the plugin's OWN folder (always present, hidden
         // under the config dir) — NOT a visible vault folder. The earlier

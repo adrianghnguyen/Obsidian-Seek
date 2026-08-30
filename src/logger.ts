@@ -380,6 +380,12 @@ export class SeekLogger {
             const fileGen = typeof parsed._gen === 'number' ? parsed._gen : null;
             const expected = this.lastWrittenGeneration();
             if (fileGen === null || expected === null || fileGen === expected) return;
+            // Init file reverted (backup restore, sync conflict): resync our counter
+            // instead of treating it as a clone collision.
+            if (fileGen < expected) {
+                this.rememberWrittenGeneration(fileGen);
+                return;
+            }
             const reason = `deviceId "${this.deviceId}" init file is at generation ${fileGen}, this install last wrote ${expected} — a write landed on our per-device file that we didn't make (likely a cloned/restored device sharing this deviceId)`;
             await this.appendError('device-clone-detected', new Error(reason)).catch(() => {});
             this.regenerateDeviceId(reason);

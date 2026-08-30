@@ -9,7 +9,7 @@
 // and assert byte-equality against a reference per-get implementation.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { IndexStore, classifyFileDelta, planRestoreOps, findOrphanChunkIds, isStoreClosedError, STORE_NOT_OPENED, indexDbPrefix, type StoreSnapshot } from './index-store';
+import { IndexStore, classifyFileDelta, planRestoreOps, findOrphanChunkIds, isStoreClosedError, isTransientIdbUnavailable, STORE_NOT_OPENED, indexDbPrefix, type StoreSnapshot } from './index-store';
 import { quantizeInt8, dequantizeInt8, type QuantVec } from './quant';
 
 // The closed-store discriminator behind the reindex storm bound: the indexer rethrows
@@ -39,6 +39,18 @@ describe('isStoreClosedError (reindex-storm bound)', () => {
         expect(isStoreClosedError(STORE_NOT_OPENED)).toBe(false); // a bare string, not an Error
         expect(isStoreClosedError(null)).toBe(false);
         expect(isStoreClosedError(undefined)).toBe(false);
+    });
+});
+
+describe('isTransientIdbUnavailable', () => {
+    it('is true for IndexStore not opened', () => {
+        expect(isTransientIdbUnavailable(new Error(STORE_NOT_OPENED))).toBe(true);
+    });
+    it('is true for Chromium UnknownError backing-store lock', () => {
+        expect(isTransientIdbUnavailable(new DOMException('Internal error opening backing store for indexedDB.open.', 'UnknownError'))).toBe(true);
+    });
+    it('is false for unrelated failures', () => {
+        expect(isTransientIdbUnavailable(new Error('QuotaExceededError'))).toBe(false);
     });
 });
 

@@ -134,6 +134,12 @@ export const STORE_NOT_OPENED = 'IndexStore not opened';
 export function isStoreClosedError(e: unknown): boolean {
     return e instanceof Error && e.message === STORE_NOT_OPENED;
 }
+
+/** Closed store or Chromium backing-store lock — not a user-facing plugin failure. */
+export function isTransientIdbUnavailable(e: unknown): boolean {
+    if (isStoreClosedError(e)) return true;
+    return e instanceof Error && e.name === 'UnknownError';
+}
 // Recognize the browser's storage-quota error (disk/IDB quota exhausted). IndexedDB
 // surfaces it as a DOMException named 'QuotaExceededError' on the failed write.
 // Matched by name, not instanceof: the error may originate in another realm
@@ -347,11 +353,27 @@ function deleteDbWithBlockGuard(dbName: string): Promise<void> {
 // Exported for open-recovery.test.ts — the VersionError-recovery path is only
 // reachable with allowRecovery=true (IndexStore.open's default), so the test drives
 // openDb directly rather than through all of open()'s post-connection setup.
-export function openDb(dbName: string, allowRecovery = true): Promise<IDBDatabase> {
+const UNKNOWN_OPEN_RETRY_MS = 200;
+const UNKNOWN_OPEN_RETRIES = 3;
+
+export function openDb(
+    dbName: string,
+    allowRecovery = true,
+    unknownRetries = UNKNOWN_OPEN_RETRIES,
+): Promise<IDBDatabase> {
     return new Promise((resolve, reject) => {
         const req = indexedDB.open(dbName, DB_VERSION);
         req.onerror = () => {
             const err = req.error;
+            // Chromium "Internal error opening backing store" (UnknownError) is often
+            // a brief lock after reload / another vault window. Retry without deleting.
+            if (allowRecovery && err instanceof DOMException && err.name === 'UnknownError'
+                && unknownRetries > 0) {
+                window.setTimeout(() => {
+                    resolve(openDb(dbName, allowRecovery, unknownRetries - 1));
+                }, UNKNOWN_OPEN_RETRY_MS);
+                return;
+            }
             if (allowRecovery && err instanceof DOMException && err.name === 'VersionError') {
                 // Per seek-schema-bump-nuke-ok: drop + reopen; the empty-index path
                 // triggers the normal first-run reindex. Match on .name only — never
@@ -558,6 +580,16 @@ export class IndexStore {
     private legacyCleanupDone = false;
 
     get dbName(): string { return this._dbName; }
+
+    /** True when a live IDB connection is held (null after close / versionchange). */
+    isOpen(): boolean {
+        return this.db != null;
+    }
+
+    /** Reopen using the last resolved vault scope when the connection was dropped. */
+    async ensureOpen(): Promise<void> {
+        if (!this.db) await this.open();
+    }
 
     async open(scope?: string, dbPrefix: string = LEGACY_DB_NAME): Promise<void> {
         if (scope) this._dbName = `${dbPrefix}:${scope}`;

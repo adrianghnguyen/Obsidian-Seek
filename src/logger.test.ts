@@ -245,6 +245,25 @@ describe('SeekLogger cloned-device deviceId collision detection', () => {
         expect(ls.get('seek-device-gen-v1:seek')).toBe('1');
     });
 
+    it('resyncs when the init file is older than our remembered generation (restore/sync)', async () => {
+        const adapter = new FakeAdapter();
+        const logger = new SeekLogger(makeApp(adapter), 'seek');
+        await logger.writeInit(initEntry()); // gen 1
+        await logger.writeInit(initEntry()); // gen 2
+        await logger.writeInit(initEntry()); // gen 3
+
+        const initFile = [...adapter.files.keys()].find(p => p.includes('seek-init-') && p.endsWith('.json'));
+        expect(initFile).toBeTruthy();
+        const stale = { ...initEntry(), _gen: 1 };
+        await adapter.write(initFile!, JSON.stringify(stale, null, 2));
+
+        await logger.writeInit(initEntry());
+        const errors = (await logger.readAll()).filter(e => e.type === 'error') as ErrorEntry[];
+        expect(errors.some(e => e.context === 'device-clone-detected')).toBe(false);
+        expect(ls.get('seek-device-id-v1')).toBe(logger.deviceId);
+        expect(ls.get('seek-device-gen-v1:seek')).toBe('2');
+    });
+
     it('a fresh install with no prior generation never false-positives', async () => {
         const adapter = new FakeAdapter();
         const logger = new SeekLogger(makeApp(adapter), 'seek');

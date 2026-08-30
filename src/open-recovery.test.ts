@@ -15,7 +15,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { openDb, nukeDatabase } from './index-store';
 
-type OpenResult = 'success' | 'version-error' | 'quota-error';
+type OpenResult = 'success' | 'version-error' | 'quota-error' | 'unknown-error';
 type DeleteResult = 'success' | 'error' | 'blocked';
 
 interface FakeOpts {
@@ -66,6 +66,9 @@ function makeFakeIndexedDB(opts: FakeOpts) {
                     (req.onsuccess as (() => void) | null)?.();
                 } else if (r === 'version-error') {
                     req.error = new DOMException('the requested version is older than the existing version', 'VersionError');
+                    (req.onerror as (() => void) | null)?.();
+                } else if (r === 'unknown-error') {
+                    req.error = new DOMException('Internal error opening backing store for indexedDB.open.', 'UnknownError');
                     (req.onerror as (() => void) | null)?.();
                 } else {
                     req.error = new DOMException('quota exceeded', 'QuotaExceededError');
@@ -177,6 +180,42 @@ describe('openDb VersionError recovery (Investment #2)', () => {
 
         await expect(p).rejects.toThrow(/blocked/i);
         expect(fake.deleteCalls.length).toBe(1);
+    });
+});
+
+describe('openDb UnknownError retry (backing-store lock)', () => {
+    it('retries then opens without deleteDatabase', async () => {
+        vi.useFakeTimers();
+        const fake = makeFakeIndexedDB({ open: c => (c === 1 ? 'unknown-error' : 'success') });
+        vi.stubGlobal('indexedDB', fake.indexedDB);
+
+        const p = openDb('seek-index');
+        await tick();
+        await vi.advanceTimersByTimeAsync(200);
+        await tick();
+
+        const db = await p;
+        expect(db).toBeTruthy();
+        expect(fake.deleteCalls.length).toBe(0);
+        expect(fake.openCount()).toBe(2);
+    });
+
+    it('rejects after bounded retries without deleting', async () => {
+        vi.useFakeTimers();
+        const fake = makeFakeIndexedDB({ open: () => 'unknown-error' });
+        vi.stubGlobal('indexedDB', fake.indexedDB);
+
+        const p = openDb('seek-index');
+        p.catch(() => {});
+        for (let i = 0; i < 3; i++) {
+            await tick();
+            await vi.advanceTimersByTimeAsync(200);
+        }
+        await tick();
+
+        await expect(p).rejects.toMatchObject({ name: 'UnknownError' });
+        expect(fake.deleteCalls.length).toBe(0);
+        expect(fake.openCount()).toBe(4);
     });
 });
 

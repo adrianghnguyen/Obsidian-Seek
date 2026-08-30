@@ -14,8 +14,11 @@ Unified first-index and full-reindex progress, faster full passes, and honest re
 
 ### Fixed
 - **Ready no longer disagrees with the search modal on first open.** While the index was warming or the modal’s chunk probe was still catching up, the status bar could say Ready while the footer or results area still showed indexing. Ready now means search can run and the modal is not in a build wait state (incremental catch-up in the status bar is unchanged).
+- **Plugin reload no longer leaves startup hitting a closed index or a torn-down iframe.** After `plugin:reload`, in-flight boot work from the prior load is abandoned, the index store is reopened before sidecar hydrate and reconcile, and diagnostics skip when the new load has already replaced the session. Catch-up, periodic reconcile, layout-ready scheduling, and flush timers also bail on the current load generation so a torn-down session does not log spurious errors.
+- **Restored init files no longer trigger a false clone-collision alarm.** When the per-device init file is older than this install’s remembered generation (backup restore or sync conflict), Seek resyncs the counter instead of logging a device-clone error and scheduling device-id regeneration.
 - **Reload no longer flashes Ready before Seek knows the index state.** The status bar stays **Starting** with a soft orange glow until inventory is probed and the first post-boot scheduling decision completes.
 - **Delete & reindex no longer freezes Obsidian when another window holds the index.** A full rebuild empties the existing database instead of deleting it. A failed rebuild no longer leaves the store closed or starts a whole-vault catch-up on top of a still-valid index.
+- **Seek no longer reports a plugin failure when the index database is briefly locked.** After reload or with another vault window open, IndexedDB can refuse the first open. Seek retries, keeps loading, and does not log index-not-opened errors for that lock. The index opens when the lock clears.
 
 ## 1.1.4
 
