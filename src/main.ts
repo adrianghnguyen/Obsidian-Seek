@@ -2067,6 +2067,7 @@ export default class SeekPlugin extends Plugin {
             peerSyncPending: this.peerSyncPending,
             job: this.indexProgress.job(),
             uiHealth: this.statusBarHealth(),
+            inventoryChunks: this.indexInventoryChunks,
         };
     }
 

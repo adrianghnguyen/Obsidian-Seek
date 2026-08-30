@@ -80,6 +80,7 @@ export class ModalReadyContractHarness {
         uiHealth?: IndexUiStatus;
         job?: IndexLoadState['job'];
         catchUpPending?: boolean;
+        inventoryChunks?: number | null;
     }): void {
         this.loadState = {
             phase: state.phase,
@@ -87,6 +88,7 @@ export class ModalReadyContractHarness {
             job: state.job ?? null,
             catchUpPending: state.catchUpPending ?? false,
             waitingForSidecar: false,
+            inventoryChunks: state.inventoryChunks ?? null,
         };
     }
 

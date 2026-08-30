@@ -812,6 +812,8 @@ export class SeekSearchModal extends Modal {
             catchUpPending: load.catchUpPending,
             waitingForSidecar: load.waitingForSidecar,
             jobKind: load.job?.kind ?? null,
+            uiHealth: load.uiHealth,
+            inventoryChunks: load.inventoryChunks,
         });
     }
 

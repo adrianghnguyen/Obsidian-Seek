@@ -69,6 +69,8 @@ function evaluateSnapshot(s: BootSnapshot) {
         catchUpPending: s.catchUpPending,
         waitingForSidecar: false,
         jobKind: s.job?.kind ?? null,
+        uiHealth,
+        inventoryChunks: s.inventoryChunks,
     });
     const footer = indexFooterStatus({
         kind: loadSpec.kind,
@@ -103,7 +105,7 @@ function assertReadySearchable(
 }
 
 describe('Ready means searchable (status contract)', () => {
-    it('cache warm: uiHealth ok but footer Indexing when phase is indexing (writing)', () => {
+    it('cache warm: uiHealth ok keeps footer Ready when phase is indexing (writing)', () => {
         const snap: BootSnapshot = {
             label: 'post-good-enough cache warm',
             inventoryChunks: 412,
@@ -121,7 +123,7 @@ describe('Ready means searchable (status contract)', () => {
         assertReadySearchable(snap, r);
     });
 
-    it('first modal open: uiHealth ok but wait-kind when modal probe reads 0 chunks', () => {
+    it('first modal open: uiHealth ok with stale zero probe uses inventory and stays searchable', () => {
         const snap: BootSnapshot = {
             label: 'stale modal chunk probe',
             inventoryChunks: 412,
@@ -132,7 +134,7 @@ describe('Ready means searchable (status contract)', () => {
         };
         const r = evaluateSnapshot(snap);
         expect(r.uiHealth).toBe('ok');
-        expect(r.loadSpec.kind).toBe('indexing');
+        expect(r.loadSpec.kind).toBe('resting');
         assertReadySearchable(snap, r);
     });
 

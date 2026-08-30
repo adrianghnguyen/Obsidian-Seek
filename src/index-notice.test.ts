@@ -7,6 +7,7 @@ import {
     resolveIndexUiStatus,
     resolveSidecarWait,
     retainIndexInventory,
+    effectiveModalChunks,
     indexFooterStatus,
     INDEX_STALE_MSG,
     INDEX_SYNCING_MSG,
@@ -191,6 +192,29 @@ describe('indexLoadSpec', () => {
         expect(spec.kind).toBe('indexing');
         expect(spec.message).toBe(INDEX_BUILDING_MSG);
     });
+
+    it('rests on Ready + stale zero probe when inventory is populated', () => {
+        expect(indexLoadSpec({
+            chunks: 0,
+            inventoryChunks: 412,
+            uiHealth: 'ok',
+            phase: 'indexing',
+        }).kind).toBe('resting');
+    });
+});
+
+describe('effectiveModalChunks', () => {
+    it('uses inventory when Ready and the modal probe read zero', () => {
+        expect(effectiveModalChunks(0, 'ok', 412)).toBe(412);
+    });
+
+    it('does not override when uiHealth is indexing', () => {
+        expect(effectiveModalChunks(0, 'indexing', 412)).toBe(0);
+    });
+
+    it('passes through a positive probe unchanged', () => {
+        expect(effectiveModalChunks(120, 'ok', 412)).toBe(120);
+    });
 });
 
 describe('indexFooterStatus', () => {
@@ -209,6 +233,13 @@ describe('indexFooterStatus', () => {
             label: INDEX_UP_TO_DATE_LABEL,
             icon: 'check',
             tone: 'good',
+        });
+    });
+
+    it('stays Ready when canonical uiHealth is ok during cache warm (phase indexing)', () => {
+        expect(indexFooterStatus({ ...idle, uiHealth: 'ok', phase: 'indexing' })).toMatchObject({
+            kind: 'up-to-date',
+            label: INDEX_UP_TO_DATE_LABEL,
         });
     });
 

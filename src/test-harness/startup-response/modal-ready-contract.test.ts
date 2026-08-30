@@ -9,7 +9,7 @@ import { isIndexWaitKind } from '../../index-notice';
 describe('modal Ready contract (harness)', () => {
     it('uiHealth ok + stale 0-chunk probe + indexing phase → loadKind not wait-kind', async () => {
         const h = new ModalReadyContractHarness();
-        h.setLoadState({ phase: 'indexing', uiHealth: 'ok' });
+        h.setLoadState({ phase: 'indexing', uiHealth: 'ok', inventoryChunks: 412 });
         h.setModalChunks(0);
         await h.poll();
         expect(isIndexWaitKind(h.loadKind)).toBe(false);
@@ -17,7 +17,7 @@ describe('modal Ready contract (harness)', () => {
 
     it('uiHealth ok + typed query + empty results → does not paint indexing wait', async () => {
         const h = new ModalReadyContractHarness();
-        h.setLoadState({ phase: 'indexing', uiHealth: 'ok' });
+        h.setLoadState({ phase: 'indexing', uiHealth: 'ok', inventoryChunks: 412 });
         h.setModalChunks(0);
         h.primeQuery('note');
         await h.poll();

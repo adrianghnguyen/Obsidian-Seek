@@ -116,6 +116,10 @@ export interface IndexLoadInput {
     waitingForSidecar?: boolean;
     /** Active coordinator pass — full rebuild blocks search even on a populated store. */
     jobKind?: 'full' | 'delta' | 'catchup' | null;
+    /** Canonical status — when ok, populated inventory wins over a stale modal probe. */
+    uiHealth?: IndexUiStatus;
+    /** Plugin inventory chunks (status bar); may lead the modal store probe on first open. */
+    inventoryChunks?: number | null;
 }
 
 export interface IndexLoadSpec {
@@ -141,6 +145,8 @@ export interface IndexLoadState {
     job?: { done: number; total: number; paused?: boolean; kind?: 'full' | 'delta' | 'catchup' } | null;
     /** Canonical UI status — every surface must show this, not a local remapping. */
     uiHealth?: IndexUiStatus;
+    /** Status-bar inventory; modal may use when uiHealth is ok and the store probe lags. */
+    inventoryChunks?: number | null;
 }
 
 export interface IndexFooterInput {
@@ -277,7 +283,20 @@ export function retainIndexInventory(
     return next;
 }
 
+/** When Ready and inventory is populated, do not treat a stale zero modal probe as empty. */
+export function effectiveModalChunks(
+    probe: number | null,
+    uiHealth: IndexUiStatus | undefined,
+    inventoryChunks: number | null | undefined,
+): number | null {
+    if (uiHealth === 'ok' && (probe ?? 0) === 0 && (inventoryChunks ?? 0) > 0) {
+        return inventoryChunks!;
+    }
+    return probe;
+}
+
 export function indexLoadSpec(input: IndexLoadInput): IndexLoadSpec {
+    const chunks = effectiveModalChunks(input.chunks, input.uiHealth, input.inventoryChunks);
     // Full rebuild is not searchable until the pass finishes — even when the store
     // still holds chunks from the pre-nuke index or a partial write.
     if (input.jobKind === 'full' && input.phase === 'indexing') {
@@ -285,7 +304,7 @@ export function indexLoadSpec(input: IndexLoadInput): IndexLoadSpec {
     }
     // A populated index keeps the resting body (recents) even mid-restore/rebuild.
     // The footer still names the live phase.
-    if (input.chunks != null && input.chunks > 0) return { kind: 'resting', showAction: false };
+    if (chunks != null && chunks > 0) return { kind: 'resting', showAction: false };
     // Empty or not-yet-probed: name the real wait phase. Never claim "no index"
     // while Seek is still starting, restoring, or indexing.
     if (input.waitingForSidecar) {
@@ -295,7 +314,7 @@ export function indexLoadSpec(input: IndexLoadInput): IndexLoadSpec {
         return { kind: 'starting', title: INDEX_STARTING_TITLE, message: INDEX_STARTING_MSG, showAction: false };
     }
     // Unknown probe: never claim "still indexing" just because catch-up is queued.
-    if (input.chunks == null) {
+    if (chunks == null) {
         if (input.catchUpPending || input.phase === 'indexing') {
             return { kind: 'starting', title: INDEX_STARTING_TITLE, message: INDEX_STARTING_MSG, showAction: false };
         }
@@ -330,8 +349,12 @@ export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
     if (input.health === 'recovering') {
         return { kind: 'starting', label: INDEX_STARTING_LABEL, icon: 'refresh-cw', tone: 'info' };
     }
-    if (input.uiHealth === 'indexing' || input.kind === 'indexing' || input.phase === 'indexing'
-        || (input.job != null && input.job.total > 0)) {
+    if (input.uiHealth === 'indexing'
+        || (input.uiHealth !== 'ok' && (
+            input.kind === 'indexing'
+            || input.phase === 'indexing'
+            || (input.job != null && input.job.total > 0)
+        ))) {
         const remaining = input.job && input.job.total > 0
             ? Math.max(0, input.job.total - input.job.done)
             : null;

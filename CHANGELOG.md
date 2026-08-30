@@ -13,6 +13,7 @@ Unified first-index and full-reindex progress, faster full passes, and honest re
 - **Status bar progress updates every committed file** with exact percent on the label and bar. A rough time remaining appears after a short warmup on the Settings line and status-bar tooltip.
 
 ### Fixed
+- **Ready no longer disagrees with the search modal on first open.** While the index was warming or the modal’s chunk probe was still catching up, the status bar could say Ready while the footer or results area still showed indexing. Ready now means search can run and the modal is not in a build wait state (incremental catch-up in the status bar is unchanged).
 - **Reload no longer flashes Ready before Seek knows the index state.** The status bar stays **Starting** with a soft orange glow until inventory is probed and the first post-boot scheduling decision completes.
 - **Delete & reindex no longer freezes Obsidian when another window holds the index.** A full rebuild empties the existing database instead of deleting it. A failed rebuild no longer leaves the store closed or starts a whole-vault catch-up on top of a still-valid index.
 
