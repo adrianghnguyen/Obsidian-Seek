@@ -16,12 +16,13 @@ A feature task is **not done** until the plugin is deployed to the dev vault and
 5. **Verify** — at least one of:
    - Repo and vault `main.js` match (size/timestamp or grep for a new symbol/string)
    - `obsidian eval` confirms new settings or runtime behavior
-6. Tell the user to **close and reopen** affected modals; use `obsidian restart` if CSS or layout looks stale
+   - **UI/CSS/layout changes:** screenshots per `.cursor/skills/seek-visual-verify/SKILL.md` (Settings surface only when Settings changed)
+6. Tell the user to **close and reopen** affected modals; use `plugin:reload` first. **`obsidian restart` kills all vault windows** — only use when the user accepts that (see `.cursor/rules/obsidian-multi-vault-cli.mdc`).
 
 Large local features/fixes: also run the CLI verify cycle in `.cursor/rules/cli-verify-cycle.mdc` (startup skill when first-load is in scope).
 
 ## Do not skip
 
 - Never assume deploy succeeded from build output alone
-- If `manifest.json` changed, restart Obsidian (reload is not enough)
+- If `manifest.json` changed, restart may be required (reload is not enough) — **warn that restart closes every open vault**
 - Out-of-vault workflow: the vault does not see repo changes until copy + reload
