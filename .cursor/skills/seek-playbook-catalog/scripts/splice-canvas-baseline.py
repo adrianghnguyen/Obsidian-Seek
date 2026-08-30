@@ -34,6 +34,8 @@ def ts_val(v, indent=0):
             return "{}"
         lines = []
         for k, val in v.items():
+            if val is None:
+                continue
             key = k if str(k).isidentifier() else json.dumps(k)
             lines.append(f"{sp}  {key}: {ts_val(val, indent + 1)}")
         return "{\n" + ",\n".join(lines) + ",\n" + sp + "}"
@@ -62,11 +64,11 @@ def main() -> None:
             f"/** All-driver smoke batch {today} - git {sha} - export-canvas-baseline.ps1 */",
             "const STUB_SCENARIO_IDS: RunScenarioId[] = " + ts_val(stub_ids) + ";",
             "",
-            "type ScenarioChartSpec = { unit: string; metric: ScenarioMetricKey; series: { label: string; values: number[] }[] };",
+            "type ScenarioChartSpec = { unit: string; metric: ScenarioMetricKey; points: AtomicPoint[] };",
             "",
-            "/** Per test id - y-axis range local to each chart. */",
+            "/** Per test id — atomic points; group at render time. */",
             "const SCENARIO_CHART: Partial<Record<RunScenarioId, ScenarioChartSpec>> = "
-            + ts_val({k: {"unit": v["unit"], "metric": v["metric"], "series": v["series"]} for k, v in chart.items()})
+            + ts_val({k: {"unit": v["unit"], "metric": v["metric"], "points": v.get("points", [])} for k, v in chart.items()})
             + ";",
             "",
             "const RUNS: SandboxRun[] = " + ts_val(runs) + ";",
@@ -80,9 +82,12 @@ def main() -> None:
     end = canvas.index("];", canvas.index("const RUNS: SandboxRun[]")) + 3
     canvas = canvas[:start] + insert + canvas[end:]
 
-    canvas = re.sub(r'reportId: "SEEK-TEL-[^"]+"', f'reportId: "SEEK-TEL-{today.replace("-", "")}-{sha}"', canvas)
-    canvas = re.sub(r'branch: "[^"]+"', f'branch: "{branch}"', canvas, count=1)
-    canvas = re.sub(r'(\s+gitSha: ")[^"]+(")', rf'\1{sha}\2', canvas, count=1)
+    canvas = re.sub(
+        r'const reportMeta = \{[\s\S]*?\};',
+        f'const reportMeta = {{\n    title: "Seek telemetry baseline report",\n    reportId: "SEEK-TEL-{today.replace("-", "")}-{sha}",\n    date: "{today}",\n    branch: "{branch}",\n    gitSha: "{sha}",\n    samples: 3,\n    vault: "plugin-sandbox-Obsidian (~2998 notes) + seek-functional",\n  }};',
+        canvas,
+        count=1,
+    )
     canvas = canvas.replace(
         "Four implemented playbook drivers (S1, S6, F2, F3) completed a 3-sample baseline batch with",
         "All 17 playbook drivers (S1-S7, F1-F10) have at least one smoke run; S1/S6/F2/F3 retain 3-sample baselines with",

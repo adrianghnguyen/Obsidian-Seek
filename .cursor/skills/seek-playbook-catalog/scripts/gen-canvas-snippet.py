@@ -78,6 +78,8 @@ for r in d["runs"]:
         "metrics": m,
         "artifacts": r.get("artifacts") or {},
     }
+    if r.get("fixture"):
+        entry["fixture"] = r["fixture"]
     if sid in ("S1", "F1", "F2", "F8"):
         entry["uiHealth"] = "ok"
     runs.append(entry)

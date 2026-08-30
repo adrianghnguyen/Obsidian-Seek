@@ -6,10 +6,31 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).Path
 $traceRoot = Join-Path $repoRoot '.cursor\functional-traces'
+$catalogRoot = Split-Path $PSScriptRoot -Parent
 if (-not $OutPath) { $OutPath = Join-Path $repoRoot '.cursor\canvas-baseline-export.json' }
 
 $sha = (git -C $repoRoot rev-parse --short HEAD 2>$null)
 $branch = (git -C $repoRoot branch --show-current 2>$null)
+
+$defaultFixtureByScenario = @{
+    S1 = 'plugin-sandbox'
+    S2 = 'g2-fresh-id'
+    S3 = 'dev-vault'
+    S4 = 'g2-fresh-id'
+    S5 = 'plugin-sandbox'
+    S6 = 'seek-functional'
+    S7 = 'seek-functional'
+    F1 = 'plugin-sandbox'
+    F2 = 'seek-functional'
+    F3 = 'full'
+    F4 = 'seek-functional'
+    F5 = 'seek-functional'
+    F6 = 'seek-functional'
+    F7 = 'seek-functional'
+    F8 = 'plugin-sandbox'
+    F9 = 'seek-functional'
+    F10 = 'seek-functional'
+}
 
 function SampleFromFilename {
     param([string]$Name)
@@ -17,45 +38,57 @@ function SampleFromFilename {
     return 1
 }
 
-function Get-LatestTraceFile {
-    param([string]$ScenarioId, [string]$Pattern = '*')
-    $dir = Join-Path $traceRoot $ScenarioId
-    if (-not (Test-Path $dir)) { return $null }
-    Get-ChildItem $dir -File -Filter $Pattern | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+function FixtureFromTrace {
+    param(
+        [string]$ScenarioId,
+        [string]$FileName,
+        [object]$TraceObj
+    )
+    if ($TraceObj -and $TraceObj.PSObject.Properties.Name -contains 'fixture' -and $TraceObj.fixture) {
+        return [string]$TraceObj.fixture
+    }
+    if ($FileName -match 'F3-(minimal|full)-') { return $Matches[1] }
+    if ($FileName -match '-(minimal|full)-sample') { return $Matches[1] }
+    return $defaultFixtureByScenario[$ScenarioId]
 }
 
-$chartByScenario = @{}
-$runs = @()
-
-function Add-Run {
-    param([hashtable]$Run)
-    $runs += $Run
+function Ensure-ChartSpec {
+    param(
+        [string]$ScenarioId,
+        [string]$Unit,
+        [string]$Metric
+    )
+    if (-not $script:chartByScenario.ContainsKey($ScenarioId)) {
+        $script:chartByScenario[$ScenarioId] = @{
+            unit    = $Unit
+            metric  = $Metric
+            points  = @()
+        }
+    }
 }
 
-function Add-ChartPoint {
+function Add-AtomicPoint {
     param(
         [string]$ScenarioId,
         [string]$Unit,
         [string]$Metric,
-        [string]$Label,
-        [double]$Value
+        [double]$Value,
+        [int]$SampleIndex,
+        [string]$Fixture,
+        [string]$QueryCase = ''
     )
-    if (-not $chartByScenario.ContainsKey($ScenarioId)) {
-        $chartByScenario[$ScenarioId] = @{
-            unit   = $Unit
-            metric = $Metric
-            series = @()
-        }
+    Ensure-ChartSpec -ScenarioId $ScenarioId -Unit $Unit -Metric $Metric
+    $point = @{
+        value       = $Value
+        sampleIndex = $SampleIndex
+        fixture     = $Fixture
     }
-    $series = @($chartByScenario[$ScenarioId].series)
-    $existing = $series | Where-Object { $_.label -eq $Label } | Select-Object -First 1
-    if ($existing) {
-        $existing.values += $Value
-    } else {
-        $series += @{ label = $Label; values = @($Value) }
-    }
-    $chartByScenario[$ScenarioId].series = $series
+    if ($QueryCase) { $point['queryCase'] = $QueryCase }
+    $script:chartByScenario[$ScenarioId].points += $point
 }
+
+$chartByScenario = @{}
+$runs = @()
 
 # Generic JSON trace scenarios
 $genericMap = @{
@@ -75,33 +108,43 @@ $genericMap = @{
 }
 
 foreach ($sid in $genericMap.Keys) {
-    $f = Get-LatestTraceFile $sid '*.json'
-    if (-not $f) { continue }
-    $t = Get-Content $f.FullName -Raw | ConvertFrom-Json
-    $map = $genericMap[$sid]
-    $metricKey = $map.key
-    $val = $null
-    if ($t.PSObject.Properties.Name -contains $metricKey) { $val = [double]$t.$metricKey }
-    $si = SampleFromFilename $f.Name
-    $run = @{
-        id          = "$($sid.ToLower())-sample$si-$($f.Name)"
-        scenarioId  = $sid
-        sampleIndex = $si
-        outcome     = if ($t.pass -eq $false) { 'fail' } else { 'success' }
-        gitSha      = $sha
-        artifacts   = @{ jsonlPath = ".cursor/functional-traces/$sid/$($f.Name)" }
+    $traceDir = Join-Path $traceRoot $sid
+    if (-not (Test-Path $traceDir)) { continue }
+    $bySample = @{}
+    foreach ($f in (Get-ChildItem $traceDir -File -Filter '*.json' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)) {
+        $si = SampleFromFilename $f.Name
+        if ($bySample.ContainsKey($si)) { continue }
+        $bySample[$si] = $f
     }
-    if ($null -ne $val) {
-        $run.metrics = @{ $map.metric = $val }
-        Add-ChartPoint -ScenarioId $sid -Unit $map.unit -Metric $map.metric -Label "Sample $si" -Value $val
+    foreach ($si in ($bySample.Keys | Sort-Object)) {
+        $f = $bySample[$si]
+        $t = Get-Content $f.FullName -Raw | ConvertFrom-Json
+        $map = $genericMap[$sid]
+        $metricKey = $map.key
+        $fixture = FixtureFromTrace -ScenarioId $sid -FileName $f.Name -TraceObj $t
+        $val = $null
+        if ($t.PSObject.Properties.Name -contains $metricKey) { $val = [double]$t.$metricKey }
+        $run = @{
+            id          = "$($sid.ToLower())-sample$si-$($f.Name)"
+            scenarioId  = $sid
+            sampleIndex = $si
+            fixture     = $fixture
+            outcome     = if ($t.pass -eq $false) { 'fail' } else { 'success' }
+            gitSha      = $sha
+            artifacts   = @{ jsonlPath = ".cursor/functional-traces/$sid/$($f.Name)" }
+        }
+        if ($null -ne $val) {
+            $run.metrics = @{ $map.metric = $val }
+            Add-AtomicPoint -ScenarioId $sid -Unit $map.unit -Metric $map.metric -Value $val -SampleIndex $si -Fixture $fixture
+        }
+        if ($t.probeSec) { $run.durationSec = [double]$t.probeSec }
+        $runs += $run
     }
-    if ($t.probeSec) { $run.durationSec = [double]$t.probeSec }
-    $runs += $run
 }
 
-# S6 — latest per sample
+# S6 — latest trace file per sample
 $s6BySample = @{}
-foreach ($f in (Get-ChildItem (Join-Path $traceRoot 'S6') -File -Filter '*.json' -ErrorAction SilentlyContinue)) {
+foreach ($f in (Get-ChildItem (Join-Path $traceRoot 'S6') -File -Filter '*.json' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)) {
     $si = SampleFromFilename $f.Name
     if ($s6BySample.ContainsKey($si)) { continue }
     $s6BySample[$si] = $f
@@ -109,17 +152,20 @@ foreach ($f in (Get-ChildItem (Join-Path $traceRoot 'S6') -File -Filter '*.json'
 foreach ($si in ($s6BySample.Keys | Sort-Object)) {
     $f = $s6BySample[$si]
     $t = Get-Content $f.FullName -Raw | ConvertFrom-Json
-    if ($t.namePartialMs) {
-        Add-ChartPoint -ScenarioId 'S6' -Unit 'namePartialMs (ms)' -Metric 'namePartialMs' -Label "Sample $si" -Value ([double]$t.namePartialMs)
+    $fixture = FixtureFromTrace -ScenarioId 'S6' -FileName $f.Name -TraceObj $t
+    $partialMs = if ($null -ne $t.namePartialMs) { [double]$t.namePartialMs } elseif ($null -ne $t.partialMs) { [double]$t.partialMs } else { $null }
+    if ($null -ne $partialMs) {
+        Add-AtomicPoint -ScenarioId 'S6' -Unit 'namePartialMs (ms)' -Metric 'namePartialMs' -Value $partialMs -SampleIndex $si -Fixture $fixture
     }
     $runs += @{
         id          = "s6-sample$si-$($f.Name)"
         scenarioId  = 'S6'
         sampleIndex = $si
+        fixture     = $fixture
         outcome     = 'success'
         gitSha      = $sha
         metrics     = @{
-            namePartialMs = $t.namePartialMs
+            namePartialMs = $partialMs
             queryEmbedMs  = $t.queryEmbedMs
             T_search_ms   = $t.elapsedMs
         }
@@ -127,32 +173,33 @@ foreach ($si in ($s6BySample.Keys | Sort-Object)) {
     }
 }
 
-# F3 — latest jsonl per sample
+# F3 — latest jsonl per sample; one atomic point per query case
 $f3BySample = @{}
-foreach ($f in (Get-ChildItem (Join-Path $traceRoot 'F3') -File -Filter '*.jsonl' -ErrorAction SilentlyContinue)) {
+foreach ($f in (Get-ChildItem (Join-Path $traceRoot 'F3') -File -Filter '*.jsonl' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)) {
     $si = SampleFromFilename $f.Name
     if ($f3BySample.ContainsKey($si)) { continue }
-    $ms = @()
+    $fixture = FixtureFromTrace -ScenarioId 'F3' -FileName $f.Name -TraceObj $null
+    $latencies = @()
     foreach ($line in Get-Content $f.FullName -Encoding UTF8) {
         if (-not $line.Trim()) { continue }
         try {
             $o = $line | ConvertFrom-Json
-            if ($null -ne $o.elapsedMs) { $ms += [double]$o.elapsedMs }
+            if ($null -eq $o.elapsedMs) { continue }
+            $caseId = if ($o.caseId) { [string]$o.caseId } else { '' }
+            Add-AtomicPoint -ScenarioId 'F3' -Unit 'seek:search latency (ms)' -Metric 'T_search_ms' -Value ([double]$o.elapsedMs) -SampleIndex $si -Fixture $fixture -QueryCase $caseId
+            $latencies += [double]$o.elapsedMs
         } catch { }
     }
-    if ($ms.Count -eq 0) { continue }
-    $f3BySample[$si] = @{ file = $f.Name; latencies = $ms }
-    foreach ($v in $ms) {
-        Add-ChartPoint -ScenarioId 'F3' -Unit 'seek:search latency (ms)' -Metric 'T_search_ms' -Label "Sample $si" -Value $v
-    }
-    $lat = $f3BySample[$si].latencies
+    if ($latencies.Count -eq 0) { continue }
+    $f3BySample[$si] = @{ file = $f.Name; latencies = $latencies; fixture = $fixture }
     $runs += @{
         id          = "f3-sample$si-$($f3BySample[$si].file)"
         scenarioId  = 'F3'
         sampleIndex = $si
+        fixture     = $fixture
         outcome     = 'success'
         gitSha      = $sha
-        metrics     = @{ T_search_ms = [math]::Round(($lat | Measure-Object -Average).Average, 0) }
+        metrics     = @{ T_search_ms = [math]::Round(($latencies | Measure-Object -Average).Average, 0) }
         artifacts   = @{ jsonlPath = ".cursor/functional-traces/F3/$($f3BySample[$si].file)" }
     }
 }
@@ -164,14 +211,18 @@ if (Test-Path $resultsPath) {
     foreach ($r in @($batch)) {
         if ($r.Id -notin @('F2', 'S1')) { continue }
         if ($r.Result -ne 'pass') { continue }
+        $sid = $r.Id
+        $si = [int]$r.Sample
+        $fixture = $defaultFixtureByScenario[$sid]
         $metricMs = [math]::Round($r.Sec * 1000, 0)
-        $key = if ($r.Id -eq 'F2') { 'T_first_good_ms' } else { 'T_start_ms' }
-        $unit = if ($r.Id -eq 'F2') { 'Time to first ok search (ms)' } else { 'Gate release T_start (ms)' }
-        Add-ChartPoint -ScenarioId $r.Id -Unit $unit -Metric $key -Label "Sample $($r.Sample)" -Value $metricMs
+        $key = if ($sid -eq 'F2') { 'T_first_good_ms' } else { 'T_start_ms' }
+        $unit = if ($sid -eq 'F2') { 'Time to first ok search (ms)' } else { 'Gate release T_start (ms)' }
+        Add-AtomicPoint -ScenarioId $sid -Unit $unit -Metric $key -Value $metricMs -SampleIndex $si -Fixture $fixture
         $runs += @{
-            id          = "$($r.Id.ToLower())-sample$($r.Sample)-batch"
-            scenarioId  = $r.Id
-            sampleIndex = $r.Sample
+            id          = "$($sid.ToLower())-sample$si-batch"
+            scenarioId  = $sid
+            sampleIndex = $si
+            fixture     = $fixture
             outcome     = 'success'
             gitSha      = $sha
             durationSec = $r.Sec
@@ -180,20 +231,12 @@ if (Test-Path $resultsPath) {
     }
 }
 
-# Fallback S1/F2 from gate-trace if no batch results
-foreach ($sid in @('S1', 'F2')) {
-    if (@($runs | Where-Object { $_.scenarioId -eq $sid }).Count -gt 0) { continue }
-    $f = Get-LatestTraceFile $sid '*.json'
-    if ($f) { continue }
-    $gatePath = Join-Path $repoRoot '.cursor\gate-trace.jsonl'
-    if (-not (Test-Path $gatePath)) { continue }
-    $lines = Get-Content $gatePath -Encoding UTF8 | Where-Object { $_ -match "`"$([regex]::Escape($sid))" }
-    if ($lines.Count -eq 0) { continue }
-}
+$registryPath = Join-Path $catalogRoot 'playbook-scenarios.json'
+$registry = Get-Content $registryPath -Raw | ConvertFrom-Json
+$registryStubIds = @($registry.scenarios | Where-Object { $_.status -eq 'stub' } | ForEach-Object { $_.id })
 
-$allScenarioIds = @('S1','S2','S3','S4','S5','S6','S7','F1','F2','F3','F4','F5','F6','F7','F8','F9','F10')
 $withRuns = @($runs | ForEach-Object { $_.scenarioId } | Select-Object -Unique)
-$stubScenarioIds = @($allScenarioIds | Where-Object { $_ -notin $withRuns })
+$stubScenarioIds = @($registryStubIds | Where-Object { $_ -notin $withRuns })
 
 $export = @{
     exportedAt       = (Get-Date).ToString('o')
