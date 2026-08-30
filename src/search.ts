@@ -19,7 +19,7 @@ import { TaskContextTracker } from './task-context';
 import { rank, cosineScores, DEFAULT_RANKING_CONFIG } from './ranker';
 import { browseOrder, recencyDate } from './fusion';
 import { collectNameHits, shouldEarlyPaint } from './name-match';
-import { IndexStore, nukeDatabase, classifyFileDelta, findOrphanChunkIds, isStoreClosedError, isQuotaError, stripContent, META_SCHEMA_VERSION, type MetaConfig, type FileRecord } from './index-store';
+import { IndexStore, classifyFileDelta, findOrphanChunkIds, isStoreClosedError, isQuotaError, stripContent, META_SCHEMA_VERSION, type MetaConfig, type FileRecord } from './index-store';
 import { INDEX_QUOTA_MSG } from './index-notice';
 import { LocalEmbedder, EMBEDDING_DIM, LEGACY_ENGLISH_MODEL_ID, MODEL_ID, PLUGIN_VERSION } from './embedder';
 import { SeekLogger } from './logger';
@@ -495,12 +495,27 @@ export class SearchOrchestrator {
         // iCloud placeholder that finished downloading) isn't skipped here too.
         this.unreadableQuarantine.clear();
 
-        // Reset. Close our long-lived connection first so deleteDatabase
-        // isn't blocked by us, then re-open the (fresh, empty) DB.
+        // Reset. Clear stores on the live connection — do not deleteDatabase.
+        // A second vault window holding the same IDB blocks delete forever and
+        // can freeze Electron if a later open races a pending delete.
         const resetStart = performance.now();
-        this.store.close();
-        const pre = await nukeDatabase(this.store.dbName);   // per-vault DB — never another vault's
-        await this.store.open();   // scope-less: reuses the name from onload's open(appId)
+        // #region agent log
+        {
+            const wins = new Set<Window>();
+            wins.add(window);
+            try {
+                this.app.workspace.iterateAllLeaves((leaf: { view?: { containerEl?: { win?: Window } } }) => {
+                    const w = leaf.view?.containerEl?.win;
+                    if (w) wins.add(w);
+                });
+            } catch { /* window count is diagnostic only */ }
+            const sidecarIds = this.coord.dir
+                ? await listSidecarDeviceIds(this.app.vault.adapter, this.coord.dir).catch(() => [] as string[])
+                : [];
+            fetch('http://127.0.0.1:7520/ingest/4041c2ea-b3bb-4f25-85a6-6a4877d4ade9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8ffd14'},body:JSON.stringify({sessionId:'8ffd14',runId:'post-fix',hypothesisId:'A-D-E',location:'search.ts:reindexAllInner',message:'full-reindex wipe in place',data:{dbName:this.store.dbName,windowCount:wins.size,sidecarDeviceIds:sidecarIds,loggerDeviceId:this.logger.deviceId},timestamp:Date.now()})}).catch(()=>{});
+        }
+        // #endregion
+        const pre = await this.store.clearAllStores();
         await this.store.setMeta({
             embeddingDim: EMBEDDING_DIM,
             lastIndexedAt: null,
@@ -2540,9 +2555,7 @@ export class SearchOrchestrator {
         //    canonical sidecar model (NOT embedder.modelId, which is '' on a cold
         //    mobile embedder) so the rebuilt index's stamp matches the producer's.
         await this.coord.runExclusive(async () => {
-            this.store.close();
-            await nukeDatabase(this.store.dbName);
-            await this.store.open();
+            await this.store.clearAllStores();
             const id = pluginIdentity();
             await this.store.setMeta({ embeddingDim: EMBEDDING_DIM, lastIndexedAt: null, schemaVersion: META_SCHEMA_VERSION, modelId: MODEL_ID, chunkerVersion: id.chunkerVersion, analyzerVersion: id.analyzerVersion, revision: id.revision });
         });

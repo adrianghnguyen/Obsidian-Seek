@@ -2423,8 +2423,13 @@ export default class SeekPlugin extends Plugin {
             this.catchUpPending = false;
             const ok = await this.runFullReindex({ skipConfirm: true });
             if (!ok && !this.orchestrator.isWriting()) {
-                this.catchUpPending = true;
-                this.scheduleStartupCatchUp();
+                await this.touchIndexInventory();
+                // A failed wipe must not kick a whole-vault catch-up while the
+                // existing index is still on disk (that froze the main vault).
+                if (isKnownEmptyIndexWithNotes(this.indexInventoryChunks, this.indexableNoteCount())) {
+                    this.catchUpPending = true;
+                    this.scheduleStartupCatchUp();
+                }
             }
         } catch (e) {
             await this.logger.appendError('cold-build', e).catch(() => {});
@@ -2601,7 +2606,6 @@ export default class SeekPlugin extends Plugin {
         }
 
         const jobId = this.beginIndexJob('full', this.indexableNoteCount(), 'Seek: indexing…');
-        this.publishInventory(0, 0, true);
         this.pushTaskContext('indexing');
         try {
             await this.ensureModelLoaded();
@@ -2634,6 +2638,7 @@ export default class SeekPlugin extends Plugin {
             this.identityHealNotified = false;
             return true;
         } catch (e) {
+            await this.store.open().catch(() => {});
             await this.logger.appendError('seek-full-reindex', e);
             // One end-toast whether it passed or failed (the recap). Detail → console + log.
             new Notice('Seek reindex: ❌ failed — see the logging report (Settings → Seek).', 10000);

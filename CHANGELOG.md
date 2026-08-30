@@ -14,6 +14,7 @@ Unified first-index and full-reindex progress, faster full passes, and honest re
 
 ### Fixed
 - **Reload no longer flashes Ready before Seek knows the index state.** The status bar stays **Starting** with a soft orange glow until inventory is probed and the first post-boot scheduling decision completes.
+- **Delete & reindex no longer freezes Obsidian when another window holds the index.** A full rebuild empties the existing database instead of deleting it. A failed rebuild no longer leaves the store closed or starts a whole-vault catch-up on top of a still-valid index.
 
 ## 1.1.4
 

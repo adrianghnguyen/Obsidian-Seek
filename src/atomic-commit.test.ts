@@ -59,6 +59,19 @@ describe('putBatchQuantized + fileRecord — one atomic transaction (Tier-1)', (
         expect((await store.listAllMeta()).map(c => c.chunk_id).sort()).toEqual(['a1', 'a2']);
     });
 
+    it('clearAllStores empties data without deleteDatabase', async () => {
+        const { store } = await boot();
+        await store.putBatchQuantized(
+            [chunk('c1', 'keep me')],
+            [tier(3)],
+            { note_path: 'c1.md', mtimeMs: 1, chunk_ids: ['c1'], contentHash: 'h' },
+        );
+        const pre = await store.clearAllStores();
+        expect(pre.chunks).toBe(1);
+        expect((await store.count()).chunks).toBe(0);
+        expect(await store.getFileRecord('c1.md')).toBeUndefined();
+    });
+
     it('a record with ZERO chunks (fully-quarantined file) writes just the FILES store', async () => {
         const { store, rwCalls } = await boot();
         await store.putBatchQuantized([], [], {
