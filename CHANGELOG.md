@@ -2,6 +2,19 @@
 
 All notable changes to Seek are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.1.5
+
+Unified first-index and full-reindex progress, faster full passes, and honest reload status. No reindex is needed, since the index format is unchanged.
+
+### Changed
+- **First index and full reindex share one progress UI.** Settings shows the same **Indexing…** row with live percent for an automatic cold build and a manual reindex — driven by the coordinator job, not a separate button state.
+- **Full index passes run at maximum throughput.** Between embed dispatches, Seek yields only briefly instead of waiting for idle compositor time. Catch-up and incremental indexing still pace for UI responsiveness and still pause for live search.
+- **Search is blocked during a full rebuild.** Opening Seek or running CLI search while a first index or full reindex is running shows a wait state instead of results from a half-written index. Catch-up indexing stays searchable.
+- **Status bar progress updates every committed file** with exact percent on the label and bar. A rough time remaining appears after a short warmup on the Settings line and status-bar tooltip.
+
+### Fixed
+- **Reload no longer flashes Ready before Seek knows the index state.** The status bar stays **Starting** with a soft orange glow until inventory is probed and the first post-boot scheduling decision completes.
+
 ## 1.1.4
 
 Search-modal honesty while the index is still coming up. No reindex is needed, since the index format is unchanged.
