@@ -811,6 +811,7 @@ export class SeekSearchModal extends Modal {
             phase: load.phase,
             catchUpPending: load.catchUpPending,
             waitingForSidecar: load.waitingForSidecar,
+            jobKind: load.job?.kind ?? null,
         });
     }
 

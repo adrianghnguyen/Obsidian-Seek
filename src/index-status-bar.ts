@@ -13,6 +13,7 @@ import {
     type IndexStatusJob,
     type IndexJobKind,
 } from './index-status-card';
+import { formatRoughEta, indexPercent } from './index-eta';
 
 export function parseIndexedProgress(msg: string): { files: number } | null {
     const m = msg.match(/Indexed\s+([\d,]+)\s+files/i);
@@ -55,7 +56,13 @@ export class IndexStatusBar {
     private total = 0;
     private done = 0;
     private label = '';
-    private paintedRemaining: number | null = null;
+    private jobStartedAt = 0;
+    private paintedDone = -1;
+    private paintedTotal = -1;
+    private paintedPercent = -1;
+    private paintScheduled = false;
+    private paintQueued = false;
+    private paintForce = false;
     private hoverGen = 0;
 
     mount(el: HTMLElement, hooks: IndexStatusBarHooks): void {
@@ -92,8 +99,11 @@ export class IndexStatusBar {
         this.total = Math.max(0, total);
         this.done = 0;
         this.label = label;
-        this.paintedRemaining = null;
-        this.paintJob(true);
+        this.jobStartedAt = performance.now();
+        this.paintedDone = -1;
+        this.paintedTotal = -1;
+        this.paintedPercent = -1;
+        this.schedulePaintJob(true);
     }
 
     updateFromProgress(msg: string, id?: number): void {
@@ -111,18 +121,24 @@ export class IndexStatusBar {
             this.label = label;
             this.jobPaused = /paused/i.test(label);
         }
-        this.paintJob(false);
+        this.schedulePaintJob(false);
     }
 
     hide(id?: number): void {
         if (id != null && this.jobId !== id) return;
+        this.paintScheduled = false;
+        this.paintQueued = false;
+        this.paintForce = false;
         this.jobActive = false;
         this.jobPaused = false;
         this.jobKind = null;
         this.done = 0;
         this.total = 0;
         this.label = '';
-        this.paintedRemaining = null;
+        this.jobStartedAt = 0;
+        this.paintedDone = -1;
+        this.paintedTotal = -1;
+        this.paintedPercent = -1;
         this.paintIdle();
         this.hideHover();
     }
@@ -130,7 +146,7 @@ export class IndexStatusBar {
     /** Repaint the idle chrome from getHealth() — e.g. after boot or catch-up. */
     refreshIdle(): void {
         if (this.jobActive) {
-            this.paintJob(true);
+            this.schedulePaintJob(true);
             return;
         }
         this.paintIdle();
@@ -141,11 +157,35 @@ export class IndexStatusBar {
         return { id: this.jobId, kind: this.jobKind ?? undefined, done: this.done, total: this.total, paused: this.jobPaused };
     }
 
+    private schedulePaintJob(force: boolean): void {
+        if (force) this.paintForce = true;
+        this.paintQueued = true;
+        if (this.paintScheduled) return;
+        this.paintScheduled = true;
+        requestAnimationFrame(() => {
+            this.paintScheduled = false;
+            if (!this.paintQueued) return;
+            this.paintQueued = false;
+            const runForce = this.paintForce;
+            this.paintForce = false;
+            this.paintJob(runForce);
+        });
+    }
+
+    private jobTooltip(): string {
+        const pct = indexPercent(this.done, this.total);
+        const eta = formatRoughEta(this.done, this.total, performance.now() - this.jobStartedAt);
+        const counts = `${this.done.toLocaleString()} / ${this.total.toLocaleString()} · ${pct}%`;
+        return eta ? `Seek: Indexing ${counts} · ${eta} left` : `Seek: Indexing ${counts}`;
+    }
+
     private paintJob(force: boolean): void {
         if (!this.root) return;
         const canonical = this.hooks?.getHealth();
         if (canonical === 'starting' || canonical === 'restoring') {
-            this.paintedRemaining = null;
+            this.paintedDone = -1;
+            this.paintedTotal = -1;
+            this.paintedPercent = -1;
             this.labelEl?.removeClass('is-hidden');
             this.labelEl?.setText('Seek');
             this.progressEl?.addClass('is-hidden');
@@ -153,17 +193,21 @@ export class IndexStatusBar {
             this.setStatusLabel(`Seek: ${INDEX_STATUS_HEALTH[canonical].compact}`);
             return;
         }
+        const pct = indexPercent(this.done, this.total);
+        if (!force && this.done === this.paintedDone && this.total === this.paintedTotal && pct === this.paintedPercent) return;
+        this.paintedDone = this.done;
+        this.paintedTotal = this.total;
+        this.paintedPercent = pct;
         const remaining = jobRemaining(this.job()) ?? 0;
-        if (!force && remaining === this.paintedRemaining) return;
-        this.paintedRemaining = remaining;
         this.paintChrome('indexing', remaining);
-        this.labelEl?.addClass('is-hidden');
+        this.labelEl?.removeClass('is-hidden');
+        this.labelEl?.setText(`${pct}%`);
         if (this.progressEl) {
             this.progressEl.removeClass('is-hidden');
             this.progressEl.max = 100;
-            this.progressEl.value = quantizePercent(this.done, this.total);
+            this.progressEl.value = pct;
         }
-        this.setStatusLabel('Seek: Indexing');
+        this.setStatusLabel(this.jobTooltip());
     }
 
     private paintIdle(): void {
@@ -207,6 +251,7 @@ export class IndexStatusBar {
             health,
             stats,
             job: this.job(),
+            eta: this.jobActive ? formatRoughEta(this.done, this.total, performance.now() - this.jobStartedAt) : null,
         });
     }
 

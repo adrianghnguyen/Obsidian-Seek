@@ -96,29 +96,20 @@ describe('quota + preempt scenarios (Tier-2)', () => {
         expect((await s.store.count()).chunks).toBeGreaterThan(0);
     });
 
-    // ── 3A: the shouldContinue mode contract, both halves ───────────────────
-    // Full mode PAUSES between files while the signal is blocked, then resumes
-    // and finishes everything — it must never abort (there is no catch-up that
-    // re-fires a manual full reindex).
-    it('a full reindex pauses for live search activity and RESUMES — commits everything (3A)', async () => {
+    // ── 3A: full pass no longer yields to search ─────────────────────────────
+    it('a full reindex ignores shouldContinue and commits everything', async () => {
         const s = await boot();
         s.vault.write('a.md', 'first note body with several words', 1000);
         s.vault.write('b.md', 'second note body with other words', 1000);
 
-        // Blocked for the first two checks (the loop-top gate + the first in-wait
-        // poll), clear from the third on — one real ~250 ms poll tick.
-        let calls = 0;
-        const shouldContinue = vi.fn(() => ++calls > 2);
+        const shouldContinue = vi.fn(() => false);
         const progress: string[] = [];
         const entry = await s.orch.reindexAll(msg => progress.push(msg), { shouldContinue });
 
         expect(entry.committedFilePaths.slice().sort()).toEqual(['a.md', 'b.md']);
-        expect(entry.filesDeferred).toBe(0);              // nothing dropped — a pause, not an abort
+        expect(entry.filesDeferred).toBe(0);
         expect(entry.pass).toBe(true);
-        expect(shouldContinue.mock.calls.length).toBeGreaterThanOrEqual(3);  // gate + ≥1 poll + the all-clear
-        // The pause explains itself — a frozen counter with no label is the shape
-        // that made users force-quit healthy runs (PROGRESS_MAX_SILENCE_MS).
-        expect(progress.some(m => m.includes('paused while you search'))).toBe(true);
+        expect(progress.some(m => m.includes('paused while you search'))).toBe(false);
     });
 
     it('the incremental path still ABORTS on shouldContinue=false — files stay dirty for catch-up', async () => {

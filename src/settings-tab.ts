@@ -20,6 +20,7 @@ import type { IndexStats, ModelStatus } from './main';
 import type { SidecarIndexLocation, SearchModalHeight, SearchModalWidth, SnippetPreview } from './types';
 import { DEFAULT_SETTINGS, MATCH_STRENGTH_MIN_NOTES } from './types';
 import { renderIndexStatusCard } from './index-status-card';
+import { formatRoughEta, indexPercent } from './index-eta';
 import {
     getBackendOverride, setBackendOverride, isWebgpuDemoted, clearWebgpuDemoted,
     getStartupWarm, setStartupWarm, isMobilePlatform,
@@ -121,9 +122,10 @@ export class SeekSettingTab extends PluginSettingTab {
     private advancedOpen = false;
     // Independent of advancedOpen (Relevance) so the Index disclosure toggles on its own.
     private indexAdvancedOpen = false;
-    private reindexPhase: 'idle' | 'confirm' | 'running' = 'idle';
-    private reindexDone = 0;
-    private reindexTotal = 0;
+    private reindexPhase: 'idle' | 'confirm' = 'idle';
+    private reindexStarting = false;
+    private progressPoll: number | null = null;
+    private jobStartedAt = 0;
     // Live-progress DOM refs, repointed on each display() so the runFullReindex
     // onProgress callback always paints the current node (robust to close/reopen).
     private progressFillEl: HTMLElement | null = null;
@@ -143,6 +145,8 @@ export class SeekSettingTab extends PluginSettingTab {
     display(): void {
         // Fetch the async snapshots once; re-render when they land.
         if (!this.stats && !this.loading) void this.loadData();
+        if (this.showIndexingProgress()) this.startProgressPoll();
+        else this.stopProgressPoll();
 
         const { containerEl } = this;
         containerEl.empty();
@@ -185,10 +189,12 @@ export class SeekSettingTab extends PluginSettingTab {
 
     // Reset the per-open snapshots so the next open re-fetches fresh counts/last-index.
     hide(): void {
+        this.stopProgressPoll();
         this.stats = null;
         this.modelStatus = null;
         this.modelDeleteConfirm = false;
         this.resetConfirm = false;
+        this.reindexStarting = false;
     }
 
     private async loadData(): Promise<void> {
@@ -211,8 +217,27 @@ export class SeekSettingTab extends PluginSettingTab {
 
     // ---- Index ---------------------------------------------------------------------
     private statusState(): 'none' | 'starting' | 'restoring' | 'ok' | 'indexing' | 'error' {
-        if (this.reindexPhase === 'running') return 'indexing';
         return this.plugin.indexUiHealth;
+    }
+
+    private activeFullJob() {
+        const job = this.plugin.getIndexJob();
+        return job?.kind === 'full' ? job : null;
+    }
+
+    private showIndexingProgress(): boolean {
+        return this.activeFullJob() != null || this.reindexStarting;
+    }
+
+    private startProgressPoll(): void {
+        if (this.progressPoll != null) return;
+        this.progressPoll = window.setInterval(() => this.paintProgress(), 250);
+    }
+
+    private stopProgressPoll(): void {
+        if (this.progressPoll == null) return;
+        window.clearInterval(this.progressPoll);
+        this.progressPoll = null;
     }
 
     private renderIndex(containerEl: HTMLElement): void {
@@ -331,10 +356,10 @@ export class SeekSettingTab extends PluginSettingTab {
     }
 
     private renderReindexRow(containerEl: HTMLElement): void {
-        if (this.reindexPhase === 'running') {
+        if (this.showIndexingProgress()) {
             const row = containerEl.createDiv({ cls: 'seek-progress-row' });
             const head = row.createDiv({ cls: 'seek-progress-head' });
-            head.createDiv({ cls: 'setting-item-name', text: 'Reindexing…' });
+            head.createDiv({ cls: 'setting-item-name', text: 'Indexing…' });
             this.progressLabelEl = head.createDiv({ cls: 'seek-progress-count' });
             const bar = row.createDiv({ cls: 'seek-progress-track' });
             this.progressFillEl = bar.createDiv({ cls: 'seek-progress-fill' });
@@ -386,45 +411,45 @@ export class SeekSettingTab extends PluginSettingTab {
     }
 
     private startReindex(): void {
-        const md = this.app.vault.getMarkdownFiles().length;
-        const bases = this.s.indexBases ? this.app.vault.getFiles().filter(f => f.extension === 'base').length : 0;
-        this.reindexTotal = md + bases;
-        this.reindexDone = 0;
-        this.reindexPhase = 'running';
+        this.reindexStarting = true;
+        this.jobStartedAt = performance.now();
         this.rerender();
 
-        void this.plugin.runFullReindex({
-            skipConfirm: true,
-            onProgress: (msg) => {
-                const job = this.plugin.getIndexJob();
-                if (job && job.total > 0) {
-                    this.reindexDone = job.done;
-                    this.reindexTotal = job.total;
-                } else {
-                    const m = msg.match(/Indexed\s+([\d,]+)\s+files/i);
-                    if (m) this.reindexDone = parseInt(m[1].replace(/,/g, ''), 10);
-                }
-                this.paintProgress();
-            },
-        }).then(() => {
-            // Back to idle with a refreshed status card — that IS the "done" feedback.
-            this.reindexPhase = 'idle';
+        void this.plugin.runFullReindex({ skipConfirm: true }).then(() => {
+            this.reindexStarting = false;
             this.stats = null;
             this.rerender();
             void this.loadData();
         }).catch(() => {
-            this.reindexPhase = 'idle';
+            this.reindexStarting = false;
             this.rerender();
         });
     }
 
     private paintProgress(): void {
-        const pct = this.reindexTotal > 0
-            ? Math.min(100, Math.round((this.reindexDone / this.reindexTotal) * 100))
-            : 0;
+        const job = this.activeFullJob();
+        if (!job) {
+            if (!this.reindexStarting) {
+                this.stopProgressPoll();
+                this.rerender();
+                return;
+            }
+            if (this.progressLabelEl) this.progressLabelEl.setText('…');
+            if (this.progressFillEl) this.progressFillEl.style.width = '0%';
+            return;
+        }
+        if (this.jobStartedAt === 0) this.jobStartedAt = performance.now();
+        const pct = indexPercent(job.done, job.total);
+        const eta = formatRoughEta(job.done, job.total, performance.now() - this.jobStartedAt);
         if (this.progressFillEl) this.progressFillEl.style.width = `${pct}%`;
         if (this.progressLabelEl) {
-            this.progressLabelEl.setText(`${this.reindexDone.toLocaleString()} / ${this.reindexTotal.toLocaleString()} notes · ${pct}%`);
+            const line = `${job.done.toLocaleString()} / ${job.total.toLocaleString()} notes · ${pct}%`;
+            this.progressLabelEl.setText(eta ? `${line} · ${eta} left` : line);
+        }
+        if (job.done >= job.total) {
+            this.reindexStarting = false;
+            this.stopProgressPoll();
+            this.rerender();
         }
     }
 

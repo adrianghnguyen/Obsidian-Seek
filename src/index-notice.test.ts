@@ -185,6 +185,12 @@ describe('indexLoadSpec', () => {
         expect(indexLoadSpec({ chunks: 12, phase: 'hydrating' }).kind).toBe('resting');
         expect(indexLoadSpec({ chunks: 12, phase: 'indexing' }).kind).toBe('resting');
     });
+
+    it('blocks on a full rebuild even when chunks already exist', () => {
+        const spec = indexLoadSpec({ chunks: 1200, phase: 'indexing', jobKind: 'full' });
+        expect(spec.kind).toBe('indexing');
+        expect(spec.message).toBe(INDEX_BUILDING_MSG);
+    });
 });
 
 describe('indexFooterStatus', () => {
@@ -367,8 +373,13 @@ describe('resolveCliSearchGate', () => {
     });
 
     it('allows search on a populated index during catch-up / indexing', () => {
-        expect(resolveCliSearchGate({ warmPhase: null, uiHealth: 'indexing', chunks: 120 }))
+        expect(resolveCliSearchGate({ warmPhase: null, uiHealth: 'indexing', chunks: 120, fullJobActive: false }))
             .toBeNull();
+    });
+
+    it('blocks during a full rebuild even when chunks already exist', () => {
+        expect(resolveCliSearchGate({ warmPhase: null, uiHealth: 'indexing', chunks: 1200, fullJobActive: true }))
+            .toBe(CLI_SEARCH_GATE_INDEXING);
     });
 
     it('blocks when inventory is empty', () => {
@@ -451,6 +462,14 @@ describe('resolveIndexUiStatus', () => {
 
     it('empty idle inventory is None', () => {
         expect(resolveIndexUiStatus({ ...idle, searchableChunks: 0, inventoryFiles: 0 })).toBe('none');
+    });
+
+    it('unprobed inventory is Starting, never Ready', () => {
+        expect(resolveIndexUiStatus({ ...idle, searchableChunks: null })).toBe('starting');
+    });
+
+    it('boot decision pending is Starting until scheduling runs', () => {
+        expect(resolveIndexUiStatus({ ...idle, bootDecisionPending: true })).toBe('starting');
     });
 });
 

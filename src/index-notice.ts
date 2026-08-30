@@ -81,7 +81,7 @@ export const INDEX_STARTING_MSG = 'Seek is loading the search index. This is not
 export const INDEX_RESTORING_TITLE = 'Restoring';
 export const INDEX_RESTORING_MSG = 'Seek is restoring the search index from another device…';
 export const INDEX_BUILDING_TITLE = 'Indexing';
-export const INDEX_BUILDING_MSG = 'Seek is still indexing your notes…';
+export const INDEX_BUILDING_MSG = 'Seek is still building the full search index. Results will be available when the pass finishes.';
 export const INDEX_NO_INDEX_TITLE = 'No index yet';
 export const INDEX_NO_INDEX_MSG = 'This vault has not been indexed. Nothing is loading in the background — build an index in Seek settings to search.';
 export const INDEX_NO_INDEX_LABEL = 'None';
@@ -114,6 +114,8 @@ export interface IndexLoadInput {
     phase: IndexLoadPhase;
     catchUpPending?: boolean;
     waitingForSidecar?: boolean;
+    /** Active coordinator pass — full rebuild blocks search even on a populated store. */
+    jobKind?: 'full' | 'delta' | 'catchup' | null;
 }
 
 export interface IndexLoadSpec {
@@ -136,7 +138,7 @@ export interface IndexLoadState {
     reason?: DegradedReason;
     peerSyncPending?: boolean;
     /** Coordinator pass currently driving the status-bar badge, or null. */
-    job?: { done: number; total: number; paused?: boolean } | null;
+    job?: { done: number; total: number; paused?: boolean; kind?: 'full' | 'delta' | 'catchup' } | null;
     /** Canonical UI status — every surface must show this, not a local remapping. */
     uiHealth?: IndexUiStatus;
 }
@@ -179,6 +181,8 @@ export function resolveIndexLoadPhase(flags: IndexLoadFlags): IndexLoadPhase {
 export interface IndexUiStatusInput {
     /** Plugin construct → onload sidecar/reconcile IIFE (and optional startup cache warm). */
     booting: boolean;
+    /** First post-boot scheduling decision (idle vs catch-up vs full) not yet applied. */
+    bootDecisionPending?: boolean;
     /** Actual sidecar hydrate in flight (startup, periodic, identity, drift). */
     hydrating: boolean;
     /** Greedy hydrate: three-day tier done — search gate released; older recovery may continue. */
@@ -214,6 +218,7 @@ export function resolveIndexUiStatus(input: IndexUiStatusInput): IndexUiStatus {
     if (input.indexing || (input.job != null && input.job.total > 0)) return 'indexing';
     const chunks = input.searchableChunks;
     const files = input.inventoryFiles ?? 0;
+    if (input.bootDecisionPending || chunks == null) return 'starting';
     if (chunks === 0 && files === 0) {
         // Queued first build — not "no index", not "still indexing your notes".
         if (input.catchUpPending) return 'starting';
@@ -238,6 +243,8 @@ export interface CliSearchGateInput {
     warmPhase: 'starting' | 'restoring' | null;
     uiHealth: CliSearchGateHealth;
     chunks: number | null;
+    /** Full first-index or reindex pass — block even when chunks > 0. */
+    fullJobActive?: boolean;
 }
 
 export const CLI_SEARCH_GATE_STARTING = 'Seek not ready — search index still loading';
@@ -250,6 +257,7 @@ export function resolveCliSearchGate(input: CliSearchGateInput): string | null {
     // races sidecar hydrate / applyDelta and can empty the in-memory frame.
     if (input.warmPhase === 'starting' || input.uiHealth === 'starting') return CLI_SEARCH_GATE_STARTING;
     if (input.warmPhase === 'restoring' || input.uiHealth === 'restoring') return CLI_SEARCH_GATE_RESTORING;
+    if (input.fullJobActive) return CLI_SEARCH_GATE_INDEXING;
     const populated = input.chunks != null && input.chunks > 0;
     if (populated) return null;
     if (input.uiHealth === 'indexing') return CLI_SEARCH_GATE_INDEXING;
@@ -270,6 +278,11 @@ export function retainIndexInventory(
 }
 
 export function indexLoadSpec(input: IndexLoadInput): IndexLoadSpec {
+    // Full rebuild is not searchable until the pass finishes — even when the store
+    // still holds chunks from the pre-nuke index or a partial write.
+    if (input.jobKind === 'full' && input.phase === 'indexing') {
+        return { kind: 'indexing', title: INDEX_BUILDING_TITLE, message: INDEX_BUILDING_MSG, showAction: false };
+    }
     // A populated index keeps the resting body (recents) even mid-restore/rebuild.
     // The footer still names the live phase.
     if (input.chunks != null && input.chunks > 0) return { kind: 'resting', showAction: false };

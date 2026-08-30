@@ -3,6 +3,8 @@
 // is the source of truth — inventory files/chunks from getIndexStats() must not
 // compete with that number.
 
+import { indexPercent } from './index-eta';
+
 export interface IndexStatusCardStats {
     files: number;
     chunks: number;
@@ -24,7 +26,7 @@ export interface IndexStatusJob {
 
 export const INDEX_STATUS_HEALTH: Record<IndexStatusHealth, { tone: string; label: string; compact: string }> = {
     none: { tone: 'mid', label: 'No index', compact: 'None' },
-    starting: { tone: 'info', label: 'Starting up…', compact: 'Starting' },
+    starting: { tone: 'pending', label: 'Starting up…', compact: 'Starting' },
     restoring: { tone: 'info', label: 'Restoring…', compact: 'Restoring' },
     ok: { tone: 'good', label: 'Up to date', compact: 'Ready' },
     indexing: { tone: 'accent', label: 'Indexing…', compact: 'Indexing' },
@@ -93,6 +95,7 @@ export function renderIndexStatusCard(
         health: IndexStatusHealth;
         stats: IndexStatusCardStats | null;
         job?: IndexStatusJob | null;
+        eta?: string | null;
     },
 ): HTMLElement {
     const model = indexWaitCardModel(opts);
@@ -113,9 +116,11 @@ export function renderIndexStatusCard(
 
     if (model.job) {
         const remaining = jobRemaining(model.job) ?? 0;
+        const pct = indexPercent(model.job.done, model.job.total);
         metric(fmtCount(remaining), 'remaining');
         const job = card.createDiv({ cls: 'seek-status-metric seek-status-job' });
-        job.createDiv({ cls: 'seek-status-value', text: `${fmtCount(model.job.done)} / ${fmtCount(model.job.total)}` });
+        const progressLine = `${fmtCount(model.job.done)} / ${fmtCount(model.job.total)} · ${pct}%`;
+        job.createDiv({ cls: 'seek-status-value', text: opts.eta ? `${progressLine} · ${opts.eta} left` : progressLine });
         job.createDiv({
             cls: 'seek-status-mlabel',
             text: model.job.paused ? 'paused this pass' : 'this pass',

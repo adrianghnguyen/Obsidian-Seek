@@ -43,7 +43,7 @@ import { IndexStatusBar, extendIndexPassTotal, parseIndexedProgress } from './in
 import type { IndexJobKind, IndexStatusHealth, IndexStatusJob } from './index-status-card';
 import { SeekSettingTab } from './settings-tab';
 import { collectPlatformInfo, isMobilePlatform, resolveDevice, recordActiveBackend, maybeDemoteOnCrash, getStartupWarm } from './platform';
-import { CompositorPacer } from './pacer';
+import { CompositorPacer, cheapYield } from './pacer';
 import { shouldUnloadEmbedder, type UnloadGateState } from './embedder-lifecycle';
 import {
     drainCatchUp,
@@ -226,6 +226,8 @@ export default class SeekPlugin extends Plugin {
     // True from construct until the onload sidecar/reconcile IIFE finishes, so the
     // search modal cannot latch "isn't indexed yet" on an empty store mid-hydrate.
     private indexBootPending = true;
+    /** False once applyPostBootIndexScheduling has classified idle vs catch-up vs full. */
+    private indexBootDecisionPending = true;
     private indexGoodEnough = false;
     private sidecarHydrating = false;
     // performance.now() at boot IIFE start — used for startup-gate elapsedMs.
@@ -332,6 +334,7 @@ export default class SeekPlugin extends Plugin {
     private statusBarHealth(): IndexStatusHealth {
         return resolveIndexUiStatus({
             booting: this.indexBootPending,
+            bootDecisionPending: this.indexBootDecisionPending,
             hydrating: this.sidecarHydrating,
             goodEnough: this.indexGoodEnough,
             waitingForSidecar: this.waitingForSidecar,
@@ -414,6 +417,7 @@ export default class SeekPlugin extends Plugin {
             warmPhase: this.indexWarmPhase,
             uiHealth: this.indexUiHealth,
             chunks,
+            fullJobActive: this.getIndexJob()?.kind === 'full',
         });
     }
 
@@ -2379,13 +2383,15 @@ export default class SeekPlugin extends Plugin {
         const empty = isKnownEmptyIndexWithNotes(this.indexInventoryChunks, this.indexableNoteCount());
         if (empty && !isMobilePlatform()) {
             this.scheduleIndexBuild('cold');
-            return;
-        }
-        if (shouldAutoDrainStartupCatchUp({
+        } else if (shouldAutoDrainStartupCatchUp({
             mobile: isMobilePlatform(),
             catchUpPending: this.catchUpPending,
         }) && this.catchUpPending) {
             this.scheduleIndexBuild('catchup');
+        }
+        if (this.indexBootDecisionPending) {
+            this.indexBootDecisionPending = false;
+            this.refreshIndexStatusBar();
         }
     }
 
@@ -2411,9 +2417,8 @@ export default class SeekPlugin extends Plugin {
             this.coldBuildScheduled = false;
             return;
         }
-        const pacer = new CompositorPacer();
         try {
-            await pacer.pace();
+            await cheapYield();
             await this.ensureModelLoaded();
             this.catchUpPending = false;
             const ok = await this.runFullReindex({ skipConfirm: true });
@@ -2604,12 +2609,6 @@ export default class SeekPlugin extends Plugin {
             const result = await this.orchestrator.reindexAll((msg) => {
                 opts?.onProgress?.(msg);
                 this.indexProgress.updateFromProgress(msg, jobId);
-            }, {
-                // 3A soft preempt: the full pass pauses between files while the user
-                // types / a query embed is in flight — the same indexingBlocked
-                // signal every other indexing path honours — then resumes. It never
-                // aborts (a full reindex must finish; see embedAndCommitFiles).
-                shouldContinue: () => !this.indexingBlocked,
             });
             const summary = [
                 result.pass ? '✅' : '❌',

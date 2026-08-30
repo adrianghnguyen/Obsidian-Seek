@@ -1065,6 +1065,15 @@
     background: var(--color-blue);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-blue) 22%, transparent);
 }
+.seek-dot-pending {
+    background: var(--color-orange);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-orange) 22%, transparent);
+    animation: seek-dot-pulse 1.6s ease-in-out infinite;
+}
+@keyframes seek-dot-pulse {
+    0%, 100% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-orange) 22%, transparent); }
+    50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--color-orange) 38%, transparent); }
+}
 .seek-dot-bad {
     background: var(--color-red);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-red) 22%, transparent);

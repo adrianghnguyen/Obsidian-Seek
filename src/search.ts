@@ -102,24 +102,6 @@ const PROGRESS_EVERY = 25;
 const PROGRESS_MAX_SILENCE_MS = 2500;
 
 // Full-reindex soft preempt: while the user is typing in the search modal or a
-// query embed is in flight (budget.shouldContinue → false), a FULL pass pauses
-// between files instead of competing for the iframe/GPU — then resumes; it never
-// aborts (a full reindex must finish; the incremental path is the one that breaks
-// and defers to catch-up). Poll cadence is coarse on purpose — the wait itself
-// holds no resources, and 250 ms is well under a typing session's decay window.
-// The per-episode cap is a wedge guard only: searchActive self-heals after 60 s
-// (SEARCH_ACTIVE_MAX_AGE_MS), so the cap should never bind in a healthy session.
-const FULL_PREEMPT_POLL_MS = 250;
-const FULL_PREEMPT_MAX_WAIT_MS = 2 * 60_000;
-// Consecutive episode-cap expiries (with the signal never once observed true)
-// before the pass treats the preempt signal as wedged and stops pausing. One
-// expiry can be a genuinely busy user refreshing searchActive; three in a row
-// (6 min, zero true observations) cannot — searchActive self-heals at 60 s, so
-// only a leaked query-in-flight count holds the signal false that long. Without
-// this, "give up after 2 min" is per FILE, not per pass: a wedged signal turns
-// a large full reindex into hours while holding the write mutex.
-const FULL_PREEMPT_WEDGE_EPISODES = 3;
-
 // Minimum spacing between "storage full" toasts. Quota exhaustion re-surfaces on
 // every retried pass (catch-up bursts re-fire), and the condition can persist for
 // hours — one Notice per pass would be a toast storm saying the same thing.
@@ -647,9 +629,6 @@ export class SearchOrchestrator {
         let commitMs = 0;
         let filesSkippedError = 0;
         let filesSkippedQuota = 0;   // subset of filesSkippedError: commit hit QuotaExceededError (disk full)
-        let preemptWaitMs = 0;       // full-mode only: total time paused for live search activity (3A)
-        let preemptExpiries = 0;     // consecutive episode-cap expiries with the signal never true
-        let preemptWedged = false;   // signal judged stuck-false — no more pauses this pass
         let embedRecycles = 0;
         let filesCommitted = 0;
         // The paths whose file-record was ACTUALLY written (commitFile succeeded) — NOT
@@ -854,7 +833,8 @@ export class SearchOrchestrator {
             // timed into paceWaitMs so a pacing inversion (compute dwarfed by
             // pace waits) is visible in the field instead of hiding in embed time.
             const paceStart = performance.now();
-            await pacer.pace();
+            if (mode === 'full') await cheapYield();
+            else await pacer.pace();
             paceWaitMs += performance.now() - paceStart;
             return result.vectors;
         };
@@ -1051,42 +1031,6 @@ export class SearchOrchestrator {
                     || (budget.shouldContinue !== undefined && !budget.shouldContinue()))) {
                 break;
             }
-            // Full-mode soft preempt (3A): pause between files while the user is
-            // typing / a query embed is in flight, then RESUME — never abort. The
-            // wait sits at loop-top, before this file's chunks enter the buffers, so
-            // nothing is held mid-flight; buffered chunks from prior files just wait.
-            // Searches are not blocked by this pass (full mode never sets
-            // currentDelta), so pausing here is what actually frees the iframe/GPU
-            // for the live query. The episode cap only guards a wedged signal —
-            // searchActive self-heals, so it should never bind (see the constants).
-            if (mode === 'full' && budget.shouldContinue !== undefined && !preemptWedged
-                && !budget.shouldContinue()) {
-                const waitStart = performance.now();
-                this.forensics?.beat('index-preempt-wait', { filesCommitted, chunks: totalChunks });
-                // Say WHY the counter froze — a silent 2-min stall is exactly the
-                // shape that made users force-quit healthy runs (see
-                // PROGRESS_MAX_SILENCE_MS); a labelled pause is self-explaining.
-                onProgress?.(`Indexed ${filesCommitted} files · ${totalChunks} chunks — paused while you search…`);
-                while (!budget.shouldContinue() && !this.disposed
-                    && performance.now() - waitStart < FULL_PREEMPT_MAX_WAIT_MS) {
-                    await new Promise(resolve => setTimeout(resolve, FULL_PREEMPT_POLL_MS));
-                }
-                preemptWaitMs += performance.now() - waitStart;
-                if (this.disposed) break;
-                if (!budget.shouldContinue()) {
-                    // Episode cap expired with the signal STILL false (see
-                    // FULL_PREEMPT_WEDGE_EPISODES for why consecutive expiries
-                    // mean wedged, not busy).
-                    if (++preemptExpiries >= FULL_PREEMPT_WEDGE_EPISODES) {
-                        preemptWedged = true;
-                        console.warn('[seek] full-reindex preempt signal never released across '
-                            + `${preemptExpiries} episodes — treating it as wedged; no more pauses this pass`);
-                        this.forensics?.beat('index-preempt-wedged', { filesCommitted, episodes: preemptExpiries });
-                    }
-                } else {
-                    preemptExpiries = 0;
-                }
-            }
             processedFiles++;
             const fileStart = performance.now();
             // Snapshot mtime BEFORE the read so the committed file-record reflects
@@ -1268,28 +1212,15 @@ export class SearchOrchestrator {
                 if (buf.length >= rollingBatchFor(bucket)) await flushBucket(bucket);
             }
 
-            // Progress is keyed to COMMITTED files (not enqueued): with rolling
-            // buffers a file commits only once its rarest-bucket chunk flushes,
-            // so committed count is the honest "searchable so far" signal.
-            // Cadence is files-OR-time: every PROGRESS_EVERY files, or every
-            // PROGRESS_MAX_SILENCE_MS as long as ANY new file committed. The
-            // pure file cadence proved a UX trap twice on iPhone WASM
-            // (2026-06-11): JSC tier-up makes early files ~8× slow, the
-            // counter froze for 30-60 s, and the user force-quit a healthy
-            // run both times. Time floor keeps the UI provably alive through
-            // slow stretches at negligible cost (the mid-reindex BM25 cache
-            // drop below already ran every ~1-7 s on the file cadence).
+            // UI progress: every newly committed file (status bar + Settings).
+            // NDJSON index-progress stays on the file-or-time cadence below.
+            if (filesCommitted > lastProgress) {
+                onProgress?.(`Indexed ${filesCommitted} files · ${totalChunks} chunks`);
+            }
             const progressOverdue = performance.now() - lastProgressAt >= PROGRESS_MAX_SILENCE_MS;
             if (filesCommitted > lastProgress && (filesCommitted - lastProgress >= PROGRESS_EVERY || progressOverdue)) {
                 lastProgress = filesCommitted;
                 lastProgressAt = performance.now();
-                // Make progressive fill visible: drop the caches so a search
-                // mid-reindex rebuilds against the files committed so far. Full
-                // reindex reads are intentionally progressive (no currentDelta
-                // gate); a delta instead commits atomically and invalidates once
-                // at the end, so we don't churn its caches per batch here.
-                if (mode === 'full') this.invalidateBm25Cache();
-                onProgress?.(`Indexed ${filesCommitted} files · ${totalChunks} chunks`);
                 this.forensics?.beat('index-progress', { filesCommitted, filesTotal: files.length, chunks: totalChunks });
                 await this.emitProgress('embed', filesCommitted, files.length, totalChunks, performance.now() - overallStart);
             }
@@ -1352,10 +1283,6 @@ export class SearchOrchestrator {
             checksExtra.push(`⚠️ storage full: ${filesSkippedQuota} file(s) failed to commit with QuotaExceededError — free up disk space; the files stay dirty and catch up automatically`);
             this.forensics?.beat('index-quota-exhausted', { files: filesSkippedQuota, mode });
             this.quotaToast();
-        }
-        // 3A observability: how long this full pass paused for live search activity.
-        if (preemptWaitMs > 500) {
-            checksExtra.push(`ℹ️ paused ${(preemptWaitMs / 1000).toFixed(1)} s for live search activity (full-reindex soft preempt)`);
         }
         onProgress?.(`Indexed ${filesCommitted} files · ${totalChunks} chunks`);
         await this.emitProgress('embed', files.length, files.length, totalChunks, performance.now() - overallStart);

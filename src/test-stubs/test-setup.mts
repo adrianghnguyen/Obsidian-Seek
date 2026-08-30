@@ -19,3 +19,10 @@
 const g = globalThis as unknown as Record<string, unknown>;
 if (typeof g.window === 'undefined') g.window = g;
 if (typeof g.activeWindow === 'undefined') g.activeWindow = g;
+// Coalesced status-bar paints use rAF; run callbacks immediately under Vitest so
+// assertions see the flushed DOM without awaiting a real frame tick.
+g.requestAnimationFrame = (cb: FrameRequestCallback) => {
+    cb(0);
+    return 1;
+};
+g.cancelAnimationFrame = () => {};
