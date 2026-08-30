@@ -85,4 +85,15 @@ describe('startup response without a live Obsidian vault', () => {
 
         expect(modal.retriedQueries).toEqual([SMALL_PEER_DELTA_FIXTURE.query]);
     });
+
+    it('returns ranked hits after gate release even when the in-memory frame cache is cold (sandbox T1 regression)', async () => {
+        const harness = await startupHarness();
+        await harness.hydrateRecentFirst();
+        await harness.search();
+        const orch = harness['orchestrator'] as unknown as { frameCache: unknown };
+        orch.frameCache = null;
+        const results = await harness.search();
+        expect(results.length).toBeGreaterThan(0);
+        expect(results[0]).toBe(SMALL_PEER_DELTA_FIXTURE.expectedFirstPath);
+    });
 });
