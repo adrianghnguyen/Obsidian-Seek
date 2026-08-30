@@ -19,7 +19,13 @@ import type SeekPlugin from './main';
 import type { IndexStats, ModelStatus } from './main';
 import type { SidecarIndexLocation, SearchModalHeight, SearchModalWidth, SnippetPreview } from './types';
 import { DEFAULT_SETTINGS, MATCH_STRENGTH_MIN_NOTES } from './types';
-import { renderIndexStatusCard } from './index-status-card';
+import type { IndexStatusHealth } from './index-status-card';
+import {
+    renderRecentSearchConsole,
+    renderSettingsIndexStatusCard,
+} from './index-status-settings';
+import { formatRecentSearchLine } from './session-telemetry';
+import type { SettingsTelemetrySink } from './main';
 import { formatRoughEta, indexPercent } from './index-eta';
 import {
     getBackendOverride, setBackendOverride, isWebgpuDemoted, clearWebgpuDemoted,
@@ -112,7 +118,7 @@ function strategyOf(denseWeight: number): Strategy {
     return denseWeight <= 0.55 ? 'keyword' : 'balanced';
 }
 
-export class SeekSettingTab extends PluginSettingTab {
+export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetrySink {
     // Async index/model snapshots, loaded once per tab open (guarded null→fetch→re-render).
     private stats: IndexStats | null = null;
     private modelStatus: ModelStatus | null = null;
@@ -137,6 +143,16 @@ export class SeekSettingTab extends PluginSettingTab {
     // flag for the "Deleting…" feedback. Both reset on hide() so reopening is clean.
     private modelDeleteConfirm = false;
     private modelDeleting = false;
+    private startupPoll: number | null = null;
+    private searchConsoleEl: HTMLElement | null = null;
+    private statusCardHost: HTMLElement | null = null;
+
+    onSessionTelemetryChanged(): void {
+        if (!this.containerEl.isConnected) return;
+        this.paintStatusCard();
+        this.paintSearchConsole();
+        if (!this.shouldPollStartup()) this.stopStartupPoll();
+    }
 
     constructor(app: App, private plugin: SeekPlugin) {
         super(app, plugin);
@@ -147,6 +163,9 @@ export class SeekSettingTab extends PluginSettingTab {
         if (!this.stats && !this.loading) void this.loadData();
         if (this.showIndexingProgress()) this.startProgressPoll();
         else this.stopProgressPoll();
+        if (this.shouldPollStartup()) this.startStartupPoll();
+        else this.stopStartupPoll();
+        this.plugin.registerSettingsTelemetrySink(this);
 
         const { containerEl } = this;
         containerEl.empty();
@@ -190,6 +209,10 @@ export class SeekSettingTab extends PluginSettingTab {
     // Reset the per-open snapshots so the next open re-fetches fresh counts/last-index.
     hide(): void {
         this.stopProgressPoll();
+        this.stopStartupPoll();
+        this.plugin.registerSettingsTelemetrySink(null);
+        this.searchConsoleEl = null;
+        this.statusCardHost = null;
         this.stats = null;
         this.modelStatus = null;
         this.modelDeleteConfirm = false;
@@ -216,7 +239,7 @@ export class SeekSettingTab extends PluginSettingTab {
     private save = () => this.plugin.saveSettings();
 
     // ---- Index ---------------------------------------------------------------------
-    private statusState(): 'none' | 'starting' | 'restoring' | 'ok' | 'indexing' | 'error' {
+    private statusState(): IndexStatusHealth {
         return this.plugin.indexUiHealth;
     }
 
@@ -238,6 +261,29 @@ export class SeekSettingTab extends PluginSettingTab {
         if (this.progressPoll == null) return;
         window.clearInterval(this.progressPoll);
         this.progressPoll = null;
+    }
+
+    private shouldPollStartup(): boolean {
+        const health = this.statusState();
+        if (health === 'starting' || health === 'restoring') return true;
+        return !this.plugin.getStartupTimingView().bootComplete;
+    }
+
+    private startStartupPoll(): void {
+        if (this.startupPoll != null) return;
+        this.startupPoll = window.setInterval(() => this.paintStartupStatus(), 250);
+    }
+
+    private stopStartupPoll(): void {
+        if (this.startupPoll == null) return;
+        window.clearInterval(this.startupPoll);
+        this.startupPoll = null;
+    }
+
+    private paintStartupStatus(): void {
+        if (!this.containerEl.isConnected) return;
+        this.paintStatusCard();
+        if (!this.shouldPollStartup()) this.stopStartupPoll();
     }
 
     private renderIndex(containerEl: HTMLElement): void {
@@ -348,10 +394,21 @@ export class SeekSettingTab extends PluginSettingTab {
     }
 
     private renderStatusCard(containerEl: HTMLElement): void {
-        renderIndexStatusCard(containerEl, {
+        this.statusCardHost = containerEl.createDiv({ cls: 'seek-status-card-host' });
+        this.paintStatusCard();
+    }
+
+    private paintStatusCard(): void {
+        const host = this.statusCardHost;
+        if (!host || !host.isConnected) return;
+        host.empty();
+        const booting = this.statusState() === 'starting' || this.statusState() === 'restoring';
+        renderSettingsIndexStatusCard(host, {
             health: this.statusState(),
             stats: this.stats,
             job: this.plugin.getIndexJob(),
+            startup: this.plugin.getStartupTimingView(),
+            liveElapsedMs: booting ? this.plugin.getStartupLiveElapsedMs() : null,
         });
     }
 
@@ -803,6 +860,13 @@ export class SeekSettingTab extends PluginSettingTab {
             .setDesc('Write a diagnostic report (seek-report.md) of indexing, searches, model loads, and any errors — generate and share it when reporting an issue. Never includes note contents.')
             .addButton(b => b.setButtonText('Generate logging report').onClick(() => void this.plugin.openLoggingReport()));
 
+        new Setting(containerEl)
+            .setName('Recent search latency')
+            .setDesc('Last five searches from the Seek modal this session — time until results were ready to open or insert. Select and copy the lines below for notes or issue reports.');
+        const consoleHost = containerEl.createDiv({ cls: 'seek-search-console-host' });
+        this.searchConsoleEl = consoleHost;
+        this.paintSearchConsole();
+
         // Placed directly under the button that produces the file it governs, so
         // the choice is in front of the user at the moment it applies.
         new Setting(containerEl)
@@ -837,6 +901,14 @@ export class SeekSettingTab extends PluginSettingTab {
             .addButton(b => b.setButtonText('Reset…').onClick(() => { this.resetConfirm = true; this.rerender(); }));
     }
     private resetConfirm = false;
+
+    private paintSearchConsole(): void {
+        const host = this.searchConsoleEl;
+        if (!host || !host.isConnected) return;
+        host.empty();
+        const lines = this.plugin.getRecentSearchEntries().map(formatRecentSearchLine);
+        renderRecentSearchConsole(host, lines);
+    }
 
     // ---- About ---------------------------------------------------------------------
     private renderAbout(containerEl: HTMLElement): void {

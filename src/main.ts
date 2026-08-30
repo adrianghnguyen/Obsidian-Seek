@@ -22,6 +22,12 @@ import { LocalEmbedder, LOCAL_MODEL, LEGACY_ENGLISH_MODEL_ID, EMBEDDING_DIM } fr
 import { activeModelSpec, resolveOverrideSpec, evictStaleModelCaches, deleteModelCaches, probeModelDownloaded } from './model-registry';
 import { pluginIdentity, identityMatches, identityFromMeta } from './identity';
 import { isLoadGenerationCurrent, isSessionWorkCurrent } from './boot-session';
+import {
+    createStoreOpenRetryScheduler,
+    isRetryIndexStoreCommandEnabled,
+    storeOpenRetryDelaysMs,
+    type StoreOpenRetryScheduler,
+} from './index-store-lock';
 import { sweepOrphanTmpFiles } from './sidecar';
 import type { SeekSettings, IndexCompleteEntry, ModelDeliveryEntry } from './types';
 import { DEFAULT_SETTINGS, migrateSettings } from './types';
@@ -42,6 +48,12 @@ import {
 import { indexBannerSpec, resolveIndexLoadPhase, resolveCliSearchGate, resolveIndexUiStatus, resolveSidecarWait, retainIndexInventory, INDEX_STALE_MSG, INDEX_SYNCING_MSG, INDEX_PEER_AHEAD_MSG, type DegradedReason, type IndexLoadState } from './index-notice';
 import { IndexStatusBar, extendIndexPassTotal, parseIndexedProgress } from './index-status-bar';
 import type { IndexJobKind, IndexStatusHealth, IndexStatusJob } from './index-status-card';
+import {
+    RecentSearchRing,
+    StartupSessionTracker,
+    type RecentSearchEntry,
+    type StartupTimingView,
+} from './session-telemetry';
 import { SeekSettingTab } from './settings-tab';
 import { collectPlatformInfo, isMobilePlatform, resolveDevice, recordActiveBackend, maybeDemoteOnCrash, getStartupWarm } from './platform';
 import { CompositorPacer, cheapYield } from './pacer';
@@ -146,6 +158,11 @@ export interface ModelStatus {
     persisted: boolean | null;
     name: string;
     dim: number;
+}
+
+/** Settings tab hook for live startup / recent-search console refresh. */
+export interface SettingsTelemetrySink {
+    onSessionTelemetryChanged(): void;
 }
 
 export default class SeekPlugin extends Plugin {
@@ -303,6 +320,19 @@ export default class SeekPlugin extends Plugin {
     private sidecarCoalesceFailed = false;
     private sidecarCoalesceFailures = 0;
     private sidecarCoalesceRunning = false;
+    /** IndexedDB refused to open after short retries — surfaces Locked UI and deferred retry. */
+    private indexStoreLocked = false;
+    private storeOpenRetryScheduler: StoreOpenRetryScheduler | null = null;
+    private bootResumeCtx: {
+        migrateSidecarPath: boolean;
+        sidecarIndexDir: string;
+        legacySidecarDir: string | null;
+    } | null = null;
+    /** Boot hydrate/reconcile ran (or was skipped because store stayed locked). */
+    private bootContinuationDone = false;
+    private readonly startupTelemetry = new StartupSessionTracker();
+    private readonly recentSearchRing = new RecentSearchRing();
+    private settingsTelemetrySink: SettingsTelemetrySink | null = null;
 
     // True while a reindex / incremental embed is running. currentTaskContext is
     // private; this is the read-only surface the settings Index status card reads
@@ -334,6 +364,7 @@ export default class SeekPlugin extends Plugin {
 
     private statusBarHealth(): IndexStatusHealth {
         return resolveIndexUiStatus({
+            storeLocked: this.indexStoreLocked,
             booting: this.indexBootPending,
             bootDecisionPending: this.indexBootDecisionPending,
             hydrating: this.sidecarHydrating,
@@ -630,6 +661,7 @@ export default class SeekPlugin extends Plugin {
         // write. Each step is gated/no-op when the sidecar is disabled.
         this.sidecarHydrating = false;
         this.bootStartMs = performance.now();
+        this.startupTelemetry.beginBoot(this.bootStartMs);
         {
             const span = {
                 type: 'startup-span' as const,
@@ -640,6 +672,11 @@ export default class SeekPlugin extends Plugin {
             seekPerf.recordStartupSpan(span);
             void this.logger.append(span).catch(() => {});
         }
+        this.bootResumeCtx = {
+            migrateSidecarPath,
+            sidecarIndexDir,
+            legacySidecarDir,
+        };
         void (async () => {
             try {
             if (!this.isBootCurrent(bootGen)) return;
@@ -652,80 +689,10 @@ export default class SeekPlugin extends Plugin {
             });
             if (!this.isBootCurrent(bootGen)) return;
             if (!this.store.isOpen()) {
-                if (!this.indexGoodEnough) this.markIndexGoodEnough();
+                this.beginIndexStoreLocked(bootGen);
                 return;
             }
-            let identityHandled = false;
-            try {
-                // One-time rev-3→4 migration: move an index written under the
-                // old active-override path into the literal '.obsidian' path,
-                // BEFORE hydrate reads the new location (else hydrate finds it
-                // empty and re-embeds what we already have). Only in 'config'
-                // mode (the literal path is the target) and only when the
-                // active override actually diverges from it.
-                if (this.settings.sidecarEnabled && migrateSidecarPath
-                    && this.settings.sidecarIndexLocation === 'config'
-                    && legacySidecarDir && legacySidecarDir !== sidecarIndexDir) {
-                    await this.migrateSidecarFiles(legacySidecarDir, sidecarIndexDir);
-                }
-                if (this.settings.sidecarEnabled && sidecarIndexDir) await sweepOrphanTmpFiles(this.app.vault.adapter, sidecarIndexDir, this.logger.deviceId);
-                // Version-identity gate BEFORE any catch-up: if the local index was
-                // built under a different chunker/model/revision/dim than this build,
-                // it is stale — hydrate from a matching peer (embed-free) / desktop-
-                // reindex / mobile-wait, and skip the normal catch-up this boot (never
-                // re-chunk or re-embed onto a stale-id index — the mobile jetsam path).
-                identityHandled = await this.enforceIndexIdentity();
-                if (!identityHandled) {
-                    if (!this.isBootCurrent(bootGen)) return;
-                    // Gated, not unconditional: the persisted dir-signature lets a
-                    // crash-relaunch with an unchanged vault skip the whole-vault
-                    // re-chunk (the iOS 1fps loop), while an empty/evicted store
-                    // still forces the recovery sweep.
-                    const hydrated = await this.withSidecarHydrate(() => this.orchestrator.reconcileSidecarIfChanged());
-                    this.applySidecarWait(hydrated);
-                    // Sidecar just scanned → raise the "update Seek" banner if a peer's index
-                    // is newer than this build (and gate the mobile catch-up below off it).
-                    this.applyPeerAheadBanner();
-                }
-            } catch (e) {
-                if (this.isBootCurrent(bootGen) && !isTransientIdbUnavailable(e)) {
-                    await this.logger.appendError('sidecar-hydrate-onload', e).catch(() => {});
-                }
-            }
-            // Steer split-config Obsidian Sync users to the visible folder: the
-            // one case the hidden literal path can't reach (a renamed config
-            // folder never receives '.obsidian/' over Sync). Fire-and-forget,
-            // after hydrate so a working setup is never interrupted.
-            await this.maybeSteerSidecarLocation().catch(() => {});
-            // Startup mtime-diff sweep — the backstop for everything changed while
-            // Seek wasn't watching (external sync, edits with the plugin disabled,
-            // in-session deletes lost on a crash). On desktop it loads the model +
-            // re-embeds; on cold mobile it applies deletes/moves now and defers
-            // edits to the first search. Skipped when the identity gate took over
-            // (identityHandled), which now means one of:
-            //   • a peer-sidecar rebuild or in-place stamp already healed the index, or
-            //   • the index is version-stale and BOTH platforms are WAITING for an
-            //     explicit reindex (consent-gated, 2026-06-23 — no more desktop
-            //     auto-reindex). We must not re-chunk onto a stale-id index here, so
-            //     while-off external edits to notes the user never opens stay deferred
-            //     until they hit “Reindex now” (a full rebuild catches everything up).
-            //     In-session edits still index live via the flushDirty event path, so
-            //     the gap is only un-touched, externally-changed notes — an accepted
-            //     freshness trade for not auto-nuking, and the banner says so.
-            if (!identityHandled) {
-                // Greedy hydrate may have already released the gate during tier-0.
-                // Skip-rechunk boots must not wait on reconcileOnLoad (mtime sweep +
-                // ensureFrame can take minutes on large vaults with a dirty set).
-                if (!this.indexGoodEnough) this.markIndexGoodEnough();
-                if (this.isBootCurrent(bootGen)) {
-                    void this.reconcileOnLoad(bootGen).catch(e =>
-                        this.appendErrorIfCurrent('reconcileOnLoad', e, bootGen));
-                }
-            }
-            // Prime BM25/frame after the store is populated so a clean launch does
-            // not wait for the first search, gated by the per-device "Warm caches
-            // on startup" setting (localStorage, never synced). Desktop warmCaches
-            // does not need the embedder; mobile no-ops until the model is loaded.
+            await this.resumeBootAfterStoreOpen(bootGen);
         } finally {
             if (!this.isBootCurrent(bootGen)) return;
             this.sidecarHydrating = false;
@@ -741,9 +708,14 @@ export default class SeekPlugin extends Plugin {
                 seekPerf.recordStartupSpan(span);
                 void this.logger.append(span).catch(() => {});
             }
+            if (this.indexStoreLocked) {
+                void this.touchIndexInventory();
+                return;
+            }
             if (!this.indexGoodEnough) {
                 this.indexBootPending = false;
                 await this.logStartupGateReleased();
+                this.finalizeStartupTelemetryIfNeeded();
                 await this.touchIndexInventory();
             } else {
                 void this.touchIndexInventory();
@@ -848,6 +820,15 @@ export default class SeekPlugin extends Plugin {
             id: 'search',
             name: 'Search',
             callback: () => this.openSearchModal(),
+        });
+
+        this.addCommand({
+            id: 'retry-index-store',
+            name: 'Retry opening the search index',
+            checkCallback: (checking) => {
+                if (checking) return isRetryIndexStoreCommandEnabled(this.indexStoreLocked);
+            },
+            callback: () => { void this.retryIndexStoreOpen(); },
         });
 
         // ---- obsidian://seek deep-link --------------------------------
@@ -1144,9 +1125,117 @@ export default class SeekPlugin extends Plugin {
         await this.store.ensureOpen();
     }
 
+    private disposeStoreOpenRetryScheduler(): void {
+        this.storeOpenRetryScheduler?.dispose();
+        this.storeOpenRetryScheduler = null;
+    }
+
+    private clearIndexStoreLocked(): void {
+        if (!this.indexStoreLocked) return;
+        this.indexStoreLocked = false;
+        this.disposeStoreOpenRetryScheduler();
+        this.refreshIndexStatusBar();
+    }
+
+    private beginIndexStoreLocked(bootGen: number): void {
+        this.indexStoreLocked = true;
+        this.refreshIndexStatusBar();
+        this.disposeStoreOpenRetryScheduler();
+        this.storeOpenRetryScheduler = createStoreOpenRetryScheduler({
+            delaysMs: storeOpenRetryDelaysMs(),
+            ensureOpen: () => this.ensureStoreReady(),
+            isCurrent: () => this.isSessionWorkCurrent(bootGen),
+            onLocked: () => {
+                this.indexStoreLocked = true;
+                this.refreshIndexStatusBar();
+            },
+            onSuccess: () => {
+                if (!this.isSessionWorkCurrent(bootGen)) return;
+                this.clearIndexStoreLocked();
+                void this.resumeBootAfterStoreOpen(bootGen);
+            },
+            schedule: (fn, ms) => window.setTimeout(fn, ms),
+            cancel: (id) => window.clearTimeout(id),
+        });
+        this.storeOpenRetryScheduler.start();
+    }
+
+    private async retryIndexStoreOpen(): Promise<void> {
+        const bootGen = this.loadGeneration;
+        try {
+            await this.ensureStoreReady();
+        } catch (e) {
+            if (!isTransientIdbUnavailable(e)) {
+                this.appendErrorIfCurrent('retry-index-store', e, bootGen);
+            }
+        }
+        if (!this.store.isOpen()) {
+            new Notice('Seek: search index is still locked. Try quitting Obsidian completely.', 6000);
+            return;
+        }
+        this.clearIndexStoreLocked();
+        new Notice('Seek: search index opened.', 4000);
+        await this.resumeBootAfterStoreOpen(bootGen);
+    }
+
+    /** Sidecar hydrate + reconcile after the index store opens (boot or retry). */
+    private async resumeBootAfterStoreOpen(bootGen: number): Promise<void> {
+        if (this.bootContinuationDone) return;
+        if (!this.isBootCurrent(bootGen)) return;
+        if (!this.store.isOpen()) return;
+        const ctx = this.bootResumeCtx;
+        if (!ctx) return;
+        this.bootContinuationDone = true;
+
+        let identityHandled = false;
+        try {
+            if (this.settings.sidecarEnabled && ctx.migrateSidecarPath
+                && this.settings.sidecarIndexLocation === 'config'
+                && ctx.legacySidecarDir && ctx.legacySidecarDir !== ctx.sidecarIndexDir) {
+                await this.migrateSidecarFiles(ctx.legacySidecarDir, ctx.sidecarIndexDir);
+            }
+            if (this.settings.sidecarEnabled && ctx.sidecarIndexDir) {
+                await sweepOrphanTmpFiles(this.app.vault.adapter, ctx.sidecarIndexDir, this.logger.deviceId);
+            }
+            identityHandled = await this.enforceIndexIdentity();
+            if (!identityHandled) {
+                if (!this.isBootCurrent(bootGen)) return;
+                const hydrated = await this.withSidecarHydrate(() => this.orchestrator.reconcileSidecarIfChanged());
+                this.applySidecarWait(hydrated);
+                this.applyPeerAheadBanner();
+            }
+        } catch (e) {
+            if (this.isBootCurrent(bootGen) && !isTransientIdbUnavailable(e)) {
+                await this.logger.appendError('sidecar-hydrate-onload', e).catch(() => {});
+            }
+        }
+        await this.maybeSteerSidecarLocation().catch(() => {});
+        if (!identityHandled) {
+            if (!this.indexGoodEnough) this.markIndexGoodEnough();
+            if (this.isBootCurrent(bootGen)) {
+                void this.reconcileOnLoad(bootGen).catch(e =>
+                    this.appendErrorIfCurrent('reconcileOnLoad', e, bootGen));
+            }
+        }
+        if (!this.isBootCurrent(bootGen)) return;
+        if (!this.indexGoodEnough) {
+            this.indexBootPending = false;
+            await this.logStartupGateReleased();
+            this.finalizeStartupTelemetryIfNeeded();
+            await this.touchIndexInventory();
+        } else {
+            void this.touchIndexInventory();
+        }
+        this.applyPostBootIndexScheduling();
+    }
+
     onunload() {
         this.loadGeneration++;
         this.unloading = true;
+        this.disposeStoreOpenRetryScheduler();
+        this.indexStoreLocked = false;
+        this.bootContinuationDone = false;
+        this.bootResumeCtx = null;
         this.vaultIndexEventsReady = false;
         this.catchUpRunning = false;
         this.flushing = false;
@@ -2168,9 +2257,63 @@ export default class SeekPlugin extends Plugin {
         void this.touchIndexInventory();
         this.refreshIndexStatusBar();
         this.syncWarmDeferred();
-        if (getStartupWarm() && this.orchestrator && !this.catchUpPending && !this.catchUpRunning) {
-            void this.orchestrator.warmCaches('startup-good-enough');
+        void this.runStartupWarm();
+    }
+
+    private async runStartupWarm(trigger: 'startup-good-enough' | 'post-catchup' = 'startup-good-enough'): Promise<void> {
+        if (this.startupTelemetry.view().bootComplete) return;
+        if (!getStartupWarm() || !this.orchestrator) {
+            this.startupTelemetry.markWarmSkipped();
+            this.notifySessionTelemetryChanged();
+            return;
         }
+        // Catch-up owns IDB — warm after the drain finishes (post-catchup).
+        if (this.catchUpPending || this.catchUpRunning) return;
+        this.startupTelemetry.beginWarm();
+        try {
+            await this.orchestrator.warmCaches(trigger);
+        } finally {
+            this.startupTelemetry.endWarm();
+            this.notifySessionTelemetryChanged();
+        }
+    }
+
+    private finalizeStartupTelemetryIfNeeded(): void {
+        if (this.startupTelemetry.view().bootComplete) return;
+        if (this.startupTelemetry.view().searchableMs == null) return;
+        // Warm still owed after catch-up — leave the timeline open.
+        if (getStartupWarm() && (this.catchUpPending || this.catchUpRunning)) return;
+        if (getStartupWarm() && this.orchestrator && !this.catchUpPending && !this.catchUpRunning) {
+            void this.runStartupWarm('startup-good-enough');
+            return;
+        }
+        this.startupTelemetry.markWarmSkipped();
+        this.notifySessionTelemetryChanged();
+    }
+
+    registerSettingsTelemetrySink(sink: SettingsTelemetrySink | null): void {
+        this.settingsTelemetrySink = sink;
+    }
+
+    getStartupTimingView(): StartupTimingView {
+        return this.startupTelemetry.view();
+    }
+
+    getStartupLiveElapsedMs(): number | null {
+        return this.startupTelemetry.liveElapsedMs();
+    }
+
+    getRecentSearchEntries(): readonly RecentSearchEntry[] {
+        return this.recentSearchRing.snapshot();
+    }
+
+    recordModalSearchLatency(query: string, ms: number): void {
+        this.recentSearchRing.push(query, ms);
+        this.notifySessionTelemetryChanged();
+    }
+
+    private notifySessionTelemetryChanged(): void {
+        this.settingsTelemetrySink?.onSessionTelemetryChanged();
     }
 
     /** Tell the orchestrator to defer background warm while catch-up holds IDB. */
@@ -2220,6 +2363,8 @@ export default class SeekPlugin extends Plugin {
     }
 
     private async logStartupGateReleased(): Promise<void> {
+        this.startupTelemetry.markSearchable();
+        this.notifySessionTelemetryChanged();
         const entry = {
             type: 'startup-gate' as const,
             timestamp: new Date().toISOString(),
@@ -2300,6 +2445,7 @@ export default class SeekPlugin extends Plugin {
                 () => this.indexLoadState(),
                 initialQuery,
                 this.recents,
+                (query, ms) => this.recordModalSearchLatency(query, ms),
             ).open();
         } catch (e) {
             // Synchronous failure path (rare — only if the Modal ctor or
@@ -2461,8 +2607,8 @@ export default class SeekPlugin extends Plugin {
                 if (!this.catchUpPending) this.finishCatchUpJob();
                 else this.indexProgress.refreshIdle();
                 void this.touchIndexInventory();
-                if (!this.catchUpPending && this.orchestrator && getStartupWarm()) {
-                    void this.orchestrator.warmCaches('post-catchup').catch(() => {});
+                if (!this.catchUpPending) {
+                    void this.runStartupWarm('post-catchup');
                 }
                 if (this.catchUpPending && (!isMobilePlatform() || !activeDocument.hidden) && !this.indexingBlocked) {
                     void pacer.pace().then(() => this.runCatchUp());

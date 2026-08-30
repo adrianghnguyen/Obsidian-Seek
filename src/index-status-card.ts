@@ -13,7 +13,7 @@ export interface IndexStatusCardStats {
     lastUpdatedAt: string | null;
 }
 
-export type IndexStatusHealth = 'none' | 'starting' | 'restoring' | 'ok' | 'indexing' | 'error';
+export type IndexStatusHealth = 'none' | 'starting' | 'restoring' | 'ok' | 'indexing' | 'error' | 'locked';
 export type IndexJobKind = 'full' | 'delta' | 'catchup';
 
 export interface IndexStatusJob {
@@ -31,6 +31,7 @@ export const INDEX_STATUS_HEALTH: Record<IndexStatusHealth, { tone: string; labe
     ok: { tone: 'good', label: 'Up to date', compact: 'Ready' },
     indexing: { tone: 'accent', label: 'Indexing…', compact: 'Indexing' },
     error: { tone: 'bad', label: 'Index error', compact: 'Error' },
+    locked: { tone: 'bad', label: 'Index locked', compact: 'Locked' },
 };
 
 /** Numbered status-bar badge. Replaces the old circular indexing dot. */
@@ -59,8 +60,8 @@ export function indexWaitCardModel(input: {
     job?: IndexStatusJob | null;
     stats?: IndexStatusCardStats | null;
 }): { health: IndexStatusHealth; stats: IndexStatusCardStats | null; job: IndexStatusJob | null } {
-    // Starting/Restoring win over an in-flight job so hydrate never paints Indexing.
-    if (input.health === 'starting' || input.health === 'restoring') {
+    // Starting/Restoring/Locked win over an in-flight job so hydrate/lock never paints Indexing.
+    if (input.health === 'starting' || input.health === 'restoring' || input.health === 'locked') {
         return { health: input.health, stats: null, job: null };
     }
     const job = input.job && input.job.total > 0 ? input.job : null;

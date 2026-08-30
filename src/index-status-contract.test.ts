@@ -14,6 +14,10 @@ import {
     indexFooterStatus,
     isIndexWaitKind,
     INDEX_UP_TO_DATE_LABEL,
+    INDEX_LOCKED_TITLE,
+    INDEX_LOCKED_LABEL,
+    INDEX_BUILDING_MSG,
+    CLI_SEARCH_GATE_LOCKED,
     type IndexLoadPhase,
     type IndexUiStatus,
 } from './index-notice';
@@ -36,6 +40,7 @@ interface BootSnapshot {
     indexing?: boolean;
     job?: { done: number; total: number; kind?: 'full' | 'delta' | 'catchup' } | null;
     bootDecisionPending?: boolean;
+    storeLocked?: boolean;
 }
 
 function evaluateSnapshot(s: BootSnapshot) {
@@ -61,6 +66,61 @@ function evaluateSnapshot(s: BootSnapshot) {
         job: s.job ? { done: s.job.done, total: s.job.total } : null,
         searchableChunks: s.inventoryChunks,
         inventoryFiles: s.inventoryFiles,
+    });
+    const modalChunks = s.modalChunks !== undefined ? s.modalChunks : s.inventoryChunks;
+    const loadSpec = indexLoadSpec({
+        chunks: modalChunks,
+        phase,
+        catchUpPending: s.catchUpPending,
+        waitingForSidecar: false,
+        jobKind: s.job?.kind ?? null,
+        uiHealth,
+        inventoryChunks: s.inventoryChunks,
+    });
+    const footer = indexFooterStatus({
+        kind: loadSpec.kind,
+        modelReady: true,
+        phase,
+        health: 'healthy',
+        reason: null,
+        peerSyncPending: false,
+        waitingForSidecar: false,
+        job: s.job ? { done: s.job.done, total: s.job.total } : null,
+        uiHealth,
+    });
+    const cliGate = resolveCliSearchGate({
+        warmPhase: s.warmPhase,
+        uiHealth,
+        chunks: s.inventoryChunks,
+        fullJobActive: s.job?.kind === 'full',
+    });
+    return { phase, uiHealth, loadSpec, footer, cliGate };
+}
+
+function evaluateSnapshotLocked(s: BootSnapshot) {
+    const phase: IndexLoadPhase = resolveIndexLoadPhase({
+        hydrating: !!(s.hydrating || s.booting) && !s.goodEnough,
+        catchUpPending: !!s.catchUpPending,
+        catchUpRunning: !!s.catchUpRunning,
+        flushing: !!s.flushing,
+        writing: !!s.writing,
+        indexing: !!s.indexing,
+    });
+    const uiHealth: IndexUiStatus = resolveIndexUiStatus({
+        booting: !!s.booting,
+        bootDecisionPending: s.bootDecisionPending,
+        hydrating: !!s.hydrating,
+        goodEnough: s.goodEnough,
+        waitingForSidecar: false,
+        peerSyncPending: false,
+        health: 'healthy',
+        reason: null,
+        indexing: !!(s.catchUpRunning || s.flushing || s.indexing),
+        catchUpPending: s.catchUpPending,
+        job: s.job ? { done: s.job.done, total: s.job.total } : null,
+        searchableChunks: s.inventoryChunks,
+        inventoryFiles: s.inventoryFiles,
+        storeLocked: s.storeLocked,
     });
     const modalChunks = s.modalChunks !== undefined ? s.modalChunks : s.inventoryChunks;
     const loadSpec = indexLoadSpec({
@@ -198,5 +258,23 @@ describe('Ready means searchable (status contract)', () => {
         const r = evaluateSnapshot(snap);
         expect(r.uiHealth).not.toBe('ok');
         expect(r.cliGate).not.toBeNull();
+    });
+
+    it('locked store: not Ready; modal wait is locked copy not building', () => {
+        const snap: BootSnapshot = {
+            label: 'idb locked with leftover inventory',
+            inventoryChunks: 412,
+            inventoryFiles: 120,
+            warmPhase: null,
+            storeLocked: true,
+        };
+        const r = evaluateSnapshotLocked(snap);
+        expect(r.uiHealth).toBe('locked');
+        expect(r.cliGate).toBe(CLI_SEARCH_GATE_LOCKED);
+        expect(isIndexWaitKind(r.loadSpec.kind)).toBe(true);
+        expect(r.loadSpec.title).toBe(INDEX_LOCKED_TITLE);
+        expect(r.loadSpec.message).not.toContain(INDEX_BUILDING_MSG);
+        expect(r.footer.label).toBe(INDEX_LOCKED_LABEL);
+        expect(r.footer.kind).not.toBe('up-to-date');
     });
 });

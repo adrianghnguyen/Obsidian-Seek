@@ -30,6 +30,10 @@ import {
     CLI_SEARCH_GATE_RESTORING,
     CLI_SEARCH_GATE_INDEXING,
     CLI_SEARCH_GATE_NO_INDEX,
+    CLI_SEARCH_GATE_LOCKED,
+    INDEX_LOCKED_MSG,
+    INDEX_LOCKED_TITLE,
+    INDEX_LOCKED_LABEL,
     isIndexWaitKind,
     type IndexFooterInput,
 } from './index-notice';
@@ -501,6 +505,64 @@ describe('resolveIndexUiStatus', () => {
 
     it('boot decision pending is Starting until scheduling runs', () => {
         expect(resolveIndexUiStatus({ ...idle, bootDecisionPending: true })).toBe('starting');
+    });
+
+    it('storeLocked beats starting, ready, and goodEnough', () => {
+        expect(resolveIndexUiStatus({ ...idle, storeLocked: true })).toBe('locked');
+        expect(resolveIndexUiStatus({
+            ...idle, storeLocked: true, booting: true, searchableChunks: null,
+        })).toBe('locked');
+        expect(resolveIndexUiStatus({
+            ...idle, storeLocked: true, goodEnough: true, hydrating: true,
+        })).toBe('locked');
+    });
+});
+
+describe('locked index UI', () => {
+    const idleFooter: IndexFooterInput = {
+        kind: 'resting',
+        modelReady: true,
+        uiHealth: 'locked',
+    };
+
+    it('footer shows Locked, not Starting or Ready', () => {
+        expect(indexFooterStatus(idleFooter)).toMatchObject({
+            kind: 'locked',
+            label: INDEX_LOCKED_LABEL,
+            tone: 'bad',
+        });
+    });
+
+    it('loadSpec is wait-kind with locked copy, not building-index', () => {
+        const spec = indexLoadSpec({
+            chunks: 0,
+            phase: 'idle',
+            uiHealth: 'locked',
+        });
+        expect(isIndexWaitKind(spec.kind)).toBe(true);
+        expect(spec.title).toBe(INDEX_LOCKED_TITLE);
+        expect(spec.message).toBe(INDEX_LOCKED_MSG);
+        expect(spec.message).not.toContain(INDEX_BUILDING_MSG);
+    });
+
+    it('loadSpec stays locked wait even when inventory chunks exist', () => {
+        const spec = indexLoadSpec({
+            chunks: 1200,
+            phase: 'idle',
+            uiHealth: 'locked',
+            inventoryChunks: 1200,
+        });
+        expect(spec.kind).not.toBe('resting');
+        expect(isIndexWaitKind(spec.kind)).toBe(true);
+        expect(spec.title).toBe(INDEX_LOCKED_TITLE);
+    });
+
+    it('CLI gate blocks search when locked even with chunks > 0', () => {
+        expect(resolveCliSearchGate({
+            warmPhase: null,
+            uiHealth: 'locked',
+            chunks: 10514,
+        })).toBe(CLI_SEARCH_GATE_LOCKED);
     });
 });
 

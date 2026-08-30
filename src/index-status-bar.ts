@@ -243,8 +243,8 @@ export class IndexStatusBar {
         if (gen !== this.hoverGen) return;
         hover.empty();
         let health = hooks.getHealth();
-        if (health === 'starting' || health === 'restoring') {
-            /* keep canonical hydrate labels even if a job is queued */
+        if (health === 'starting' || health === 'restoring' || health === 'locked') {
+            /* keep canonical hydrate/lock labels even if a job is queued */
         } else if (this.jobActive) health = 'indexing';
         else if (health !== 'error' && health !== 'indexing' && stats.files === 0 && stats.chunks === 0) health = 'none';
         renderIndexStatusCard(hover, {

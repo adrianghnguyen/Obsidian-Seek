@@ -256,6 +256,8 @@ export class SeekSearchModal extends Modal {
     private latestSearchEntry: SearchEntry | null = null;
     private latestResultsShown: ScoredChunk[] = [];
     private latestSearchCompletedAt = 0;
+    private searchLatencyStartMs = 0;
+    private searchLatencyRecordedFor = 0;
 
     // Cold-start onboarding flag: set true once checkIndexState() (run on open)
     // confirms zero indexed chunks. Drives renderNoIndex() in place of the generic
@@ -327,6 +329,8 @@ export class SeekSearchModal extends Modal {
         // Optional (absent in tests / headless) — null disables both capture
         // and the resting-state rows.
         private recents: RecentSearches | null = null,
+        // Modal search latency for Settings → Diagnostics console (optional).
+        private onSearchLatency?: (query: string, ms: number) => void,
     ) {
         super(app);
         this.orchestrator = orchestrator;
@@ -730,6 +734,8 @@ export class SeekSearchModal extends Modal {
         this.activeSearchAbort?.abort();
         this.activeSearchAbort = controller;
         this.beginInFlight();
+        this.searchLatencyStartMs = performance.now();
+        this.searchLatencyRecordedFor = 0;
         try {
             this.setSearching();
             this.earlyCleanedQuery = '';
@@ -742,6 +748,7 @@ export class SeekSearchModal extends Modal {
                     this.earlyCleanedQuery = partial.cleanedQuery;
                     this.latestResultsShown = partial.results;
                     this.renderResults(partial.results);
+                    this.maybeRecordSearchLatency(id, query, partial.results);
                 },
                 controller.signal,
             );
@@ -756,6 +763,7 @@ export class SeekSearchModal extends Modal {
             this.latestResultsShown = results;
             this.latestSearchCompletedAt = performance.now();
             this.renderResults(results);
+            this.maybeRecordSearchLatency(id, query, results);
         } catch (e) {
             if (e instanceof Error && e.name === 'AbortError') return;
             if (id !== this.currentSearch || this.closed) return;
@@ -777,6 +785,15 @@ export class SeekSearchModal extends Modal {
         if (this.inFlight > 0 && --this.inFlight === 0) this.onQueryInFlight?.(false);
     }
 
+    /** First results paint per search id — time until the modal list is usable (incl. empty). */
+    private maybeRecordSearchLatency(searchId: number, query: string, _results: ScoredChunk[]): void {
+        if (!this.onSearchLatency) return;
+        if (this.searchLatencyRecordedFor === searchId) return;
+        if (this.searchLatencyStartMs <= 0) return;
+        this.searchLatencyRecordedFor = searchId;
+        this.onSearchLatency(query, Math.round(performance.now() - this.searchLatencyStartMs));
+    }
+
     private renderEmpty(): void {
         const spec = this.currentLoadSpec();
         if (spec.kind === 'onboarding') { this.renderNoIndex(); return; }
@@ -786,6 +803,7 @@ export class SeekSearchModal extends Modal {
 
     private modalIndexHealth(kind: IndexLoadKind, load: IndexLoadState): IndexStatusHealth {
         if (load.uiHealth) return load.uiHealth;
+        if (kind === 'locked') return 'locked';
         if (kind === 'restoring' || load.waitingForSidecar || load.peerSyncPending) return 'restoring';
         if (kind === 'starting' || load.phase === 'hydrating') return 'starting';
         if (kind === 'indexing' || load.phase === 'indexing') return 'indexing';

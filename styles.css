@@ -1137,6 +1137,74 @@
     color: var(--text-faint);
     margin-top: 2px;
 }
+.seek-settings .seek-status-startup {
+    flex-basis: 100%;
+    margin-top: 4px;
+    padding-top: 10px;
+    border-top: 1px solid var(--background-modifier-border);
+}
+.seek-settings .seek-status-startup-head {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: lowercase;
+    margin-bottom: 6px;
+}
+.seek-settings .seek-status-startup-live {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+.seek-settings .seek-status-startup-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.seek-settings .seek-status-startup-row {
+    display: grid;
+    grid-template-columns: 5.5em 3.5em 0.6em 1fr;
+    gap: 6px;
+    align-items: baseline;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+.seek-settings .seek-status-startup-label {
+    color: var(--text-muted);
+}
+.seek-settings .seek-status-startup-phase {
+    font-weight: 600;
+    color: var(--text-normal);
+    text-align: right;
+}
+.seek-settings .seek-status-startup-sep {
+    color: var(--text-faint);
+    text-align: center;
+}
+.seek-settings .seek-status-startup-from {
+    color: var(--text-muted);
+    font-size: 11px;
+}
+.seek-search-console-host {
+    margin: 0 0 16px;
+}
+.seek-search-console {
+    font-family: var(--font-monospace);
+    font-size: 12px;
+    line-height: 1.55;
+    padding: 10px 12px;
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    color: var(--text-normal);
+    user-select: text;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.seek-search-console-empty {
+    color: var(--text-muted);
+}
+.seek-search-console-line + .seek-search-console-line {
+    margin-top: 2px;
+}
 
 /* Desktop status-bar item + hover panel (replaces the indexing Notice toast). */
 .seek-status-bar {

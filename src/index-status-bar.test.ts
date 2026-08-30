@@ -12,6 +12,7 @@ import {
     jobRemaining,
     INDEX_STATUS_BADGE_CLS,
     INDEX_STATUS_DOT_CLS,
+    INDEX_STATUS_HEALTH,
 } from './index-status-card';
 
 interface StubEl {
@@ -348,5 +349,15 @@ describe('renderIndexStatusCard', () => {
         expect(textOf(restore)).toContain('Restoring');
         expect(textOf(restore)).not.toContain('No index');
         expect(textOf(restore)).not.toMatch(/\b5\b/);
+    });
+});
+
+describe('INDEX_STATUS_HEALTH locked', () => {
+    it('uses compact Locked and bad tone for status bar and settings', () => {
+        expect(INDEX_STATUS_HEALTH.locked).toEqual({
+            tone: 'bad',
+            label: 'Index locked',
+            compact: 'Locked',
+        });
     });
 });

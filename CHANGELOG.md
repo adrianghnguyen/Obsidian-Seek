@@ -19,6 +19,11 @@ Unified first-index and full-reindex progress, faster full passes, and honest re
 - **Reload no longer flashes Ready before Seek knows the index state.** The status bar stays **Starting** with a soft orange glow until inventory is probed and the first post-boot scheduling decision completes.
 - **Delete & reindex no longer freezes Obsidian when another window holds the index.** A full rebuild empties the existing database instead of deleting it. A failed rebuild no longer leaves the store closed or starts a whole-vault catch-up on top of a still-valid index.
 - **Seek no longer reports a plugin failure when the index database is briefly locked.** After reload or with another vault window open, IndexedDB can refuse the first open. Seek retries, keeps loading, and does not log index-not-opened errors for that lock. The index opens when the lock clears.
+- **Leftover unscoped-index delete no longer runs on load.** Seek used to fire-and-forget a delete of the old bare `seek-index` database on every open, which could wedge LevelDB when two vault windows were open on the same origin.
+
+### Added
+- **Settings shows startup latency and recent search timing.** Under Index, **last startup** lists Searchable, Cache warm, and Fully ready with phase duration and wall-clock from Obsidian open. Under Diagnostics, a copyable console lists the last five modal searches as `[query] time`.
+- **Index locked status when the database cannot open.** The status bar, search modal, and Settings index card show **Locked** instead of Ready or Starting. Seek retries opening in the background (2s, 5s, 10s, 15s), and the command palette adds **Retry opening the search index** when locked.
 
 ## 1.1.4
 
