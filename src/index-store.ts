@@ -329,13 +329,7 @@ function deleteDbWithBlockGuard(dbName: string): Promise<void> {
             // Don't reject immediately — another tab/instance may close shortly.
             // Wait a generous interval, then fail with an actionable message.
             console.warn('[seek] deleteDatabase blocked — waiting up to 10 s for other connections to close');
-            // #region agent log
-            fetch('http://127.0.0.1:7520/ingest/4041c2ea-b3bb-4f25-85a6-6a4877d4ade9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8ffd14'},body:JSON.stringify({sessionId:'8ffd14',runId:'pre-fix',hypothesisId:'A-B',location:'index-store.ts:deleteDbWithBlockGuard',message:'deleteDatabase onblocked',data:{dbName},timestamp:Date.now()})}).catch(()=>{});
-            // #endregion
             blockedTimer = window.setTimeout(() => {
-                // #region agent log
-                fetch('http://127.0.0.1:7520/ingest/4041c2ea-b3bb-4f25-85a6-6a4877d4ade9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8ffd14'},body:JSON.stringify({sessionId:'8ffd14',runId:'pre-fix',hypothesisId:'A-B',location:'index-store.ts:deleteDbWithBlockGuard',message:'deleteDatabase still blocked after 10s',data:{dbName},timestamp:Date.now()})}).catch(()=>{});
-                // #endregion
                 reject(new Error(
                     `deleteDatabase blocked: another Obsidian window/tab is holding the ${dbName} ` +
                     'IndexedDB open. Close other Obsidian windows for this vault and retry.',
@@ -578,9 +572,6 @@ export class IndexStore {
         const opened = this.db;
         opened.onversionchange = () => {
             console.warn('[seek] versionchange received — closing + dropping connection');
-            // #region agent log
-            fetch('http://127.0.0.1:7520/ingest/4041c2ea-b3bb-4f25-85a6-6a4877d4ade9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8ffd14'},body:JSON.stringify({sessionId:'8ffd14',runId:'pre-fix',hypothesisId:'A-B',location:'index-store.ts:onversionchange',message:'versionchange closing connection',data:{dbName:this._dbName},timestamp:Date.now()})}).catch(()=>{});
-            // #endregion
             opened.close();
             if (this.db === opened) this.db = null;
         };
@@ -597,9 +588,6 @@ export class IndexStore {
     }
 
     close(): void {
-        // #region agent log
-        fetch('http://127.0.0.1:7520/ingest/4041c2ea-b3bb-4f25-85a6-6a4877d4ade9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8ffd14'},body:JSON.stringify({sessionId:'8ffd14',runId:'pre-fix',hypothesisId:'B',location:'index-store.ts:close',message:'IndexStore.close',data:{dbName:this._dbName,hadConnection:!!this.db},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
         this.db?.close();
         this.db = null;
     }
@@ -625,9 +613,6 @@ export class IndexStore {
             ]);
             preCount = { chunks, embeddings, binary, files };
         }
-        // #region agent log
-        fetch('http://127.0.0.1:7520/ingest/4041c2ea-b3bb-4f25-85a6-6a4877d4ade9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8ffd14'},body:JSON.stringify({sessionId:'8ffd14',runId:'post-fix',hypothesisId:'A-B-C',location:'index-store.ts:clearAllStores',message:'wiping stores in place (no deleteDatabase)',data:{dbName:this._dbName,storeNames:names,preCount},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
         if (names.length > 0) {
             const clearTx = db.transaction(names, 'readwrite');
             for (const name of names) clearTx.objectStore(name).clear();
@@ -1283,9 +1268,6 @@ export async function nukeDatabase(dbName: string): Promise<{ chunks: number; em
         // DB may not exist yet — fine, counts stay zero.
     }
 
-    // #region agent log
-    fetch('http://127.0.0.1:7520/ingest/4041c2ea-b3bb-4f25-85a6-6a4877d4ade9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8ffd14'},body:JSON.stringify({sessionId:'8ffd14',runId:'pre-fix',hypothesisId:'B-C-D',location:'index-store.ts:nukeDatabase',message:'counts closed, calling deleteDatabase',data:{dbName,preCount},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     await deleteDbWithBlockGuard(dbName);
     return preCount;
 }

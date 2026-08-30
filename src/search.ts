@@ -499,22 +499,6 @@ export class SearchOrchestrator {
         // A second vault window holding the same IDB blocks delete forever and
         // can freeze Electron if a later open races a pending delete.
         const resetStart = performance.now();
-        // #region agent log
-        {
-            const wins = new Set<Window>();
-            wins.add(window);
-            try {
-                this.app.workspace.iterateAllLeaves((leaf: { view?: { containerEl?: { win?: Window } } }) => {
-                    const w = leaf.view?.containerEl?.win;
-                    if (w) wins.add(w);
-                });
-            } catch { /* window count is diagnostic only */ }
-            const sidecarIds = this.coord.dir
-                ? await listSidecarDeviceIds(this.app.vault.adapter, this.coord.dir).catch(() => [] as string[])
-                : [];
-            fetch('http://127.0.0.1:7520/ingest/4041c2ea-b3bb-4f25-85a6-6a4877d4ade9',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8ffd14'},body:JSON.stringify({sessionId:'8ffd14',runId:'post-fix',hypothesisId:'A-D-E',location:'search.ts:reindexAllInner',message:'full-reindex wipe in place',data:{dbName:this.store.dbName,windowCount:wins.size,sidecarDeviceIds:sidecarIds,loggerDeviceId:this.logger.deviceId},timestamp:Date.now()})}).catch(()=>{});
-        }
-        // #endregion
         const pre = await this.store.clearAllStores();
         await this.store.setMeta({
             embeddingDim: EMBEDDING_DIM,
