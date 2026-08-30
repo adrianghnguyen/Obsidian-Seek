@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto';
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { IndexStore, STORE_NOT_OPENED } from './index-store';
 
 describe('IndexStore.ensureOpen (reload / versionchange recovery)', () => {
@@ -43,5 +43,15 @@ describe('IndexStore.ensureOpen (reload / versionchange recovery)', () => {
         expect(store.isOpen()).toBe(true);
         await store.ensureOpen();
         expect(store.isOpen()).toBe(true);
+    });
+
+    it('open(scope) never calls indexedDB.deleteDatabase (legacy cleanup removed)', async () => {
+        const deleteSpy = vi.spyOn(indexedDB, 'deleteDatabase');
+        const scope = `no-delete-${Math.random().toString(36).slice(2)}`;
+        const store = new IndexStore();
+        await store.open(scope, 'seek-test');
+        opened.push(store);
+        expect(deleteSpy).not.toHaveBeenCalled();
+        deleteSpy.mockRestore();
     });
 });

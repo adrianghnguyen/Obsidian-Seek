@@ -577,7 +577,6 @@ export class IndexStore {
     // passes the vault's appId at onload — and reused by every later
     // scope-less open() (the reset path in search.ts reindexAll).
     private _dbName: string = LEGACY_DB_NAME;
-    private legacyCleanupDone = false;
 
     get dbName(): string { return this._dbName; }
 
@@ -607,16 +606,9 @@ export class IndexStore {
             opened.close();
             if (this.db === opened) this.db = null;
         };
-        // One-time legacy cleanup: THIS build's pre-scoping shared DB (the bare,
-        // appId-less prefix). Targets dbPrefix — not a hardcoded literal — so a
-        // differently-id'd build only ever deletes its OWN bare legacy, never
-        // another build's scoped DB. Fire-and-forget — if another window (old
-        // build) still holds it, the delete stays pending until that window
-        // closes; nothing here waits on it.
-        if (!this.legacyCleanupDone && this._dbName !== dbPrefix) {
-            this.legacyCleanupDone = true;
-            try { indexedDB.deleteDatabase(dbPrefix); } catch { /* best-effort */ }
-        }
+        // Scoped DBs are seek-index:<appId>. A leftover bare seek-index from an
+        // older build is harmless; fire-and-forget deleteDatabase here can wedge
+        // LevelDB across vault windows on the shared Electron origin.
     }
 
     close(): void {
