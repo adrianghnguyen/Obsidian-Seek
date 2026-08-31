@@ -585,13 +585,22 @@ export class IndexStore {
         return this.db != null;
     }
 
+    /**
+     * Bind the per-vault DB name without opening IndexedDB. Call this in
+     * onload; wait for `onLayoutReady` before `open()` / `ensureOpen()` so
+     * Seek does not race Obsidian's own File Recovery / cache / sync stores.
+     */
+    configure(scope: string, dbPrefix: string = LEGACY_DB_NAME): void {
+        this._dbName = `${dbPrefix}:${scope}`;
+    }
+
     /** Reopen using the last resolved vault scope when the connection was dropped. */
     async ensureOpen(): Promise<void> {
         if (!this.db) await this.open();
     }
 
     async open(scope?: string, dbPrefix: string = LEGACY_DB_NAME): Promise<void> {
-        if (scope) this._dbName = `${dbPrefix}:${scope}`;
+        if (scope) this.configure(scope, dbPrefix);
         if (this.db && !scope) return;
         this.db = await openDb(this._dbName);
         // GAP-3: openDb's onversionchange closes the connection on a cross-window

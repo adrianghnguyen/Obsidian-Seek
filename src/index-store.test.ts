@@ -14,6 +14,16 @@ import { quantizeInt8, dequantizeInt8, type QuantVec } from './quant';
 
 // The closed-store discriminator behind the reindex storm bound: the indexer rethrows
 // (aborting the whole pass) ONLY for this error, and skips just the one file otherwise.
+describe('IndexStore.configure (name without opening IndexedDB)', () => {
+    it('sets dbName and leaves the connection closed', () => {
+        const store = new IndexStore();
+        expect(store.isOpen()).toBe(false);
+        store.configure('vault-app-id', 'seek-index');
+        expect(store.dbName).toBe('seek-index:vault-app-id');
+        expect(store.isOpen()).toBe(false);
+    });
+});
+
 describe('indexDbPrefix (per-plugin DB scoping for co-installed builds)', () => {
     it('the shipped id resolves to the legacy name — released build never migrates', () => {
         // open() appends `:<appId>`, so this must equal the historical

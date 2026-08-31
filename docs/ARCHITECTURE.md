@@ -188,17 +188,19 @@ All production code lives in a **flat `src/` directory** (~55 modules). Tests ar
 Rough order in `SeekPlugin.onload()`:
 
 1. **Logger** — create `SeekLogger`, run log maintenance (migrate, rotate, prune)
-2. **Settings** — `loadData()` → `migrateSettings()` → merge with `DEFAULT_SETTINGS`
-3. **IndexedDB** — `IndexStore.open()` scoped per vault + plugin id
+2. **Settings** — `loadData()` (BOM-stripped) → `migrateSettings()` → merge with `DEFAULT_SETTINGS`
+3. **Index name** — `IndexStore.configure()` binds the per-vault DB name **without** opening IndexedDB
 4. **Forensics** — inspect prior session; log crash if unclosed
 5. **Orchestrator** — construct `SearchOrchestrator` with store, embedder, settings ref
 6. **Settings tab** — register `SeekSettingTab`
 7. **Incremental indexing** — wire vault/workspace event listeners
-8. **Sidecar** — async hydrate + identity enforcement + reconcile on load
+8. **`onLayoutReady`** — then start startup clocks, `IndexStore.open()`, sidecar hydrate, identity, reconcile
 9. **Intervals** — periodic reconcile; mobile idle embedder unload
 10. **Observers** — global errors, long tasks, memory pressure
 11. **Embedder init** — `embedder.init()` (non-blocking; model loads lazily)
 12. **Integration** — command, `obsidian://seek` protocol, optional CLI handlers
+
+Do **not** `await onLayoutReady()` inside `onload` (that can deadlock). Use the callback form. Until that gate, Seek must not time startup, probe IndexedDB, or treat core File Recovery / cache / sync IndexedDB errors as Seek failures.
 
 Model weights are **not** loaded at startup. First search or reindex calls `ensureModelLoaded()`.
 
