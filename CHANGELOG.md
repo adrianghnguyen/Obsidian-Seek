@@ -2,6 +2,19 @@
 
 All notable changes to Seek are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.3.0
+
+Progressive search pipeline stage indicator and Settings transparency. No reindex is needed, since the index format is unchanged.
+
+### Added
+- **Search modal footer shows the progressive pipeline stage.** While a search runs, the footer displays Name match → Lexical BM25 → Hybrid semantic, progressively bolding the active stage as promise-ordered results arrive. The indicator collapses when all stages complete, keeping the footer clean at rest.
+- **Settings → Relevance explains the progressive pipeline ladder.** A "Search stages" block below the fusion diagram mirrors the footer labels, so users understand what the stage indicator means.
+- **New `pipeline-stage.ts` reducer** with tests: a pure state machine that maps orchestrator `onPartial` events to stage phases, testable without the DOM.
+- **AGENTS.md UI transparency gate** — general changes affecting user experience must be reviewed against what the plugin UI exposes (pipeline labels, settings, status bar, modal hints).
+
+### Changed
+- **Settings → Relevance rearranged** to include the progressive ladder immediately after the fusion pipeline diagram.
+
 ## 1.2.0
 
 Progressive search pipeline with BM25-first lexical partial and cold-start fallback. No reindex is needed, since the index format is unchanged.
