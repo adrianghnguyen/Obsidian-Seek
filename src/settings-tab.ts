@@ -523,6 +523,12 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
 
         this.renderPipeline(containerEl);
 
+        // Progressive pipeline ladder: the search modal footer mirrors this
+        // ladder during an active search (Name match → Lexical BM25 →
+        // Hybrid semantic), progressively bolding the active stage as each
+        // promise-ordered step completes.
+        this.renderProgressive(containerEl);
+
         containerEl.createDiv({ cls: 'seek-hint', text: 'Relevance changes apply to your next search.' });
 
         // Advanced disclosure
@@ -565,6 +571,25 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         subLabel('title', titleStage);
         arrow();
         box('Results');
+    }
+
+    // Progressive pipeline ladder explainer — shows the streaming stages the
+    // search modal footer mirrors during an active search. Not configurable;
+    // purely informational transparency so the user understands the stage labels.
+    private renderProgressive(containerEl: HTMLElement): void {
+        const block = containerEl.createDiv({ cls: 'seek-progressive-pipe' });
+        block.createDiv({ cls: 'seek-progressive-title', text: 'Search stages' });
+        const row = block.createDiv({ cls: 'seek-progressive-row' });
+        const labels = ['Name match', '→', 'Lexical BM25', '→', 'Hybrid semantic'];
+        for (const l of labels) {
+            const el = row.createSpan({ cls: 'seek-progressive-label' });
+            if (l === '→') el.setText(l);
+            else el.createSpan({ text: l });
+        }
+        block.createDiv({
+            cls: 'seek-progressive-desc',
+            text: 'Seek streams results through these stages as they become available. Each stage replaces the previous one in-place, so you always see the best results so far.',
+        });
     }
 
     private renderAdvanced(containerEl: HTMLElement): void {
