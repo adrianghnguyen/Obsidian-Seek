@@ -53,7 +53,7 @@ describe('search early name paint', () => {
         expect(exactAlias.results.some(r => r.note_path === 'People/Alex Chen.md')).toBe(true);
     });
 
-    it('topical query still ranks the body match and does not early-paint', async () => {
+    it('topical query fires lexical partial, not name early-paint', async () => {
         const s = await boot();
         await index(s, 50);
         const partials: SearchPartial[] = [];
@@ -63,7 +63,9 @@ describe('search early name paint', () => {
             undefined,
             p => { partials.push(p); },
         );
-        expect(partials).toEqual([]);
+        // Lexical partial fires (new progressive behavior) but no NAME partial
+        expect(partials.length).toBeGreaterThan(0);
+        expect(partials[0].source).toBe('lexical');
         expect(entry.nameEarlyPainted).toBe(false);
         expect(results[0]?.note_path).toBe('Gadgets/Pixel.md');
     });
