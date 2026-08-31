@@ -3832,6 +3832,58 @@ export class SearchOrchestrator {
         // lifting via recency_weight (see ranker.ts DEFAULT_RANKING_CONFIG).
         const recencyTopIdx = this.topByRecency(orderedChunks, caps.recency, mask);
 
+        // ---- S1d: lexical partial (BM25 + recency + title boost only) ---
+        // Fire BM25-only results before the embedder finishes, so the user sees
+        // useful lexical results immediately — the "progressive" search ladder.
+        // These are replaced when the full hybrid results return.
+        let lexPartialFired = false;
+        const lexPartialMsStart = performance.now();
+        if (onPartial) {
+            // Build rankConfig early — it only depends on settings + recencyOverride,
+            // both available from the start (bm25Bound was returned by getScoresWithCoverage).
+            const lexRankConfig = {
+                ...DEFAULT_RANKING_CONFIG,
+                alpha: this.settings.denseWeight,
+                titleBoost: this.settings.navTitleBoost,
+                recencyEpsilon: recencyOverride?.epsilon ?? this.settings.recencyEpsilon,
+                recencyHalfLifeDays: recencyOverride?.halfLifeDays ?? this.settings.recencyHalfLifeDays,
+                recencyKey: this.settings.recencyKey,
+                createdProp: this.settings.createdProp,
+            };
+            // Union of BM25 + recency candidates (name-only hits are already painted).
+            const lexUnion = new Set<number>();
+            for (const i of bm25TopIdx) lexUnion.add(i);
+            for (const i of recencyTopIdx) lexUnion.add(i);
+            if (lexUnion.size > 0) {
+                const lexIndices = Array.from(lexUnion);
+                const lexChunks = lexIndices.map(i => orderedChunks[i]);
+                const lexBm25 = lexIndices.map(i => bm25Scores[i]);
+                const zeroDense = new Float64Array(lexIndices.length);
+                const lexPoolSize = Math.min(caps.binary + caps.bm25 + caps.recency, lexIndices.length);
+                const { results: lexRanked } = rank(
+                    lexChunks, zeroDense, new Float64Array(lexBm25),
+                    cleanedQuery, lexPoolSize, lexRankConfig, bm25Bound,
+                );
+                // Mark all as lexicalOnly so the modal's score rendering handles them correctly
+                for (const r of lexRanked) r.lexicalOnly = true;
+                const lexResults = dedupByPath(lexRanked, topK);
+                if (lexResults.length > 0) {
+                    await this.hydrateBodies(lexResults);
+                    const snippetChars = SNIPPET_PREVIEW_LIMITS[this.settings.snippetPreview].chars;
+                    const passageTerms = buildPassageTerms(cleanedQuery, () => 0);
+                    for (const r of lexResults) r.snippet = makeSnippet(r.content, passageTerms, snippetChars);
+                    lexPartialMsStart; // keep the start anchor for telemetry
+                    await onPartial({
+                        results: lexResults,
+                        source: 'lexical',
+                        cleanedQuery,
+                    });
+                    lexPartialFired = true;
+                }
+            }
+        }
+        const lexPartialMs = performance.now() - lexPartialMsStart;
+
         // Embed may still be in flight (BM25 overlapped it). Binary launches
         // from embed's then() — await embed first so a non-finite/dim failure
         // does not wait on a scan that never started.
@@ -4078,6 +4130,8 @@ export class SearchOrchestrator {
             nameHitCount: nameHits.length,
             nameEarlyPainted,
             namePartialMs: parseFloat(namePartialMs.toFixed(2)),
+            lexPartialMs: parseFloat(lexPartialMs.toFixed(2)),
+            lexPartialFired,
             // Theoretical BM25 bound for this query (0 = bound had no opinion →
             // fusion used the empirical-max fallback). Diagnoses weak-lexical
             // queries: max(rawBm25)/bm25Bound is the channel's confidence.
@@ -4706,6 +4760,10 @@ export class SearchOrchestrator {
     /** When true, background warm triggers no-op (catch-up owns IDB). */
     private warmDeferred = false;
     setWarmDeferred(deferred: boolean): void { this.warmDeferred = deferred; }
+    /** True when the BM25 cache is populated for the live generation (can serve lexical-only searches). */
+    hasBm25Cache(): boolean {
+        return this.bm25Cache !== null && this.bm25CacheGeneration === this.coord.generation && this.bm25CacheChunkCount > 0;
+    }
     /** In-flight warmCaches promise — concurrent callers await instead of no-op. */
     private warmPromise: Promise<void> | null = null;
     async warmCaches(trigger: string): Promise<void> {
@@ -4857,11 +4915,115 @@ export class SearchOrchestrator {
             binaryCacheHit: false,
             rawDenseTop5: [], rawBm25Top5: [], fusedTop50: [],
             nameMatchMs: 0, nameHitCount: 0, nameEarlyPainted: false, namePartialMs: 0,
+            lexPartialMs: 0, lexPartialFired: false,
             alpha: this.settings.denseWeight,
             recencyWeight: this.settings.recencyEpsilon,
             recencyKey: this.settings.recencyKey,
             searchId,
         };
+    }
+
+    /**
+     * Lexical-only search (BM25 + recency + title boost, no embedder).
+     *
+     * Fires onPartial with `source: 'lexical'` and returns results immediately.
+     * Designed for the cold-start path when the embedding model is not yet
+     * loaded: the user sees useful BM25 results while the model loads in the
+     * background, then the full search() replaces them.
+     *
+     * Does NOT emit telemetry (the caller is expected to call full search()
+     * later when the model is ready, which records the definitive entry).
+     */
+    async searchLexicalOnly(
+        query: string,
+        topK = 10,
+        onPartial?: (partial: SearchPartial) => void | Promise<void>,
+    ): Promise<{ results: ScoredChunk[] }> {
+        const t0 = performance.now();
+        const cleanedQuery = parseQuery(query, this.buildFilterContext()).cleanedQuery;
+        if (!cleanedQuery.trim()) return { results: [] };
+
+        const frame = await this.ensureFrame({ skipResidentInt8: true });
+        if (!frame || frame.orderedChunks.length === 0) return { results: [] };
+
+        const orderedChunks = frame.orderedChunks;
+        if (!this.bm25CacheValid(orderedChunks)) {
+            await this.tryLoadPersistedBm25(orderedChunks);
+        }
+        const bm25CacheHit = await this.ensureBm25(orderedChunks);
+        if (!this.bm25Cache) return { results: [] };
+        if (!frameBm25Coherent(frame, this.bm25Cache)) return { results: [] };
+
+        const { scores: bm25Scores, bound: bm25Bound } = this.bm25Cache.getScoresWithCoverage(cleanedQuery, {
+            boosts: this.bm25FieldBoosts(),
+            fuzzy: this.settings.fuzzyEnabled ? FUZZY_BY_LENGTH : false,
+            prefix: this.settings.prefixLastToken ? PREFIX_LAST_TOKEN : false,
+        });
+        void bm25CacheHit;
+
+        const caps = poolCaps(orderedChunks.length - frame.tombstoneCount);
+        const bm25TopIdx = topNIndices(bm25Scores, caps.bm25, null);
+        const recencyTopIdx = this.topByRecency(orderedChunks, caps.recency, null);
+
+        // Name hits for early paint (same as full search)
+        let nameEarlyPainted = false;
+        if (onPartial) {
+            const nameHits = collectNameHits(orderedChunks, cleanedQuery);
+            if (shouldEarlyPaint(nameHits)) {
+                const titleBoost = this.settings.navTitleBoost;
+                const early: ScoredChunk[] = nameHits.slice(0, topK).map(h => {
+                    const c = orderedChunks[h.index];
+                    return {
+                        ...c, content: '', score: h.score,
+                        ranking_signals: { dense: 0, bm25: 0, hybrid: 0, recency: 0, title_boost: titleBoost * h.score, denseRaw: 0 },
+                        lexicalOnly: true,
+                    };
+                });
+                await this.hydrateBodies(early);
+                const snippetChars = SNIPPET_PREVIEW_LIMITS[this.settings.snippetPreview].chars;
+                const passageTerms = buildPassageTerms(cleanedQuery, () => 0);
+                for (const r of early) r.snippet = makeSnippet(r.content, passageTerms, snippetChars);
+                nameEarlyPainted = true;
+                await onPartial({ results: early, source: 'name', nameHitCount: nameHits.length, cleanedQuery });
+            }
+        }
+
+        // BM25 lexical ranking
+        const lexUnion = new Set<number>();
+        for (const i of bm25TopIdx) lexUnion.add(i);
+        for (const i of recencyTopIdx) lexUnion.add(i);
+        if (lexUnion.size === 0) return { results: [] };
+
+        const lexIndices = Array.from(lexUnion);
+        const lexChunks = lexIndices.map(i => orderedChunks[i]);
+        const lexBm25 = lexIndices.map(i => bm25Scores[i]);
+        const zeroDense = new Float64Array(lexIndices.length);
+        const lexRankConfig = {
+            ...DEFAULT_RANKING_CONFIG,
+            alpha: this.settings.denseWeight,
+            titleBoost: this.settings.navTitleBoost,
+            recencyEpsilon: this.settings.recencyEpsilon,
+            recencyHalfLifeDays: this.settings.recencyHalfLifeDays,
+            recencyKey: this.settings.recencyKey,
+            createdProp: this.settings.createdProp,
+        };
+        const { results: lexRanked } = rank(
+            lexChunks, zeroDense, new Float64Array(lexBm25),
+            cleanedQuery, Math.min(caps.binary + caps.bm25 + caps.recency, lexIndices.length),
+            lexRankConfig, bm25Bound,
+        );
+        for (const r of lexRanked) r.lexicalOnly = true;
+        const results = dedupByPath(lexRanked, topK);
+        await this.hydrateBodies(results);
+        const snippetChars = SNIPPET_PREVIEW_LIMITS[this.settings.snippetPreview].chars;
+        const passageTerms = buildPassageTerms(cleanedQuery, () => 0);
+        for (const r of results) r.snippet = makeSnippet(r.content, passageTerms, snippetChars);
+
+        if (onPartial && !nameEarlyPainted) {
+            await onPartial({ results, source: 'lexical', cleanedQuery });
+        }
+
+        return { results };
     }
 
     // BM25 cache. Validity is determined by:
