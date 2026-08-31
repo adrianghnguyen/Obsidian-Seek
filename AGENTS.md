@@ -2,6 +2,11 @@
 
 ## Cursor Cloud specific instructions
 
+### UI transparency gate
+Any feature, behavioral change, or settings addition that affects what the user sees or experiences must be reviewed against the plugin's own UI surfaces — Settings (especially the Relevance pipeline diagram and the Search stages explainer), the search modal footer, status bar, and keyboard hints. If the change introduces a new state, label, ranking stage, or visual cue that the plugin advertises, the corresponding UI surface in the plugin must be updated to explain or reflect it. This ensures Seek users always have a path to understand what the plugin is doing.
+
+### Commands
+
 Seek is an **Obsidian plugin** (TypeScript, bundled with esbuild). There is no standalone server or web app — the plugin runs inside the Obsidian desktop/mobile app. Dependencies are managed with npm (`package-lock.json`); the startup update script already runs `npm ci`.
 
 Standard commands live in `package.json` `scripts` — use those:
