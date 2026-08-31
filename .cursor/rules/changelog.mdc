@@ -1,18 +1,39 @@
 ---
-description: User-facing Seek changes must update CHANGELOG.md in the current version
+description: User-facing Seek changes must update CHANGELOG.md and manifest.json per semver
 alwaysApply: true
 ---
 
-# Update CHANGELOG.md for user-facing work
+# Release notes and semantic versioning (Seek)
 
-A user-visible feature, fix, or settings change is **not done** until `CHANGELOG.md` has a bullet under the **current** `manifest.json` version. Do this in the same turn as the code — do not wait to be asked.
+A user-visible feature, fix, or settings change is **not done** until:
+
+1. `CHANGELOG.md` has a bullet under the matching `## X.Y.Z` section, and
+2. `manifest.json` `version` is bumped per [semver](https://semver.org/) in the same turn as the code.
+
+Do not wait to be asked.
 
 Skip: typos, comments, tests-only, docs-only, purely internal refactors with no behavior or UX change.
 
-## Where
+## Semver (manifest.json)
 
-- Edit the existing `## X.Y.Z` section. Do not bump the version unless the user asks (fork version tracks upstream unless a fork-only patch is required).
-- Use `### Added`, `### Changed`, or `### Fixed` (create the heading if that version lacks it).
+| Change | Bump | Example |
+|--------|------|---------|
+| Bug fix, regression, crash, incorrect UX | **PATCH** | `1.1.5` → `1.1.6` |
+| New feature, setting, backward-compatible behavior | **MINOR** | `1.1.5` → `1.2.0` |
+| Breaking change (settings shape, command removal, index format) | **MAJOR** | `1.1.5` → `2.0.0` |
+
+After a version bump, deploy requires **Obsidian restart** (not just `plugin:reload`). Warn that restart closes every open vault.
+
+## Upstream sync (fork)
+
+- Merging **upstream** releases: adopt upstream version and CHANGELOG; do not invent a fork semver on top.
+- **Fork-only** user-facing patches between upstream releases: bump PATCH (or MINOR/MAJOR if warranted) on the fork and add a new `## X.Y.Z` section.
+
+## CHANGELOG
+
+- New version → new `## X.Y.Z` section with the version blurb (keep "No reindex is needed…" unless index format changed).
+- Same release, another bullet → edit the existing section for that version.
+- Use `### Added`, `### Changed`, or `### Fixed` (create the heading if missing).
 - One concern per bullet. Fold into an existing bullet when it is the same user-facing change.
 
 ## Voice (match 1.1.x)
@@ -24,4 +45,4 @@ Bold lead-in that a user would recognize, then the problem, then what Seek does 
 - **Startup no longer treats a still-loading vault as a mass delete.** On a large vault, Seek could run catch-up before Obsidian had listed any notes. Catch-up now waits until the vault layout is ready.
 ```
 
-Keep the version blurb's "No reindex is needed…" line unless the index format actually changed.
+General plugin-dev workflow: global skill `~/.cursor/skills/obsidian-plugin-dev/SKILL.md` (Release notes and semantic versioning).
