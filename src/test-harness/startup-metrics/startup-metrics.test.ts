@@ -92,4 +92,14 @@ describe('startup probe measurement contracts', () => {
             source.lastIndexOf("if ($verdict -ne 'pass')"),
         );
     });
+
+    it('does not treat core IndexedDB boot noise as a Seek failure before onLayoutReady', () => {
+        const skill = readFileSync(join(ROOT, '.cursor/skills/seek-cli-startup-debug/SKILL.md'), 'utf8');
+        expect(skill).toContain('onLayoutReady');
+        expect(skill).toContain('File Recovery failed to connect to IndexedDB');
+        expect(skill).toContain('Failed to load cache, unable to open IndexedDB');
+        expect(skill).toContain('Failed to load sync data');
+        expect(skill).toContain('Internal error opening backing store for indexedDB.open');
+        expect(skill).toMatch(/Unexpected token/);
+    });
 });

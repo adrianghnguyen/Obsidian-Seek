@@ -29,7 +29,18 @@ Maps to `src/index-notice.ts`, `src/main.ts`, `src/search.ts`.
 | `indexing` | `catchUpPending`, `catchUpRunning`, `flushing`, `isIndexing`, or orchestrator `isWriting()` | Each flag clears independently |
 | `idle` | None of the above | — |
 
-Boot sequence (onload): orchestrator created **synchronously** → `sidecarHydrating=true` → async IIFE (identity gate → sidecar hydrate → `reconcileOnLoad`) → `finally`: clear hydrate flags, `touchIndexInventory`, fire `warmCaches('startup')` if `getStartupWarm()`.
+Boot sequence (onload): orchestrator created **synchronously** → `IndexStore.configure()` (name only) → `onLayoutReady` callback starts clocks + `store.open()` + sidecar hydrate IIFE (identity gate → sidecar hydrate → `reconcileOnLoad`) → `finally`: clear hydrate flags, `touchIndexInventory`, fire `warmCaches('startup')` if `getStartupWarm()`.
+
+Do **not** treat console errors from **before** `onLayoutReady` as Seek failures. Obsidian does not log a stable “workspace loaded” line; the official gate is `app.workspace.onLayoutReady()`. Until that fires, File Recovery, cache, and sync are still opening IndexedDB.
+
+Ignore these as core boot noise (not Seek):
+
+- `File Recovery failed to connect to IndexedDB`
+- `Failed to load cache, unable to open IndexedDB`
+- `Failed to load sync data`
+- `UnknownError: Internal error opening backing store for indexedDB.open`
+
+A UTF-8 BOM on another plugin’s `data.json` (`Unexpected token '﻿'`, e.g. `.obsidian/plugins/agent-client/data.json`) is also not a Seek bug and is **not** fixed by waiting for layout-ready — strip the BOM from that file.
 
 ### UI / status-bar labels (`indexUiHealth`, modal footer)
 
@@ -219,8 +230,8 @@ Approximate; vault-size dependent. Use gate bundle columns, not fixed seconds al
 
 | Gate bundle signal | Typical timing | Notes |
 |--------------------|----------------|-------|
-| `seek:true` | ~5–8s | Obsidian CLI alive |
-| `warmPhase:'starting'` or `'restoring'` | hydrate IIFE | Sidecar restore / identity; search often `no results`, `chunks` may be 0 |
+| `seek:true` | ~5–8s | Obsidian CLI alive; Seek onload may have run, but index open / `[seek:perf]` clocks wait for `onLayoutReady` |
+| `warmPhase:'starting'` or `'restoring'` | after layout ready | Sidecar restore / identity; search often `no results`, `chunks` may be 0 |
 | `warmPhase:null`, `uiHealth:'indexing'` | post-hydrate | `reconcileOnLoad` catch-up or `warmCaches`; job badge may show remaining |
 | `warmPhase:null`, `uiHealth:'ok'`, `chunks>0` | vault-size dependent | Index inventory stable; search should hit for good probe query |
 | Console (normal) | during warm | `[seek] …` warnings; `[seek:perf] {"type":"…"}` timing beats |
@@ -256,7 +267,7 @@ Also list:
 
 - Seek `[seek:perf]` lines (from `dev:console limit=150 level=info` after `dumpPerfConsole`)
 - Seek `[seek]` console lines verbatim (from `dev:console`)
-- Any `dev:errors` entries
+- `dev:errors` entries **after** layout ready that are not core boot IndexedDB noise (see Readiness gates). Do not fail a probe on File Recovery / cache / sync / backing-store errors, or on a UTF-8 BOM parse of another plugin’s `data.json`.
 - Probe caveats (warm session skipped, vault size, parallel contamination, `warmCaches` not observable)
 
 ## Logging report (after the timeline, or instead of hoping `dev:console` caught hydrate)
@@ -275,6 +286,8 @@ Writes vault-root `seek-report.md` (summary) and `.seek-artifacts/seek-report.js
 - Parallel subagents hitting CLI simultaneously
 - Treating `seek:search` acceptance or absence of “still loading” as ready
 - Treating `no results` as ready when `uiHealth !== 'ok'` or `chunks === 0`
+- Treating File Recovery / cache / sync IndexedDB errors (or `indexedDB.open` backing-store `UnknownError`) as Seek failures — those are core boot noise until `onLayoutReady`
+- Treating a UTF-8 BOM parse of `.obsidian/plugins/*/data.json` (`Unexpected token '﻿'`) as a Seek failure — strip the BOM; waiting for layout-ready does not fix it
 - Expecting `dev:console` to work before `dev:debug on`
 - Capturing `dev:console` without `dumpPerfConsole()` after a cold restart (misses pre-reattach hydrate/boot beats)
 - Relying on default `dev:console` `limit` (50) when the perf ring alone can be ~80 lines

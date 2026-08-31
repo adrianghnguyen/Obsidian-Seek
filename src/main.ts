@@ -70,6 +70,12 @@ import {
 } from './startup-drain';
 import { TaskContextTracker, type TaskContext } from './task-context';
 import { seekPerf } from './perf-console';
+import {
+    whenLayoutReady,
+    scheduleAfterLayoutReady,
+    isIgnorableStartupConsoleError,
+} from './layout-ready';
+import { parseJsonStripBom } from './json-text';
 import type { LongTaskEntry, MemoryPressureEntry, StorageSnapshotEntry, EvictionSuspectedEntry, AppLocalFetchEntry } from './types';
 
 // Long-task threshold. PerformanceObserver fires for any task ≥50 ms by spec,
@@ -538,14 +544,9 @@ export default class SeekPlugin extends Plugin {
         // Scope the DB by PLUGIN id too (indexDbPrefix), not just the vault, so a
         // second Seek build in this vault (e.g. an id 'seek-prototype' dev build)
         // owns a separate database. id 'seek' → 'seek-index:<appId>', unchanged.
-        try {
-            await this.store.open(vaultScope, indexDbPrefix(this.manifest.id));
-        } catch (e) {
-            // UnknownError ("backing store") must not escape onload — Obsidian logs
-            // that as "Plugin failure: seek". Boot IIFE retries via ensureStoreReady.
-            console.warn('[seek] index store open deferred:', e);
-        }
-        void this.touchIndexInventory();
+        // Bind the name now; do not open IndexedDB until onLayoutReady — opening
+        // here races Obsidian's File Recovery / cache / sync stores.
+        this.store.configure(vaultScope, indexDbPrefix(this.manifest.id));
 
         // Crash forensics: synchronous localStorage breadcrumbs (vault-scoped
         // like the IDB name — localStorage is origin-shared across vaults on
@@ -610,22 +611,6 @@ export default class SeekPlugin extends Plugin {
             }
         };
 
-        // One-time DB v3→v4 transition: if the user already has fp32 vectors
-        // from a prior install, pack their sign-bit binary siblings in the
-        // background. Steady-state this is a no-op (the count guard inside
-        // returns 0 immediately). Awaited because the orchestrator's first
-        // search assumes the binary index is loadable — but the actual work
-        // is ~5 ms for an empty store and ~100 ms for a 5k-chunk vault.
-        if (this.store.isOpen()) {
-            try {
-                await this.store.backfillBinaryIfMissing();
-            } catch (e) {
-                if (!isTransientIdbUnavailable(e)) {
-                    await this.logger.appendError('binary-backfill', e);
-                }
-            }
-        }
-
         // Sidecar index dir. CRITICAL: resolved from a LITERAL config-folder
         // name, not this.manifest.dir — manifest.dir resolves against the
         // device's active Override Config Folder (vault.configDir), which is
@@ -656,82 +641,23 @@ export default class SeekPlugin extends Plugin {
         // cold/evicted device hydrate must finish populating the store before
         // reconcileOnLoad computes its delta, or computeDelta would read the empty
         // store, mark the whole vault dirty, and re-embed everything the sidecar
-        // already holds. All off the load path (fire-and-forget IIFE) so plugin
-        // load never blocks. sweepOrphanTmpFiles first cleans any crashed atomic
-        // write. Each step is gated/no-op when the sidecar is disabled.
+        // already holds. IndexedDB open, startup clocks, and hydrate wait for
+        // onLayoutReady (callback, not awaited in onload) so they do not race
+        // Obsidian's File Recovery / cache / sync stores.
         this.sidecarHydrating = false;
-        this.bootStartMs = performance.now();
-        this.startupTelemetry.beginBoot(this.bootStartMs);
-        {
-            const span = {
-                type: 'startup-span' as const,
-                timestamp: new Date().toISOString(),
-                span: 'boot-ifi',
-                phase: 'start' as const,
-            };
-            seekPerf.recordStartupSpan(span);
-            void this.logger.append(span).catch(() => {});
-        }
         this.bootResumeCtx = {
             migrateSidecarPath,
             sidecarIndexDir,
             legacySidecarDir,
         };
-        void (async () => {
-            try {
-            if (!this.isBootCurrent(bootGen)) return;
-            await this.ensureStoreReady().catch(e => {
-                if (!isTransientIdbUnavailable(e)) {
-                    this.appendErrorIfCurrent('store-open-boot', e, bootGen);
-                } else {
-                    console.warn('[seek] index store still locked after retry:', e);
-                }
-            });
-            if (!this.isBootCurrent(bootGen)) return;
-            if (!this.store.isOpen()) {
-                this.beginIndexStoreLocked(bootGen);
-                return;
-            }
-            await this.resumeBootAfterStoreOpen(bootGen);
-        } finally {
-            if (!this.isBootCurrent(bootGen)) return;
-            this.sidecarHydrating = false;
-            const bootDurationMs = Math.round(performance.now() - this.bootStartMs);
-            {
-                const span = {
-                    type: 'startup-span' as const,
-                    timestamp: new Date().toISOString(),
-                    span: 'boot-ifi',
-                    phase: 'end' as const,
-                    durationMs: bootDurationMs,
-                };
-                seekPerf.recordStartupSpan(span);
-                void this.logger.append(span).catch(() => {});
-            }
-            if (this.indexStoreLocked) {
-                void this.touchIndexInventory();
-                return;
-            }
-            if (!this.indexGoodEnough) {
-                this.indexBootPending = false;
-                await this.logStartupGateReleased();
-                this.finalizeStartupTelemetryIfNeeded();
-                await this.touchIndexInventory();
-            } else {
-                void this.touchIndexInventory();
-            }
-            // Empty store + live notes: desktop must drain without opening Search.
-            // Covers identity-nuke-then-empty-hydrate and boot races that skip
-            // reconcileOnLoad's pending flag.
-            this.applyPostBootIndexScheduling();
-        }
-        })();
-
+        // Callback form, not `await onLayoutReady()` inside onload — awaiting
+        // here can deadlock because Obsidian waits for every plugin's onload
+        // before firing layout ready.
         const layoutGen = bootGen;
-        this.app.workspace.onLayoutReady(() => {
+        scheduleAfterLayoutReady(this.app.workspace, () => {
             if (!this.isBootCurrent(layoutGen)) return;
             this.vaultIndexEventsReady = true;
-            this.applyPostBootIndexScheduling();
+            void this.startPostLayoutBoot(layoutGen);
         });
 
         // Periodic sidecar reconcile: remote arrivals don't fire vault events for
@@ -1122,7 +1048,84 @@ export default class SeekPlugin extends Plugin {
     }
 
     private async ensureStoreReady(): Promise<void> {
+        await this.whenLayoutReady();
         await this.store.ensureOpen();
+    }
+
+    /**
+     * After workspace layout is ready: start debug clocks, open the index DB,
+     * then hydrate / reconcile. Must not run from onload itself.
+     */
+    private async startPostLayoutBoot(bootGen: number): Promise<void> {
+        if (!this.isBootCurrent(bootGen)) return;
+        this.bootStartMs = performance.now();
+        this.startupTelemetry.beginBoot(this.bootStartMs);
+        {
+            const span = {
+                type: 'startup-span' as const,
+                timestamp: new Date().toISOString(),
+                span: 'boot-ifi',
+                phase: 'start' as const,
+            };
+            seekPerf.recordStartupSpan(span);
+            void this.logger.append(span).catch(() => {});
+        }
+        try {
+            if (!this.isBootCurrent(bootGen)) return;
+            await this.ensureStoreReady().catch(e => {
+                if (!isTransientIdbUnavailable(e)) {
+                    this.appendErrorIfCurrent('store-open-boot', e, bootGen);
+                } else {
+                    console.warn('[seek] index store still locked after retry:', e);
+                }
+            });
+            if (!this.isBootCurrent(bootGen)) return;
+            if (!this.store.isOpen()) {
+                this.beginIndexStoreLocked(bootGen);
+                return;
+            }
+            void this.touchIndexInventory();
+            try {
+                await this.store.backfillBinaryIfMissing();
+            } catch (e) {
+                if (!isTransientIdbUnavailable(e)) {
+                    this.appendErrorIfCurrent('binary-backfill', e, bootGen);
+                }
+            }
+            if (!this.isBootCurrent(bootGen)) return;
+            await this.resumeBootAfterStoreOpen(bootGen);
+        } finally {
+            if (!this.isBootCurrent(bootGen)) return;
+            this.sidecarHydrating = false;
+            const bootDurationMs = Math.round(performance.now() - this.bootStartMs);
+            {
+                const span = {
+                    type: 'startup-span' as const,
+                    timestamp: new Date().toISOString(),
+                    span: 'boot-ifi',
+                    phase: 'end' as const,
+                    durationMs: bootDurationMs,
+                };
+                seekPerf.recordStartupSpan(span);
+                void this.logger.append(span).catch(() => {});
+            }
+            if (this.indexStoreLocked) {
+                void this.touchIndexInventory();
+                return;
+            }
+            if (!this.indexGoodEnough) {
+                this.indexBootPending = false;
+                await this.logStartupGateReleased();
+                this.finalizeStartupTelemetryIfNeeded();
+                await this.touchIndexInventory();
+            } else {
+                void this.touchIndexInventory();
+            }
+            // Empty store + live notes: desktop must drain without opening Search.
+            // Covers identity-nuke-then-empty-hydrate and boot races that skip
+            // reconcileOnLoad's pending flag.
+            this.applyPostBootIndexScheduling();
+        }
     }
 
     private disposeStoreOpenRetryScheduler(): void {
@@ -2388,9 +2391,34 @@ export default class SeekPlugin extends Plugin {
     }
 
     private whenLayoutReady(): Promise<void> {
-        const ws = this.app.workspace as { onLayoutReady?: (cb: () => void) => void };
-        if (typeof ws.onLayoutReady !== 'function') return Promise.resolve();
-        return new Promise(resolve => ws.onLayoutReady!(() => resolve()));
+        return whenLayoutReady(this.app.workspace);
+    }
+
+    /**
+     * Settings load that survives a UTF-8 BOM on data.json (`Unexpected token '﻿'`).
+     * Layout-ready does not fix this — the BOM has to be stripped.
+     */
+    async loadData(): Promise<any> {
+        const dir = this.manifest.dir;
+        if (dir) {
+            try {
+                const path = `${dir}/data.json`;
+                const adapter = this.app.vault.adapter;
+                if (await adapter.exists(path)) {
+                    const text = await adapter.read(path);
+                    if (!text) return null;
+                    return parseJsonStripBom(text);
+                }
+                return null;
+            } catch {
+                // Fall through to Obsidian's loader.
+            }
+        }
+        try {
+            return await super.loadData();
+        } catch {
+            return null;
+        }
     }
 
     private indexableNoteCount(): number {
@@ -3056,6 +3084,7 @@ export default class SeekPlugin extends Plugin {
             // process gets a lot of unrelated cross-plugin noise, and we
             // don't want to claim other plugins' errors as ours.
             const src = (e.filename ?? '') + ' ' + (e.message ?? '');
+            if (isIgnorableStartupConsoleError(e.message ?? '')) return;
             if (!/seek|transformers|webgpu/i.test(src)) return;
             this.logger.appendError('window.onerror', e.error ?? new Error(e.message)).catch(() => {});
         };
@@ -3063,6 +3092,7 @@ export default class SeekPlugin extends Plugin {
             if (this.unloading) return;
             const reason = e.reason instanceof Error ? e.reason : new Error(String(e.reason));
             const stackStr = reason.stack ?? '';
+            if (isIgnorableStartupConsoleError(reason.message) || isIgnorableStartupConsoleError(stackStr)) return;
             // Same filter as above. False negatives are fine; false positives
             // (logging other plugins' errors as Seek's) are worse.
             if (!/seek|transformers|webgpu/i.test(stackStr) && !/seek|transformers|webgpu/i.test(reason.message)) return;
