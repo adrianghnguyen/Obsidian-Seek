@@ -706,17 +706,32 @@ export class SeekSearchModal extends Modal {
     private async runSearch(query: string): Promise<void> {
         const id = ++this.currentSearch;
 
-        // Cold-start gate. On the warm path `modelReady` is true and we skip
-        // straight to "Searching…". On the cold path we show a distinct status
-        // so the user knows their query is held, not lost, then await the same
-        // promise every concurrent runSearch awaits. Whichever holds the latest
-        // `id` wins; the others bail on the stale check below.
+        // Cold-start gate: emit BM25 lexical results immediately if the BM25
+        // cache is available, then upgrade to hybrid results when the model loads.
+        // This provides useful results even before the embedding model is ready.
         if (!this.modelReady) {
             if (this.modelLoadError) {
                 this.renderStatus(`Model load failed: ${this.modelLoadError.message}`);
                 return;
             }
-            this.renderStatus('Loading model… your query will run as soon as it’s ready.');
+
+            // Fire lexical results from the BM25 cache while model loads.
+            // The orchestrator handles name early paint + BM25 scoring inline.
+            if (this.orchestrator.hasBm25Cache()) {
+                await this.orchestrator.searchLexicalOnly(
+                    query,
+                    MAX_RESULTS,
+                    (partial: SearchPartial) => {
+                        if (id !== this.currentSearch || this.closed) return;
+                        this.earlyCleanedQuery = partial.cleanedQuery;
+                        this.latestResultsShown = partial.results;
+                        this.renderResults(partial.results);
+                    },
+                );
+            } else {
+                this.renderStatus('Loading model… your query will run as soon as it’s ready.');
+            }
+
             try {
                 await this.modelReadyPromise;
             } catch (e) {

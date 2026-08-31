@@ -1168,13 +1168,19 @@ export interface SearchEntry {
     nameEarlyPainted?: boolean;
     // t0 → onPartial fire (perceived TTFR). 0 / absent when no early paint.
     namePartialMs?: number;
+    // Lexical partial telemetry (t0 → first lexical onPartial fire, if any).
+    // 0 / absent when no lexical partial was emitted.
+    lexPartialMs?: number;
+    // True when the lexical BM25-only onPartial was emitted.
+    lexPartialFired?: boolean;
 }
 
 // First-page callback from search() — name hits only, before embed/binary finish.
 export interface SearchPartial {
     results: ScoredChunk[];
-    source: 'name';
-    nameHitCount: number;
+    source: 'name' | 'lexical' | 'hybrid';
+    /** Number of name hits scanned (only set when source === 'name'). */
+    nameHitCount?: number;
     cleanedQuery: string;
 }
 
