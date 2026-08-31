@@ -40,6 +40,12 @@ import {
     jobRemaining,
     type IndexStatusHealth,
 } from './index-status-card';
+import {
+    nextPipelineStage,
+    initialPipelineStageState,
+    PIPELINE_STAGE_ORDER,
+} from './pipeline-stage';
+import type { PipelineStages, PipelineStageEvent } from './pipeline-stage';
 
 // Search debounce. Mobile gets a longer window: the query embed runs on the
 // render thread (iframe = same event loop) and on iOS the stage-1 binary scan is
@@ -223,6 +229,10 @@ export class SeekSearchModal extends Modal {
     // Cleaned query for alias highlight while an early name-page is showing
     // (latestSearchEntry is still the previous search until fusion returns).
     private earlyCleanedQuery = '';
+    // Progressive pipeline stage tracker — advances on each promise-ordered
+    // onPartial event. Reset on a new query, cleared on close/error.
+    private pipelineStages: PipelineStages = initialPipelineStageState();
+    private pipeStageEl: HTMLElement | null = null;
     // The currently displayed, ordered results — the array the keyboard model
     // indexes into via `selectedIndex`.
     private currentResults: ScoredChunk[] = [];
@@ -494,6 +504,7 @@ export class SeekSearchModal extends Modal {
         // guard this flag feeds) assumes "closed" is already visible to any
         // async completion that races this call.
         this.closed = true;
+        this.advancePipeline({ type: 'clear' });
         if (this.loadPoll != null) { window.clearInterval(this.loadPoll); this.loadPoll = null; }
         // Closing with results showing counts as a committed search (see captureRecent).
         if (this.currentResults.length > 0) this.captureRecent();
@@ -610,12 +621,70 @@ export class SeekSearchModal extends Modal {
             });
         }
         const closeGrp = foot.createSpan({ cls: 'seek-foot-grp seek-foot-close' });
+        this.pipeStageEl = closeGrp.createSpan({ cls: 'seek-pipe-run' });
+        this.syncPipelineStages();
         this.footStatusEl = closeGrp.createSpan({ cls: 'seek-foot-status' });
         this.footStatusEl.setAttr('role', 'status');
         this.footStatusIconEl = this.footStatusEl.createSpan({ cls: 'seek-foot-status-icon' });
         this.footStatusLabelEl = this.footStatusEl.createSpan({ cls: 'seek-foot-status-label' });
         kbd(closeGrp, 'esc');
         closeGrp.createSpan({ text: ' close' });
+    }
+
+    // Paint the pipeline stage labels into the footer. Each stage shows as a
+    // short text label; active is bold + accent, done is dimmed, pending is
+    // hidden. Arrows between them. The whole group collapses when idle or
+    // all-done so the footer stays clean at rest.
+    private syncPipelineStages(): void {
+        if (!this.pipeStageEl) return;
+        const st = this.pipelineStages;
+        const allDone = st.name === 'done' && st.lexical === 'done' && st.hybrid === 'done';
+        const idle = st.name === 'pending' && st.lexical === 'pending' && st.hybrid === 'pending';
+        this.pipeStageEl.empty();
+        if (allDone || idle) {
+            this.pipeStageEl.style.display = 'none';
+            return;
+        }
+        this.pipeStageEl.style.display = '';
+        const labelMap: Record<string, string> = {
+            name: 'Name match', lexical: 'Lexical BM25', hybrid: 'Hybrid semantic',
+        };
+        for (let i = 0; i < PIPELINE_STAGE_ORDER.length; i++) {
+            const id = PIPELINE_STAGE_ORDER[i];
+            const phase = st[id];
+            const span = this.pipeStageEl.createSpan({ cls: 'seek-pipe-stage' });
+            if (phase === 'active') span.addClass('is-active');
+            else if (phase === 'done') span.addClass('is-done');
+            else span.addClass('is-pending');
+            span.setText(labelMap[id]);
+            if (i < PIPELINE_STAGE_ORDER.length - 1) {
+                this.pipeStageEl.createSpan({ cls: 'seek-pipe-stage-arrow', text: '→' });
+            }
+        }
+    }
+
+    // Map from the orchestrator's SearchPartial.source to the pipeline stage
+    // machine event type. The modal passes this to advancePipeline inside the
+    // onPartial callback so stage advancement is driven by the actual promise-
+    // ordered search result stream. Currently the orchestrator fires only
+    // 'name' and 'lexical' onPartial — the hybrid results arrive via return
+    // and trigger the 'final' event separately.
+    private static partialSourceEvent(source: SearchPartial['source']): PipelineStageEvent['type'] {
+        switch (source) {
+            case 'name': return 'name-done';
+            case 'lexical': return 'lexical-done';
+            case 'hybrid': return 'final'; // safety-valve if a future orchestrator emits 'hybrid'
+        }
+    }
+
+    // Advance the pipeline state machine by one event and re-render the stage
+    // labels. Idempotent — does nothing when the event would not change state
+    // (e.g. a duplicate name-done from the cold-start double pass).
+    private advancePipeline(event: PipelineStageEvent): void {
+        const next = nextPipelineStage(this.pipelineStages, event);
+        if (next === this.pipelineStages) return;
+        this.pipelineStages = next;
+        this.syncPipelineStages();
     }
 
     private syncFooterStatus(): void {
@@ -695,6 +764,7 @@ export class SeekSearchModal extends Modal {
             this.currentSearch++;
             this.latestSearchEntry = null;
             this.earlyCleanedQuery = '';
+            this.advancePipeline({ type: 'clear' });
             this.renderEmpty();
             return;
         }
@@ -705,6 +775,10 @@ export class SeekSearchModal extends Modal {
 
     private async runSearch(query: string): Promise<void> {
         const id = ++this.currentSearch;
+
+        // Reset the pipeline stage machine — the search id check below guards
+        // against stale advancement from a superseded search.
+        this.advancePipeline({ type: 'query' });
 
         // Cold-start gate: emit BM25 lexical results immediately if the BM25
         // cache is available, then upgrade to hybrid results when the model loads.
@@ -726,6 +800,7 @@ export class SeekSearchModal extends Modal {
                         this.earlyCleanedQuery = partial.cleanedQuery;
                         this.latestResultsShown = partial.results;
                         this.renderResults(partial.results);
+                        this.advancePipeline({ type: SeekSearchModal.partialSourceEvent(partial.source) });
                     },
                 );
             } else {
@@ -763,6 +838,7 @@ export class SeekSearchModal extends Modal {
                     this.earlyCleanedQuery = partial.cleanedQuery;
                     this.latestResultsShown = partial.results;
                     this.renderResults(partial.results);
+                    this.advancePipeline({ type: SeekSearchModal.partialSourceEvent(partial.source) });
                     this.maybeRecordSearchLatency(id, query, partial.results);
                 },
                 controller.signal,
@@ -778,6 +854,7 @@ export class SeekSearchModal extends Modal {
             this.latestResultsShown = results;
             this.latestSearchCompletedAt = performance.now();
             this.renderResults(results);
+            this.advancePipeline({ type: 'final' });
             this.maybeRecordSearchLatency(id, query, results);
         } catch (e) {
             if (e instanceof Error && e.name === 'AbortError') return;
