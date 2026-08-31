@@ -2,6 +2,13 @@
 
 All notable changes to Seek are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.1.6
+
+Startup deadlock guard on settings persist. No reindex is needed, since the index format is unchanged.
+
+### Fixed
+- **Vault startup no longer hangs on "Loading plugins" when settings migrate.** Seek persisted migrated settings with `await saveData` inside `onload`, which can deadlock while Obsidian is still loading other plugins. Settings persist and crash forensics logging now run off the blocking onload path.
+
 ## 1.1.5
 
 Unified first-index and full-reindex progress, faster full passes, and honest reload status. No reindex is needed, since the index format is unchanged.

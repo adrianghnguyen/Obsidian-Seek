@@ -531,7 +531,11 @@ export default class SeekPlugin extends Plugin {
         // migrated values win over the persisted ones rather than being overridden.
         migrateSettings(raw);
         Object.assign(this.settings, DEFAULT_SETTINGS, raw);
-        await this.saveData(this.settings);
+        // Persist migrated settings off the blocking onload path — await saveData
+        // here can deadlock Obsidian on "Loading plugins" while the vault adapter
+        // is still busy with other plugins' onload work (see vault plugin-dev gotchas).
+        void this.saveData(this.settings).catch(e =>
+            console.warn('[seek] deferred settings persist failed:', e));
         // Scope the index DB per vault. IndexedDB is shared across every vault
         // window (one Electron origin), so an unscoped name means vault A's
         // reindex destroys vault B's index (see index-store.ts LEGACY_DB_NAME).
@@ -565,7 +569,7 @@ export default class SeekPlugin extends Plugin {
             // Forensics: always persist the classified crash to the per-device
             // log. This is the diagnostic surface (read via the log report) — it
             // is silent by design, not a toast.
-            await this.logger.append(crash);
+            void this.logger.append(crash).catch(() => {});
             // Tripwire WITH a side effect: maybeDemoteOnCrash performs the sticky,
             // per-device WebGPU→WASM demotion (a localStorage write) when a mobile
             // device was killed mid-reindex in the foreground while WebGPU was the
