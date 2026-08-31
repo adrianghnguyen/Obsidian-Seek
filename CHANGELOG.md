@@ -2,7 +2,15 @@
 
 All notable changes to Seek are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
-## 1.1.6
+## 1.2.0
+
+Progressive search pipeline with BM25-first lexical partial and cold-start fallback. No reindex is needed, since the index format is unchanged.
+
+### Added
+- **Search now streams lexical (BM25) results before semantic results arrive.** After name-prefix paint, BM25 + recency + title-boost results are ranked and displayed within ~5 ms, before the embedding model finishes computing vectors. The modal reconciles these lexical results in place with the final hybrid results when they arrive — no flicker, no flash.
+- **Cold-start search works even before the embedding model loads.** When the plugin is still downloading the ~61 MB model (~3-10 s cold start), the BM25 persisted cache serves results immediately. The user sees lexical results instead of "Loading model..." on their first search after Obsidian opens.
+- **New `searchLexicalOnly()` method on the orchestrator** for BM25-only searches that don't require the embedder, serving as a reusable building block for other features.
+- **`lexPartialMs` and `lexPartialFired` telemetry** on SearchEntry so latency measurements track the new progressive partial.
 
 Startup deadlock guard on settings persist. No reindex is needed, since the index format is unchanged.
 
