@@ -10,27 +10,21 @@ A feature task is **not done** until the plugin is deployed to the **sandbox vau
 ## Required finish steps (Seek)
 
 1. `npm run typecheck` and `npm test` (or the relevant subset)
-2. `npm run build`
-3. Copy `main.js`, `manifest.json`, and `styles.css` to `C:\plugin-sandbox-Obsidian\.obsidian\plugins\seek\`
-4. `obsidian plugin:reload id=seek vault=plugin-sandbox-Obsidian`
-5. **Verify** — at least one of:
+2. User-facing fix or feature? Update `CHANGELOG.md` and bump `manifest.json` per semver (`.cursor/rules/changelog.mdc`) — same turn as code
+3. `npm run build`
+4. Copy `main.js`, `manifest.json`, and `styles.css` to `C:\plugin-sandbox-Obsidian\.obsidian\plugins\seek\`
+5. `obsidian plugin:reload id=seek vault=plugin-sandbox-Obsidian` — or **restart Obsidian** if manifest version changed
+6. **Verify** — at least one of:
    - Repo and vault `main.js` match (size/timestamp or grep for a new symbol/string)
    - `obsidian eval vault=plugin-sandbox-Obsidian …` confirms new settings or runtime behavior
    - **UI/CSS/layout changes:** screenshots per `.cursor/skills/seek-visual-verify/SKILL.md` (Settings surface only when Settings changed)
-6. Tell the user to **close and reopen** affected modals; use `plugin:reload` first. **`obsidian restart` kills all vault windows** — only use when the user accepts that (see `.cursor/rules/obsidian-multi-vault-cli.mdc`).
+7. Tell the user to **close and reopen** affected modals; use `plugin:reload` first, then `obsidian reload vault=…` if CSS/layout is stale. Global `restart` only with user consent (see `.cursor/rules/seek-vault-cli.mdc` and global skill `obsidian-multi-vault-cli`).
 
 Large local features/fixes: also run the CLI verify cycle in `.cursor/rules/cli-verify-cycle.mdc` (startup skill when first-load is in scope).
 
-## Production promotion (Obsidian)
+## Production promotion
 
-**Do not** copy build artifacts to `C:\Obsidian\.obsidian\plugins\seek\` during feature work, PR review, or routine task completion.
-
-Deploy to production vault `Obsidian` **only** when:
-
-1. The user **explicitly** asks to promote/deploy to Obsidian, or
-2. A PR branch has been **merged into `main`** and the user (or workflow) requests a production update
-
-When promoting: copy the same three artifacts to `C:\Obsidian\.obsidian\plugins\seek\`, then `obsidian plugin:reload id=seek vault=Obsidian` (or restart if `manifest.json` changed — warn that restart closes every vault).
+See `.cursor/rules/seek-vault-cli.mdc` — do not copy to `C:\Obsidian\.obsidian\plugins\seek\` during feature work or routine task completion.
 
 ## Do not skip
 

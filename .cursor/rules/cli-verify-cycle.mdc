@@ -18,8 +18,8 @@ Large: multi-file behavior, startup/index/search UI, embed/iframe/WebGPU, catch-
    - UI/CSS/status-bar/modal/settings proof → `.cursor/skills/seek-visual-verify/SKILL.md` (`capture-surfaces.ps1`).
    - Other runtime: `obsidian eval`, `obsidian seek:search`, `obsidian plugin:reload` as the change requires.
 3. Confirm the new behavior (or the bug is gone) from CLI output, not from build success.
-4. If CSS/layout/iframe looks stale: try `plugin:reload` first. Use `obsidian restart` only when necessary and **after warning** that it closes every open vault (`.cursor/rules/obsidian-multi-vault-cli.mdc`), then re-probe.
+4. If CSS/layout/iframe looks stale: try `plugin:reload`, then `obsidian reload vault=…`. Use global `obsidian restart` only when necessary and **after warning** that it closes every open vault (global skill `obsidian-multi-vault-cli`), then re-probe.
 
 Do not skip because `npm test` passed. Do not probe a warm session when the bug is first-load. Log Seek console lines that matter.
 
-Production vault (`Obsidian`) CLI verify is **not** part of routine task completion — only when the user requests production promotion (see `.cursor/rules/deploy-and-verify.mdc`).
+Production vault (`Obsidian`) CLI verify is **not** part of routine task completion — only when the user requests production promotion (see `.cursor/rules/seek-vault-cli.mdc`).
