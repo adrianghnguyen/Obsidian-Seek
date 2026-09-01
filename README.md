@@ -28,7 +28,28 @@ The user guide for seek can be found [here](https://publish.obsidian.md/rmm/Seek
 
 ## How It Works
 
-Seek embeds your notes with a local embedding model and fuses those semantic scores with a lexical BM25 ranker. Indexing, embedding, and ranking all happens within Obsidian. Your notes and queries never leave your machine. 
+Seek embeds your notes with a local embedding model and fuses those semantic scores with a lexical BM25 ranker. Indexing, embedding, and ranking all happen inside Obsidian. Your notes and queries never leave your machine.
+
+### Progressive search: three tiers, promoted in place
+
+A search streams results through three tiers, each promoting into the next without a flash or flicker:
+
+1. **Name match** — the basename and alias prefix paint first, so a known-item keystroke shows its note immediately.
+2. **Lexical BM25** — the persisted keyword index ranks matches within a few milliseconds, before the embedding model has finished computing vectors.
+3. **Hybrid semantic** — the dense embedding and fusion pass reconciles the list in place with the final ranked results.
+
+The search footer shows this ladder (Name match → Lexical BM25 → Hybrid semantic), bolding the active stage as each tier resolves. Because the lexical tier is served from the persisted index, search works even on a cold start, before the model finishes downloading or loading.
+
+### Local index cache
+
+The index lives in an IndexedDB database scoped to your vault (`seek-index:<appId>`). Notes are chunked and stored across tiered object stores so the search hot path only reads what it needs:
+
+- **Chunk metadata and bodies** — text and per-chunk metadata for snippets and ranking.
+- **Quantized embeddings** — vectors stored as int8 (SQ8), a 4× shrink over fp32 with negligible relevance loss.
+- **Sign-bit projections** — a compact binary tier used to pick candidate chunks before exact reranking.
+- **Persisted BM25** — the lexical index is serialized and reloaded on startup instead of being rebuilt from scratch.
+
+The resident frame (the corpus in ranked order plus its packed vectors) is cached in memory and reused across keystrokes, so a warm query makes no IndexedDB round-trips. For multi-device use, Seek also writes a synced sidecar — per-device vault files that Obsidian Sync or iCloud can carry between devices — so a phone can hydrate the index without re-embedding.
 
 ## Network Use
 

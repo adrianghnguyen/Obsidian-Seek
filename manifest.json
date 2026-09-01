@@ -3,8 +3,8 @@
     "name": "Seek",
     "version": "1.3.0",
     "minAppVersion": "1.12.7",
-    "description": "Search your vault with hybrid semantic and lexical retrieval, powered by an on-device embedding model.",
-    "author": "Ryan Manor",
-    "authorUrl": "https://github.com/ryan-manor",
+    "description": "A customized fork of the Obsidian Seek plugin - Search your vault with hybrid semantic and lexical retrieval, powered by an on-device embedding model.",
+    "author": "Adrian Nguyen (original by Ryan Manor)",
+    "authorUrl": "https://github.com/adrianghnguyen/obsidian-seek",
     "isDesktopOnly": false
 }
