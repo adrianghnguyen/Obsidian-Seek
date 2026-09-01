@@ -402,13 +402,14 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         const host = this.statusCardHost;
         if (!host || !host.isConnected) return;
         host.empty();
-        const booting = this.statusState() === 'starting' || this.statusState() === 'restoring';
+        const startup = this.plugin.getStartupTimingView();
         renderSettingsIndexStatusCard(host, {
             health: this.statusState(),
             stats: this.stats,
             job: this.plugin.getIndexJob(),
-            startup: this.plugin.getStartupTimingView(),
-            liveElapsedMs: booting ? this.plugin.getStartupLiveElapsedMs() : null,
+            startup,
+            liveElapsedMs: startup.bootComplete ? null : this.plugin.getStartupLiveElapsedMs(),
+            prevBoot: this.plugin.getPreviousStartupBoot(),
         });
     }
 

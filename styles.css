@@ -1199,11 +1199,6 @@
     text-transform: lowercase;
     margin-bottom: 6px;
 }
-.seek-settings .seek-status-startup-live {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-}
 .seek-settings .seek-status-startup-rows {
     display: flex;
     flex-direction: column;
@@ -1211,7 +1206,7 @@
 }
 .seek-settings .seek-status-startup-row {
     display: grid;
-    grid-template-columns: 5.5em 3.5em 0.6em 1fr;
+    grid-template-columns: 5.5em 1fr;
     gap: 6px;
     align-items: baseline;
     font-size: 12px;
@@ -1223,15 +1218,20 @@
 .seek-settings .seek-status-startup-phase {
     font-weight: 600;
     color: var(--text-normal);
-    text-align: right;
 }
-.seek-settings .seek-status-startup-sep {
-    color: var(--text-faint);
-    text-align: center;
-}
-.seek-settings .seek-status-startup-from {
-    color: var(--text-muted);
+.seek-settings .seek-status-startup-trend {
+    margin-top: 6px;
     font-size: 11px;
+    color: var(--text-muted);
+}
+.seek-settings .seek-status-startup-trend.is-faster {
+    color: var(--text-success, var(--text-accent));
+}
+.seek-settings .seek-status-startup-trend.is-slower {
+    color: var(--text-warning, var(--text-faint));
+}
+.seek-settings .seek-status-startup-trend.is-baseline {
+    color: var(--text-faint);
 }
 .seek-search-console-host {
     margin: 0 0 16px;

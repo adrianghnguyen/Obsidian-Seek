@@ -51,6 +51,7 @@ import { IndexStatusBar, extendIndexPassTotal, parseIndexedProgress } from './in
 import type { IndexJobKind, IndexStatusHealth, IndexStatusJob } from './index-status-card';
 import {
     RecentSearchRing,
+    StartupBootHistory,
     StartupSessionTracker,
     type RecentSearchEntry,
     type StartupTimingView,
@@ -338,6 +339,10 @@ export default class SeekPlugin extends Plugin {
     /** Boot hydrate/reconcile ran (or was skipped because store stayed locked). */
     private bootContinuationDone = false;
     private readonly startupTelemetry = new StartupSessionTracker();
+    private readonly startupHistory = new StartupBootHistory(() => {
+        try { return window.localStorage; } catch { return null; }
+    });
+    private startupBootRecorded = false;
     private readonly recentSearchRing = new RecentSearchRing();
     private settingsTelemetrySink: SettingsTelemetrySink | null = null;
 
@@ -2351,6 +2356,7 @@ export default class SeekPlugin extends Plugin {
         if (this.startupTelemetry.view().bootComplete) return;
         if (!getStartupWarm() || !this.orchestrator) {
             this.startupTelemetry.markWarmSkipped();
+            this.recordStartupBoot();
             this.notifySessionTelemetryChanged();
             return;
         }
@@ -2361,6 +2367,7 @@ export default class SeekPlugin extends Plugin {
             await this.orchestrator.warmCaches(trigger);
         } finally {
             this.startupTelemetry.endWarm();
+            this.recordStartupBoot();
             this.notifySessionTelemetryChanged();
         }
     }
@@ -2375,6 +2382,7 @@ export default class SeekPlugin extends Plugin {
             return;
         }
         this.startupTelemetry.markWarmSkipped();
+        this.recordStartupBoot();
         this.notifySessionTelemetryChanged();
     }
 
@@ -2382,8 +2390,23 @@ export default class SeekPlugin extends Plugin {
         this.settingsTelemetrySink = sink;
     }
 
+    /** Snapshot a completed boot into device-local history (once per boot). */
+    private recordStartupBoot(): void {
+        if (this.startupBootRecorded) return;
+        const view = this.startupTelemetry.view();
+        if (!view.bootComplete || view.readyFromStartMs == null) return;
+        this.startupBootRecorded = true;
+        this.startupHistory.record(view);
+    }
+
     getStartupTimingView(): StartupTimingView {
         return this.startupTelemetry.view();
+    }
+
+    /** Previous boot from device-local history, for the Settings trend row. */
+    getPreviousStartupBoot(): { readyFromStartMs: number | null; warmSkipped: boolean } | null {
+        const prev = this.startupHistory.previous();
+        return prev ? { readyFromStartMs: prev.readyFromStartMs, warmSkipped: prev.warmSkipped } : null;
     }
 
     getStartupLiveElapsedMs(): number | null {

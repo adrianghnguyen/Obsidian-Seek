@@ -2,6 +2,17 @@
 
 All notable changes to Seek are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.4.0
+
+Startup diagnostics that fill in live and persist for a boot-over-boot trend. No reindex is needed, since the index format is unchanged.
+
+### Added
+- **Settings → Index shows the startup timeline while it happens, not only after it ends.** The startup block now renders as soon as Seek starts: Searchable clocks live until the search gate releases, Cache warm shows queued → a live clock while caches load → its final duration, and Fully ready opens when warm completes (or immediately when warm is off). Previously the block stayed hidden until the whole boot finished, so a mid-boot Settings visit showed nothing.
+- **Startup timings trend against the previous boot.** Each completed boot is saved on the device (not synced — boot cost is a device trait) and the card shows whether this boot was faster or slower than the last one, with the delta.
+
+### Changed
+- **Startup rows show one number per stage.** Searchable keeps its gate time, Cache warm shows the warm duration itself (the delta between stages), and Fully ready shows the total time from start — replacing the previous duplicated phase/from-start columns.
+
 ## 1.3.0
 
 Progressive search pipeline stage indicator and Settings transparency. No reindex is needed, since the index format is unchanged.

@@ -1,5 +1,6 @@
-// Session-only telemetry for Settings → Seek: startup phase timings and a
-// rolling window of recent modal search latencies. Not persisted across restarts.
+// Telemetry for Settings → Seek: startup phase timings (filled in progressively
+// during boot, persisted per-device for a boot-over-boot trend) and a rolling
+// window of recent modal search latencies. Recent searches are session-only.
 
 export interface StartupTimingView {
     /** Wall ms boot → searchable gate. */
@@ -21,8 +22,7 @@ export interface RecentSearchEntry {
 
 export interface StartupTimingRow {
     label: string;
-    phase: string;
-    fromStart: string;
+    value: string;
 }
 
 const RECENT_SEARCH_MAX = 5;
@@ -34,30 +34,131 @@ export function fmtLatency(ms: number): string {
     return `${Math.round(ms)}ms`;
 }
 
-export function buildStartupTimingRows(view: StartupTimingView): StartupTimingRow[] {
-    const searchable = view.searchableMs;
-    const warmPhase = view.warmPhaseMs;
-    const ready = view.readyFromStartMs;
-
+// One number per stage: gate time, warm duration, total. Rows fill in as the
+// boot progresses — Searchable clocks live until the gate releases, Cache warm
+// shows queued → live clock → final delta, Fully ready opens when warm ends.
+export function buildStartupTimingRows(
+    view: StartupTimingView,
+    liveBootMs: number | null = null,
+    liveWarmMs: number | null = null,
+): StartupTimingRow[] {
+    const searchable = view.searchableMs != null
+        ? fmtLatency(view.searchableMs)
+        : (liveBootMs != null ? fmtLatency(liveBootMs) : '…');
+    const warm = view.warmSkipped
+        ? 'skipped'
+        : (view.warmPhaseMs != null
+            ? fmtLatency(view.warmPhaseMs)
+            : (liveWarmMs != null
+                ? fmtLatency(liveWarmMs)
+                : (view.searchableMs != null ? 'queued' : '…')));
+    const ready = view.readyFromStartMs != null ? fmtLatency(view.readyFromStartMs) : '…';
     return [
-        {
-            label: 'Searchable',
-            phase: searchable != null ? fmtLatency(searchable) : '—',
-            fromStart: searchable != null ? `${fmtLatency(searchable)} from start` : '—',
-        },
-        {
-            label: 'Cache warm',
-            phase: view.warmSkipped ? '—' : (warmPhase != null ? fmtLatency(warmPhase) : '—'),
-            fromStart: view.warmSkipped
-                ? '—'
-                : (ready != null ? `${fmtLatency(ready)} from start` : '—'),
-        },
-        {
-            label: 'Fully ready',
-            phase: '—',
-            fromStart: ready != null ? `${fmtLatency(ready)} from start` : '—',
-        },
+        { label: 'Searchable', value: searchable },
+        { label: 'Cache warm', value: warm },
+        { label: 'Fully ready', value: ready },
     ];
+}
+
+// ── Per-boot history (device-local) ────────────────────────────────────────
+// Completed boots are snapshotted to localStorage (never synced via data.json —
+// boot cost is a device trait, same reasoning as the startup warm toggle) so the
+// Settings card can trend this boot against the previous one.
+
+export interface StoredStartupBoot {
+    searchableMs: number | null;
+    warmPhaseMs: number | null;
+    readyFromStartMs: number | null;
+    warmSkipped: boolean;
+    /** Epoch ms when the boot completed. */
+    at: number;
+}
+
+export interface StartupTrend {
+    direction: 'faster' | 'slower' | 'flat';
+    text: string;
+}
+
+/** The subset of a stored boot the Settings card trends against. */
+export interface StartupTrendBaseline {
+    readyFromStartMs: number | null;
+    warmSkipped: boolean;
+}
+
+/** Compare this boot's ready time with the previous recorded boot. */
+export function startupTrend(
+    current: StartupTimingView,
+    prev: StartupTrendBaseline | null,
+): StartupTrend | null {
+    // Warm-skipped boots aren't comparable with warm-completed ones.
+    if (!prev || prev.warmSkipped || current.warmSkipped) return null;
+    if (current.readyFromStartMs == null || prev.readyFromStartMs == null) return null;
+    const delta = current.readyFromStartMs - prev.readyFromStartMs;
+    if (Math.abs(delta) < 500) return { direction: 'flat', text: '≈ last boot' };
+    return delta < 0
+        ? { direction: 'faster', text: `▼ ${fmtLatency(-delta)} vs last boot` }
+        : { direction: 'slower', text: `▲ ${fmtLatency(delta)} vs last boot` };
+}
+
+const STARTUP_HISTORY_KEY = 'seek-startup-history';
+const STARTUP_HISTORY_MAX = 8;
+
+export class StartupBootHistory {
+    private readonly loadStorage: () => Storage | null;
+
+    constructor(loadStorage: () => Storage | null) {
+        this.loadStorage = loadStorage;
+    }
+
+    private read(): StoredStartupBoot[] {
+        const storage = this.loadStorage();
+        if (!storage) return [];
+        try {
+            const raw = storage.getItem(STARTUP_HISTORY_KEY);
+            if (!raw) return [];
+            const parsed: unknown = JSON.parse(raw);
+            if (!Array.isArray(parsed)) return [];
+            return parsed.filter(isStoredBoot);
+        } catch {
+            return [];
+        }
+    }
+
+    private write(entries: StoredStartupBoot[]): void {
+        const storage = this.loadStorage();
+        if (!storage) return;
+        try {
+            storage.setItem(STARTUP_HISTORY_KEY, JSON.stringify(entries));
+        } catch { /* best-effort */ }
+    }
+
+    /** Most recent stored boot, or null when history is empty. */
+    previous(): StoredStartupBoot | null {
+        return this.read()[0] ?? null;
+    }
+
+    all(): readonly StoredStartupBoot[] {
+        return this.read();
+    }
+
+    record(view: StartupTimingView): void {
+        if (!view.bootComplete || view.readyFromStartMs == null) return;
+        const entries = this.read();
+        entries.unshift({
+            searchableMs: view.searchableMs,
+            warmPhaseMs: view.warmPhaseMs,
+            readyFromStartMs: view.readyFromStartMs,
+            warmSkipped: view.warmSkipped,
+            at: Date.now(),
+        });
+        this.write(entries.slice(0, STARTUP_HISTORY_MAX));
+    }
+}
+
+function isStoredBoot(v: unknown): v is StoredStartupBoot {
+    if (typeof v !== 'object' || v == null) return false;
+    const b = v as Record<string, unknown>;
+    return 'readyFromStartMs' in b && 'warmSkipped' in b && 'at' in b;
 }
 
 export class StartupSessionTracker {
