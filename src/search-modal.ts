@@ -789,24 +789,37 @@ export class SeekSearchModal extends Modal {
                 return;
             }
 
-            // Fire lexical results from the BM25 cache while model loads.
-            // The orchestrator handles name early paint + BM25 scoring inline.
-            if (this.orchestrator.hasBm25Cache()) {
-                await this.orchestrator.searchLexicalOnly(
-                    query,
-                    MAX_RESULTS,
-                    (partial: SearchPartial) => {
-                        if (id !== this.currentSearch || this.closed) return;
-                        this.earlyCleanedQuery = partial.cleanedQuery;
-                        this.latestResultsShown = partial.results;
-                        this.renderResults(partial.results);
-                        this.advancePipeline({ type: SeekSearchModal.partialSourceEvent(partial.source) });
-                    },
-                );
-            } else {
+            // Serve lexical results while the model loads. searchLexicalOnly
+            // builds the frame + BM25 lazily on first use, so this works even
+            // when the startup cache warm hasn't landed yet — during catch-up
+            // ensureFrame serves a briefly-stale frame, which is exactly the
+            // useful-early-results trade the progressive ladder is for.
+            // Warming may also be skipped by an active full rebuild — the
+            // footer already shows Indexing, and the modal's 750 ms poll
+            // re-runs the query when coverage arrives.
+            await this.orchestrator.searchLexicalOnly(
+                query,
+                MAX_RESULTS,
+                (partial: SearchPartial) => {
+                    if (id !== this.currentSearch || this.closed) return;
+                    this.earlyCleanedQuery = partial.cleanedQuery;
+                    this.latestResultsShown = partial.results;
+                    this.renderResults(partial.results);
+                    // Lexical rows on the cold path are provisional — explain
+                    // that above the list until the hybrid upgrade replaces them.
+                    if (partial.results.length > 0) this.paintWarmupHint();
+                    this.advancePipeline({ type: SeekSearchModal.partialSourceEvent(partial.source) });
+                },
+            );
+            if (id !== this.currentSearch || this.closed) return;
+            // Empty lexical page + no model yet: the index itself is still
+            // warming (cold build / restoring). A wait state keeps its
+            // informative card; otherwise say the model is loading instead of
+            // leaving "No notes match." while hybrid search is still ahead.
+            if (this.currentResults.length === 0 && !this.latestSearchEntry
+                && !isIndexWaitKind(this.currentLoadSpec().kind)) {
                 this.renderStatus('Loading model… your query will run as soon as it’s ready.');
             }
-
             try {
                 await this.modelReadyPromise;
             } catch (e) {
@@ -1170,6 +1183,26 @@ export class SeekSearchModal extends Modal {
     // Reconcile the row pool against the new result set in place. Each slot is
     // reused: only changed text repaints, and only changed snippet markdown
     // re-renders. The orchestrator already deduped to one-per-note upstream.
+    // Small notice above the result rows while results are lexical-only during
+    // warm-up (model loading / index caches still hydrating). Painted once and
+    // removed by the next full render — renderResults and the hybrid upgrade
+    // both drop it, so it can never survive onto final results.
+    private paintWarmupHint(): void {
+        if (!this.resultsEl) return;
+        this.clearWarmupHint();
+        const hint = this.resultsEl.createDiv({ cls: 'seek-warmup-hint' });
+        const icon = hint.createSpan({ cls: 'seek-warmup-icon' });
+        setIcon(icon, 'refresh-cw');
+        hint.createSpan({
+            text: 'Seek is warming up — showing quick lexical results; semantic ranking follows.',
+        });
+        this.resultsEl.prepend(hint);
+    }
+
+    private clearWarmupHint(): void {
+        this.resultsEl?.querySelectorAll(':scope > .seek-warmup-hint').forEach(el => el.remove());
+    }
+
     private renderResults(results: ScoredChunk[]): void {
         const container = this.resultsEl;
         if (!container) return;
@@ -1201,6 +1234,9 @@ export class SeekSearchModal extends Modal {
         // Drop a status/empty placeholder (coming from a cold search) without
         // disturbing real rows we may be about to reuse.
         container.querySelectorAll(':scope > .seek-empty').forEach(el => el.remove());
+        // The warm-up hint lives only above lexical-only rows; final results
+        // (and any non-warmup caller) always clear it.
+        this.clearWarmupHint();
 
         // Only the first page is painted now; the rest reveal on scroll. Rows are
         // reused in place by index, so re-running a query that still has ≥PAGE_SIZE

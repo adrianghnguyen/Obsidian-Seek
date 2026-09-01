@@ -750,6 +750,28 @@
     color: var(--text-faint);
 }
 
+/* Warm-up notice above lexical-only results while the model / caches load. */
+.seek-warmup-hint {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    font-size: 12px;
+    color: var(--text-faint);
+}
+
+.seek-warmup-hint .seek-warmup-icon {
+    flex: none;
+    color: var(--text-faint);
+}
+
+.seek-warmup-hint .seek-warmup-icon > svg {
+    animation: seek-spin 1.5s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+    .seek-warmup-hint .seek-warmup-icon > svg { animation: none; }
+}
+
 /* Recent searches (resting state — no active query) */
 .seek-recents {
     padding: 6px 8px;
