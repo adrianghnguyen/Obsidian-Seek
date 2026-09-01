@@ -51,6 +51,8 @@ import type { RowSpaceProbe, DriftRecoveryState } from './coherence';
 import { buildBm25Stamp, bm25StampMatches } from './bm25-persist';
 import type { Bm25PersistStamp } from './bm25-persist';
 import { enumerateNumberPropertyNames } from './prop-types';
+import { CacheManager } from './cache-manager';
+import { SearchQuery } from './search-query';
 
 // Indexing batches via PER-BUCKET ROLLING BUFFERS (2026-06-03 redesign).
 //
@@ -235,6 +237,11 @@ export class SearchOrchestrator {
     // everywhere). Owns its Worker; disposed on plugin unload. See binary-scorer.ts.
     private binaryWorker: BinaryScorerWorker;
 
+    // Extracted collaborators. CacheManager owns the resident frame / BM25 /
+    // binary / bg-stats caches; SearchQuery owns search() + searchLexicalOnly().
+    private cacheManager: CacheManager;
+    private searchQuery: SearchQuery;
+
     // Set once, in dispose() (plugin unload / disable). A reindex that is still
     // embedding when the plugin unloads keeps running on the microtask queue AFTER
     // onunload has already closed the store — every subsequent commit would then throw
@@ -289,6 +296,14 @@ export class SearchOrchestrator {
         this.taskCtx = taskCtx;
         this.coord = new IndexCoordinator(indexDir, settings);
         this.binaryWorker = new BinaryScorerWorker();
+        this.cacheManager = new CacheManager(
+            store, this.coord, embedder, settings, app, forensics, logger, taskCtx,
+        );
+        this.searchQuery = new SearchQuery(
+            app, store, embedder, logger, settings, forensics,
+            this.cacheManager, this.binaryWorker, this.coord,
+            (where: string) => this.onCoherenceDrift(where),
+        );
     }
 
     // Release the off-thread scorer's Worker. Called from the plugin's onunload
@@ -300,9 +315,10 @@ export class SearchOrchestrator {
         this.binaryWorker.dispose();
         // A pending idle-deferred persist would otherwise run its 200-630 ms
         // toJSON against this zombie orchestrator after unload (issue #5 fix E).
-        if (this.pendingPersistIdle !== null && typeof cancelIdleCallback === 'function') {
-            cancelIdleCallback(this.pendingPersistIdle);
-            this.pendingPersistIdle = null;
+        const pending = this.cacheManager.pendingPersistIdle;
+        if (pending !== null && typeof cancelIdleCallback === 'function') {
+            cancelIdleCallback(pending);
+            this.cacheManager.pendingPersistIdle = null;
         }
     }
 
@@ -332,12 +348,12 @@ export class SearchOrchestrator {
 
     /** True while warmCaches is rebuilding frame/BM25 (observable boot gate). */
     isWarmingCaches(): boolean {
-        return this.warming;
+        return this.cacheManager.isWarmingCaches();
     }
 
     /** Join startup/pre-catchup warm if already in flight (avoids parallel ensureFrame). */
     async awaitWarmCachesIfInFlight(): Promise<void> {
-        if (this.warmPromise) await this.warmPromise;
+        await this.cacheManager.awaitWarmCachesIfInFlight();
     }
 
     // Full reindex. Drops the database, walks all markdown, re-embeds everything.
@@ -1727,7 +1743,7 @@ export class SearchOrchestrator {
                 bgStd: bg?.std ?? m.bgStd,
             });
         });
-        this.bgStatsGen = -1;        // invalidate the cached bg accessor (mirrors hydrateSidecar)
+        this.cacheManager.bgStatsGen = -1;        // invalidate the cached bg accessor (mirrors hydrateSidecar)
         this.invalidateBm25Cache();  // bump dataGeneration so the next search rebuilds against the stamped meta
         return 'stamped';
     }
@@ -1827,7 +1843,7 @@ export class SearchOrchestrator {
                 // Capture whenever the frame is resident — applyDelta may patch
                 // incrementally once BM25 is warm (restored or already live), and
                 // bodies must be read BEFORE deleteFile drops them from IDB.
-                const wantRemovalBodies = !!this.frameCache;
+                const wantRemovalBodies = !!this.cacheManager.frameCache;
                 // In-place metadata patches from the engine's chunk-diff: id-stable
                 // chunks whose BM25-irrelevant metadata drifted (line numbers,
                 // dates). applyDelta swaps the frame rows; IDB was already updated.
