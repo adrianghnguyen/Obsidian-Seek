@@ -2,6 +2,17 @@
 
 All notable changes to Seek are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.6.0
+
+See which folders are fully indexed, and watch Seek backfill when you change what it excludes. No reindex is needed, since the index format is unchanged.
+
+### Added
+- **Settings → Index shows embedder coverage per folder.** A new "Embedder coverage by folder" panel lists each top-level folder with the percentage of its notes that have run through the embedder pipeline (the ones that have real index records), plus an overall percentage for the whole vault. Fully-excluded folders are tagged rather than shown as a coverage hole.
+- **Seek detects changes to Obsidian's "Excluded files" and backfills automatically.** When you add or remove an entry under Settings → Files & Links → Excluded files (or flip "Honor excluded folders"), Seek notices within a few seconds. A newly-revealed folder shows a backfill banner ("Backfilling after your Excluded files changed") and is indexed automatically; a newly-excluded folder is soft-deleted from the index. No manual reindex is required.
+
+### Changed
+- **Settings → Index "Honor excluded folders"** now applies immediately on toggle (previously "next full reindex"), so removing an exclusion triggers a backfill right away.
+
 ## 1.5.0
 
 Early results while Seek warms up. No reindex is needed, since the index format is unchanged.

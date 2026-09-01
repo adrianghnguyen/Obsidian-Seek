@@ -20,6 +20,7 @@ import { rank, cosineScores, DEFAULT_RANKING_CONFIG } from './ranker';
 import { browseOrder, recencyDate } from './fusion';
 import { collectNameHits, shouldEarlyPaint } from './name-match';
 import { IndexStore, classifyFileDelta, findOrphanChunkIds, isStoreClosedError, isQuotaError, stripContent, META_SCHEMA_VERSION, type MetaConfig, type FileRecord } from './index-store';
+import { computeFolderCoverage, type FolderCoverageSummary } from './folder-coverage';
 import { INDEX_QUOTA_MSG } from './index-notice';
 import { LocalEmbedder, EMBEDDING_DIM, LEGACY_ENGLISH_MODEL_ID, MODEL_ID, PLUGIN_VERSION } from './embedder';
 import { SeekLogger } from './logger';
@@ -1625,6 +1626,28 @@ export class SearchOrchestrator {
             return { dirty, deleted: [] };
         }
         return { dirty, deleted };
+    }
+
+    // Per-folder embedder coverage for the settings surface. `allPaths` = every
+    // indexable-extension file in the vault (before exclusions); `coveredPaths` = the
+    // subset that has a FileRecord (committed through the embedder); `excludedPaths`
+    // = the subset currently out of index because of Obsidian's "Excluded files" (and
+    // the honor toggle). All three are live vault reads, so this reflects the current
+    // exclusion state without waiting for a delta pass.
+    async getFolderCoverage(): Promise<FolderCoverageSummary> {
+        const all = this.indexableFiles();
+        const allPaths = all.map(f => f.path);
+        const excludedPaths = all.filter(f => !this.shouldIndex(f.path)).map(f => f.path);
+        const coveredPaths = await this.store.listFilePaths();
+        return computeFolderCoverage({ allPaths, coveredPaths, excludedPaths });
+    }
+
+    // Live paths that are indexable-by-extension but currently OUT of the index because
+    // of Obsidian's "Excluded files" (+ the honor toggle). The exclusion-change detector
+    // diffs the top-level folders of this set across polls to tell "a folder came back"
+    // from "a folder was hidden".
+    getExcludedLivePaths(): string[] {
+        return this.indexableFiles().filter(f => !this.shouldIndex(f.path)).map(f => f.path);
     }
 
     // ── Heal a version-mismatched index WITHOUT a full re-embed, when it is provably

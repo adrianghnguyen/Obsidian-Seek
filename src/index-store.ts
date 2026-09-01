@@ -887,6 +887,27 @@ export class IndexStore {
         return await awaitRequest(tx.objectStore(STORE_FILES).getAll()) as FileRecord[];
     }
 
+    // Just the note_paths of the FILES store — a projection that skips the
+    // chunk_ids arrays. The settings coverage panel needs only "which paths have a
+    // FileRecord" (i.e. were committed through the embedder), not their chunk lists,
+    // so this avoids materializing N×k chunk-id arrays on every coverage poll.
+    async listFilePaths(): Promise<string[]> {
+        const db = this.requireDb();
+        const tx = db.transaction(STORE_FILES, 'readonly');
+        const req = tx.objectStore(STORE_FILES).openCursor();
+        const paths: string[] = [];
+        await new Promise<void>((resolve, reject) => {
+            req.onsuccess = (e) => {
+                const cursor = (e.target as IDBRequest<IDBCursorWithValue | null>).result;
+                if (!cursor) { resolve(); return; }
+                paths.push((cursor.value as FileRecord).note_path);
+                cursor.continue();
+            };
+            req.onerror = () => reject(req.error);
+        });
+        return paths;
+    }
+
     // Every chunk_id in the index (KEYS only — far lighter than listAllMeta's full
     // records). The referential-integrity sweep diffs this against the union of
     // FILES-record chunk_ids to find orphans.

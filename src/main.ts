@@ -37,6 +37,12 @@ import { SeekLogger, REPORT_ARTIFACTS_DIR } from './logger';
 import { Forensics } from './forensics';
 import { RecentSearches } from './recents';
 import { SearchOrchestrator, driftRecoveryDecision, shouldIndexPath, type RecencyOverride } from './search';
+import {
+    diffExcludedPaths,
+    exclusionDiffIsEmpty,
+    type ExclusionDiff,
+    type FolderCoverageSummary,
+} from './folder-coverage';
 import { SeekSearchModal, type IndexBanner } from './search-modal';
 import { parsePaneType, openFileAtTarget, openBaseAtTarget, type OpenTarget } from './open-target';
 import {
@@ -171,6 +177,8 @@ export interface ModelStatus {
 /** Settings tab hook for live startup / recent-search console refresh. */
 export interface SettingsTelemetrySink {
     onSessionTelemetryChanged(): void;
+    /** Fired when per-folder embedder coverage or an exclusion change is detected. */
+    onFolderCoverageChanged?(): void;
 }
 
 export default class SeekPlugin extends Plugin {
@@ -242,6 +250,19 @@ export default class SeekPlugin extends Plugin {
     private idleTimer: number | null = null;   // 5-min debounce for edits
     private structTimer: number | null = null;  // short debounce for deletes/moves
     private lastModelUseAt = 0;                  // epoch ms of the last ensureModelLoaded; drives the idle-unload timer (mobile)
+    // ── Exclusion-list change detection (settings coverage surface) ──────────────
+    // Obsidian's "Excluded files" (Settings → Files & Links) has no plugin event,
+    // so we poll its effective-excluded live-path set. A change means a folder was
+    // hidden (soft-delete its chunks) or revealed (backfill it). The snapshot is
+    // seeded on first poll (after layout-ready) so the initial state is never a
+    // false-positive backfill; only LATER deltas trigger.
+    private lastExcludedPaths: string[] | null = null;
+    // Last change detected, for the settings banner ("detected a change in folder: X").
+    // Cleared when the index catches up (runCatchUp finish / full reindex) so a stale
+    // banner never lingers.
+    private exclusionChange: ExclusionDiff | null = null;
+    private exclusionChangeDetectedAt = 0;
+    private exclusionWatcherArmed = false;   // true once the first snapshot is seeded
     private flushing = false;                    // flushDirty re-entrancy guard
     private catchUpPending = false;              // cold-mobile deferred an embed
     private catchUpRunning = false;              // runCatchUp re-entrancy guard
@@ -686,6 +707,12 @@ export default class SeekPlugin extends Plugin {
         // signature, so a warm index with no new sidecar files skips the
         // whole-vault re-chunk entirely. Cleared automatically on unload.
         this.registerInterval(window.setInterval(() => void this.periodicReconcile(), 5 * 60 * 1000));
+
+        // Exclusion-list watch: Obsidian's "Excluded files" has no plugin event, so
+        // poll its effective excluded live-path set every 5s. Cheap (in-memory filter
+        // over the TFile list, no IDB, no reads) and self-gating — it no-ops while a
+        // write/boot pass is running, and only fires on a real path-set change.
+        this.registerInterval(window.setInterval(() => this.pollExclusionChanges(), 5000));
 
         // Mobile: reset the WASM heap during genuine idle. Once a minute, if the
         // model hasn't been used for IDLE_UNLOAD_MS, tear it down (when quiescent);
@@ -2771,6 +2798,9 @@ export default class SeekPlugin extends Plugin {
                 else this.indexProgress.refreshIdle();
                 void this.touchIndexInventory();
                 if (!this.catchUpPending) {
+                    // The drain reached an empty delta — any exclusion change it was
+                    // backfilling is now reflected in the index. Clear the banner.
+                    this.clearExclusionChange();
                     void this.runStartupWarm('post-catchup');
                 }
                 if (this.catchUpPending && (!isMobilePlatform() || !activeDocument.hidden) && !this.indexingBlocked) {
@@ -2867,6 +2897,106 @@ export default class SeekPlugin extends Plugin {
                 // Leave catchUpPending set — visibility / next search retries.
             }
         });
+    }
+
+    // ── Exclusion-list change detection ────────────────────────────────────────────
+    // Obsidian's "Excluded files" (Settings → Files & Links) exposes no plugin event,
+    // so we poll its EFFECTIVE excluded live-path set (indexable-by-extension files
+    // that shouldIndex currently rejects). The first post-boot poll seeds the baseline;
+    // each later poll set-diffs against it. A path that left the excluded set came back
+    // (backfill it — its chunks were soft-deleted or never built); a path that entered
+    // it was hidden (soft-delete its chunks). Only real path-set changes fire — a
+    // whitespace/case-only filter edit leaves the matched set identical and is ignored.
+    private pollExclusionChanges(): void {
+        if (!this.vaultIndexEventsReady || !this.orchestrator || this.unloading) return;
+        // Don't snapshot while a write is in flight OR while boot reconciliation is
+        // still running — a mid-reconcile/mid-reindex enumeration could read a
+        // partially-updated live set and manufacture a spurious diff.
+        if (this.flushing || this.catchUpRunning || this.indexBootPending || this.sidecarHydrating) return;
+        let next: string[];
+        try {
+            next = this.orchestrator.getExcludedLivePaths();
+        } catch { return; }
+        const prev = this.lastExcludedPaths;
+        this.lastExcludedPaths = next;
+        if (prev === null) { this.exclusionWatcherArmed = true; return; }  // seed baseline
+        const diff = diffExcludedPaths(prev, next);
+        if (exclusionDiffIsEmpty(diff)) return;
+        this.exclusionChange = diff;
+        this.exclusionChangeDetectedAt = Date.now();
+        this.notifyFolderCoverageChanged();
+        this.driveExclusionBackfill(diff);
+    }
+
+    // Drive an index pass for the detected exclusion change. Newly-included files have
+    // no FileRecord, so computeDelta already flags them dirty and drainCatchUp backfills
+    // them; newly-excluded files are in computeDelta's deleted set, so the same pass
+    // soft-deletes them. This just arms + surfaces the pass. Desktop loads the model and
+    // drains now (the user just changed exclusions); mobile defers to a safe foreground
+    // window via catchUpPending (scheduleStartupCatchUp no-ops on mobile, matching the
+    // existing lazy mobile behavior).
+    private driveExclusionBackfill(diff: ExclusionDiff): void {
+        if (!this.orchestrator || this.unloading) return;
+        this.catchUpPending = true;
+        this.syncWarmDeferred();
+        const count = Math.max(diff.newlyIncludedPaths.length, diff.newlyExcludedPaths.length, 1);
+        // Surface the pass on the status bar immediately so it reads "indexing…".
+        this.syncCatchUpJob(count);
+        if (isMobilePlatform()) {
+            this.scheduleStartupCatchUp();
+            return;
+        }
+        const workGen = this.loadGeneration;
+        const pacer = new CompositorPacer();
+        void pacer.pace().then(async () => {
+            if (!this.isSessionWorkCurrent(workGen) || !this.catchUpPending) return;
+            try {
+                await this.ensureModelLoaded();
+                if (!this.isSessionWorkCurrent(workGen)) return;
+                this.runCatchUp();
+            } catch {
+                // Leave catchUpPending set — a later trigger (search end / foreground)
+                // retries the drain.
+            }
+        });
+    }
+
+    /** The last exclusion-list change, or null. `backfilling` = a pass is in flight. */
+    getExclusionChange(): { diff: ExclusionDiff; detectedAt: number; backfilling: boolean } | null {
+        if (!this.exclusionChange || exclusionDiffIsEmpty(this.exclusionChange)) return null;
+        return {
+            diff: this.exclusionChange,
+            detectedAt: this.exclusionChangeDetectedAt,
+            backfilling: this.catchUpPending || this.catchUpRunning,
+        };
+    }
+
+    /** Called when the backfill for a detected change finishes (catch-up drained). */
+    private clearExclusionChange(): void {
+        if (this.exclusionChange === null) return;
+        this.exclusionChange = null;
+        this.exclusionChangeDetectedAt = 0;
+        this.notifyFolderCoverageChanged();
+    }
+
+    private notifyFolderCoverageChanged(): void {
+        this.settingsTelemetrySink?.onFolderCoverageChanged?.();
+    }
+
+    /** Per-folder embedder coverage for the settings surface (passthrough). */
+    async getFolderCoverage(): Promise<FolderCoverageSummary> {
+        if (!this.orchestrator) return { rows: [], overall: { folder: '', total: 0, covered: 0, excluded: 0, percent: 0 } };
+        try {
+            return await this.orchestrator.getFolderCoverage();
+        } catch {
+            return { rows: [], overall: { folder: '', total: 0, covered: 0, excluded: 0, percent: 0 } };
+        }
+    }
+
+    // Force an exclusion re-check now (used when the user flips "Honor excluded
+    // folders" in Settings, rather than waiting for the 5s poll).
+    forcePollExclusions(): void {
+        this.pollExclusionChanges();
     }
     // branch). Gen-keyed suppression: only escalate once per index generation, so a
     // degraded index re-tripping drift on every keystroke doesn't re-arm recovery — a

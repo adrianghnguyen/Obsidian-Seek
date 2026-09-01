@@ -27,6 +27,7 @@ import {
 import { formatRecentSearchLine } from './session-telemetry';
 import type { SettingsTelemetrySink } from './main';
 import { formatRoughEta, indexPercent } from './index-eta';
+import { displayFolderName, type FolderCoverageSummary } from './folder-coverage';
 import {
     getBackendOverride, setBackendOverride, isWebgpuDemoted, clearWebgpuDemoted,
     getStartupWarm, setStartupWarm, isMobilePlatform,
@@ -118,6 +119,13 @@ function strategyOf(denseWeight: number): Strategy {
     return denseWeight <= 0.55 ? 'keyword' : 'balanced';
 }
 
+// Coverage color bucket: full → good, ≥50% → warn (partially covered), below → low.
+function coverageTone(r: { percent: number }): 'good' | 'warn' | 'low' {
+    if (r.percent >= 100) return 'good';
+    if (r.percent >= 50) return 'warn';
+    return 'low';
+}
+
 export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetrySink {
     // Async index/model snapshots, loaded once per tab open (guarded null→fetch→re-render).
     private stats: IndexStats | null = null;
@@ -146,12 +154,22 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
     private startupPoll: number | null = null;
     private searchConsoleEl: HTMLElement | null = null;
     private statusCardHost: HTMLElement | null = null;
+    // Per-folder coverage panel: a lightweight poll repaints while the tab is open so a
+    // live backfill (e.g. after an exclusion change) ticks up to 100% without a reopen.
+    private coveragePoll: number | null = null;
+    private coverageHost: HTMLElement | null = null;
+    private exclusionBannerHost: HTMLElement | null = null;
 
     onSessionTelemetryChanged(): void {
         if (!this.containerEl.isConnected) return;
         this.paintStatusCard();
         this.paintSearchConsole();
         if (!this.shouldPollStartup()) this.stopStartupPoll();
+    }
+
+    onFolderCoverageChanged(): void {
+        if (!this.containerEl.isConnected) return;
+        void this.paintCoverage();
     }
 
     constructor(app: App, private plugin: SeekPlugin) {
@@ -165,6 +183,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         else this.stopProgressPoll();
         if (this.shouldPollStartup()) this.startStartupPoll();
         else this.stopStartupPoll();
+        this.startCoveragePoll();
         this.plugin.registerSettingsTelemetrySink(this);
 
         const { containerEl } = this;
@@ -210,9 +229,12 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
     hide(): void {
         this.stopProgressPoll();
         this.stopStartupPoll();
+        this.stopCoveragePoll();
         this.plugin.registerSettingsTelemetrySink(null);
         this.searchConsoleEl = null;
         this.statusCardHost = null;
+        this.coverageHost = null;
+        this.exclusionBannerHost = null;
         this.stats = null;
         this.modelStatus = null;
         this.modelDeleteConfirm = false;
@@ -291,6 +313,16 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
 
         this.renderStatusCard(containerEl);
 
+        // Exclusion-change banner: shows while a backfill for a detected change in
+        // Obsidian's "Excluded files" is running (e.g. a folder was un-excluded).
+        this.exclusionBannerHost = containerEl.createDiv({ cls: 'seek-exclusion-banner-host' });
+        this.paintExclusionBanner();
+
+        // Per-folder embedder-pipeline coverage (which folders have been run through
+        // the embedder, and how completely). Repaints live during a backfill.
+        this.coverageHost = containerEl.createDiv({ cls: 'seek-coverage-host' });
+        void this.paintCoverage();
+
         if (this.plugin.indexHealthState === 'degraded') {
             const warn = containerEl.createDiv({ cls: 'seek-inline-warn' });
             warn.setText('Index degraded — search still works but ranking may be off. A full reindex is recommended.');
@@ -326,8 +358,13 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
 
         new Setting(adv)
             .setName('Honor excluded folders')
-            .setDesc("Skip files in Obsidian's Settings → Files & Links → Excluded files (e.g. Archive). Takes effect on the next full reindex.")
-            .addToggle(t => t.setValue(this.s.honorIgnoredFolders).onChange(async v => { this.s.honorIgnoredFolders = v; await this.save(); }));
+            .setDesc("Skip files in Obsidian's Settings → Files & Links → Excluded files (e.g. Archive). When you add or remove an exclusion there, Seek detects the change and backfills / soft-deletes the affected folders automatically.")
+            .addToggle(t => t.setValue(this.s.honorIgnoredFolders).onChange(async v => {
+                this.s.honorIgnoredFolders = v;
+                await this.save();
+                this.plugin.forcePollExclusions();
+                void this.paintCoverage();
+            }));
 
         if (!isMobilePlatform()) {
             new Setting(adv)
@@ -412,6 +449,104 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             prevBoot: this.plugin.getPreviousStartupBoot(),
         });
     }
+
+    // ── Per-folder coverage + exclusion-change banner ────────────────────────────
+
+    private startCoveragePoll(): void {
+        if (this.coveragePoll != null) return;
+        this.coveragePoll = window.setInterval(() => {
+            if (!this.containerEl.isConnected) { this.stopCoveragePoll(); return; }
+            void this.paintCoverage();
+            this.paintExclusionBanner();
+        }, 2000);
+    }
+
+    private stopCoveragePoll(): void {
+        if (this.coveragePoll == null) return;
+        window.clearInterval(this.coveragePoll);
+        this.coveragePoll = null;
+    }
+
+    private async paintCoverage(): Promise<void> {
+        const host = this.coverageHost;
+        if (!host || !host.isConnected) return;
+        let summary: FolderCoverageSummary;
+        try {
+            summary = await this.plugin.getFolderCoverage();
+        } catch {
+            if (host.isConnected && host === this.coverageHost) host.empty();
+            return;
+        }
+        if (!host.isConnected || host !== this.coverageHost) return; // re-rendered
+        host.empty();
+        if (summary.overall.total === 0) return; // nothing indexable yet
+
+        const wrap = host.createDiv({ cls: 'seek-coverage-panel' });
+        wrap.createDiv({ cls: 'seek-coverage-head', text: 'Embedder coverage by folder' });
+
+        const o = summary.overall;
+        const overall = wrap.createDiv({ cls: 'seek-coverage-overall' });
+        overall.createSpan({
+            cls: 'seek-coverage-pct is-' + coverageTone(o),
+            text: `${o.percent}%`,
+        });
+        overall.createSpan({
+            cls: 'seek-coverage-overall-meta',
+            text: `covered ${o.covered.toLocaleString()} of ${o.total.toLocaleString()} notes` +
+                (o.excluded > 0 ? ` · ${o.excluded.toLocaleString()} excluded` : ''),
+        });
+
+        const rows = wrap.createDiv({ cls: 'seek-coverage-rows' });
+        for (const r of summary.rows) {
+            const fullyExcluded = r.excluded > 0 && r.total - r.excluded === 0;
+            const row = rows.createDiv({ cls: 'seek-coverage-row' + (fullyExcluded ? ' is-excluded' : '') });
+            const name = row.createDiv({ cls: 'seek-coverage-name' });
+            name.createSpan({ text: displayFolderName(r.folder) });
+            if (fullyExcluded) name.createSpan({ cls: 'seek-coverage-excluded-tag', text: 'excluded' });
+
+            const bar = row.createDiv({ cls: 'seek-coverage-track' });
+            const fill = bar.createDiv({ cls: 'seek-coverage-fill is-' + coverageTone(r) });
+            fill.style.width = `${r.percent}%`;
+
+            row.createSpan({ cls: 'seek-coverage-pct is-' + coverageTone(r), text: `${r.percent}%` });
+            row.createSpan({
+                cls: 'seek-coverage-meta',
+                text: fullyExcluded
+                    ? `${r.total.toLocaleString()} excluded`
+                    : `${r.covered.toLocaleString()} / ${r.total.toLocaleString()}`,
+            });
+        }
+    }
+
+    private paintExclusionBanner(): void {
+        const host = this.exclusionBannerHost;
+        if (!host || !host.isConnected) return;
+        host.empty();
+        const change = this.plugin.getExclusionChange();
+        if (!change) return;
+        const { diff, detectedAt, backfilling } = change;
+        const banner = host.createDiv({
+            cls: 'seek-exclusion-banner' + (backfilling ? ' is-backfilling' : ''),
+        });
+        const when = new Date(detectedAt).toLocaleTimeString();
+        if (diff.newlyIncludedPaths.length > 0) {
+            banner.createDiv({
+                cls: 'seek-exclusion-banner-title',
+                text: backfilling ? 'Backfilling after your Excluded files changed' : 'Backfill ready after your Excluded files changed',
+            });
+            banner.createDiv({
+                cls: 'seek-exclusion-banner-detail',
+                text: `Detected a change${diff.newlyIncludedFolders.length ? ' in ' + diff.newlyIncludedFolders.join(', ') : ''} — indexing ${diff.newlyIncludedPaths.length.toLocaleString()} newly included note${diff.newlyIncludedPaths.length === 1 ? '' : 's'} (${when}).`,
+            });
+        }
+        if (diff.newlyExcludedPaths.length > 0) {
+            banner.createDiv({
+                cls: 'seek-exclusion-banner-detail',
+                text: `Removing ${diff.newlyExcludedPaths.length.toLocaleString()} note${diff.newlyExcludedPaths.length === 1 ? '' : 's'} from the index${diff.newlyExcludedFolders.length ? ' in ' + diff.newlyExcludedFolders.join(', ') : ''}.`,
+            });
+        }
+    }
+
 
     private renderReindexRow(containerEl: HTMLElement): void {
         if (this.showIndexingProgress()) {
