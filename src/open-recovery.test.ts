@@ -191,7 +191,7 @@ describe('openDb UnknownError retry (backing-store lock)', () => {
 
         const p = openDb('seek-index');
         await tick();
-        await vi.advanceTimersByTimeAsync(200);
+        await vi.advanceTimersByTimeAsync(500);
         await tick();
 
         const db = await p;
@@ -207,15 +207,15 @@ describe('openDb UnknownError retry (backing-store lock)', () => {
 
         const p = openDb('seek-index');
         p.catch(() => {});
-        for (let i = 0; i < 3; i++) {
+        for (let i = 0; i < 5; i++) {
             await tick();
-            await vi.advanceTimersByTimeAsync(200);
+            await vi.advanceTimersByTimeAsync(500);
         }
         await tick();
 
         await expect(p).rejects.toMatchObject({ name: 'UnknownError' });
         expect(fake.deleteCalls.length).toBe(0);
-        expect(fake.openCount()).toBe(4);
+        expect(fake.openCount()).toBe(6);
     });
 });
 

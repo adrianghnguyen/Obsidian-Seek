@@ -26,6 +26,7 @@ import {
     createStoreOpenRetryScheduler,
     isRetryIndexStoreCommandEnabled,
     storeOpenRetryDelaysMs,
+    storeOpenBackoffDelaysMs,
     type StoreOpenRetryScheduler,
 } from './index-store-lock';
 import { sweepOrphanTmpFiles } from './sidecar';
@@ -761,6 +762,18 @@ export default class SeekPlugin extends Plugin {
             callback: () => { void this.retryIndexStoreOpen(); },
         });
 
+        this.addCommand({
+            id: 'force-reset-index',
+            name: 'Force reset search index',
+            checkCallback: (checking) => {
+                if (checking) return this.indexStoreLocked;
+                if (!this.indexStoreLocked) return false;
+                const bootGen = this.loadGeneration;
+                void this.forceResetAndReindex(bootGen);
+                return true;
+            },
+        });
+
         // ---- obsidian://seek deep-link --------------------------------
         // `obsidian://seek?query=<urlencoded>[&mode=open][&paneType=tab|split|window][&vault=<name>]`.
         // registerObsidianProtocolHandler is a core Plugin API (present on
@@ -1148,13 +1161,46 @@ export default class SeekPlugin extends Plugin {
         this.indexStoreLocked = true;
         this.refreshIndexStatusBar();
         this.disposeStoreOpenRetryScheduler();
+        // Wrap ensureStoreReady in a timeout so the retry chain doesn't hang
+        // on a stale LevelDB lock (indexedDB.open() can hang indefinitely on
+        // Windows/Electron after a crash). The timeout rejection lets the
+        // scheduler continue to the next backoff tick. deleteDatabase (forceReset)
+        // does NOT need the open lock.
+        const ensureOpenWithTimeout = async (): Promise<void> => {
+            const timeoutMs = 8000;
+            await Promise.race([
+                this.ensureStoreReady(),
+                new Promise<void>((_, reject) =>
+                    window.setTimeout(() => reject(new Error(`store open timed out after ${timeoutMs}ms`)), timeoutMs)),
+            ]);
+        };
         this.storeOpenRetryScheduler = createStoreOpenRetryScheduler({
             delaysMs: storeOpenRetryDelaysMs(),
-            ensureOpen: () => this.ensureStoreReady(),
+            backoffDelaysMs: storeOpenBackoffDelaysMs(),
+            ensureOpen: ensureOpenWithTimeout,
             isCurrent: () => this.isSessionWorkCurrent(bootGen),
             onLocked: () => {
                 this.indexStoreLocked = true;
                 this.refreshIndexStatusBar();
+            },
+            onRetry: (attempt, delayMs, elapsedMs) => {
+                const msg = `[seek] store lock retry #${attempt} in ${delayMs}ms (${elapsedMs}ms elapsed)`;
+                console.warn(msg);
+                void this.logger.append({
+                    type: 'store-lock-retry',
+                    timestamp: new Date().toISOString(),
+                    attempt,
+                    delayMs,
+                    totalElapsedMs: elapsedMs,
+                }).catch(() => {});
+            },
+            onExhausted: () => {
+                console.warn('[seek] store lock retry exhausted — attempting self-heal (nuke + rebuild)');
+                void this.logger.append({
+                    type: 'store-lock-exhausted',
+                    timestamp: new Date().toISOString(),
+                }).catch(() => {});
+                void this.forceResetAndReindex(bootGen);
             },
             onSuccess: () => {
                 if (!this.isSessionWorkCurrent(bootGen)) return;
@@ -1167,7 +1213,41 @@ export default class SeekPlugin extends Plugin {
         this.storeOpenRetryScheduler.start();
     }
 
+    /** Self-heal: nuke the IndexedDB database and schedule a full reindex. */
+    private async forceResetAndReindex(bootGen: number): Promise<void> {
+        if (!this.isBootCurrent(bootGen)) return;
+        try {
+            new Notice('Seek: search index is stuck locked — resetting database...', 8000);
+            await this.logger.append({
+                type: 'store-force-reset',
+                timestamp: new Date().toISOString(),
+            }).catch(() => {});
+            const result = await this.store.forceReset();
+            if (!this.isBootCurrent(bootGen)) return;
+            if (result.error) {
+                new Notice(`Seek: ${result.error}`, 8000);
+                return;
+            }
+            if (!this.store.isOpen()) {
+                new Notice('Seek: cannot reset search index — another window may hold the lock. Close other vault windows and retry.', 8000);
+                return;
+            }
+            this.clearIndexStoreLocked();
+            new Notice(`Seek: index ${result.nuked ? 'reset' : 'cleared'} — rebuilding from scratch...`, 6000);
+            void this.scheduleColdBuild();
+        } catch (e) {
+            this.appendErrorIfCurrent('force-reset', e, bootGen);
+            new Notice('Seek: failed to reset search index. Try quitting Obsidian completely.', 8000);
+        }
+    }
+
     private async retryIndexStoreOpen(): Promise<void> {
+        if (this.storeOpenRetryScheduler) {
+            // Use retryNow to bypass pending backoff timers.
+            this.storeOpenRetryScheduler.retryNow();
+            new Notice('Seek: retrying search index...', 3000);
+            return;
+        }
         const bootGen = this.loadGeneration;
         try {
             await this.ensureStoreReady();
@@ -1177,7 +1257,7 @@ export default class SeekPlugin extends Plugin {
             }
         }
         if (!this.store.isOpen()) {
-            new Notice('Seek: search index is still locked. Try quitting Obsidian completely.', 6000);
+            new Notice('Seek: search index is still locked. Try force-reset or quit Obsidian completely.', 6000);
             return;
         }
         this.clearIndexStoreLocked();

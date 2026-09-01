@@ -1557,6 +1557,25 @@ export interface StartupGateEntry {
     searchResult?: string;
 }
 
+export interface StoreLockRetryEntry {
+    type: 'store-lock-retry';
+    timestamp: string;
+    attempt: number;
+    delayMs: number;
+    totalElapsedMs: number;
+}
+
+export interface StoreLockExhaustedEntry {
+    type: 'store-lock-exhausted';
+    timestamp: string;
+}
+
+export interface StoreForceResetEntry {
+    type: 'store-force-reset';
+    timestamp: string;
+    nuked?: boolean;
+}
+
 // Stamped onto every entry by logger.append(). Optional so pre-v9 logs (which
 // predate device/session attribution) still parse — the report treats a missing
 // deviceId as 'legacy' and a missing sessionId as un-scopable.
@@ -1596,4 +1615,7 @@ export type LogEntry = (
     | RechunkLiveEntry
     | StartupSpanEntry
     | StartupGateEntry
+    | StoreLockRetryEntry
+    | StoreLockExhaustedEntry
+    | StoreForceResetEntry
 ) & LogMeta;

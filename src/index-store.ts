@@ -353,8 +353,58 @@ function deleteDbWithBlockGuard(dbName: string): Promise<void> {
 // Exported for open-recovery.test.ts — the VersionError-recovery path is only
 // reachable with allowRecovery=true (IndexStore.open's default), so the test drives
 // openDb directly rather than through all of open()'s post-connection setup.
-const UNKNOWN_OPEN_RETRY_MS = 200;
-const UNKNOWN_OPEN_RETRIES = 3;
+const UNKNOWN_OPEN_RETRY_MS = 500;
+const UNKNOWN_OPEN_RETRIES = 5;
+
+/**
+ * Attempt to clear a stale LevelDB lock by issuing a deleteDatabase.
+ * deleteDatabase does not need the open lock — it can succeed when open()
+ * fails with UnknownError, freeing the underlying SQLite/LevelDB lock.
+ * Returns true if the delete succeeded (lock cleared), false if blocked or errored.
+ */
+export async function clearStaleLock(dbName: string): Promise<boolean> {
+    try {
+        await deleteDbWithBlockGuard(dbName);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+export function openDbWithTimeout(
+    dbName: string,
+    timeoutMs: number,
+): Promise<IDBDatabase> {
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        const timer = window.setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            reject(new Error(`indexedDB.open(${dbName}) timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+        const req = indexedDB.open(dbName, DB_VERSION);
+        req.onerror = () => {
+            if (settled) return;
+            settled = true;
+            window.clearTimeout(timer);
+            reject(req.error ?? new Error(`indexedDB.open(${dbName}) failed`));
+        };
+        req.onsuccess = () => {
+            if (settled) return;
+            settled = true;
+            window.clearTimeout(timer);
+            const db = req.result;
+            db.onversionchange = () => {
+                console.warn('[seek] versionchange received — closing connection to allow schema upgrade');
+                db.close();
+            };
+            resolve(db);
+        };
+        req.onupgradeneeded = () => {
+            /* versionchange handled in openDb — not needed for fire-and-forget caller */
+        };
+    });
+}
 
 export function openDb(
     dbName: string,
@@ -623,6 +673,51 @@ export class IndexStore {
     close(): void {
         this.db?.close();
         this.db = null;
+    }
+
+    /**
+     * Nuke the database and reopen fresh. Used for self-healing when IndexedDB
+     * is permanently locked (stale LevelDB lock after a crash).
+     *
+     * Strategy:
+     *   1. Close any open connection.
+     *   2. Try deleteDatabase with a timeout. If it blocks (another window),
+     *      the caller knows to prompt the user to close other windows.
+     *   3. If stale lock persists (deleteDatabase hangs too), report that so
+     *      the user knows to quit Obsidian completely.
+     *
+     * Returns { nuked, error } where nuked=true means DB was dropped and reopened.
+     */
+    async forceReset(): Promise<{ nuked: boolean; error?: string }> {
+        this.close();
+        // 1. Try deleteDatabase directly (with block guard = 10s max wait).
+        //    If another window holds the DB, this rejects with a blocked error.
+        try {
+            await deleteDbWithBlockGuard(this._dbName);
+        } catch (e) {
+            this.close();
+            // deleteDatabase was blocked — another window/tab holds the DB.
+            // Try a timed open+clear as fallback.
+            try {
+                this.db = await openDbWithTimeout(this._dbName, 3000);
+                await this.clearAllStores();
+                return { nuked: false };
+            } catch (fallbackErr) {
+                this.close();
+                const msg = e instanceof Error ? e.message : String(e);
+                if (msg.includes('blocked')) {
+                    return { nuked: false, error: `another window is holding ${this._dbName} open. Close other vault windows and retry.` };
+                }
+                return { nuked: false, error: `cannot force-reset ${this._dbName}: stale LevelDB lock. Quit Obsidian completely and retry.` };
+            }
+        }
+        // 2. deleteDatabase succeeded — reopen the empty DB.
+        try {
+            this.db = await openDb(this._dbName);
+            return { nuked: true };
+        } catch (e) {
+            return { nuked: false, error: `reopened DB after delete failed: ${e instanceof Error ? e.message : String(e)}` };
+        }
     }
 
     /**
