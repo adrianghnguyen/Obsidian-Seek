@@ -2,6 +2,17 @@
 
 All notable changes to Seek are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.5.0
+
+Early results while Seek warms up. No reindex is needed, since the index format is unchanged.
+
+### Added
+- **Search works while Seek is still warming up.** On a fresh start, the search modal no longer waits for the embedding model and index caches before showing anything: it now serves the early stages of the search pipeline (name matches and lexical BM25 results) immediately, then upgrades them in-place to full semantic results when Seek finishes loading. A small notice above the results explains that lexical results are provisional during warm-up.
+- **Headless `seek:search` returns lexical results during warm-up.** CLI and automation calls no longer refuse while the index finishes booting — with a populated index they answer lexically and mark the response `ready: false` (with a `warming` note) until semantic search is available. `seek:open` and `seek:insert-link` still wait, so a wrong top hit can't misfire into a note.
+
+### Changed
+- **Settings → Relevance "Search stages" explainer** mentions that lexical results can appear before semantic ranking while Seek is warming up.
+
 ## 1.4.0
 
 Startup diagnostics that fill in live and persist for a boot-over-boot trend. No reindex is needed, since the index format is unchanged.
