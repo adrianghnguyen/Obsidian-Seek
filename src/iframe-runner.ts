@@ -116,6 +116,11 @@ export function selectQueryBucket(tokenCount: number): number {
 }
 const IFRAME_ID = 'seek-runtime-iframe';
 const READY_TIMEOUT_MS = 30_000;
+// Grace period before removing the srcdoc iframe from the DOM. Blank the document
+// first so WebGPU/ORT teardown runs inside the frame; a hard removeChild while
+// GPU callbacks are still unwinding triggers Electron "Uncaught illegal access"
+// noise (index.html:1 in DevTools). Capped so plugin unload/recycle never hangs.
+export const SOFT_DISPOSE_MS = 50;
 
 // Per-RPC timeout. The iframe WebContent process can be jetsam-killed mid-RPC on
 // mobile (the documented reindex-hang failure) or its WebGPU device lost; the
@@ -288,7 +293,7 @@ export class IframeRunner {
             // posting to an iframe that never answers. dispose() unwinds to a clean
             // no-iframe state (also removing the leaked message listener) so the next
             // init() genuinely rebuilds.
-            this.dispose();
+            await this.dispose();
         }
         result.initMs = parseFloat((performance.now() - t0).toFixed(2));
         return result;
@@ -490,13 +495,11 @@ export class IframeRunner {
         return this.send<AppLocalFetchResult>('app-local-fetch', { url });
     }
 
-    dispose(): void {
+    async dispose(): Promise<void> {
         if (this.listener) {
             window.removeEventListener('message', this.listener);
             this.listener = null;
         }
-        if (this.iframe?.parentNode) this.iframe.parentNode.removeChild(this.iframe);
-        this.iframe = null;
         // Tag the rejection 'DISPOSED' so the embed catch can distinguish an
         // intentional teardown (plugin unloading → must NOT recycle, or it
         // resurrects a zombie iframe + reloads ~250 MB into a dead plugin) from
@@ -510,6 +513,21 @@ export class IframeRunner {
             p.reject(Object.assign(new Error('iframe disposed'), { code: 'DISPOSED' }));
         }
         this.pending.clear();
+
+        const iframe = this.iframe;
+        this.iframe = null;
+        if (!iframe) return;
+
+        try {
+            iframe.removeAttribute('srcdoc');
+            iframe.src = 'about:blank';
+        } catch { /* swallow — frame may already be detached */ }
+
+        await new Promise<void>((resolve) => window.setTimeout(resolve, SOFT_DISPOSE_MS));
+
+        try {
+            if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+        } catch { /* swallow — frame may already be gone */ }
     }
 
     // Reject every in-flight RPC with a RECOVERABLE error (NOT 'DISPOSED'),

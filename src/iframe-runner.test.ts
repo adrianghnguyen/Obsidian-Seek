@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { IframeRunner, buildChildScript, isChromiumPowerPreferenceAdapterWarning, stripGpuPowerPreference } from './iframe-runner';
+import { IframeRunner, buildChildScript, isChromiumPowerPreferenceAdapterWarning, stripGpuPowerPreference, SOFT_DISPOSE_MS } from './iframe-runner';
 
 // F5 — per-RPC timeout. A jetsam-killed iframe child never replies; without the
 // timeout the parent promise hangs forever, stranding the embed catch's
@@ -7,6 +7,40 @@ import { IframeRunner, buildChildScript, isChromiumPowerPreferenceAdapterWarning
 // the node test env, so inject a live-looking iframe whose contentWindow.postMessage
 // is a no-op (the child never answers) and drive the timer with fake timers.
 afterEach(() => { vi.useRealTimers(); });
+
+describe('IframeRunner soft dispose', () => {
+    it('blanks srcdoc, waits SOFT_DISPOSE_MS, then removes the iframe', async () => {
+        vi.useFakeTimers();
+        const r = new IframeRunner();
+        let removed = false;
+        const iframe = {
+            id: 'seek-runtime-iframe',
+            srcdoc: '<!DOCTYPE html><html><body>x</body></html>',
+            src: '',
+            removeAttribute: vi.fn(function (this: { srcdoc?: string }, name: string) {
+                if (name === 'srcdoc') delete this.srcdoc;
+            }),
+            hasAttribute: vi.fn(function (this: { srcdoc?: string }, name: string) {
+                return name === 'srcdoc' && this.srcdoc != null;
+            }),
+            parentNode: {
+                removeChild: vi.fn(() => { removed = true; }),
+            },
+        };
+        (r as unknown as { iframe: typeof iframe }).iframe = iframe;
+
+        const disposeP = r.dispose();
+        await Promise.resolve();
+        expect(iframe.src).toBe('about:blank');
+        expect(iframe.hasAttribute('srcdoc')).toBe(false);
+        expect(removed).toBe(false);
+
+        await vi.advanceTimersByTimeAsync(SOFT_DISPOSE_MS);
+        await disposeP;
+        expect(iframe.parentNode.removeChild).toHaveBeenCalledWith(iframe);
+        expect(removed).toBe(true);
+    });
+});
 
 function withDeadIframe(): IframeRunner {
     const r = new IframeRunner();

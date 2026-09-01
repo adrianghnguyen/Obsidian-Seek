@@ -464,7 +464,7 @@ export class LocalEmbedder {
     // _loaded true on success, false (and throws) if the rebuild fails.
     async recycle(): Promise<void> {
         this._loaded = false;
-        this.runner.dispose();
+        await this.runner.dispose();
         // Set the rebuild promise into the init memo BEFORE the first await so a
         // CONCURRENT embedder.init() coalesces onto it (init() returns the memo)
         // instead of racing a second runner.init() through the gap the old
@@ -582,6 +582,6 @@ export class LocalEmbedder {
         this.runner.onEvent = this._onIframeEvent;
         this._initPromise = null;
         this._loadPromise = null;
-        oldRunner.dispose();
+        void oldRunner.dispose();
     }
 }
