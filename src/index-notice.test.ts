@@ -27,6 +27,7 @@ import {
     INDEX_NO_INDEX_TITLE,
     INDEX_UP_TO_DATE_LABEL,
     CLI_SEARCH_GATE_STARTING,
+    CLI_SEARCH_WARMING,
     CLI_SEARCH_GATE_RESTORING,
     CLI_SEARCH_GATE_INDEXING,
     CLI_SEARCH_GATE_NO_INDEX,
@@ -397,13 +398,23 @@ describe('isIndexWaitKind', () => {
 });
 
 describe('resolveCliSearchGate', () => {
-    it('blocks during hydrate / starting even when inventory is already populated', () => {
+    it('soft-warms during hydrate / starting on a populated store (lexical fallback, not a refusal)', () => {
         expect(resolveCliSearchGate({ warmPhase: 'starting', uiHealth: 'starting', chunks: 10514 }))
+            .toBe(CLI_SEARCH_WARMING);
+    });
+
+    it('soft-warms during sidecar restore when some chunks already exist', () => {
+        expect(resolveCliSearchGate({ warmPhase: 'restoring', uiHealth: 'restoring', chunks: 12 }))
+            .toBe(CLI_SEARCH_WARMING);
+    });
+
+    it('hard-blocks during starting with an empty store (nothing to serve)', () => {
+        expect(resolveCliSearchGate({ warmPhase: 'starting', uiHealth: 'starting', chunks: 0 }))
             .toBe(CLI_SEARCH_GATE_STARTING);
     });
 
-    it('blocks during sidecar restore even if some chunks already exist', () => {
-        expect(resolveCliSearchGate({ warmPhase: 'restoring', uiHealth: 'restoring', chunks: 12 }))
+    it('hard-blocks during restoring with an unknown store probe', () => {
+        expect(resolveCliSearchGate({ warmPhase: 'restoring', uiHealth: 'restoring', chunks: null }))
             .toBe(CLI_SEARCH_GATE_RESTORING);
     });
 
@@ -414,6 +425,11 @@ describe('resolveCliSearchGate', () => {
 
     it('blocks during a full rebuild even when chunks already exist', () => {
         expect(resolveCliSearchGate({ warmPhase: null, uiHealth: 'indexing', chunks: 1200, fullJobActive: true }))
+            .toBe(CLI_SEARCH_GATE_INDEXING);
+    });
+
+    it('full rebuild outranks the soft warming state (populated + fullJobActive blocks)', () => {
+        expect(resolveCliSearchGate({ warmPhase: 'starting', uiHealth: 'starting', chunks: 1200, fullJobActive: true }))
             .toBe(CLI_SEARCH_GATE_INDEXING);
     });
 

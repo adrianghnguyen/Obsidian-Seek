@@ -264,16 +264,28 @@ export const CLI_SEARCH_GATE_RESTORING = 'Seek not ready — restoring search in
 export const CLI_SEARCH_GATE_INDEXING = 'Seek not ready — index still building';
 export const CLI_SEARCH_GATE_NO_INDEX = 'Seek not ready — no indexed notes yet';
 export const CLI_SEARCH_GATE_LOCKED = 'Seek not ready — search index is locked';
+/** Soft (non-blocking) notice for a populated store still warming at boot. */
+export const CLI_SEARCH_WARMING = 'Seek is warming up — lexical results only until semantic search is ready';
 
 export function resolveCliSearchGate(input: CliSearchGateInput): string | null {
     if (input.uiHealth === 'locked') return CLI_SEARCH_GATE_LOCKED;
-    // Starting/restoring block even on a populated store — search during boot
-    // races sidecar hydrate / applyDelta and can empty the in-memory frame.
+    // A full rebuild is always a hard block — even over a populated store and
+    // even while booting. Results mid-pass are partial and misleading.
+    if (input.fullJobActive) return CLI_SEARCH_GATE_INDEXING;
+    // Starting/restoring on a POPULATED store is a soft state, not a refusal:
+    // ensureFrame serves the warm/stale frame behind the writer mutex and
+    // searchLexicalOnly needs no embedder, so lexical results are safe and
+    // useful while caches hydrate. The handler marks the response ready:false.
+    // An empty store still hard-blocks — there is genuinely nothing to serve.
+    const populated = input.chunks != null && input.chunks > 0;
+    if (populated) {
+        if (input.warmPhase === 'starting' || input.uiHealth === 'starting') return CLI_SEARCH_WARMING;
+        if (input.warmPhase === 'restoring' || input.uiHealth === 'restoring') return CLI_SEARCH_WARMING;
+    }
+    if (populated) return null;
+    // Starting/restoring with nothing to serve keeps the old refusal copy.
     if (input.warmPhase === 'starting' || input.uiHealth === 'starting') return CLI_SEARCH_GATE_STARTING;
     if (input.warmPhase === 'restoring' || input.uiHealth === 'restoring') return CLI_SEARCH_GATE_RESTORING;
-    if (input.fullJobActive) return CLI_SEARCH_GATE_INDEXING;
-    const populated = input.chunks != null && input.chunks > 0;
-    if (populated) return null;
     if (input.uiHealth === 'indexing') return CLI_SEARCH_GATE_INDEXING;
     if (input.chunks == null) return CLI_SEARCH_GATE_STARTING;
     return CLI_SEARCH_GATE_NO_INDEX;

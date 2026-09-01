@@ -30,7 +30,7 @@ import {
     type StoreOpenRetryScheduler,
 } from './index-store-lock';
 import { sweepOrphanTmpFiles } from './sidecar';
-import type { SeekSettings, IndexCompleteEntry, ModelDeliveryEntry } from './types';
+import type { SeekSettings, IndexCompleteEntry, ModelDeliveryEntry, ScoredChunk, SearchEntry } from './types';
 import { DEFAULT_SETTINGS, migrateSettings } from './types';
 import { IndexStore, indexDbPrefix, isTransientIdbUnavailable } from './index-store';
 import { SeekLogger, REPORT_ARTIFACTS_DIR } from './logger';
@@ -46,7 +46,7 @@ import {
     resolveInsertLinkAlias,
     resolveInsertLinkSubpath,
 } from './insert-link';
-import { indexBannerSpec, resolveIndexLoadPhase, resolveCliSearchGate, resolveIndexUiStatus, resolveSidecarWait, retainIndexInventory, INDEX_STALE_MSG, INDEX_SYNCING_MSG, INDEX_PEER_AHEAD_MSG, type DegradedReason, type IndexLoadState } from './index-notice';
+import { indexBannerSpec, resolveIndexLoadPhase, resolveCliSearchGate, CLI_SEARCH_WARMING, resolveIndexUiStatus, resolveSidecarWait, retainIndexInventory, INDEX_STALE_MSG, INDEX_SYNCING_MSG, INDEX_PEER_AHEAD_MSG, type DegradedReason, type IndexLoadState } from './index-notice';
 import { IndexStatusBar, extendIndexPassTotal, parseIndexedProgress } from './index-status-bar';
 import type { IndexJobKind, IndexStatusHealth, IndexStatusJob } from './index-status-card';
 import {
@@ -465,6 +465,16 @@ export default class SeekPlugin extends Plugin {
         });
     }
 
+    // Soft-warming probe for the seek:search lexical fallback: resolveCliSearchGate
+    // returns the warm-up notice (not a refusal) exactly when the store is
+    // populated but boot/restore hasn't released the gate. seek:search serves
+    // lexical results in that window (marked ready:false); seek:open /
+    // seek:insert-link keep the hard gate since a wrong top hit misfires.
+    private async cliSearchWarmingNotice(): Promise<string | null> {
+        const gate = await this.cliSearchGateMessage();
+        return gate === CLI_SEARCH_WARMING ? gate : null;
+    }
+
     private openSeekSettings(): void {
         const setting = (this.app as unknown as {
             setting?: { open(): void; openTabById(id: string): void };
@@ -862,7 +872,13 @@ export default class SeekPlugin extends Plugin {
                     if (!orchestrator) return fail('Seek not initialized — plugin still loading');
 
                     const gate = await this.cliSearchGateMessage();
-                    if (gate) return asJson ? JSON.stringify({ error: gate, results: [], ready: false }) : gate;
+                    // Populated store still booting/restoring: degrade to lexical
+                    // instead of refusing — the modal does the same. The gate
+                    // message rides the response so callers know why quality is
+                    // temporarily reduced (warming ≠ ready).
+                    const warming = gate === CLI_SEARCH_WARMING;
+                    if (gate && !warming) return asJson ? JSON.stringify({ error: gate, results: [], ready: false }) : gate;
+                    if (asJson && warming) return JSON.stringify({ error: gate, results: [], ready: false, warming: true });
 
                     const parsedLimit = typeof args.limit === 'string' ? parseInt(args.limit, 10) : NaN;
                     const topK = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : 10;
@@ -895,31 +911,43 @@ export default class SeekPlugin extends Plugin {
                         // or bulk flush yields at its next batch boundary instead of
                         // making this call wait out the whole indexing pass (the
                         // modal gets the same preemption via its own edges).
-                        const { results, entry } = await this.withQueryInFlight(async () => {
-                            // No modal here to overlap the cold-start, so block on the
-                            // model load (3–10 s first call) before querying — otherwise
-                            // the orchestrator embeds against an unloaded model.
-                            await this.ensureModelLoaded();
-                            return orchestrator.search(query, topK, recencyOverride);
-                        });
+                        // Warming window: skip the model load and answer lexically
+                        // (BM25 + recency + name) — the same early-results trade
+                        // the search modal makes while the embedder cold-starts.
+                        const run = warming
+                            ? async (): Promise<{ results: ScoredChunk[]; entry: SearchEntry | null }> => ({
+                                results: (await orchestrator.searchLexicalOnly(query, topK)).results,
+                                entry: null,
+                            })
+                            : async (): Promise<{ results: ScoredChunk[]; entry: SearchEntry | null }> => {
+                                // No modal here to overlap the cold-start, so block on the
+                                // model load (3–10 s first call) before querying — otherwise
+                                // the orchestrator embeds against an unloaded model.
+                                return this.withQueryInFlight(async () => {
+                                    await this.ensureModelLoaded();
+                                    return orchestrator.search(query, topK, recencyOverride);
+                                });
+                            };
 
-                        // ---- format=json: programmatic / piped callers ---------
+                        const { results, entry } = await run();
+                        const mapped = results.map(r => ({
+                            path: r.note_path,
+                            // displayTitle carries the "(part N)" marker for
+                            // split chunks (absent otherwise); title itself is
+                            // now the clean, embedded/indexed form.
+                            title: r.displayTitle ?? r.title,
+                            score: r.score,
+                            excerpt: r.snippet ?? '',
+                        }));
                         if (asJson) {
-                            const mapped = results.map(r => {
-                                const base: Record<string, unknown> = {
-                                    path: r.note_path,
-                                    // displayTitle carries the "(part N)" marker for
-                                    // split chunks (absent otherwise); title itself is
-                                    // now the clean, embedded/indexed form.
-                                    title: r.displayTitle ?? r.title,
-                                    score: r.score,
-                                    excerpt: r.snippet ?? '',
-                                };
-                                return base;
-                            });
                             const payload: Record<string, unknown> = { results: mapped, query, count: mapped.length };
-                            if (entry.nameEarlyPainted !== undefined) payload.nameEarlyPainted = entry.nameEarlyPainted;
-                            if (entry.namePartialMs !== undefined) payload.namePartialMs = entry.namePartialMs;
+                            if (warming) {
+                                payload.warming = CLI_SEARCH_WARMING;
+                                payload.ready = false;
+                            } else if (entry) {
+                                payload.nameEarlyPainted = entry.nameEarlyPainted;
+                                payload.namePartialMs = entry.namePartialMs;
+                            }
                             return JSON.stringify(payload);
                         }
 

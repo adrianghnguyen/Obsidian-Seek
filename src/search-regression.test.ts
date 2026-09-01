@@ -329,4 +329,30 @@ describe('search progressive pipeline', () => {
         const { results } = await s.orch.searchLexicalOnly('', 5);
         expect(results).toEqual([]);
     });
+
+    // ---- P8: searchLexicalOnly builds its caches lazily on a cold session ----
+    // The modal's warm-up fallback calls searchLexicalOnly BEFORE any
+    // warmCaches pass (startup warm is deferred behind catch-up, and the old
+    // hasBm25Cache() gate refused to search in exactly that window). The
+    // lexical path must therefore build frame + BM25 from IndexedDB on first
+    // use, never requiring a prior warm.
+    it('P8: searchLexicalOnly works with no warm caches and no embedder (lazy frame + BM25 build)', async () => {
+        const s = await boot();
+        await indexAll(s);
+
+        // Simulate the boot state the modal now serves through: cold caches,
+        // model not loaded. searchLexicalOnly must still return BM25 results.
+        expect(s.orch.hasBm25Cache()).toBe(false);
+        const spy = vi.spyOn(s.embedder, 'embed');
+
+        const partials: SearchPartial[] = [];
+        const { results } = await s.orch.searchLexicalOnly('concert setlist tour', 5, p => { partials.push(p); });
+
+        expect(results.length).toBeGreaterThan(0);
+        expect(results[0].note_path).toBe('music.md');
+        for (const r of results) expect(r.lexicalOnly).toBe(true);
+        expect(spy).not.toHaveBeenCalled();
+        // Name early paint still fires on the cold path when coverage exists.
+        expect(partials.some(p => p.source === 'name' || p.source === 'lexical')).toBe(true);
+    });
 });
