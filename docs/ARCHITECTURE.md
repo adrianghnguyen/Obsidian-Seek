@@ -105,7 +105,10 @@ All production code lives in a **flat `src/` directory** (~55 modules). Tests ar
 
 | Files | Responsibility |
 |-------|----------------|
-| `search.ts` | **`SearchOrchestrator`** — indexing, search, sidecar reconcile, frame cache |
+| `search.ts` | **`SearchOrchestrator`** — indexing, search, sidecar reconcile, frame cache (~5.3k lines; decomposition guide: [SEARCH-DECOMPOSITION.md](./SEARCH-DECOMPOSITION.md)) |
+| `frame-utils.ts` | Resident frame ops, candidate alignment, delta row helpers *(Phase 1 extraction — PR #25)* |
+| `coherence.ts` | Frame/BM25 drift detection and recovery decisions *(Phase 1 — PR #25)* |
+| `bm25-persist.ts` | Persisted BM25 index identity stamps *(Phase 1 — PR #25)* |
 | `query-parser.ts` | Inline filter syntax (`#tag`, `path:`, `[key:value]`, dates, negation) |
 | `fusion.ts` | Score normalization, hybrid fusion, recency ε-tiebreaker, title boost, browse order |
 | `ranker.ts` | `rank()` — combines dense + BM25 + recency + title on candidate set |
@@ -560,6 +563,7 @@ CLI handlers register only when `registerCliHandler` exists on the plugin instan
 
 ## Related docs
 
+- [SEARCH-DECOMPOSITION.md](./SEARCH-DECOMPOSITION.md) — how to split `search.ts` safely (phase order, anti-patterns, test gates)
 - [seek-architecture.canvas.tsx](./seek-architecture.canvas.tsx) — interactive Cursor canvas (system map, index/search/persistence drill-downs)
 - [README.md](../README.md) — user-facing install and privacy summary
 - [CHANGELOG.md](../CHANGELOG.md) — release history

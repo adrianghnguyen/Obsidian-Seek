@@ -5,6 +5,20 @@
 // vaults will want incremental, but the design doc explicitly defers that;
 // the user asked for a "total nuke and reset" full reindex as one of the
 // three v0 commands.
+//
+// ── Module boundaries (decomposition) ─────────────────────────────────────
+// This file is ~5k lines. Pure helpers already live in frame-utils.ts,
+// coherence.ts, and bm25-persist.ts (re-exported at the file tail). Future
+// splits follow docs/SEARCH-DECOMPOSITION.md — phase order:
+//   1. Pure helpers (done / PR #25)
+//   2. CacheManager — single owner of frameCache, bm25Cache, warmCaches,
+//      ensureFrame (must DELETE orchestrator copies in the same PR)
+//   3. SearchQuery — search() + searchLexicalOnly() (delegate, don't duplicate)
+//   4. Indexing slices — reindexDelta, sidecar hydrate (last; highest conflict)
+// Anti-pattern: copy a class out but leave the orchestrator implementation —
+// that creates dual caches and subtle incremental-delete bugs. One move per PR.
+// Contract tests: src/search-integration.test.ts
+// ───────────────────────────────────────────────────────────────────────────
 
 import type { App } from 'obsidian';
 import { Notice, TFile } from 'obsidian'; // value imports: reindexDelta uses `instanceof TFile`; the quota gate toasts
@@ -1761,6 +1775,11 @@ export class SearchOrchestrator {
     // write mutex (so it can't overlap a full reindex or another delta) and sets
     // `currentDelta` for its critical section so a concurrent search's frame
     // rebuild waits for full application instead of reading a half-committed delta.
+    //
+    // ── Phase 4 decomposition seam (indexing) ── reindexDelta + applyDelta share
+    // removal-body capture, incremental BM25 patch, and coord.currentDelta gating.
+    // Extract only after CacheManager owns frameCache (Phase 2). See
+    // docs/SEARCH-DECOMPOSITION.md
     async reindexDelta(
         dirtyPaths: string[],
         deletedPaths: string[],
@@ -3519,6 +3538,11 @@ export class SearchOrchestrator {
 
     // Search path (two-stage, v7+):
     //
+    // ── Phase 3 decomposition seam (SearchQuery) ── search() + searchLexicalOnly()
+    // + telemetry belong in search-query.ts once CacheManager (Phase 2) is the sole
+    // cache owner. Orchestrator should delegate, not duplicate. See
+    // docs/SEARCH-DECOMPOSITION.md
+    //
     //   S0  resident frame (corpus + binary index, cached by dataGeneration —
     //       listAllChunks runs only on a cache miss, i.e. after a reindex)
     //   S1  union of three candidate gens, fed by the resident tier:
@@ -4180,6 +4204,11 @@ export class SearchOrchestrator {
     // then cached in memory; ~64 KB per 1k chunks at d=512, so 5.5k vault ≈
     // 350 KB resident. The packed buffer is one contiguous Uint8Array for
     // cache-friendly scoring (see binary.ts:concatPacked).
+    //
+    // ── Phase 2 decomposition seam (CacheManager) ── frameCache, bm25Cache,
+    // binaryIndex, warmCaches, ensureFrame, invalidateBm25Cache move together as
+    // ONE owner. Do not split cache fields across orchestrator + CacheManager.
+    // See docs/SEARCH-DECOMPOSITION.md
     private binaryIndex: {
         ids: string[];
         packed: Uint8Array;
