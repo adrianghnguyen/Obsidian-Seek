@@ -32,6 +32,20 @@ export type BackendChoice = 'auto' | 'webgpu' | 'wasm';
 const OVERRIDE_KEY = 'seek-backend-override';  // BackendChoice; absent/invalid = auto
 const DEMOTED_KEY = 'seek-webgpu-demoted';     // '1' once a mobile WebGPU reindex was OS-killed
 const ACTIVE_KEY = 'seek-active-backend';      // 'webgpu' | 'wasm' — backend the last load resolved to
+// T8: route embeddings through the nested dedicated worker (desktop experiment).
+// Per-device for the same reason as OVERRIDE_KEY: worker viability is a property
+// of the device/runtime, not the vault.
+const WORKER_ROUTE_KEY = 'seek-worker-embed-route';  // absent = off; '1' = on
+
+export function getWorkerEmbedRoute(): boolean {
+    try { return window.localStorage.getItem(WORKER_ROUTE_KEY) === '1'; }
+    catch { return false; }
+}
+
+export function setWorkerEmbedRoute(on: boolean): void {
+    try { window.localStorage.setItem(WORKER_ROUTE_KEY, on ? '1' : '0'); }
+    catch { /* best-effort */ }
+}
 
 // Every localStorage access below is raw per-origin (`window.localStorage`) BY
 // DESIGN — these are per-device, never-synced backend keys (see the section

@@ -568,6 +568,20 @@ export class IframeRunner {
         return this.send<{ killed: boolean }>('embed-worker-kill', { reason });
     }
 
+    // T8 production route — one embed through the long-lived nested worker.
+    // Same RPC the functional test uses, but addressed directly (no cosine
+    // comparison, no test bookkeeping).
+    workerEmbed(text: string): Promise<{ vector: Float32Array; latencyMs: number }> {
+        return this.send<{ vector: Float32Array; latencyMs: number }>('embed-worker-embed', { text }, RPC_TIMEOUT_MS);
+    }
+
+    // T8 production route — a batch through the nested worker. The worker
+    // forwards each text to its pipeline; a batch failure rejects whole so
+    // the indexer's per-file error accounting sees one rejection.
+    workerBatch(texts: string[]): Promise<{ vectors: Float32Array[]; latencyMs: number }> {
+        return this.send<{ vectors: Float32Array[]; latencyMs: number }>('embed-worker-batch', { texts }, RPC_TIMEOUT_MS);
+    }
+
     async dispose(): Promise<void> {
         if (this.listener) {
             window.removeEventListener('message', this.listener);
@@ -926,12 +940,26 @@ const EMBED_WORKER_BODY = [
     "    self.postMessage({ __embedWorkerReply: true, id: req.id, ok: true,",
     "        vector: vector, latencyMs: Date.now() - t0, dim: vector.length }, [vector.buffer]);",
     "}",
+    // Batch path for the production route (indexer). Sequential forwards on
+    // the worker's own pipeline — each row transfers independently; the batch
+    // reply fails whole on any error (the caller treats it as one rejection).
+    "async function handleBatch(req) {",
+    "    const t0 = Date.now();",
+    "    const vectors = [];",
+    "    for (const text of req.texts) {",
+    "        vectors.push(await embedOne(text));",
+    "    }",
+    "    const transfers = vectors.map(v => v.buffer);",
+    "    self.postMessage({ __embedWorkerReply: true, id: req.id, ok: true,",
+    "        vectors: vectors, latencyMs: Date.now() - t0 }, transfers);",
+    "}",
     "",
     "self.onmessage = async (e) => {",
     "    const req = e.data;",
     "    if (!req || typeof req !== 'object' || !req.id) return;",
     "    try {",
     "        if (req.type === 'embed') await handleEmbed(req);",
+    "        else if (req.type === 'embed-batch') await handleBatch(req);",
     "        else if (req.type === 'load') await ensurePipeline().then(",
     "            () => self.postMessage({ __embedWorkerReply: true, id: req.id, ok: true, ready: true }),",
     "            (err) => self.postMessage({ __embedWorkerReply: true, id: req.id, ok: false, error: String(err) }));",
@@ -1917,6 +1945,16 @@ window.addEventListener('message', async (event) => {
         } else if (data.type === 'embed-worker-kill') {
             killEmbedWorker(String(data.payload && data.payload.reason || 'parent request'));
             result = { killed: true };
+        } else if (data.type === 'embed-worker-embed') {
+            // T8 production route — single embed via the long-lived worker.
+            const t0 = Date.now();
+            const reply = await embedWorkerRpc({ id: 'prod-' + Date.now() + '-' + Math.random().toString(36).slice(2), type: 'embed', text: String(data.payload.text) }, 60000);
+            result = { vector: reply.vector, latencyMs: reply.latencyMs != null ? reply.latencyMs : (Date.now() - t0) };
+        } else if (data.type === 'embed-worker-batch') {
+            // T8 production route — batch via the long-lived worker.
+            const t0 = Date.now();
+            const reply = await embedWorkerRpc({ id: 'prodb-' + Date.now() + '-' + Math.random().toString(36).slice(2), type: 'embed-batch', texts: data.payload.texts }, 60000);
+            result = { vectors: reply.vectors, latencyMs: reply.latencyMs != null ? reply.latencyMs : (Date.now() - t0) };
         } else if (data.type === 'app-local-fetch') {
             // Probe — never throws to the parent; the failure cases ARE the data.
             // We want { ok: false, error } back, not a rejected RPC.

@@ -2,6 +2,16 @@
 
 All notable changes to Seek are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.8.0
+
+Queries can run in a background worker thread, and the embedding runtime now has an off-ramp that doesn't touch the UI. No reindex is needed, since the index format is unchanged.
+
+### Added
+- **Settings → Model & performance: "Run queries in background worker" (experimental, desktop only).** Seek's embedding model ran on Obsidian's UI thread inside a hidden sandbox; during indexing, every query embedding competed with everything else that thread is doing. This setting moves query embeddings to a dedicated background worker thread. The regular pipeline stays as an automatic fallback: if the worker fails, that search embeds the usual way and the worker is retried on the next reload. Per-device (not synced), like the Compute setting.
+
+### Changed
+- **Seek exposes worker diagnostics for support.** Two new developer hooks (`runWorkerProbe` / `runWorkerEmbedTest`) report whether the background worker can spawn, load the model, and produce vectors identical to the regular pipeline — so worker problems can be diagnosed from a log report without reproducing them interactively.
+
 ## 1.7.0
 
 Coverage now shows the whole folder hierarchy, each folder counting only its own notes. No reindex is needed, since the index format is unchanged.

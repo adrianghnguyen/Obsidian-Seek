@@ -31,6 +31,7 @@ import type { FolderCoverageNode, FolderCoverageSummary } from './folder-coverag
 import {
     getBackendOverride, setBackendOverride, isWebgpuDemoted, clearWebgpuDemoted,
     getStartupWarm, setStartupWarm, isMobilePlatform,
+    getWorkerEmbedRoute, setWorkerEmbedRoute,
     type BackendChoice,
 } from './platform';
 import { enumerateDatePropertyNames } from './prop-types';
@@ -929,6 +930,25 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             this.rerender(); // forcing WebGPU clears a prior sticky demote; reflect it
         });
 
+        // T8 — per-device worker route (desktop experiment). Query embeds run
+        // in a dedicated Web Worker nested inside Seek's sandboxed iframe, off
+        // the renderer main thread; the iframe pipeline stays as automatic
+        // fallback. Per-device like Compute (worker viability is a property of
+        // the runtime, not the vault), so it lives in localStorage, not
+        // data.json. The embedder reads the flag per call, so this takes
+        // effect immediately.
+        if (!isMobilePlatform()) {
+            new Setting(containerEl)
+                .setName('Run queries in background worker')
+                .setDesc('EXPERIMENTAL. Runs the embedding model for queries in a separate background thread instead of Obsidian\'s UI thread, so indexing should feel smoother. Your regular search pipeline is kept as a backup and takes over automatically if the worker fails. Applies to new searches immediately.')
+                .addToggle(t => t.setValue(getWorkerEmbedRoute()).onChange(async v => {
+                    setWorkerEmbedRoute(v);
+                    new Notice(v
+                        ? 'Seek: queries now embed in the background worker. The standard pipeline takes over automatically if it fails.'
+                        : 'Seek: queries embed in the standard pipeline again.', 6000);
+                }));
+        }
+
         if (isWebgpuDemoted()) {
             new Setting(containerEl)
                 .setName('WebGPU disabled after a crash on this device')
@@ -1086,7 +1106,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         const left = about.createDiv({ cls: 'seek-about-left' });
         left.createSpan({ cls: 'seek-about-name', text: 'Seek' });
         left.createSpan({ cls: 'seek-about-ver', text: `v${this.plugin.manifest.version}` });
-        left.createSpan({ cls: 'seek-about-by', text: 'by Ryan Manor' });
+        left.createSpan({ cls: 'seek-about-by', text: `by ${this.plugin.manifest.author}` });
 
         const links = about.createDiv({ cls: 'seek-about-links' });
         // Lucide-named icon button (GitHub, Docs).

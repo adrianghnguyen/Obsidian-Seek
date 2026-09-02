@@ -17,6 +17,7 @@
 
 import type { Device, RequestedDevice, Dtype, LoadEntry, InitEntry } from './types';
 import { snapshotMemory, memoryDelta, LOG_SCHEMA_VERSION } from './types';
+import { getWorkerEmbedRoute } from './platform';
 import { ACTIVE_MODEL_SPEC } from './model-registry';
 import {
     IframeRunner,
@@ -74,6 +75,10 @@ export interface EmbedTimed {
     iframeLatencyMs: number;
     // True when served from the query-embed LRU (no iframe work; latency ≈ 0).
     cacheHit?: boolean;
+    // T8: which realm produced the vector — the nested dedicated worker
+    // (production route when enabled) or the iframe pipeline (default and
+    // fallback). Absent on LRU hits (route-independent).
+    embedRoute?: 'worker' | 'iframe';
 }
 
 export interface EmbedBatchTimed {
@@ -209,6 +214,11 @@ export class LocalEmbedder {
     // (cosineScores / scoreAsymmetric / rank all read, none mutate).
     private queryEmbedCache = new Map<string, Float32Array>();
     private static readonly QUERY_EMBED_CACHE_MAX = 128;
+
+    // T8: set when a worker-route embed fails — the rest of the session falls
+    // back to the iframe pipeline instead of paying a dead round trip per
+    // query. Reset by a plugin reload (fresh instance) or toggling the setting.
+    private workerRouteDisabled = false;
 
     get device(): Device { return this._device; }
     get dtype(): Dtype { return this._dtype; }
@@ -416,6 +426,39 @@ export class LocalEmbedder {
             }
         };
         throwIfAborted();
+        // LRU hit short-circuits BEFORE route selection: a cached vector is
+        // route-independent (same model either way), so no need to pay a
+        // worker round trip for a repeat query.
+        const hit = this.queryEmbedCache.get(text);
+        if (hit !== undefined) {
+            this.queryEmbedCache.delete(text);     // re-insert at tail → most-recent
+            this.queryEmbedCache.set(text, hit);
+            return { vector: hit, iframeLatencyMs: 0, cacheHit: true };
+        }
+        // T8 production route: worker-first when the per-device toggle is on,
+        // iframe pipeline as automatic fallback. The worker loads its own
+        // pipeline independently of the iframe's load state, so this also
+        // works before/without a model load on the iframe path.
+        if (getWorkerEmbedRoute() && !this.workerRouteDisabled) {
+            try {
+                const w = await this.runner.workerEmbed(text);
+                if (w.vector.every(Number.isFinite)) {
+                    this.queryEmbedCache.set(text, w.vector);
+                    if (this.queryEmbedCache.size > LocalEmbedder.QUERY_EMBED_CACHE_MAX) {
+                        this.queryEmbedCache.delete(this.queryEmbedCache.keys().next().value as string);
+                    }
+                }
+                return { vector: w.vector, iframeLatencyMs: w.latencyMs, cacheHit: false, embedRoute: 'worker' };
+            } catch (e) {
+                // Fallback, not failure: the iframe pipeline is the durable
+                // path. Sticky-disable the route for this session so a dead
+                // worker doesn't add a failed round trip to every query —
+                // the toggle (or a reload) re-enables it.
+                this.workerRouteDisabled = true;
+                console.warn('[seek] worker embed route failed — falling back to iframe pipeline (worker route disabled until reload):', e);
+                if (signal?.aborted) throwIfAborted();
+            }
+        }
         if (!this._loaded) {
             // A load()/recycle() is in flight (they share _loadPromise — see
             // recycle()) — e.g. a query fired while the indexer's SafeInt-overflow
@@ -429,25 +472,19 @@ export class LocalEmbedder {
             if (!this._loaded) throw new Error('Model not loaded.');
         }
         throwIfAborted();
-        const hit = this.queryEmbedCache.get(text);
-        if (hit !== undefined) {
-            this.queryEmbedCache.delete(text);     // re-insert at tail → most-recent
-            this.queryEmbedCache.set(text, hit);
-            return { vector: hit, iframeLatencyMs: 0, cacheHit: true };
-        }
         const r = await this.runner.embed(text, signal);
         // A non-finite vector (WASM numeric fault, torn model load) must not
         // enter the LRU: a cached NaN row would replay the poisoned vector on
         // every repeat of this query until eviction. Return it uncached — the
         // search-side sanity gate rejects it and a retry re-embeds fresh.
         if (!r.vector.every(Number.isFinite)) {
-            return { vector: r.vector, iframeLatencyMs: r.latencyMs, cacheHit: false };
+            return { vector: r.vector, iframeLatencyMs: r.latencyMs, cacheHit: false, embedRoute: 'iframe' };
         }
         this.queryEmbedCache.set(text, r.vector);
         if (this.queryEmbedCache.size > LocalEmbedder.QUERY_EMBED_CACHE_MAX) {
             this.queryEmbedCache.delete(this.queryEmbedCache.keys().next().value as string);  // evict LRU head
         }
-        return { vector: r.vector, iframeLatencyMs: r.latencyMs, cacheHit: false };
+        return { vector: r.vector, iframeLatencyMs: r.latencyMs, cacheHit: false, embedRoute: 'iframe' };
     }
 
     // Tear down and rebuild the ENTIRE iframe to reset ORT-Web's WebGPU state.
@@ -521,6 +558,10 @@ export class LocalEmbedder {
 
     // bucket: explicit seq rung from token-exact routing (selectIndexBucket).
     // Optional only for back-compat; the indexer always passes it.
+    // T8: the worker route does NOT serve batches — the indexer's rolling
+    // buffer depends on the iframe's token-exact bucket padding (max_length at
+    // the rung), which the worker's fixed-cap path doesn't reproduce. Batches
+    // stay on the iframe pipeline; only query embeds route to the worker.
     async embedBatch(texts: string[], bucket?: number): Promise<EmbedBatchTimed> {
         if (!this._loaded) throw new Error('Model not loaded.');
         const r = await this.runner.embedBatch(texts, bucket);
