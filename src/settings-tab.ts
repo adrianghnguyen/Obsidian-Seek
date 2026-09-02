@@ -39,10 +39,35 @@ import {
     clampCatchUpBurstMaxFiles,
 } from './startup-drain';
 
-// Real repo/social URLs for the About footer.
-const GITHUB_URL = 'https://github.com/tooape/Obsidian-Seek-prototype';
-const X_URL = 'https://x.com/tooape';
-const DOCS_URL = 'https://publish.obsidian.md/rmm/Seek+Documentation/About+Seek';
+/** Optional About-footer URLs beyond Obsidian's base manifest schema. */
+type SeekAboutManifest = {
+    githubUrl?: string;
+    xUrl?: string;
+    docsUrl?: string;
+};
+
+function manifestField(value: string | undefined): string | null {
+    const trimmed = value?.trim();
+    return trimmed ? trimmed : null;
+}
+
+async function readAboutUrls(
+    app: App,
+    pluginDir: string | null | undefined,
+): Promise<{ docsUrl: string | null; githubUrl: string | null; xUrl: string | null }> {
+    const empty = { docsUrl: null, githubUrl: null, xUrl: null };
+    if (!pluginDir) return empty;
+    try {
+        const raw = JSON.parse(await app.vault.adapter.read(`${pluginDir}/manifest.json`)) as SeekAboutManifest;
+        return {
+            docsUrl: manifestField(raw.docsUrl),
+            githubUrl: manifestField(raw.githubUrl),
+            xUrl: manifestField(raw.xUrl),
+        };
+    } catch {
+        return empty;
+    }
+}
 
 // The X (Twitter) logo as an inline SVG path. Obsidian's bundled Lucide no longer
 // ships a `twitter`/`x` brand icon, so setIcon('twitter') rendered an empty box —
@@ -1102,22 +1127,37 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
 
     // ---- About ---------------------------------------------------------------------
     private renderAbout(containerEl: HTMLElement): void {
+        const manifest = this.plugin.manifest;
         const about = containerEl.createDiv({ cls: 'seek-about' });
         const left = about.createDiv({ cls: 'seek-about-left' });
-        left.createSpan({ cls: 'seek-about-name', text: 'Seek' });
-        left.createSpan({ cls: 'seek-about-ver', text: `v${this.plugin.manifest.version}` });
-        left.createSpan({ cls: 'seek-about-by', text: `by ${this.plugin.manifest.author}` });
+        const name = manifestField(manifest.name);
+        if (name) left.createSpan({ cls: 'seek-about-name', text: name });
+        const version = manifestField(manifest.version);
+        if (version) left.createSpan({ cls: 'seek-about-ver', text: `v${version}` });
+        const author = manifestField(manifest.author);
+        if (author) left.createSpan({ cls: 'seek-about-by', text: `by ${author}` });
 
-        const links = about.createDiv({ cls: 'seek-about-links' });
-        // Lucide-named icon button (GitHub, Docs).
+        const linksHost = about.createDiv({ cls: 'seek-about-links' });
+        void this.paintAboutLinks(linksHost);
+    }
+
+    // Obsidian's runtime manifest omits custom keys — read manifest.json from disk
+    // so optional githubUrl / docsUrl / xUrl fields (including "") control icons.
+    private async paintAboutLinks(host: HTMLElement): Promise<void> {
+        const { docsUrl, githubUrl, xUrl } = await readAboutUrls(this.app, this.plugin.manifest.dir);
+        if (!host.isConnected) return;
+        host.empty();
+        if (!docsUrl && !githubUrl && !xUrl) {
+            host.remove();
+            return;
+        }
         const link = (href: string, icon: string, label: string) => {
-            const a = links.createEl('a', { cls: 'seek-about-ic', href, attr: { 'aria-label': label, title: label } });
+            const a = host.createEl('a', { cls: 'seek-about-ic', href, attr: { 'aria-label': label, title: label } });
             setIcon(a, icon);
         };
-        link(DOCS_URL, 'book-open', 'Seek Documentation');
-        link(GITHUB_URL, 'github', 'Repository on GitHub');
-        // X uses an inline-SVG button (no Lucide brand icon — see X_LOGO_PATH).
-        this.brandLink(links, X_URL, X_LOGO_PATH, '0 0 24 24', 'On X');
+        if (docsUrl) link(docsUrl, 'book-open', 'Seek Documentation');
+        if (githubUrl) link(githubUrl, 'github', 'Repository on GitHub');
+        if (xUrl) this.brandLink(host, xUrl, X_LOGO_PATH, '0 0 24 24', 'On X');
     }
 
     // An icon-button link whose glyph is an inline SVG path rather than a Lucide

@@ -2,6 +2,13 @@
 
 All notable changes to Seek are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.8.1
+
+About-footer links are manifest-driven. No reindex is needed, since the index format is unchanged.
+
+### Changed
+- **Settings About footer reads name, version, author, and link URLs from `manifest.json`.** Optional `githubUrl`, `docsUrl`, and `xUrl` fields control the icon links; omit or leave a field empty to hide that icon. Custom URL fields are read from the plugin's `manifest.json` on disk because Obsidian does not expose them on the runtime manifest object.
+
 ## 1.8.0
 
 Queries can run in a background worker thread, and the embedding runtime now has an off-ramp that doesn't touch the UI. No reindex is needed, since the index format is unchanged.
