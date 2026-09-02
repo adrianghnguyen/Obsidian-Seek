@@ -2,6 +2,13 @@
 
 All notable changes to Seek are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.6.1
+
+See which folders are fully indexed, and watch Seek backfill when you change what it excludes. No reindex is needed, since the index format is unchanged.
+
+### Changed
+- **Seek waits a few seconds after the workspace opens before touching the search index.** On vaults with many plugins, Seek's startup indexing used to race the other plugins' startup I/O. It now lets that first burst finish before opening its index — and skips the wait entirely if you open search right away.
+
 ## 1.6.0
 
 See which folders are fully indexed, and watch Seek backfill when you change what it excludes. No reindex is needed, since the index format is unchanged.

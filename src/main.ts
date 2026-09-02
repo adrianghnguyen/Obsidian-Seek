@@ -81,7 +81,9 @@ import { seekPerf } from './perf-console';
 import {
     whenLayoutReady,
     scheduleAfterLayoutReady,
+    scheduleAfterLayoutReadyBuffered,
     isIgnorableStartupConsoleError,
+    type BootBufferHandle,
 } from './layout-ready';
 import { parseJsonStripBom } from './json-text';
 import type { LongTaskEntry, MemoryPressureEntry, StorageSnapshotEntry, EvictionSuspectedEntry, AppLocalFetchEntry } from './types';
@@ -91,6 +93,13 @@ import type { LongTaskEntry, MemoryPressureEntry, StorageSnapshotEntry, Eviction
 // which the user perceives a stutter and is also the design-doc latency
 // budget for search.
 const LONG_TASK_THRESHOLD_MS = 250;
+
+// Boot buffer: after onLayoutReady, wait this long before the first IndexedDB
+// work (store open, hydrate, reconcile) so other plugins' startup I/O gets the
+// window first. The search modal bypasses the remaining wait immediately, so
+// the cost only lands on background indexing — never on the user opening
+// search. Kept small: user-approved budget is "a few seconds, no more".
+const POST_LAYOUT_BOOT_BUFFER_MS = 3500;
 
 // Extensions Seek indexes: markdown notes always, plus .base files (Obsidian
 // Bases — YAML view definitions, indexed via a synthetic doc; see
@@ -359,6 +368,13 @@ export default class SeekPlugin extends Plugin {
     } | null = null;
     /** Boot hydrate/reconcile ran (or was skipped because store stayed locked). */
     private bootContinuationDone = false;
+    /**
+     * Boot buffer between onLayoutReady and the first IndexedDB work: other
+     * plugins' startup I/O gets the window first. Null once fired/cancelled.
+     */
+    private bootBuffer: BootBufferHandle | null = null;
+    /** True when the search modal bypassed the boot buffer before it fired. */
+    private bootBufferBypassed = false;
     private readonly startupTelemetry = new StartupSessionTracker();
     private readonly startupHistory = new StartupBootHistory(() => {
         try { return window.localStorage; } catch { return null; }
@@ -694,12 +710,32 @@ export default class SeekPlugin extends Plugin {
         // Callback form, not `await onLayoutReady()` inside onload — awaiting
         // here can deadlock because Obsidian waits for every plugin's onload
         // before firing layout ready.
+        //
+        // Buffered: hold POST_LAYOUT_BOOT_BUFFER_MS after layout ready before
+        // the first IndexedDB work so other plugins' startup I/O (File
+        // Recovery, cache, sync, heavy plugins) gets the window first. The
+        // search modal bypasses the remaining wait (openSearchModal), so an
+        // impatient user never eats the buffer. Cancelled on unload.
         const layoutGen = bootGen;
-        scheduleAfterLayoutReady(this.app.workspace, () => {
-            if (!this.isBootCurrent(layoutGen)) return;
-            this.vaultIndexEventsReady = true;
-            void this.startPostLayoutBoot(layoutGen);
-        });
+        this.bootBufferBypassed = false;
+        this.bootBuffer = scheduleAfterLayoutReadyBuffered(
+            this.app.workspace,
+            () => {
+                this.bootBuffer = null;
+                if (!this.isBootCurrent(layoutGen)) return;
+                this.vaultIndexEventsReady = true;
+                seekPerf.recordStartupSpan({
+                    type: 'startup-span',
+                    timestamp: new Date().toISOString(),
+                    span: 'boot-buffer',
+                    phase: 'end',
+                    durationMs: POST_LAYOUT_BOOT_BUFFER_MS,
+                    bypassed: this.bootBufferBypassed,
+                });
+                void this.startPostLayoutBoot(layoutGen);
+            },
+            POST_LAYOUT_BOOT_BUFFER_MS,
+        );
 
         // Periodic sidecar reconcile: remote arrivals don't fire vault events for
         // .obsidian/ dotfiles, so poll for another device's freshly-synced index
@@ -1379,6 +1415,8 @@ export default class SeekPlugin extends Plugin {
     onunload() {
         this.loadGeneration++;
         this.unloading = true;
+        this.bootBuffer?.cancel();
+        this.bootBuffer = null;
         this.disposeStoreOpenRetryScheduler();
         this.indexStoreLocked = false;
         this.bootContinuationDone = false;
@@ -2619,6 +2657,14 @@ export default class SeekPlugin extends Plugin {
 
     private openSearchModal(initialQuery = ''): void {
         this.pushTaskContext('search');
+        // The user's search intent beats the boot politeness buffer: run the
+        // deferred post-layout boot now instead of leaving them waiting for it.
+        if (this.bootBuffer) {
+            this.bootBufferBypassed = true;
+            const handle = this.bootBuffer;
+            this.bootBuffer = null;
+            handle.bypass();
+        }
         try {
             const wasLoaded = this.embedder.loaded;
             const loadPromise = this.ensureModelLoaded();

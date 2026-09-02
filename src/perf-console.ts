@@ -65,13 +65,9 @@ export class SeekPerfConsole {
 
     // ---- Slimmers: keep CLI lines small; omit ranking traces / checklists ----
 
-    recordStartupSpan(entry: Pick<StartupSpanEntry, 'type' | 'timestamp' | 'span' | 'phase' | 'durationMs'>): void {
+    recordStartupSpan(entry: Pick<StartupSpanEntry, 'type' | 'timestamp' | 'span' | 'phase' | 'durationMs'> & { bypassed?: boolean }): void {
         this.record({
-            type: entry.type,
-            timestamp: entry.timestamp,
-            span: entry.span,
-            phase: entry.phase,
-            durationMs: entry.durationMs,
+            ...entry,
         });
     }
 

@@ -26,6 +26,71 @@ export function scheduleAfterLayoutReady(workspace: LayoutReadyWorkspace, work: 
     work();
 }
 
+/**
+ * A cancellable, bypassable delayed callback — the boot buffer between
+ * onLayoutReady and Seek's first IndexedDB / hydrate work.
+ */
+export interface BootBufferHandle {
+    /** Cancel the pending delay without running the work. Idempotent; safe after firing. */
+    cancel(): void;
+    /**
+     * Run the work as soon as possible, skipping the remaining delay. If
+     * layout is not ready yet, the work runs at layout-ready (no extra
+     * delay) — never before it. Idempotent; no-op after cancel or firing.
+     */
+    bypass(): void;
+}
+
+/**
+ * Delay `work` by `delayMs` after the workspace layout is ready, so other
+ * plugins' startup work (File Recovery, Dataview, sync backfills, …) gets the
+ * disk/IDB window first. Layout-ready time is what the delay measures from —
+ * NOT onload — so plugin-load ordering never adds to the wait.
+ *
+ * Cancel on teardown (unload / boot-generation supersede) so a dead
+ * generation's buffer never fires mid-recycle. Bypass when the user opens
+ * search immediately: the user's own I/O interest beats the politeness buffer.
+ * If layout-ready already fired (worktree reload with a live workspace), the
+ * delay still applies — it is a deliberate cooldown, not a layout wait.
+ */
+export function scheduleAfterLayoutReadyBuffered(
+    workspace: LayoutReadyWorkspace,
+    work: () => void,
+    delayMs: number,
+): BootBufferHandle {
+    let cancelled = false;
+    let workDone = false;
+    let bypassRequested = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const run = (): void => {
+        if (cancelled || workDone) return;
+        workDone = true;
+        if (timer !== null) clearTimeout(timer);
+        timer = null;
+        work();
+    };
+    scheduleAfterLayoutReady(workspace, () => {
+        if (cancelled) return;
+        // bypass() before layout ready: the user's interest still wins, but
+        // only now that layout IS ready — never as a pre-layout fire.
+        if (bypassRequested) { run(); return; }
+        timer = setTimeout(run, delayMs);
+    });
+    return {
+        cancel: () => {
+            if (cancelled) return;
+            cancelled = true;
+            if (timer !== null) clearTimeout(timer);
+            timer = null;
+        },
+        bypass: () => {
+            if (cancelled || workDone) return;
+            if (timer !== null) { run(); return; }
+            bypassRequested = true;
+        },
+    };
+}
+
 /** Core Obsidian IndexedDB / cache / sync failures during vault open — not Seek bugs. */
 export function isObsidianCoreBootIdbNoise(message: string): boolean {
     const text = stripLeadingBom(message);
