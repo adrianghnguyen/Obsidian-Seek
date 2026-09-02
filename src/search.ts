@@ -1866,7 +1866,7 @@ export class SearchOrchestrator {
                 // Capture whenever the frame is resident — applyDelta may patch
                 // incrementally once BM25 is warm (restored or already live), and
                 // bodies must be read BEFORE deleteFile drops them from IDB.
-                const wantRemovalBodies = !!this.cacheManager.frameCache;
+                const wantRemovalBodies = !!this.frameCache;
                 // In-place metadata patches from the engine's chunk-diff: id-stable
                 // chunks whose BM25-irrelevant metadata drifted (line numbers,
                 // dates). applyDelta swaps the frame rows; IDB was already updated.
@@ -5156,6 +5156,9 @@ export {
     bm25StampMatches,
 } from './bm25-persist';
 export type { Bm25PersistStamp } from './bm25-persist';
+
+export { CacheManager } from './cache-manager';
+export { SearchQuery } from './search-query';
 
 // ── Internal helpers (used only inside SearchOrchestrator) ──────────────────
 function dedupByPath(rankedPool: ScoredChunk[], topK: number): ScoredChunk[] {

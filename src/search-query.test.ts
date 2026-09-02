@@ -54,12 +54,13 @@ describe('SearchQuery contract', () => {
         expect(result.entry).toHaveProperty('cleanedQuery');
     });
 
-    it('search with empty query returns empty results', async () => {
+    it('search with empty query returns browse results (filter-only fast path)', async () => {
         const s = await boot();
         await indexAll(s);
 
         const { results, entry } = await s.orch.search('', 5);
-        expect(results).toEqual([]);
+        expect(results.length).toBeGreaterThan(0);
+        expect(results.every(r => r.score === 0)).toBe(true);
         expect(entry).toBeTruthy();
     });
 
