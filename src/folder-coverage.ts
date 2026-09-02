@@ -2,6 +2,11 @@
 // user-ignore-filter diff that detects when Obsidian's "Excluded files" list
 // changed so a previously-excluded folder can be backfilled.
 //
+// resolveCoveragePanelView() decides whether Settings → Index shows the folder
+// tree, a placeholder ("still indexing"), or both (tree + status banner).
+//
+import type { IndexStatusHealth, IndexStatusJob } from './index-status-card';
+
 // Pure and dependency-injected (no Obsidian / model coupling) so the math and the
 // change detection are unit-testable. The plugin supplies the three live path sets
 // (all indexable-extension files, the subset already through the embedder, the
@@ -83,6 +88,143 @@ function pct(covered: number, denom: number): number {
 
 // A well-formed empty summary, used by callers (e.g. the plugin) before the
 // orchestrator exists or on a read failure.
+export type CoveragePlaceholderTone = 'pending' | 'muted' | 'bad';
+
+export interface CoveragePanelMessage {
+    title: string;
+    detail: string;
+    tone: CoveragePlaceholderTone;
+}
+
+export interface CoveragePanelView {
+    showTree: boolean;
+    summary: FolderCoverageSummary;
+    /** Shown instead of the tree when showTree is false. */
+    placeholder?: CoveragePanelMessage;
+    /** Optional banner above the tree while indexing is still catching up. */
+    statusLine?: CoveragePanelMessage;
+}
+
+function indexingDetail(job: IndexStatusJob | null): string {
+    if (job && job.total > 0) {
+        return `Indexed ${job.done.toLocaleString()} of ${job.total.toLocaleString()} notes so far. The per-folder breakdown updates as embedding catches up.`;
+    }
+    return 'Seek is still scanning and embedding your vault. Folder coverage will appear once notes are indexed.';
+}
+
+function isIndexingActive(health: IndexStatusHealth, job: IndexStatusJob | null): boolean {
+    if (health === 'indexing') return true;
+    return job != null && job.total > 0 && job.done < job.total;
+}
+
+/** Settings → Index coverage panel: tree vs explicit placeholder copy. */
+export function resolveCoveragePanelView(input: {
+    summary: FolderCoverageSummary;
+    health: IndexStatusHealth;
+    job: IndexStatusJob | null;
+    orchestratorReady: boolean;
+    loadFailed?: boolean;
+}): CoveragePanelView {
+    const { summary, health, job, orchestratorReady, loadFailed } = input;
+    const { total, covered, excluded } = summary.overall;
+
+    if (loadFailed) {
+        return {
+            showTree: false,
+            summary,
+            placeholder: {
+                tone: 'bad',
+                title: "Couldn't read coverage",
+                detail: 'Try reloading Seek or reopening Settings.',
+            },
+        };
+    }
+
+    if (!orchestratorReady || health === 'starting' || health === 'restoring') {
+        return {
+            showTree: false,
+            summary,
+            placeholder: {
+                tone: 'pending',
+                title: health === 'restoring' ? 'Restoring index…' : 'Still starting up',
+                detail: health === 'restoring'
+                    ? 'Seek is restoring your index. Folder coverage will appear once the vault layout is ready.'
+                    : 'Seek is loading the search index. Folder coverage will appear once your vault is ready.',
+            },
+        };
+    }
+
+    if (health === 'error') {
+        return {
+            showTree: false,
+            summary,
+            placeholder: {
+                tone: 'bad',
+                title: 'Index error',
+                detail: 'Fix the index (try a full reindex) to see embedder coverage by folder.',
+            },
+        };
+    }
+
+    if (health === 'locked') {
+        return {
+            showTree: false,
+            summary,
+            placeholder: {
+                tone: 'bad',
+                title: 'Index locked',
+                detail: 'Close other Obsidian windows using this vault, then reopen Settings.',
+            },
+        };
+    }
+
+    if (total > 0) {
+        const view: CoveragePanelView = { showTree: true, summary };
+        if (isIndexingActive(health, job) && covered < total) {
+            view.statusLine = {
+                tone: 'pending',
+                title: 'Still indexing',
+                detail: indexingDetail(job),
+            };
+        }
+        return view;
+    }
+
+    if (excluded > 0) {
+        return {
+            showTree: false,
+            summary,
+            placeholder: {
+                tone: 'muted',
+                title: 'Nothing to cover',
+                detail: `Every indexable note is excluded (${excluded.toLocaleString()} excluded). Adjust Obsidian's Excluded files or turn off Honor excluded folders to include them.`,
+            },
+        };
+    }
+
+    if (isIndexingActive(health, job) || health === 'none') {
+        return {
+            showTree: false,
+            summary,
+            placeholder: {
+                tone: 'pending',
+                title: 'Still indexing',
+                detail: indexingDetail(job),
+            },
+        };
+    }
+
+    return {
+        showTree: false,
+        summary,
+        placeholder: {
+            tone: 'muted',
+            title: 'No indexable notes',
+            detail: 'This vault has no markdown notes (or other indexable files) for Seek to cover.',
+        },
+    };
+}
+
 export function emptyFolderCoverage(): FolderCoverageSummary {
     const root: FolderCoverageNode = {
         path: '',

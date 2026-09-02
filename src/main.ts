@@ -3064,6 +3064,11 @@ export default class SeekPlugin extends Plugin {
         this.settingsTelemetrySink?.onFolderCoverageChanged?.();
     }
 
+    /** True once the search orchestrator exists — coverage reads need it. */
+    get isCoverageSourceReady(): boolean {
+        return this.orchestrator != null;
+    }
+
     /** Per-folder embedder coverage for the settings surface (passthrough). */
     async getFolderCoverage(): Promise<FolderCoverageSummary> {
         if (!this.orchestrator) return emptyFolderCoverage();

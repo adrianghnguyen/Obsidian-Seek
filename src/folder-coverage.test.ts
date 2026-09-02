@@ -9,6 +9,7 @@ import {
     pathFolderChain,
     computeFolderCoverage,
     emptyFolderCoverage,
+    resolveCoveragePanelView,
     diffExcludedPaths,
     exclusionDiffIsEmpty,
     type FolderCoverageNode,
@@ -157,6 +158,75 @@ describe('computeFolderCoverage (hierarchy, per-subtree %)', () => {
             excludedPaths: [],
         });
         expect(s.root.children.map(c => c.path)).toEqual(['z', 'a', 'b']);
+    });
+});
+
+describe('resolveCoveragePanelView', () => {
+    const readySummary = computeFolderCoverage({
+        allPaths: ['a/1.md', 'b/1.md'],
+        coveredPaths: ['a/1.md'],
+        excludedPaths: [],
+    });
+
+    it('shows the tree when notes are indexable', () => {
+        const view = resolveCoveragePanelView({
+            summary: readySummary,
+            health: 'ok',
+            job: null,
+            orchestratorReady: true,
+        });
+        expect(view.showTree).toBe(true);
+        expect(view.placeholder).toBeUndefined();
+    });
+
+    it('shows a still-indexing placeholder before the vault is scanned', () => {
+        const view = resolveCoveragePanelView({
+            summary: emptyFolderCoverage(),
+            health: 'indexing',
+            job: { kind: 'full', done: 12, total: 100 },
+            orchestratorReady: true,
+        });
+        expect(view.showTree).toBe(false);
+        expect(view.placeholder?.title).toBe('Still indexing');
+        expect(view.placeholder?.detail).toContain('12 of 100');
+    });
+
+    it('shows a starting-up placeholder before the orchestrator exists', () => {
+        const view = resolveCoveragePanelView({
+            summary: emptyFolderCoverage(),
+            health: 'starting',
+            job: null,
+            orchestratorReady: false,
+        });
+        expect(view.showTree).toBe(false);
+        expect(view.placeholder?.title).toBe('Still starting up');
+    });
+
+    it('shows a status banner above a partial tree while indexing', () => {
+        const view = resolveCoveragePanelView({
+            summary: readySummary,
+            health: 'indexing',
+            job: { kind: 'catchup', done: 1, total: 2 },
+            orchestratorReady: true,
+        });
+        expect(view.showTree).toBe(true);
+        expect(view.statusLine?.title).toBe('Still indexing');
+    });
+
+    it('explains when every note is excluded', () => {
+        const summary = computeFolderCoverage({
+            allPaths: ['arch/1.md'],
+            coveredPaths: [],
+            excludedPaths: ['arch/1.md'],
+        });
+        const view = resolveCoveragePanelView({
+            summary,
+            health: 'ok',
+            job: null,
+            orchestratorReady: true,
+        });
+        expect(view.showTree).toBe(false);
+        expect(view.placeholder?.title).toBe('Nothing to cover');
     });
 });
 

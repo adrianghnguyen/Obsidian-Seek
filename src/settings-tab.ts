@@ -27,7 +27,8 @@ import {
 import { formatRecentSearchLine } from './session-telemetry';
 import type { SettingsTelemetrySink } from './main';
 import { formatRoughEta, indexPercent } from './index-eta';
-import type { FolderCoverageNode, FolderCoverageSummary } from './folder-coverage';
+import type { FolderCoverageNode, FolderCoverageSummary, CoveragePanelMessage } from './folder-coverage';
+import { emptyFolderCoverage, resolveCoveragePanelView } from './folder-coverage';
 import {
     getBackendOverride, setBackendOverride, isWebgpuDemoted, clearWebgpuDemoted,
     getStartupWarm, setStartupWarm, isMobilePlatform,
@@ -498,20 +499,35 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         const host = this.coverageHost;
         if (!host || !host.isConnected) return;
         let summary: FolderCoverageSummary;
+        let loadFailed = false;
         try {
             summary = await this.plugin.getFolderCoverage();
         } catch {
-            if (host.isConnected && host === this.coverageHost) host.empty();
-            return;
+            summary = emptyFolderCoverage();
+            loadFailed = true;
         }
         if (!host.isConnected || host !== this.coverageHost) return; // re-rendered
         host.empty();
-        if (summary.overall.total === 0) return; // nothing indexable yet
+
+        const view = resolveCoveragePanelView({
+            summary,
+            health: this.statusState(),
+            job: this.plugin.getIndexJob(),
+            orchestratorReady: this.plugin.isCoverageSourceReady,
+            loadFailed,
+        });
 
         const wrap = host.createDiv({ cls: 'seek-coverage-panel' });
         wrap.createDiv({ cls: 'seek-coverage-head', text: 'Embedder coverage by folder' });
 
-        const o = summary.overall;
+        if (view.statusLine) this.renderCoverageMessage(wrap, view.statusLine, 'status');
+        if (!view.showTree && view.placeholder) {
+            this.renderCoverageMessage(wrap, view.placeholder, 'placeholder');
+            return;
+        }
+        if (!view.showTree) return;
+
+        const o = view.summary.overall;
         const overall = wrap.createDiv({ cls: 'seek-coverage-overall' });
         overall.createSpan({
             cls: 'seek-coverage-pct is-' + coverageTone(o),
@@ -524,7 +540,17 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         });
 
         const rows = wrap.createDiv({ cls: 'seek-coverage-rows' });
-        for (const child of summary.root.children) this.renderCoverageNode(rows, child, 0);
+        for (const child of view.summary.root.children) this.renderCoverageNode(rows, child, 0);
+    }
+
+    private renderCoverageMessage(
+        parent: HTMLElement,
+        message: CoveragePanelMessage,
+        kind: 'status' | 'placeholder',
+    ): void {
+        const block = parent.createDiv({ cls: `seek-coverage-${kind} is-${message.tone}` });
+        block.createDiv({ cls: `seek-coverage-${kind}-title`, text: message.title });
+        block.createDiv({ cls: `seek-coverage-${kind}-detail`, text: message.detail });
     }
 
     // Recursively renders one folder node (and its subfolders) as an indented tree
