@@ -19,6 +19,7 @@
 import { Modal, Notice, Plugin, TFile } from 'obsidian';
 import type { App } from 'obsidian';
 import { LocalEmbedder, LOCAL_MODEL, LEGACY_ENGLISH_MODEL_ID, EMBEDDING_DIM } from './embedder';
+import type { WorkerProbeResult, WorkerEmbedTestResult } from './iframe-runner';
 import { activeModelSpec, resolveOverrideSpec, evictStaleModelCaches, deleteModelCaches, probeModelDownloaded } from './model-registry';
 import { pluginIdentity, identityMatches, identityFromMeta } from './identity';
 import { isLoadGenerationCurrent, isSessionWorkCurrent } from './boot-session';
@@ -2022,6 +2023,28 @@ export default class SeekPlugin extends Plugin {
             await this.logger.appendError('generate-log', e);
             new Notice('Seek: could not write the logging report — see the developer console.', 6000);
         }
+    }
+
+    // T8 spike — dedicated-worker capability probe (CLI eval target). Spawns a
+    // module Worker inside the Seek iframe and reports spawn / CDN-import /
+    // process-shim / WebGPU-compute results. Never mutates index or pipeline
+    // state, so it is safe to run before or after a model load.
+    async runWorkerProbe(): Promise<WorkerProbeResult> {
+        return this.embedder.workerProbe();
+    }
+
+    // T8 spike — functional embed-worker test (CLI eval target). Loads the real
+    // model in a long-lived nested worker, embeds the given text there, and
+    // compares the vector against the iframe pipeline's own output via cosine.
+    // Independent of the iframe pipeline's load state; never mutates index data.
+    async runWorkerEmbedTest(text = 'The quick brown fox jumps over the lazy dog'): Promise<WorkerEmbedTestResult> {
+        return this.embedder.workerEmbedTest(text);
+    }
+
+    // T8 spike — terminate the nested embed worker (frees wasm heap + GPU
+    // state). Next runWorkerEmbedTest() respawns it fresh.
+    async killEmbedWorker(reason = 'manual'): Promise<{ killed: boolean }> {
+        return this.embedder.killEmbedWorker(reason);
     }
 
     private async warnOnModelIndexDrift(): Promise<void> {

@@ -28,6 +28,8 @@ import {
     type RawProfile,
     type IframeEvent,
     type IframeInit,
+    type WorkerProbeResult,
+    type WorkerEmbedTestResult,
 } from './iframe-runner';
 
 // localStorage namespace for the warmup-skip fingerprint. Bumping the prefix
@@ -552,6 +554,32 @@ export class LocalEmbedder {
     // don't have to reach into the private runner field.
     appLocalFetch(url: string): Promise<AppLocalFetchResult> {
         return this.runner.appLocalFetch(url);
+    }
+
+    // T8 spike — nested dedicated-worker capability probe. Diagnostic only;
+    // runs regardless of model-load state (init() self-heals the iframe), never
+    // touches pipeline state, and reports failures as data. See
+    // IframeRunner.workerProbe / WorkerProbeResult for the fields.
+    async workerProbe(): Promise<WorkerProbeResult> {
+        const init = await this.init();
+        if (!init.iframeReady) throw new Error(init.error ?? 'iframe init failed');
+        return this.runner.workerProbe();
+    }
+
+    // T8 spike — functional embed-worker test. Loads the real model in the
+    // nested worker (independent of the iframe pipeline's own load state) and
+    // returns the worker/iframe cosine comparison. See WorkerEmbedTestResult.
+    async workerEmbedTest(text: string): Promise<WorkerEmbedTestResult> {
+        const init = await this.init();
+        if (!init.iframeReady) throw new Error(init.error ?? 'iframe init failed');
+        return this.runner.workerEmbedTest(text);
+    }
+
+    // T8 spike — kill the iframe's embed worker (free its realm).
+    async killEmbedWorker(reason = 'manual'): Promise<{ killed: boolean }> {
+        const init = await this.init();
+        if (!init.iframeReady) throw new Error(init.error ?? 'iframe init failed');
+        return this.runner.killEmbedWorker(reason);
     }
 
     // Diagnostic — runtime wall-time decomposition. See IframeRunner.profile.

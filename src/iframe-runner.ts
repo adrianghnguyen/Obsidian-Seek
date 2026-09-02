@@ -134,6 +134,10 @@ export const SOFT_DISPOSE_MS = 50;
 // so it gets a far longer budget before we call it dead.
 const RPC_TIMEOUT_MS = 60_000;
 const LOAD_RPC_TIMEOUT_MS = 180_000;
+// T8 spike — dedicated-worker probe. The child races its own 12 s inner timeout
+// (spawn + CDN import + WebGPU adapter/device/compute) before terminating the
+// nested worker; this outer budget only has to cover the RPC round trip.
+export const WORKER_PROBE_TIMEOUT_MS = 20_000;
 
 export interface IframeInit {
     buildTimestamp: string;
@@ -225,6 +229,52 @@ interface Pending {
     // Per-RPC timeout handle, cleared when the reply lands (or on dispose).
     // number is window.setTimeout's DOM return (clearTimeout takes it).
     timer?: number;
+}
+
+// T8 spike — result of the nested dedicated-worker probe. Spawned inside the
+// iframe realm; answers the four spike questions the research phase left open:
+//   spawnOk   — can this srcdoc iframe create a module Worker at all?
+//   importOk  — can that worker dynamically import() the transformers.js CDN URL?
+//   process.* — Electron worker realms expose a Node-like process; did the shim
+//               flip it so transformers would take the web (not node) branch?
+//   webgpu    — adapter/device availability + one REAL GPUBuffer passing a
+//               compute pass (not just requestAdapter; ORT needs dispatch).
+export interface WorkerProbeResult {
+    spawnOk: boolean;
+    spawnError: string | null;
+    workerType: 'module' | null;
+    importOk: boolean;
+    importError: string | null;
+    importMs: number | null;
+    processSeen: boolean;
+    processVersionsNode: string | null;
+    processType: string | null;
+    webgpu: {
+        api: boolean;
+        adapter: boolean;
+        device: boolean;
+        computePass: boolean;
+        error: string | null;
+    };
+    durationMs: number;
+}
+
+// T8 spike — functional embed-worker test result. The worker loads the REAL
+// model (same repo/revision/q4 as the iframe pipeline), embeds the probe text
+// in the worker realm, and the child embeds the SAME text on the iframe
+// pipeline to compute a cosine. cosine ≥ ~0.999 = the two realms produce the
+// same vectors = the worker architecture is functionally correct.
+export interface WorkerEmbedTestResult {
+    loadOk: boolean;
+    loadError: string | null;
+    loadMs: number;
+    embedOk: boolean;
+    embedError: string | null;
+    embedMs: number;
+    dim: number;
+    cosine: number;
+    workerKilled: boolean;
+    durationMs?: number;
 }
 
 // Shape of an iframe→parent postMessage payload: RPC replies plus the bootstrap
@@ -495,6 +545,29 @@ export class IframeRunner {
         return this.send<AppLocalFetchResult>('app-local-fetch', { url });
     }
 
+    // T8 spike — spawn a dedicated module worker INSIDE the iframe and report
+    // what it can do. Diagnostic only: no pipeline state is touched, the worker
+    // is terminated by the child before replying, and a probe failure never
+    // throws to the parent (failures ARE the data, like app-local-fetch).
+    workerProbe(): Promise<WorkerProbeResult> {
+        return this.send<WorkerProbeResult>('worker-probe', {}, WORKER_PROBE_TIMEOUT_MS);
+    }
+
+    // T8 spike — functional test of the REAL embed worker: load the model in a
+    // long-lived nested worker, embed the probe text there, and compare against
+    // the iframe pipeline's own embedding via cosine. The load RPC gets the
+    // LOAD-class budget (cold load can stream ~60 MB from the CDN); embed gets
+    // the standard budget. Structured result, never a rejection.
+    workerEmbedTest(text: string): Promise<WorkerEmbedTestResult> {
+        return this.send<WorkerEmbedTestResult>('embed-worker-test', { text }, LOAD_RPC_TIMEOUT_MS);
+    }
+
+    // T8 spike — terminate the iframe's long-lived embed worker (frees its
+    // realm: wasm heap + GPU state). The next embed-worker test respawns fresh.
+    killEmbedWorker(reason: string): Promise<{ killed: boolean }> {
+        return this.send<{ killed: boolean }>('embed-worker-kill', { reason });
+    }
+
     async dispose(): Promise<void> {
         if (this.listener) {
             window.removeEventListener('message', this.listener);
@@ -638,6 +711,249 @@ const WEBGPU_POWER_PREFERENCE_WARN_FILTER = [
     '})();',
 ].join('\n');
 
+// T8 spike — source of the DEDICATED WORKER the iframe spawns for the probe.
+// Runs in a nested dedicated-worker realm inside the srcdoc iframe. Answers the
+// spike questions with hard evidence:
+//   1. spawn        — proven by the child receiving our reply at all.
+//   2. CDN import() — dynamic import of the transformers.js URL. This is the ONE
+//      thing no precedent covers (worker plugins bundle ORT locally; only Seek's
+//      iframe must CDN-import under Obsidian's CSP).
+//   3. process shim — Electron worker realms expose a Node-like `process` which
+//      makes transformers pick the (externalized, dead) onnxruntime-node branch
+//      and ORT's glue `require('worker_threads')` (smart-related-notes fought
+//      exactly this). Report what this realm actually shows BEFORE flipping, so
+//      the eventual embed-worker knows which shim layers it needs.
+//   4. WebGPU       — navigator.gpu in dedicated workers is the documented
+//      Chromium position, but ORT needs a device AND a real dispatch, so run one
+//      compute pass on a GPUBuffer instead of trusting requestAdapter alone.
+//
+// Constraints mirrored from the child template: this body is concatenated into
+// the iframe's own script string, so NO backticks anywhere below.
+const WORKER_PROBE_BODY = [
+    "const id = " + "'__PROBE_ID__'" + ";",
+    // process shim report (no flip — evidence only, see comment above).
+    "let proc = null;",
+    "try { proc = typeof process !== 'undefined' ? process : null; } catch (e0) {}",
+    "const procInfo = {",
+    "    seen: !!proc,",
+    "    versionsNode: proc && proc.versions ? String(proc.versions.node || '') : null,",
+    "    type: proc ? String(proc.type || '') : null,",
+    "};",
+    "async function probeWebgpu() {",
+    "    const out = { api: false, adapter: false, device: false, computePass: false, error: null };",
+    "    try {",
+    "        if (typeof navigator === 'undefined' || !navigator.gpu) { out.error = 'navigator.gpu missing'; return out; }",
+    "        out.api = true;",
+    "        const adapter = await navigator.gpu.requestAdapter();",
+    "        if (!adapter) { out.error = 'requestAdapter returned null'; return out; }",
+    "        out.adapter = true;",
+    "        const device = await adapter.requestDevice();",
+    "        out.device = true;",
+    "        const buf = device.createBuffer({ size: 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });",
+    "        const enc = device.createCommandEncoder();",
+    "        const pass = enc.beginComputePass();",
+    "        pass.dispatchWorkgroups(1);",
+    "        pass.end();",
+    "        device.queue.submit([enc.finish()]);",
+    "        await device.queue.onSubmittedWorkDone();",
+    "        out.computePass = true;",
+    "        try { buf.destroy(); } catch (e1) {}",
+    "        try { device.destroy(); } catch (e2) {}",
+    "    } catch (e3) {",
+    "        out.error = String(e3 && e3.message ? e3.message : e3);",
+    "    }",
+    "    return out;",
+    "}",
+    "async function run() {",
+    "    const t0 = Date.now();",
+    "    let importOk = false, importError = null;",
+    "    try {",
+    "        await import(" + "'__CDN_URL__'" + ");",
+    "        importOk = true;",
+    "    } catch (e4) {",
+    "        importError = String(e4 && e4.message ? e4.message : e4);",
+    "    }",
+    "    const webgpu = await probeWebgpu();",
+    "    const result = {",
+    "        probeId: id,",
+    "        importOk: importOk,",
+    "        importError: importError,",
+    "        importMs: importOk ? Date.now() - t0 : null,",
+    "        process: procInfo,",
+    "        webgpu: webgpu,",
+    "    };",
+    "    self.postMessage({ __workerProbeResult: true, id: id, result: result });",
+    "}",
+    "try { run(); } catch (e5) {",
+    "    self.postMessage({ __workerProbeResult: true, id: id, result: null, fatal: String(e5) });",
+    "}",
+].join('\n');
+
+// Exported for testing only — same rationale as buildChildScript.
+export function buildWorkerProbeScript(cdnUrl: string): string {
+    return WORKER_PROBE_BODY
+        .replace("'__PROBE_ID__'", JSON.stringify('wp-' + Math.random().toString(36).slice(2)))
+        .replace("'__CDN_URL__'", JSON.stringify(cdnUrl));
+}
+
+// ── T8 spike: the REAL embed worker ─────────────────────────────────────
+// A functional nested worker that loads the actual model (same repo/revision/
+// dtype as the iframe pipeline) and answers 'embed' RPCs with 384-d vectors.
+// This is the architectural proof for moving the whole runtime off the shared
+// renderer main thread. Design decisions, carried over from the research phase
+// (smart-related-notes precedent + our probe measurements):
+//
+//  - ORT/transformers NODE-branch shim: Electron worker realms expose a Node-like
+//    `process` (our probe measured versions.node=24.x, type='worker'). transformers
+//    reads `process.release.name === 'node'` ONCE at import to pick onnxruntime-node
+//    (externalized → dead in-realm); ORT's glue checks `process.type !=
+//    'renderer'` at session-create and would require('worker_threads'). We set
+//    process.type='renderer' persistently and flip release.name around the
+//    transformers import (restore on the next microtask — the exact ort-shim
+//    choreography from smart-related-notes). With type already 'renderer', the
+//    glue's own check is false, so its node branch never runs and the glue text
+//    needs no patching — tx.js loads it from the CDN itself.
+//  - No pthread pool: numThreads=1 (cross-origin isolation is absent in the
+//    srcdoc realm, so threaded wasm isn't available; ORT also latches wasm-init
+//    per realm, so a failed threaded bring-up would be unrecoverable in-realm).
+//  - dtype pinned q4 = the iframe's WEBGPU_DTYPE_LADDER[0]; device pinned webgpu
+//    (the probe proved adapter+device+compute in this realm). No ladder: this is
+//    a spike — a real load failure surfaces as the error string.
+//  - Padding: fixed 128 cap, single-text spike (not the bucketed index path).
+//    CLS-pooled + L2-normalized in-worker, same math as sliceAndRenormalize.
+//  - Reply TRANSFERS the vector buffer (zero-copy), like the child's embed RPC.
+//  - The ~250 MB model load reuses the browser Cache API (a blob: worker
+//    inherits the iframe origin = the same cache the iframe pipeline populated).
+//
+// Constraints mirrored from the child template: NO backticks (this body is
+// concatenated into the iframe's script string).
+const EMBED_WORKER_BODY = [
+    "const CDN_URL = " + "'__CDN_URL__'" + ";",
+    "const MODEL_ID = " + "'__MODEL_ID__'" + ";",
+    "const REVISION = " + "'__REVISION__'" + ";",
+    "const DTYPE = 'q4';",
+    "const EMBED_DIM = " + "'__DIM__'" + ";",
+    "const SEQ_CAP = 128;",
+    // ── ORT/transformers node-branch shim (evidence from runWorkerProbe) ──
+    // process.type is flipped PERSISTENTLY (ORT's glue re-checks it at
+    // session-create). release.name must be flipped around the DYNAMIC import
+    // of transformers (see ensurePipeline) — NOT at worker startup: IS_NODE_ENV
+    // is captured during module evaluation, which happens when the import runs,
+    // long after this top-level code. (The smart-related-notes shim restores on
+    // a microtask only because its static import chain evaluates transformers
+    // in the same tick.)
+    "const proc = (typeof process !== 'undefined') ? process : null;",
+    "if (proc && proc.type !== 'renderer') {",
+    "    try { proc.type = 'renderer'; } catch (e0) {",
+    "        try { Object.defineProperty(proc, 'type', { value: 'renderer', configurable: true, writable: true }); } catch (e1) {}",
+    "    }",
+    "}",
+    "const release = proc && proc.release ? proc.release : null;",
+    "function flipReleaseNameForImport() {",
+    "    if (!release || release.name === 'node') {",
+    "        let flipped = false;",
+    "        try { if (release) { release.name = 'obsidian-iframe-worker'; flipped = true; } } catch (e2) {",
+    "            try { Object.defineProperty(release, 'name', { value: 'obsidian-iframe-worker', configurable: true, writable: true }); flipped = true; } catch (e3) {}",
+    "        }",
+    "        return () => { try { if (flipped && release) release.name = 'node'; } catch (e4) {} };",
+    "    }",
+    "    return () => {};",
+    "}",
+    "",
+    "let tx = null;          // transformers module namespace",
+    "let pipe = null;        // feature-extraction pipeline",
+    "let loadingPromise = null;",
+    "",
+    "async function ensurePipeline() {",
+    "    if (pipe) return pipe;",
+    "    if (loadingPromise) return loadingPromise;",
+    "    loadingPromise = (async () => {",
+    "        const restore = flipReleaseNameForImport();",
+    "        try {",
+    "            if (!tx) tx = await import(CDN_URL);",
+    "        } finally {",
+    "            restore();",
+    "        }",
+    "        const { pipeline: createPipeline, env } = tx;",
+    "        env.allowLocalModels = false;",
+    "        env.allowRemoteModels = true;",
+    "        env.useBrowserCache = true;",
+    "        const onnx = env.backends && env.backends.onnx ? env.backends.onnx : null;",
+    "        const setFlags = (o) => {",
+    "            if (!o) return;",
+    "            o.numThreads = 1;",
+    "            o.proxy = false;",
+    "        };",
+    "        setFlags(onnx ? onnx.wasm : null);",
+    "        setFlags(onnx && onnx.env ? onnx.env.wasm : null);",
+    "        pipe = await createPipeline('feature-extraction', MODEL_ID, {",
+    "            device: 'webgpu',",
+    "            dtype: DTYPE,",
+    "            ...(REVISION ? { revision: REVISION } : {}),",
+    "        });",
+    "        return pipe;",
+    "    })();",
+    "    try { await loadingPromise; }",
+    "    catch (e) { loadingPromise = null; pipe = null; throw e; }",
+    "    return loadingPromise;",
+    "}",
+    "",
+    "function norm(v) {",
+    "    let n = 0;",
+    "    for (let i = 0; i < v.length; i++) n += v[i] * v[i];",
+    "    n = Math.sqrt(n);",
+    "    if (n > 0) for (let i = 0; i < v.length; i++) v[i] /= n;",
+    "    return v;",
+    "}",
+    "",
+    "async function embedOne(text) {",
+    "    await ensurePipeline();",
+    "    const out = await pipe(text, {",
+    "        pooling: 'cls', normalize: true,",
+    "        padding: 'max_length', truncation: true, max_length: SEQ_CAP,",
+    "    });",
+    "    const d = out.dims;",
+    "    const dim = d[d.length - 1];",
+    "    if (dim < EMBED_DIM) throw new Error('model dim ' + dim + ' < EMBED_DIM ' + EMBED_DIM);",
+    "    const vec = new Float32Array(EMBED_DIM);",
+    "    vec.set(new Float32Array(out.data.buffer, out.data.byteOffset, EMBED_DIM));",
+    "    if (typeof out.dispose === 'function') out.dispose();",
+    "    return norm(vec);",
+    "}",
+    "async function handleEmbed(req) {",
+    "    const t0 = Date.now();",
+    "    const vector = await embedOne(req.text);",
+    "    self.postMessage({ __embedWorkerReply: true, id: req.id, ok: true,",
+    "        vector: vector, latencyMs: Date.now() - t0, dim: vector.length }, [vector.buffer]);",
+    "}",
+    "",
+    "self.onmessage = async (e) => {",
+    "    const req = e.data;",
+    "    if (!req || typeof req !== 'object' || !req.id) return;",
+    "    try {",
+    "        if (req.type === 'embed') await handleEmbed(req);",
+    "        else if (req.type === 'load') await ensurePipeline().then(",
+    "            () => self.postMessage({ __embedWorkerReply: true, id: req.id, ok: true, ready: true }),",
+    "            (err) => self.postMessage({ __embedWorkerReply: true, id: req.id, ok: false, error: String(err) }));",
+    "        else self.postMessage({ __embedWorkerReply: true, id: req.id, ok: false, error: 'unknown type ' + req.type });",
+    '    } catch (err) {',
+    "        self.postMessage({ __embedWorkerReply: true, id: req.id, ok: false, error: String(err) });",
+    '    }',
+    "};",
+    "",
+    "self.postMessage({ __embedWorkerReply: true, id: '__ready', ok: true, ready: true });",
+].join('\n');
+
+// Exported for testing only — same rationale as buildChildScript. dim rides
+// along so tests can assert the contract without importing the registry.
+export function buildEmbedWorkerScript(cdnUrl: string, modelId: string, revision: string | null, dim: number): string {
+    return EMBED_WORKER_BODY
+        .replace("'__CDN_URL__'", JSON.stringify(cdnUrl))
+        .replace("'__MODEL_ID__'", JSON.stringify(modelId))
+        .replace("'__REVISION__'", JSON.stringify(revision ?? ''))
+        .replace("'__DIM__'", JSON.stringify(dim));
+}
+
 // Exported for testing only — the string content of the RPC dispatch handler
 // (e.g. the source-origin check) can't be exercised via a real srcdoc iframe
 // in the node test env, so tests assert on the emitted script text instead.
@@ -655,6 +971,10 @@ ${WEBGPU_POWER_PREFERENCE_WARN_FILTER}
 const WARMUP_BATCH_SIZES = ${JSON.stringify(WARMUP_BATCH_SIZES)};
 const SEQ_BUCKETS = ${JSON.stringify(SEQ_BUCKETS)};
 const QUERY_SEQ_BUCKETS = ${JSON.stringify(QUERY_SEQ_BUCKETS)};
+// T8 spike — the REAL embed worker's full source (from buildEmbedWorkerScript),
+// inlined at build time so the child can spawn it from a blob without a
+// network fetch. JSON.stringify makes it a safe JS string literal.
+const __EMBED_WORKER_SOURCE__ = ${JSON.stringify(buildEmbedWorkerScript(cdnUrl, ACTIVE_MODEL_SPEC.repo, ACTIVE_MODEL_SPEC.revision, outputDim))};
 let pipeline = null;
 // Standalone tokenizer (no model weights) for the sidecar hydrate's chunk-id
 // reproduction. Independent of pipeline — survives recycle.
@@ -1264,6 +1584,201 @@ async function tokenCounts(texts) {
     return counts;
 }
 
+// ── T8 spike: nested dedicated-worker probe ─────────────────────────────
+// Spawn a module Worker from a blob INSIDE this iframe realm, run
+// buildWorkerProbeScript() in it (CDN import + process-shim report + a real
+// WebGPU compute dispatch), relay the result to the parent, and terminate.
+// Diagnostic only — no pipeline state is touched, and every failure is data
+// (same philosophy as app-local-fetch): the reply is a structured WorkerProbe
+//Result, never a rejection. Hard 12 s inner deadline: the worker is
+// terminated on expiry so a wedged spawn can never trip the parent's RPC
+// timeout instead of reporting.
+const WORKER_PROBE_TIMEOUT_MS = 12000;
+function trySpawnWorker(source) {
+    try {
+        const blob = new Blob([source], { type: 'text/javascript' });
+        const url = URL.createObjectURL(blob);
+        let w = null;
+        try {
+            w = new Worker(url, { type: 'module' });
+        } catch (e) {
+            try { URL.revokeObjectURL(url); } catch (e2) {}
+            return { worker: null, url: url, error: String(e && e.message ? e.message : e) };
+        }
+        return { worker: w, url: url, error: null };
+    } catch (e3) {
+        return { worker: null, url: null, error: String(e3 && e3.message ? e3.message : e3) };
+    }
+}
+async function runWorkerProbe() {
+    const t0 = Date.now();
+    const result = {
+        spawnOk: false, spawnError: null, workerType: null,
+        importOk: false, importError: null, importMs: null,
+        processSeen: false, processVersionsNode: null, processType: null,
+        webgpu: { api: false, adapter: false, device: false, computePass: false, error: null },
+        durationMs: 0,
+    };
+    if (typeof Worker !== 'function') {
+        result.spawnError = "Worker constructor missing";
+        result.durationMs = Date.now() - t0;
+        return result;
+    }
+    const workerProbeScript = ${JSON.stringify(buildWorkerProbeScript(cdnUrl))};
+    const spawned = trySpawnWorker(workerProbeScript);
+    result.workerType = 'module';
+    if (!spawned.worker) {
+        result.spawnError = spawned.error;
+        result.durationMs = Date.now() - t0;
+        return result;
+    }
+    result.spawnOk = true;
+    const w = spawned.worker;
+    await new Promise((resolve) => {
+        let settled = false;
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            window.clearTimeout(timer);
+            try { w.terminate(); } catch (e) {}
+            try { URL.revokeObjectURL(spawned.url); } catch (e) {}
+            resolve();
+        };
+        w.onmessage = (ev) => {
+            const d = ev && ev.data;
+            if (!d || d.__workerProbeResult !== true) return;
+            const r = d.result;
+            if (r) {
+                result.importOk = !!r.importOk;
+                result.importError = r.importError || null;
+                result.importMs = typeof r.importMs === 'number' ? r.importMs : null;
+                if (r.process) {
+                    result.processSeen = !!r.process.seen;
+                    result.processVersionsNode = r.process.versionsNode || null;
+                    result.processType = r.process.type || null;
+                }
+                if (r.webgpu) result.webgpu = r.webgpu;
+            } else {
+                result.spawnError = "worker fatal: " + String(d.fatal || 'unknown');
+            }
+            finish();
+        };
+        w.onerror = (e) => {
+            result.spawnError = "worker onerror: " + String(e && e.message ? e.message : e);
+            finish();
+        };
+        const timer = window.setTimeout(finish, WORKER_PROBE_TIMEOUT_MS);
+    });
+    result.durationMs = Date.now() - t0;
+    return result;
+}
+
+// ── T8 spike: REAL embed worker lifecycle (iframe child side) ───────────
+// Hosts a long-lived dedicated worker running buildEmbedWorkerScript's body
+// (injected below via __EMBED_WORKER_SOURCE__). Unlike the probe worker, this
+// one STAYS ALIVE across RPCs (spawning it cold per embed would pay the model
+// load every time) and is explicitly restarted by 'embed-worker-kill'. Reply
+// routing mirrors the parent: __embedWorkerReply messages resolve pending
+// worker promises; anything else is the unsolicited __ready handshake.
+const embedWorkerPending = new Map();
+let embedWorker = null;
+let embedWorkerReady = null;
+function killEmbedWorker(reason) {
+    if (embedWorkerReady) { const r = embedWorkerReady; embedWorkerReady = null; r(); }
+    const w = embedWorker;
+    embedWorker = null;
+    for (const [, p] of embedWorkerPending) {
+        try { p.reject(new Error('embed worker killed: ' + reason)); } catch (e) {}
+    }
+    embedWorkerPending.clear();
+    if (w) { try { w.terminate(); } catch (e2) {} }
+}
+function getEmbedWorker() {
+    if (embedWorker) return embedWorkerReady;
+    const source = __EMBED_WORKER_SOURCE__;
+    let blobUrl = null;
+    embedWorkerReady = new Promise((resolve, reject) => {
+        try {
+            blobUrl = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+            const w = new Worker(blobUrl, { type: 'module' });
+            embedWorker = w;
+            w.onerror = (e) => {
+                const err = 'embed worker onerror: ' + String(e && e.message ? e.message : e);
+                killEmbedWorker(err);
+                reject(new Error(err));
+            };
+            w.onmessage = (ev) => {
+                const d = ev && ev.data;
+                if (!d || d.__embedWorkerReply !== true) return;
+                if (d.id === '__ready') { resolve(w); return; }
+                const p = embedWorkerPending.get(d.id);
+                if (!p) return;
+                embedWorkerPending.delete(d.id);
+                if (d.ok) p.resolve(d);
+                else p.reject(new Error(d.error || 'embed worker error'));
+            };
+        } catch (e) {
+            embedWorker = null;
+            embedWorkerReady = null;
+            reject(e);
+        }
+    });
+    return embedWorkerReady;
+}
+function embedWorkerRpc(req, timeoutMs) {
+    return getEmbedWorker().then((w) => new Promise((resolve, reject) => {
+        const id = req.id;
+        const timer = window.setTimeout(() => {
+            embedWorkerPending.delete(id);
+            reject(new Error("embed worker RPC '" + req.type + "' timed out after " + timeoutMs + 'ms'));
+        }, timeoutMs);
+        embedWorkerPending.set(id, {
+            resolve: (d) => { window.clearTimeout(timer); resolve(d); },
+            reject: (e) => { window.clearTimeout(timer); reject(e); },
+        });
+        w.postMessage(req);
+    }));
+}
+// Functional-spike result: worker vs iframe pipeline on the SAME text. The
+// cosine is the correctness gate — same model, same pooling math, so the two
+// realms must produce near-identical vectors.
+async function runWorkerEmbedTest(text) {
+    const t0 = Date.now();
+    const out = { loadOk: false, loadError: null, loadMs: 0, embedOk: false, embedError: null, embedMs: 0, dim: 0, cosine: 0, workerKilled: false };
+    if (typeof Worker !== 'function') { out.loadError = 'Worker constructor missing'; return out; }
+    try {
+        const wt0 = Date.now();
+        await embedWorkerRpc({ id: 'wtest-load', type: 'load' }, 180000);
+        out.loadOk = true;
+        out.loadMs = Date.now() - wt0;
+    } catch (e) {
+        out.loadError = String(e && e.message ? e.message : e);
+        out.workerKilled = embedWorker === null;
+        return out;
+    }
+    try {
+        const et0 = Date.now();
+        const reply = await embedWorkerRpc({ id: 'wtest-embed', type: 'embed', text: String(text) }, 60000);
+        out.embedOk = true;
+        out.embedMs = Date.now() - et0;
+        out.dim = reply.dim || 0;
+        if (!pipeline) {
+            out.cosine = -1;
+        } else {
+            const ref = await embedText(String(text));
+            const a = reply.vector, b = ref.vector;
+            let dot = 0, na = 0, nb = 0;
+            for (let i = 0; i < Math.min(a.length, b.length); i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+            out.cosine = dot / (Math.sqrt(na) * Math.sqrt(nb) || 1);
+        }
+    } catch (e) {
+        out.embedError = String(e && e.message ? e.message : e);
+        out.workerKilled = embedWorker === null;
+    }
+    out.durationMs = Date.now() - t0;
+    return out;
+}
+
 // Pseudo-natural text of ~targetTokens length (chunker estimates 4.5 ch/tok).
 // Timing of forward/post is shape-bound, not content-bound, but tokenizer
 // cost IS content-sensitive — so use a realistic sentence, not a repeated
@@ -1391,6 +1906,17 @@ window.addEventListener('message', async (event) => {
         } else if (data.type === 'embed-profile') {
             result = await profileRuntime(
                 data.payload.batchSizes, data.payload.seqBuckets, data.payload.reps);
+        } else if (data.type === 'worker-probe') {
+            // T8 spike — nested dedicated-worker probe. Never throws (failures
+            // ARE the data); see runWorkerProbe above.
+            result = await runWorkerProbe();
+        } else if (data.type === 'embed-worker-test') {
+            // T8 spike — functional embed-worker test (load + embed + cosine
+            // vs the iframe pipeline). Structured result, never a rejection.
+            result = await runWorkerEmbedTest(data.payload.text);
+        } else if (data.type === 'embed-worker-kill') {
+            killEmbedWorker(String(data.payload && data.payload.reason || 'parent request'));
+            result = { killed: true };
         } else if (data.type === 'app-local-fetch') {
             // Probe — never throws to the parent; the failure cases ARE the data.
             // We want { ok: false, error } back, not a rejected RPC.

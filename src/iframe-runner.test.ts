@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { IframeRunner, buildChildScript, isChromiumPowerPreferenceAdapterWarning, stripGpuPowerPreference, SOFT_DISPOSE_MS } from './iframe-runner';
+import { IframeRunner, buildChildScript, buildWorkerProbeScript, buildEmbedWorkerScript, isChromiumPowerPreferenceAdapterWarning, stripGpuPowerPreference, SOFT_DISPOSE_MS, WORKER_PROBE_TIMEOUT_MS } from './iframe-runner';
 
 // F5 — per-RPC timeout. A jetsam-killed iframe child never replies; without the
 // timeout the parent promise hangs forever, stranding the embed catch's
@@ -339,5 +339,179 @@ describe('iframe child WASM fallback — preserves the WebGPU failure cause', ()
         const second = script.indexOf('wasmFail(e2)');
         expect(first).toBeGreaterThan(-1);
         expect(second).toBeGreaterThan(first);
+    });
+});
+
+// T8 spike — the nested dedicated-worker probe. The node test env can't run a
+// real srcdoc iframe or a real Worker, so (like the child-script tests above)
+// we assert on the emitted source text: the worker body must be a valid
+// script-shaped string carrying the probe contract, and the iframe child must
+// relay a 'worker-probe' RPC to runWorkerProbe() and reply with a structured
+// result (never a rejection).
+describe('worker probe script (buildWorkerProbeScript)', () => {
+    it('inlines the CDN URL and a unique probe id, no unreplaced placeholders', () => {
+        const script = buildWorkerProbeScript('https://cdn.example.com/transformers');
+        expect(script).toContain('"https://cdn.example.com/transformers"');
+        expect(script).toMatch(/const id = "wp-[0-9a-z]+"/);
+        expect(script).not.toContain('__PROBE_ID__');
+        expect(script).not.toContain('__CDN_URL__');
+    });
+
+    it('contains no backticks (safe to embed in the iframe template literal)', () => {
+        expect(buildWorkerProbeScript('https://cdn.example.com/x')).not.toContain('`');
+        expect(buildWorkerProbeScript('https://cdn.example.com/x')).not.toContain('${');
+    });
+
+    it('dynamically imports the CDN URL and posts one structured result', () => {
+        const script = buildWorkerProbeScript('https://cdn.example.com/x');
+        expect(script).toContain('await import("https://cdn.example.com/x")');
+        expect(script).toContain('self.postMessage({ __workerProbeResult: true');
+        // Evidence-only process-shim report (the eventual embed-worker decides
+        // whether to flip; the probe only reports what the realm exposes).
+        expect(script).toContain('versionsNode');
+        expect(script).toContain("String(proc.type || '')");
+    });
+
+    it('exercises a real WebGPU compute dispatch, not just requestAdapter', () => {
+        const script = buildWorkerProbeScript('https://cdn.example.com/x');
+        expect(script).toContain('navigator.gpu');
+        expect(script).toContain('requestAdapter()');
+        expect(script).toContain('requestDevice()');
+        expect(script).toContain('GPUBufferUsage.STORAGE');
+        expect(script).toContain('dispatchWorkgroups(1)');
+        expect(script).toContain('onSubmittedWorkDone()');
+    });
+});
+
+describe('iframe child worker-probe relay', () => {
+    it("dispatches 'worker-probe' to runWorkerProbe() before the app-local-fetch arm", () => {
+        const script = buildChildScript('https://example.com/cdn', 384);
+        const probeArm = script.indexOf("data.type === 'worker-probe'");
+        const runCall = script.indexOf('await runWorkerProbe()', probeArm);
+        const fetchArm = script.indexOf("data.type === 'app-local-fetch'");
+        expect(probeArm).toBeGreaterThan(-1);
+        expect(runCall).toBeGreaterThan(probeArm);
+        expect(fetchArm).toBeGreaterThan(probeArm);
+    });
+
+    it('embeds the full worker source (spawn target present in the child)', () => {
+        const script = buildChildScript('https://example.com/cdn', 384);
+        // The child embeds the compiled worker body as a JSON string literal.
+        expect(script).toContain('new Worker(url, { type: \'module\' })');
+        expect(script).toContain('__workerProbeResult');
+        expect(script).toContain('onSubmittedWorkDone()');
+    });
+
+    it('terminates the nested worker on a hard deadline (no wedged spawns)', () => {
+        const script = buildChildScript('https://example.com/cdn', 384);
+        expect(script).toContain('WORKER_PROBE_TIMEOUT_MS = 12000');
+        const tIdx = script.indexOf('window.setTimeout(finish, WORKER_PROBE_TIMEOUT_MS)');
+        const termIdx = script.indexOf('w.terminate()', 0);
+        expect(tIdx).toBeGreaterThan(-1);
+        expect(termIdx).toBeGreaterThan(-1);
+    });
+
+    it('parent RPC uses the dedicated worker-probe timeout budget', () => {
+        expect(WORKER_PROBE_TIMEOUT_MS).toBeGreaterThan(12000);
+        const r = new IframeRunner();
+        const spy = vi.spyOn(r as unknown as { send: (...a: unknown[]) => unknown }, 'send');
+        void r.workerProbe().catch(() => { /* dead-iframe rejection is fine here */ });
+        expect(spy).toHaveBeenCalledWith('worker-probe', {}, WORKER_PROBE_TIMEOUT_MS);
+    });
+});
+
+// T8 spike — the REAL embed worker. Same approach as the probe tests: the node
+// env can't run Workers or the model, so we assert the emitted source text
+// carries the load-bearing contract pieces.
+describe('embed worker script (buildEmbedWorkerScript)', () => {
+    const MODEL = 'tooape/granite-embedding-97m-multilingual-r2-GBQ4-ONNX';
+    const REV = '54db88c5667bd79b4aea24ea6027a7ef45a7bbb5';
+
+    it('pins model id, revision, q4 dtype, and dim from the spec', () => {
+        const script = buildEmbedWorkerScript('https://cdn.example.com/tx', MODEL, REV, 384);
+        expect(script).toContain(JSON.stringify(MODEL));
+        expect(script).toContain(JSON.stringify(REV));
+        expect(script).toContain("const DTYPE = 'q4';");
+        expect(script).toContain('const EMBED_DIM = 384;');
+        expect(script).not.toContain('__CDN_URL__');
+        expect(script).not.toContain('__MODEL_ID__');
+        expect(script).not.toContain('__REVISION__');
+        expect(script).not.toContain('__DIM__');
+    });
+
+    it('carries the ORT/transformers node-branch shim', () => {
+        const script = buildEmbedWorkerScript('https://cdn.example.com/tx', MODEL, REV, 384);
+        // process.type flipped persistently (ORT glue's check at session-create).
+        expect(script).toContain("proc.type = 'renderer'");
+        // release.name flipped around the DYNAMIC transformers import (module
+        // eval happens at import time, not worker startup) — flip + restore.
+        expect(script).toContain('function flipReleaseNameForImport()');
+        expect(script).toContain("release.name = 'obsidian-iframe-worker'");
+        expect(script).toContain('flipReleaseNameForImport()');
+        expect(script).toContain('restore();');
+    });
+
+    it('configures the web runtime: remote models, browser cache, single thread', () => {
+        const script = buildEmbedWorkerScript('https://cdn.example.com/tx', MODEL, REV, 384);
+        expect(script).toContain('env.allowLocalModels = false');
+        expect(script).toContain('env.allowRemoteModels = true');
+        expect(script).toContain('env.useBrowserCache = true');
+        expect(script).toContain('o.numThreads = 1');
+        expect(script).toContain('o.proxy = false');
+    });
+
+    it('produces CLS-pooled normalized vectors and transfers them back', () => {
+        const script = buildEmbedWorkerScript('https://cdn.example.com/tx', MODEL, REV, 384);
+        expect(script).toContain("pooling: 'cls'");
+        expect(script).toMatch(/truncation: true, max_length: SEQ_CAP/);
+        expect(script).toContain('function norm(v)');
+        // Zero-copy reply + the __embedWorkerReply contract the child routes on.
+        expect(script).toContain('[vector.buffer]');
+        expect(script).toContain('__embedWorkerReply');
+        expect(script).toContain("id: '__ready'");
+    });
+
+    it('contains no backticks (safe to embed in the iframe template literal)', () => {
+        expect(buildEmbedWorkerScript('https://cdn.example.com/tx', MODEL, REV, 384)).not.toContain('`');
+    });
+});
+
+describe('iframe child embed-worker relay', () => {
+    it('inlines the worker source and dispatches the three embed-worker RPCs', () => {
+        const script = buildChildScript('https://example.com/cdn', 384);
+        // Source is injected as a JS string literal (no placeholder remains).
+        expect(script).toContain('const __EMBED_WORKER_SOURCE__ = ');
+        expect(script).not.toContain('undefined && __EMBED_WORKER_SOURCE__');
+        // Lifecycle: long-lived worker + explicit kill (NOT per-RPC terminate).
+        expect(script).toContain("new Worker(blobUrl, { type: 'module' })");
+        expect(script).toContain("data.type === 'embed-worker-test'");
+        expect(script).toContain("data.type === 'embed-worker-kill'");
+        expect(script).toContain('function killEmbedWorker');
+        // Cosine comparison against the iframe pipeline's own embedText.
+        expect(script).toContain('await runWorkerEmbedTest(data.payload.text)');
+        expect(script).toContain('out.cosine = dot / (Math.sqrt(na) * Math.sqrt(nb) || 1)');
+    });
+
+    it('routes __embedWorkerReply messages and rejects on worker death', () => {
+        const script = buildChildScript('https://example.com/cdn', 384);
+        const routeIdx = script.indexOf('d.__embedWorkerReply !== true');
+        const readyIdx = script.indexOf("d.id === '__ready'", routeIdx);
+        // killEmbedWorker is defined before the router in the emitted child —
+        // presence is the contract here (its rejects fire on worker death).
+        const killIdx = script.indexOf('embed worker killed: ');
+        expect(routeIdx).toBeGreaterThan(-1);
+        expect(readyIdx).toBeGreaterThan(routeIdx);
+        expect(killIdx).toBeGreaterThan(-1);
+        // Per-RPC timeout so a wedged worker rejects instead of hanging forever.
+        expect(script).toContain(' timed out after ');
+        expect(script).toContain('+ timeoutMs +');
+    });
+
+    it('embed-worker-test load RPC is parent-timeout compatible (never a raw hang)', () => {
+        const script = buildChildScript('https://example.com/cdn', 384);
+        // The load RPC uses a 180 s budget inside the child — the parent's
+        // LOAD_RPC_TIMEOUT_MS (180 s) covers the whole test round trip.
+        expect(script).toContain("embedWorkerRpc({ id: 'wtest-load', type: 'load' }, 180000)");
+        expect(script).toContain("type: 'embed', text: String(text)");
     });
 });
