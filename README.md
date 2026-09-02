@@ -2,28 +2,35 @@
 
 <img width="693" height="817" alt="Screenshot 2026-06-29 at 14 33 54" src="https://github.com/user-attachments/assets/127d554d-9faf-45c0-8215-02e151c1f5c4" />
 
-
-Seek is an Obsidian native hybrid search for Obsidian vaults, built to find buried information in large and complex vaults. It combines dense semantic embeddings with lexical (keyword) search to find exactly what you're looking for, all running within Obsidian. No APIs, or local servers needed. 
+Seek is a native hybrid search plugin for Obsidian vaults, built to find buried information in large and complex vaults. It combines dense semantic embeddings with lexical (keyword) search to find exactly what you're looking for, all running within Obsidian. No APIs or local servers needed.
 
 Relevance has been tested and evaluated on hundreds of thousands of queries and notes, and offers easy customization to best suit your vault.
 
+> **Fork notice:** This repo is a maintained fork of [ryan-manor/Obsidian-Seek](https://github.com/ryan-manor/Obsidian-Seek) by Ryan Manor, extended by [Adrian Nguyen](https://github.com/adrianghnguyen/Obsidian-Seek). Current version: **1.4.0**. The [upstream user guide](https://publish.obsidian.md/rmm/Seek+Documentation/About+Seek) still applies for core relevance and tuning; see [CHANGELOG.md](./CHANGELOG.md) for fork-specific additions.
+
 <img width="735" height="595" alt="Screenshot 2026-06-30 at 09 25 33" src="https://github.com/user-attachments/assets/ab5bf543-8d57-4f79-b912-bede11bac059" />
 
-
-
 ## Features
+
 - Support for 52 languages (plus code)
 - Inline filtering with autosuggestions
-- Support for mobile with a cross device, synced index
-- Highly tuned and evaluated for relevance on any size of Obsidian vault, even up to tens of thousands of notes. 
+- Support for mobile with a cross-device, synced index
+- Highly tuned and evaluated for relevance on any size of Obsidian vault, even up to tens of thousands of notes
+- **Recent searches** in the modal resting state
+- **Insert a wiki link** from search (Shift+Enter) without leaving the editor
+- **Configurable open target** for Cmd/Ctrl+click — new tab, split pane, or window (desktop)
+- **Warm-up lexical results** before semantic ranking is ready on a fresh start
+- **Settings startup timeline** with boot-over-boot trend and per-folder embedder coverage tree
+- **Automatic backfill** when Obsidian excluded-files settings change
+- **Obsidian CLI** headless search, open, and insert-link (`seek:search`, `seek:open`, `seek:insert-link`)
+- **Experimental background query worker** (desktop, Settings → Model & performance)
 
-
-The user guide for seek can be found [here](https://publish.obsidian.md/rmm/Seek+Documentation/About+Seek), and more information about Seek's relevance tuning and evaluation is [here](https://publish.obsidian.md/rmm/Seek+Documentation/Seek+Evaluation+%26+Development).
+The user guide for Seek can be found [here](https://publish.obsidian.md/rmm/Seek+Documentation/About+Seek), and more information about Seek's relevance tuning and evaluation is [here](https://publish.obsidian.md/rmm/Seek+Documentation/Seek+Evaluation+%26+Development).
 
 ## Installation
 
 1. Install the plugin in your vault.
-2. In Seek settings, click index to let Seek scan your vault. (typically 1–3 minutes; longer for very large vaults).
+2. Open Obsidian and let Seek build the index on first load (typically 1–3 minutes; longer for very large vaults).
 3. Open search with the **Search** command and start typing.
 
 ## How It Works
@@ -51,6 +58,18 @@ The index lives in an IndexedDB database scoped to your vault (`seek-index:<appI
 
 The resident frame (the corpus in ranked order plus its packed vectors) is cached in memory and reused across keystrokes, so a warm query makes no IndexedDB round-trips. For multi-device use, Seek also writes a synced sidecar — per-device vault files that Obsidian Sync or iCloud can carry between devices — so a phone can hydrate the index without re-embedding.
 
+## CLI and automation
+
+Seek registers Obsidian CLI commands for headless use (Obsidian 1.12.7+ with the CLI enabled):
+
+```powershell
+obsidian seek:search query="project notes" format=json vault=MyVault
+obsidian seek:open query="project notes" rank=1 paneType=tab vault=MyVault
+obsidian seek:insert-link query="project notes" rank=1 vault=MyVault
+```
+
+Deep links via `obsidian://seek` support search, open, and insert-link modes with the same parameters.
+
 ## Network Use
 
 Seek runs the embedding model locally, but it has to download the model and its runtime **once per device**, the first time you index a vault:
@@ -62,9 +81,9 @@ These downloads happen only when the assets are not already cached. They are cac
 
 ## Privacy and Local Logging
 
-Seek writes diagnostic logs (indexing progress, search activity, and errors) to local files inside your vault to help debug performance and relevance. These logs stay on your device and are never transmitted anywhere. Additionaly, diagnostics for search and relevance can be generated which creates a report of your recent searches, with note titles, and metadata included. Results content is not included in these reports, and the reports are written to your local Seek folder. 
+Seek writes diagnostic logs (indexing progress, search activity, and errors) to local files inside your vault to help debug performance and relevance. These logs stay on your device and are never transmitted anywhere. Additionally, diagnostics for search and relevance can be generated which creates a report of your recent searches, with note titles, and metadata included. Results content is not included in these reports, and the reports are written to your local Seek folder.
 
-Seek transmits no logging or data to me about your index, or your queries. 
+Seek transmits no logging or data to me about your index, or your queries.
 
 ## License and Attribution
 
@@ -75,3 +94,5 @@ It builds on:
 - [transformers.js](https://github.com/huggingface/transformers.js) (Apache-2.0) — on-device model inference.
 - [IBM Granite embedding models](https://huggingface.co/ibm-granite) (Apache-2.0) — the embedding model.
 - [MiniSearch](https://github.com/lucaong/minisearch) (MIT) — lexical (BM25) search.
+
+Original Seek by [Ryan Manor](https://github.com/ryan-manor/Obsidian-Seek).

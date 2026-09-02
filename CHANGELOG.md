@@ -2,144 +2,92 @@
 
 All notable changes to Seek are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
-## 1.8.1
+## [Unreleased]
 
-About-footer links are manifest-driven, startup boot history persists on disk, and embedder coverage explains when it is not ready yet. No reindex is needed, since the index format is unchanged.
+## 1.4.0
 
-### Changed
-- **Settings About footer reads name, version, author, and link URLs from `manifest.json`.** Optional `githubUrl`, `docsUrl`, and `xUrl` fields control the icon links; omit or leave a field empty to hide that icon. Custom URL fields are read from the plugin's `manifest.json` on disk because Obsidian does not expose them on the runtime manifest object.
-- **Startup boot history keeps the last five sessions on disk.** Settings → Index lists recent boots under the live startup block. History is stored as `startup-history.json` in the plugin folder (not synced settings or localStorage), so it survives plugin reloads and manifest deploys. Existing localStorage history migrates once on load.
-
-### Fixed
-- **Settings → Index no longer hides "Embedder coverage by folder" while Seek is still starting or indexing.** When coverage is not ready yet, the panel now shows an explicit message (for example "Still starting up" or "Still indexing" with progress) instead of disappearing. Partial coverage still shows the folder tree with a status banner until embedding catches up.
-
-## 1.8.0
-
-Queries can run in a background worker thread, and the embedding runtime now has an off-ramp that doesn't touch the UI. No reindex is needed, since the index format is unchanged.
+Queries can run in a background worker thread, and Settings polish makes the About footer and boot history easier to maintain. No reindex is needed, since the index format is unchanged.
 
 ### Added
 - **Settings → Model & performance: "Run queries in background worker" (experimental, desktop only).** Seek's embedding model ran on Obsidian's UI thread inside a hidden sandbox; during indexing, every query embedding competed with everything else that thread is doing. This setting moves query embeddings to a dedicated background worker thread. The regular pipeline stays as an automatic fallback: if the worker fails, that search embeds the usual way and the worker is retried on the next reload. Per-device (not synced), like the Compute setting.
 
 ### Changed
 - **Seek exposes worker diagnostics for support.** Two new developer hooks (`runWorkerProbe` / `runWorkerEmbedTest`) report whether the background worker can spawn, load the model, and produce vectors identical to the regular pipeline — so worker problems can be diagnosed from a log report without reproducing them interactively.
+- **Settings About footer reads name, version, author, and link URLs from `manifest.json`.** Optional `githubUrl`, `docsUrl`, and `xUrl` fields control the icon links; omit or leave a field empty to hide that icon. Custom URL fields are read from the plugin's `manifest.json` on disk because Obsidian does not expose them on the runtime manifest object.
+- **Startup boot history keeps the last five sessions on disk.** Settings → Index lists recent boots under the live startup block. History is stored as `startup-history.json` in the plugin folder (not synced settings or localStorage), so it survives plugin reloads and manifest deploys. Existing localStorage history migrates once on load.
 
-## 1.7.0
+## 1.3.0
 
-Coverage now shows the whole folder hierarchy, each folder counting only its own notes. No reindex is needed, since the index format is unchanged.
-
-### Changed
-- **Settings → Index "Embedder coverage by folder" now shows the full directory hierarchy.** Every folder — not just top-level ones — appears as an indented tree row, and each row reports the coverage of that folder's own notes (recursively): `embedded files / relevant files` in that subtree, instead of a percentage against the whole vault. A nested folder like `A/B` shows its own embedded/relevant count, so you can see exactly where coverage is thin. Excluded files still don't count against a folder's percentage, and fully-excluded folders are tagged "excluded".
-
-## 1.6.1
-
-See which folders are fully indexed, and watch Seek backfill when you change what it excludes. No reindex is needed, since the index format is unchanged.
-
-### Changed
-- **Seek waits a few seconds after the workspace opens before touching the search index.** On vaults with many plugins, Seek's startup indexing used to race the other plugins' startup I/O. It now lets that first burst finish before opening its index — and skips the wait entirely if you open search right away.
-
-## 1.6.0
-
-See which folders are fully indexed, and watch Seek backfill when you change what it excludes. No reindex is needed, since the index format is unchanged.
-
-### Added
-- **Settings → Index shows embedder coverage per folder.** A new "Embedder coverage by folder" panel lists each top-level folder with the percentage of its notes that have run through the embedder pipeline (the ones that have real index records), plus an overall percentage for the whole vault. Fully-excluded folders are tagged rather than shown as a coverage hole.
-- **Seek detects changes to Obsidian's "Excluded files" and backfills automatically.** When you add or remove an entry under Settings → Files & Links → Excluded files (or flip "Honor excluded folders"), Seek notices within a few seconds. A newly-revealed folder shows a backfill banner ("Backfilling after your Excluded files changed") and is indexed automatically; a newly-excluded folder is soft-deleted from the index. No manual reindex is required.
-
-### Changed
-- **Settings → Index "Honor excluded folders"** now applies immediately on toggle (previously "next full reindex"), so removing an exclusion triggers a backfill right away.
-
-## 1.5.0
-
-Early results while Seek warms up. No reindex is needed, since the index format is unchanged.
-
-### Added
-- **Search works while Seek is still warming up.** On a fresh start, the search modal no longer waits for the embedding model and index caches before showing anything: it now serves the early stages of the search pipeline (name matches and lexical BM25 results) immediately, then upgrades them in-place to full semantic results when Seek finishes loading. A small notice above the results explains that lexical results are provisional during warm-up.
-- **Headless `seek:search` returns lexical results during warm-up.** CLI and automation calls no longer refuse while the index finishes booting — with a populated index they answer lexically and mark the response `ready: false` (with a `warming` note) until semantic search is available. `seek:open` and `seek:insert-link` still wait, so a wrong top hit can't misfire into a note.
-
-### Changed
-- **Settings → Relevance "Search stages" explainer** mentions that lexical results can appear before semantic ranking while Seek is warming up.
-
-## 1.4.0
-
-Startup diagnostics that fill in live and persist for a boot-over-boot trend. No reindex is needed, since the index format is unchanged.
+Index and startup diagnostics fill in live, show where embedding coverage is thin, and backfill when exclusions change. No reindex is needed, since the index format is unchanged.
 
 ### Added
 - **Settings → Index shows the startup timeline while it happens, not only after it ends.** The startup block now renders as soon as Seek starts: Searchable clocks live until the search gate releases, Cache warm shows queued → a live clock while caches load → its final duration, and Fully ready opens when warm completes (or immediately when warm is off). Previously the block stayed hidden until the whole boot finished, so a mid-boot Settings visit showed nothing.
 - **Startup timings trend against the previous boot.** Each completed boot is saved on the device (not synced — boot cost is a device trait) and the card shows whether this boot was faster or slower than the last one, with the delta.
+- **Settings → Index shows embedder coverage per folder.** A new "Embedder coverage by folder" panel lists each folder with the percentage of its notes that have run through the embedder pipeline (the ones that have real index records), plus an overall percentage for the whole vault. Fully-excluded folders are tagged rather than shown as a coverage hole.
+- **Seek detects changes to Obsidian's "Excluded files" and backfills automatically.** When you add or remove an entry under Settings → Files & Links → Excluded files (or flip "Honor excluded folders"), Seek notices within a few seconds. A newly-revealed folder shows a backfill banner ("Backfilling after your Excluded files changed") and is indexed automatically; a newly-excluded folder is soft-deleted from the index. No manual reindex is required.
 
 ### Changed
 - **Startup rows show one number per stage.** Searchable keeps its gate time, Cache warm shows the warm duration itself (the delta between stages), and Fully ready shows the total time from start — replacing the previous duplicated phase/from-start columns.
+- **Settings → Index "Honor excluded folders"** now applies immediately on toggle (previously "next full reindex"), so removing an exclusion triggers a backfill right away.
+- **Seek waits a few seconds after the workspace opens before touching the search index.** On vaults with many plugins, Seek's startup indexing used to race the other plugins' startup I/O. It now lets that first burst finish before opening its index — and skips the wait entirely if you open search right away.
+- **Settings → Index "Embedder coverage by folder" now shows the full directory hierarchy.** Every folder — not just top-level ones — appears as an indented tree row, and each row reports the coverage of that folder's own notes (recursively): `embedded files / relevant files` in that subtree, instead of a percentage against the whole vault. A nested folder like `A/B` shows its own embedded/relevant count, so you can see exactly where coverage is thin. Excluded files still don't count against a folder's percentage, and fully-excluded folders are tagged "excluded".
 
-## 1.3.0
-
-Progressive search pipeline stage indicator and Settings transparency. No reindex is needed, since the index format is unchanged.
-
-### Added
-- **Search modal footer shows the progressive pipeline stage.** While a search runs, the footer displays Name match → Lexical BM25 → Hybrid semantic, progressively bolding the active stage as promise-ordered results arrive. The indicator collapses when all stages complete, keeping the footer clean at rest.
-- **Settings → Relevance explains the progressive pipeline ladder.** A "Search stages" block below the fusion diagram mirrors the footer labels, so users understand what the stage indicator means.
-- **New `pipeline-stage.ts` reducer** with tests: a pure state machine that maps orchestrator `onPartial` events to stage phases, testable without the DOM.
-- **AGENTS.md UI transparency gate** — general changes affecting user experience must be reviewed against what the plugin UI exposes (pipeline labels, settings, status bar, modal hints).
-
-### Changed
-- **Settings → Relevance rearranged** to include the progressive ladder immediately after the fusion pipeline diagram.
+### Fixed
+- **Settings → Index no longer hides "Embedder coverage by folder" while Seek is still starting or indexing.** When coverage is not ready yet, the panel now shows an explicit message (for example "Still starting up" or "Still indexing" with progress) instead of disappearing. Partial coverage still shows the folder tree with a status banner until embedding catches up.
 
 ## 1.2.0
 
-Progressive search pipeline with BM25-first lexical partial and cold-start fallback. No reindex is needed, since the index format is unchanged.
+Progressive search streams lexical results before semantic ranking finishes, and warm-up search no longer waits for the model. No reindex is needed, since the index format is unchanged.
 
 ### Added
 - **Search now streams lexical (BM25) results before semantic results arrive.** After name-prefix paint, BM25 + recency + title-boost results are ranked and displayed within ~5 ms, before the embedding model finishes computing vectors. The modal reconciles these lexical results in place with the final hybrid results when they arrive — no flicker, no flash.
 - **Cold-start search works even before the embedding model loads.** When the plugin is still downloading the ~61 MB model (~3-10 s cold start), the BM25 persisted cache serves results immediately. The user sees lexical results instead of "Loading model..." on their first search after Obsidian opens.
-- **New `searchLexicalOnly()` method on the orchestrator** for BM25-only searches that don't require the embedder, serving as a reusable building block for other features.
-- **`lexPartialMs` and `lexPartialFired` telemetry** on SearchEntry so latency measurements track the new progressive partial.
+- **Search modal footer shows the progressive pipeline stage.** While a search runs, the footer displays Name match → Lexical BM25 → Hybrid semantic, progressively bolding the active stage as promise-ordered results arrive. The indicator collapses when all stages complete, keeping the footer clean at rest.
+- **Settings → Relevance explains the progressive pipeline ladder.** A "Search stages" block below the fusion diagram mirrors the footer labels, so users understand what the stage indicator means.
+- **Search works while Seek is still warming up.** On a fresh start, the search modal no longer waits for the embedding model and index caches before showing anything: it now serves the early stages of the search pipeline (name matches and lexical BM25 results) immediately, then upgrades them in-place to full semantic results when Seek finishes loading. A small notice above the results explains that lexical results are provisional during warm-up.
+- **Headless `seek:search` returns lexical results during warm-up.** CLI and automation calls no longer refuse while the index finishes booting — with a populated index they answer lexically and mark the response `ready: false` (with a `warming` note) until semantic search is available. `seek:open` and `seek:insert-link` still wait, so a wrong top hit can't misfire into a note.
 
-Startup deadlock guard on settings persist. No reindex is needed, since the index format is unchanged.
+### Changed
+- **Settings → Relevance rearranged** to include the progressive ladder immediately after the fusion pipeline diagram.
+- **Settings → Relevance "Search stages" explainer** mentions that lexical results can appear before semantic ranking while Seek is warming up.
 
 ### Fixed
 - **Vault startup no longer hangs on "Loading plugins" when settings migrate.** Seek persisted migrated settings with `await saveData` inside `onload`, which can deadlock while Obsidian is still loading other plugins. Settings persist and crash forensics logging now run off the blocking onload path.
 
-## 1.1.5
+## 1.1.4
 
-Unified first-index and full-reindex progress, faster full passes, and honest reload status. No reindex is needed, since the index format is unchanged.
+Search-modal honesty, startup hardening, and reliable indexing while the vault is still coming up. No reindex is needed, since the index format is unchanged.
+
+### Added
+- **Settings shows startup latency and recent search timing.** Under Index, **last startup** lists Searchable, Cache warm, and Fully ready with phase duration and wall-clock from Obsidian open. Under Diagnostics, a copyable console lists the last five modal searches as `[query] time`.
+- **Index locked status when the database cannot open.** The status bar, search modal, and Settings index card show **Locked** instead of Ready or Starting. Seek retries opening in the background (2s, 5s, 10s, 15s), and the command palette adds **Retry opening the search index** when locked.
 
 ### Changed
+- **Known-item search paints sooner.** Typing a note name or alias — including a partial last word, like `alex che` for "Alex Chen" — shows those matches before the semantic pass finishes. Keyword scoring starts without waiting on the query embedding. Full ranking still runs and can reorder the list.
+- **Search no longer says the vault isn't indexed while Seek is still restoring or building the index.** Opening search during sidecar hydrate, a pending first-time embed, or a full rebuild shows a waiting state instead of "Your vault isn't indexed yet" or "No notes match." Index status is an icon and short label in the footer next to esc; the query-row chip is gone.
+- **Indexing progress lives in the status bar**, not a sticky toast. The item shows quantized percent for the current full or incremental pass (5% steps). Hover reuses the Settings index card (files, chunks, last index) plus this-pass counts. Single-note saves do not. Completion notices are unchanged.
+- **Empty indexes now build through the fast full-reindex path on desktop.** A vault with no saved index (fresh install, sandbox reset, or cleared IndexedDB) previously indexed every note through throttled catch-up bursts — hours on a large vault. Seek now routes that case to a full reindex without the per-burst cap.
+- **Catch-up batch size is adjustable in Settings → Index (advanced).** Desktop catch-up defaults to **30 notes per burst** (up from 8). Lower it if search feels sluggish while indexing; raise it up to 40 for faster backlog drain. Mobile keeps its fixed smaller cap.
+- **Rapid typing no longer builds a queue of obsolete searches.** Superseded modal queries now leave the embedding queue before they run, while an already-running inference finishes safely before the latest query starts. This keeps follow-up searches responsive without changing indexing or ranking.
 - **First index and full reindex share one progress UI.** Settings shows the same **Indexing…** row with live percent for an automatic cold build and a manual reindex — driven by the coordinator job, not a separate button state.
 - **Full index passes run at maximum throughput.** Between embed dispatches, Seek yields only briefly instead of waiting for idle compositor time. Catch-up and incremental indexing still pace for UI responsiveness and still pause for live search.
 - **Search is blocked during a full rebuild.** Opening Seek or running CLI search while a first index or full reindex is running shows a wait state instead of results from a half-written index. Catch-up indexing stays searchable.
 - **Status bar progress updates every committed file** with exact percent on the label and bar. A rough time remaining appears after a short warmup on the Settings line and status-bar tooltip.
 
 ### Fixed
-- **Ready no longer disagrees with the search modal on first open.** While the index was warming or the modal’s chunk probe was still catching up, the status bar could say Ready while the footer or results area still showed indexing. Ready now means search can run and the modal is not in a build wait state (incremental catch-up in the status bar is unchanged).
-- **Startup clocks and index checks wait until the workspace is ready.** Seek used to open its search index and start timing as soon as the plugin loaded, while File Recovery, cache, and sync were still connecting. Those checks now wait until the workspace layout is up, so early IndexedDB errors are not treated as Seek failures.
-- **Settings still load when data.json starts with a UTF-8 BOM.** A Windows-saved settings file could fail to parse (`Unexpected token '﻿'`). Seek now strips the BOM before reading settings.
-- **Plugin reload no longer leaves startup hitting a closed index or a torn-down iframe.** After `plugin:reload`, in-flight boot work from the prior load is abandoned, the index store is reopened before sidecar hydrate and reconcile, and diagnostics skip when the new load has already replaced the session. Catch-up, periodic reconcile, layout-ready scheduling, and flush timers also bail on the current load generation so a torn-down session does not log spurious errors.
-- **Restored init files no longer trigger a false clone-collision alarm.** When the per-device init file is older than this install’s remembered generation (backup restore or sync conflict), Seek resyncs the counter instead of logging a device-clone error and scheduling device-id regeneration.
-- **Reload no longer flashes Ready before Seek knows the index state.** The status bar stays **Starting** with a soft orange glow until inventory is probed and the first post-boot scheduling decision completes.
-- **Delete & reindex no longer freezes Obsidian when another window holds the index.** A full rebuild empties the existing database instead of deleting it. A failed rebuild no longer leaves the store closed or starts a whole-vault catch-up on top of a still-valid index.
-- **Seek no longer reports a plugin failure when the index database is briefly locked.** After reload or with another vault window open, IndexedDB can refuse the first open. Seek retries, keeps loading, and does not log index-not-opened errors for that lock. The index opens when the lock clears.
-- **Leftover unscoped-index delete no longer runs on load.** Seek used to fire-and-forget a delete of the old bare `seek-index` database on every open, which could wedge LevelDB when two vault windows were open on the same origin.
-
-### Added
-- **Settings shows startup latency and recent search timing.** Under Index, **last startup** lists Searchable, Cache warm, and Fully ready with phase duration and wall-clock from Obsidian open. Under Diagnostics, a copyable console lists the last five modal searches as `[query] time`.
-- **Index locked status when the database cannot open.** The status bar, search modal, and Settings index card show **Locked** instead of Ready or Starting. Seek retries opening in the background (2s, 5s, 10s, 15s), and the command palette adds **Retry opening the search index** when locked.
-
-## 1.1.4
-
-Search-modal honesty while the index is still coming up. No reindex is needed, since the index format is unchanged.
-
-### Changed
-- **Known-item search paints sooner.** Typing a note name or alias — including a partial last word, like `alex che` for “Alex Chen” — shows those matches before the semantic pass finishes. Keyword scoring starts without waiting on the query embedding. Full ranking still runs and can reorder the list.
-- **Search no longer says the vault isn’t indexed while Seek is still restoring or building the index.** Opening search during sidecar hydrate, a pending first-time embed, or a full rebuild shows a waiting state instead of “Your vault isn’t indexed yet” or “No notes match.” Index status is an icon and short label in the footer next to esc; the query-row chip is gone.
-- **Indexing progress lives in the status bar**, not a sticky toast. The item shows quantized percent for the current full or incremental pass (5% steps). Hover reuses the Settings index card (files, chunks, last index) plus this-pass counts. Single-note saves do not. Completion notices are unchanged.
-- **Empty indexes now build through the fast full-reindex path on desktop.** A vault with no saved index (fresh install, sandbox reset, or cleared IndexedDB) previously indexed every note through throttled catch-up bursts — hours on a large vault. Seek now routes that case to a full reindex without the per-burst cap.
-- **Catch-up batch size is adjustable in Settings → Index (advanced).** Desktop catch-up defaults to **30 notes per burst** (up from 8). Lower it if search feels sluggish while indexing; raise it up to 40 for faster backlog drain. Mobile keeps its fixed smaller cap.
-- **Rapid typing no longer builds a queue of obsolete searches.** Superseded modal queries now leave the embedding queue before they run, while an already-running inference finishes safely before the latest query starts. This keeps follow-up searches responsive without changing indexing or ranking.
-
-### Fixed
 - **Catch-up indexing progress no longer resets or vanishes between bursts.** The status bar hid the job after every burst and restarted the counter when new edits arrived mid-drain, so remaining counts jumped backward and the badge often disappeared while indexing was still running. Progress now stays on one pass until the drain finishes or pauses for search.
 - **Reload with a partial index restores saved search caches before catch-up embeds.** BM25 and frame caches from disk were skipped on dirty-only startup reconciles, so search stayed cold until catch-up finished re-embedding. Catch-up now reloads persisted caches once per boot when the index already has chunks.
 - **Startup no longer treats a still-loading vault as a mass delete.** On a large vault, Seek could run its catch-up pass before Obsidian had listed any notes, see thousands of indexed files and zero live files, and log `deferring suspicious mass-delete sweep`. The index was kept, but every existing note then arrived as a `create` and queued a full re-embed. Catch-up now waits until the vault layout is ready, retries while the file list looks truncated, and ignores create/delete/rename until that point so boot enumeration is not mistaken for new notes.
 - **Recent notes start appearing without another keystroke while Seek restores the index.** Startup previously declared its recent restore good enough after one note and an empty modal query stayed empty as more chunks arrived. Seek now restores every coverable note modified in the last three days before releasing the startup gate, automatically retries an active empty query as coverage grows, and leaves older recovery work in the background.
+- **Ready no longer disagrees with the search modal on first open.** While the index was warming or the modal's chunk probe was still catching up, the status bar could say Ready while the footer or results area still showed indexing. Ready now means search can run and the modal is not in a build wait state (incremental catch-up in the status bar is unchanged).
+- **Startup clocks and index checks wait until the workspace is ready.** Seek used to open its search index and start timing as soon as the plugin loaded, while File Recovery, cache, and sync were still connecting. Those checks now wait until the workspace layout is up, so early IndexedDB errors are not treated as Seek failures.
+- **Settings still load when data.json starts with a UTF-8 BOM.** A Windows-saved settings file could fail to parse (`Unexpected token '﻿'`). Seek now strips the BOM before reading settings.
+- **Plugin reload no longer leaves startup hitting a closed index or a torn-down iframe.** After `plugin:reload`, in-flight boot work from the prior load is abandoned, the index store is reopened before sidecar hydrate and reconcile, and diagnostics skip when the new load has already replaced the session. Catch-up, periodic reconcile, layout-ready scheduling, and flush timers also bail on the current load generation so a torn-down session does not log spurious errors.
+- **Restored init files no longer trigger a false clone-collision alarm.** When the per-device init file is older than this install's remembered generation (backup restore or sync conflict), Seek resyncs the counter instead of logging a device-clone error and scheduling device-id regeneration.
+- **Reload no longer flashes Ready before Seek knows the index state.** The status bar stays **Starting** with a soft orange glow until inventory is probed and the first post-boot scheduling decision completes.
+- **Delete & reindex no longer freezes Obsidian when another window holds the index.** A full rebuild empties the existing database instead of deleting it. A failed rebuild no longer leaves the store closed or starts a whole-vault catch-up on top of a still-valid index.
+- **Seek no longer reports a plugin failure when the index database is briefly locked.** After reload or with another vault window open, IndexedDB can refuse the first open. Seek retries, keeps loading, and does not log index-not-opened errors for that lock. The index opens when the lock clears.
+- **Leftover unscoped-index delete no longer runs on load.** Seek used to fire-and-forget a delete of the old bare `seek-index` database on every open, which could wedge LevelDB when two vault windows were open on the same origin.
 
 ## 1.1.3
 
@@ -201,7 +149,7 @@ The first feature release since launch! A big thanks to everyone on the reddit t
 Sync index toggle and Windows CRLF atom parsing.
 
 ### Changed
-- **Sync index across devices** — Settings → Index advanced exposes the existing sidecar toggle. ON (default) still writes vault index files for Sync/iOS hydrate; OFF keeps search on this device’s IndexedDB only. Index location is disabled while OFF.
+- **Sync index across devices** — Settings → Index advanced exposes the existing sidecar toggle. ON (default) still writes vault index files for Sync/iOS hydrate; OFF keeps search on this device's IndexedDB only. Index location is disabled while OFF.
 
 ### Fixed
 - Markdown fences and tables parse correctly when note content uses Windows CRLF line endings.
