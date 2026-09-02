@@ -50,6 +50,18 @@ The CLI is a single IPC queue. Running `obsidian` commands in parallel (across s
 
 **Always:** one `obsidian` command at a time, wait for it to finish (or fail) before the next.
 
+### Wedge anatomy and recovery (evidence from the 2026-09-01 worker verification)
+
+> Canonical home: the global skill `~/.cursor/skills/obsidian-plugin-dev/SKILL.md` § "CLI IPC queue discipline" now carries the general rule (one command per invocation, wedge-vs-slow, exit-code signature, recovery). The notes below are the Seek-specific evidence record.
+
+Two wedges occurred during the dedicated-worker reload stress session, both from **chained commands in one shell line** (`plugin:reload ; eval`, then `seek:search ; eval`) — the first command stalled the app's main thread (once, an Obsidian "Error" dialog window was up, which alone stops the queue being serviced) and the second queued behind it forever.
+
+- **Wedge vs slow.** A wedge is silence: no `=>` line and no exit, indefinitely. Contrast a *slow-but-succeeding* `seek:search` right after a reload — catch-up can hold it for 100–130s and it still exits 0 with output. Don't kill a search that is still writing output.
+- **Killed-shell signature.** A shell force-killed during a wedge reports exit code `4294967295` (0xFFFFFFFF) — the kill, not a command failure.
+- **Why it's not plugin code.** The queue is a parent-app ↔ CLI channel; plugin runtime state (e.g. a nested Web Worker in an iframe) shares neither the thread nor the queue. After each wedge's recovery, the same session ran repeated reload + search cycles with the worker actively serving queries — zero hangs, zero Seek log errors.
+- **Recovery (same as CLI restart reliability above):** kill the stuck shell → force-quit Obsidian (tray Quit; `Stop-Process` when the Error window blocks it) → relaunch `Start-Process "obsidian://open?vault=<vault>"` → wait ~15–20s → retry ONE probe (`eval code="'alive'"`).
+- **Prevention that held:** strictly ONE `obsidian` command per shell invocation — never `;`-chain two CLI commands, even read-only ones behind a reload. A timeout wrapper (single command, ~20s cap, auto-kill on hang) would make the rule mechanical.
+
 ## PowerShell shell quirks
 
 The development environment uses PowerShell, not bash. Common differences:
