@@ -8,6 +8,7 @@ About-footer links are manifest-driven. No reindex is needed, since the index fo
 
 ### Changed
 - **Settings About footer reads name, version, author, and link URLs from `manifest.json`.** Optional `githubUrl`, `docsUrl`, and `xUrl` fields control the icon links; omit or leave a field empty to hide that icon. Custom URL fields are read from the plugin's `manifest.json` on disk because Obsidian does not expose them on the runtime manifest object.
+- **Startup boot history keeps the last five sessions on disk.** Settings → Index lists recent boots under the live startup block. History is stored as `startup-history.json` in the plugin folder (not synced settings or localStorage), so it survives plugin reloads and manifest deploys. Existing localStorage history migrates once on load.
 
 ## 1.8.0
 

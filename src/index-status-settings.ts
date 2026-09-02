@@ -9,7 +9,10 @@ import {
     buildStartupTimingRows,
     startupTrend,
     fmtLatency,
+    formatBootAge,
+    formatStoredBootLine,
     type StartupTimingView,
+    type StoredStartupBoot,
 } from './session-telemetry';
 import {
     renderIndexStatusCard,
@@ -27,6 +30,7 @@ export function renderSettingsIndexStatusCard(
         startup?: StartupTimingView | null;
         liveElapsedMs?: number | null;
         prevBoot?: { readyFromStartMs: number | null; warmSkipped: boolean } | null;
+        recentBoots?: readonly StoredStartupBoot[];
     },
 ): HTMLElement {
     const card = renderIndexStatusCard(parent, {
@@ -73,6 +77,18 @@ export function renderSettingsIndexStatusCard(
             cls: 'seek-status-startup-trend is-baseline',
             text: `last boot ${fmtLatency(opts.prevBoot.readyFromStartMs)}`,
         });
+    }
+
+    const recentBoots = opts.recentBoots ?? [];
+    if (recentBoots.length > 0) {
+        const hist = block.createDiv({ cls: 'seek-status-startup-history' });
+        hist.createDiv({ cls: 'seek-status-startup-head', text: 'recent boots' });
+        const histRows = hist.createDiv({ cls: 'seek-status-startup-history-rows' });
+        for (const boot of recentBoots) {
+            const line = histRows.createDiv({ cls: 'seek-status-startup-history-row' });
+            line.createSpan({ cls: 'seek-status-startup-history-when', text: formatBootAge(boot.at) });
+            line.createSpan({ cls: 'seek-status-startup-history-value', text: formatStoredBootLine(boot) });
+        }
     }
 
     return card;

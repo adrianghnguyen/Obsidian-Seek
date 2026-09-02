@@ -1,6 +1,8 @@
 // Telemetry for Settings → Seek: startup phase timings (filled in progressively
-// during boot, persisted per-device for a boot-over-boot trend) and a rolling
+// during boot, persisted on disk for a boot-over-boot trend) and a rolling
 // window of recent modal search latencies. Recent searches are session-only.
+
+import type { DataAdapter } from 'obsidian';
 
 export interface StartupTimingView {
     /** Wall ms boot → searchable gate. */
@@ -60,10 +62,11 @@ export function buildStartupTimingRows(
     ];
 }
 
-// ── Per-boot history (device-local) ────────────────────────────────────────
-// Completed boots are snapshotted to localStorage (never synced via data.json —
-// boot cost is a device trait, same reasoning as the startup warm toggle) so the
-// Settings card can trend this boot against the previous one.
+// ── Per-boot history (device-local, on disk) ─────────────────────────────
+// Completed boots are snapshotted to a JSON file in the plugin folder (never
+// synced via data.json — boot cost is a device trait, same reasoning as the
+// startup warm toggle). The file survives plugin reloads and manifest deploys
+// because it lives beside main.js, not in the replaced artifacts.
 
 export interface StoredStartupBoot {
     searchableMs: number | null;
@@ -100,59 +103,140 @@ export function startupTrend(
         : { direction: 'slower', text: `▲ ${fmtLatency(delta)} vs last boot` };
 }
 
-const STARTUP_HISTORY_KEY = 'seek-startup-history';
-const STARTUP_HISTORY_MAX = 8;
+export const STARTUP_HISTORY_FILE = 'startup-history.json';
+export const STARTUP_HISTORY_MAX = 5;
+const LEGACY_STARTUP_HISTORY_KEY = 'seek-startup-history';
 
+export interface StartupBootHistoryBackend {
+    readRaw(): Promise<string | null>;
+    writeRaw(json: string): Promise<void>;
+    readLegacyLocalStorage(): StoredStartupBoot[];
+    clearLegacyLocalStorage(): void;
+}
+
+/** Disk-backed store in the plugin folder; migrates one-time from localStorage. */
 export class StartupBootHistory {
-    private readonly loadStorage: () => Storage | null;
+    private entries: StoredStartupBoot[] = [];
+    private saveChain = Promise.resolve();
 
-    constructor(loadStorage: () => Storage | null) {
-        this.loadStorage = loadStorage;
+    constructor(private readonly backend: StartupBootHistoryBackend) {}
+
+    static forPlugin(adapter: DataAdapter, pluginDir: string): StartupBootHistory {
+        const path = `${pluginDir}/${STARTUP_HISTORY_FILE}`;
+        return new StartupBootHistory({
+            readRaw: async () => {
+                try {
+                    if (!(await adapter.exists(path))) return null;
+                    return await adapter.read(path);
+                } catch {
+                    return null;
+                }
+            },
+            writeRaw: async (json) => {
+                try {
+                    await adapter.write(path, json);
+                } catch { /* best-effort */ }
+            },
+            readLegacyLocalStorage: () => readLegacyStartupHistory(),
+            clearLegacyLocalStorage: () => clearLegacyStartupHistory(),
+        });
     }
 
-    private read(): StoredStartupBoot[] {
-        const storage = this.loadStorage();
-        if (!storage) return [];
-        try {
-            const raw = storage.getItem(STARTUP_HISTORY_KEY);
-            if (!raw) return [];
-            const parsed: unknown = JSON.parse(raw);
-            if (!Array.isArray(parsed)) return [];
-            return parsed.filter(isStoredBoot);
-        } catch {
-            return [];
+    /** Load from disk (and migrate legacy localStorage when disk is empty). */
+    async load(): Promise<void> {
+        let entries = parseStoredBoots(await this.backend.readRaw());
+        if (entries.length === 0) {
+            entries = this.backend.readLegacyLocalStorage();
+            if (entries.length > 0) {
+                entries = entries.slice(0, STARTUP_HISTORY_MAX);
+                await this.persist(entries);
+            }
+            this.backend.clearLegacyLocalStorage();
+        } else if (entries.length > STARTUP_HISTORY_MAX) {
+            entries = entries.slice(0, STARTUP_HISTORY_MAX);
+            await this.persist(entries);
         }
-    }
-
-    private write(entries: StoredStartupBoot[]): void {
-        const storage = this.loadStorage();
-        if (!storage) return;
-        try {
-            storage.setItem(STARTUP_HISTORY_KEY, JSON.stringify(entries));
-        } catch { /* best-effort */ }
+        this.entries = entries;
     }
 
     /** Most recent stored boot, or null when history is empty. */
     previous(): StoredStartupBoot | null {
-        return this.read()[0] ?? null;
+        return this.entries[0] ?? null;
     }
 
     all(): readonly StoredStartupBoot[] {
-        return this.read();
+        return this.entries;
     }
 
     record(view: StartupTimingView): void {
         if (!view.bootComplete || view.readyFromStartMs == null) return;
-        const entries = this.read();
-        entries.unshift({
+        this.entries.unshift({
             searchableMs: view.searchableMs,
             warmPhaseMs: view.warmPhaseMs,
             readyFromStartMs: view.readyFromStartMs,
             warmSkipped: view.warmSkipped,
             at: Date.now(),
         });
-        this.write(entries.slice(0, STARTUP_HISTORY_MAX));
+        this.entries = this.entries.slice(0, STARTUP_HISTORY_MAX);
+        void this.enqueueSave();
     }
+
+    private async persist(entries: StoredStartupBoot[]): Promise<void> {
+        await this.backend.writeRaw(JSON.stringify(entries));
+    }
+
+    private enqueueSave(): void {
+        const snapshot = this.entries.slice();
+        this.saveChain = this.saveChain
+            .then(() => this.persist(snapshot))
+            .catch(() => {});
+    }
+}
+
+function parseStoredBoots(raw: string | null): StoredStartupBoot[] {
+    if (!raw) return [];
+    try {
+        const parsed: unknown = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter(isStoredBoot);
+    } catch {
+        return [];
+    }
+}
+
+function readLegacyStartupHistory(): StoredStartupBoot[] {
+    try {
+        const raw = window.localStorage.getItem(LEGACY_STARTUP_HISTORY_KEY);
+        return parseStoredBoots(raw);
+    } catch {
+        return [];
+    }
+}
+
+function clearLegacyStartupHistory(): void {
+    try {
+        window.localStorage.removeItem(LEGACY_STARTUP_HISTORY_KEY);
+    } catch { /* best-effort */ }
+}
+
+/** Compact relative time for a stored boot row in Settings. */
+export function formatBootAge(atMs: number, nowMs = Date.now()): string {
+    const delta = nowMs - atMs;
+    if (delta < 60_000) return 'just now';
+    if (delta < 3_600_000) return `${Math.round(delta / 60_000)}m ago`;
+    if (delta < 86_400_000) return `${Math.round(delta / 3_600_000)}h ago`;
+    if (delta < 7 * 86_400_000) return `${Math.round(delta / 86_400_000)}d ago`;
+    return new Date(atMs).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+/** One-line summary for a stored boot in the Settings history list. */
+export function formatStoredBootLine(boot: StoredStartupBoot): string {
+    if (boot.readyFromStartMs == null) return '—';
+    const ready = fmtLatency(boot.readyFromStartMs);
+    if (boot.warmSkipped) return `${ready} ready · warm skipped`;
+    const searchable = boot.searchableMs != null ? fmtLatency(boot.searchableMs) : '—';
+    const warm = boot.warmPhaseMs != null ? fmtLatency(boot.warmPhaseMs) : '—';
+    return `${ready} ready · ${searchable} searchable · ${warm} warm`;
 }
 
 function isStoredBoot(v: unknown): v is StoredStartupBoot {

@@ -473,6 +473,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             startup,
             liveElapsedMs: startup.bootComplete ? null : this.plugin.getStartupLiveElapsedMs(),
             prevBoot: this.plugin.getPreviousStartupBoot(),
+            recentBoots: this.plugin.getStartupBootHistory(),
         });
     }
 

@@ -1255,6 +1255,30 @@
 .seek-settings .seek-status-startup-trend.is-baseline {
     color: var(--text-faint);
 }
+.seek-settings .seek-status-startup-history {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--background-modifier-border);
+}
+.seek-settings .seek-status-startup-history-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+.seek-settings .seek-status-startup-history-row {
+    display: grid;
+    grid-template-columns: 4.5em 1fr;
+    gap: 6px;
+    align-items: baseline;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}
+.seek-settings .seek-status-startup-history-when {
+    color: var(--text-faint);
+}
+.seek-settings .seek-status-startup-history-value {
+    color: var(--text-muted);
+}
 
 /* ---- Exclusion-change backfill banner (Settings → Index) ---- */
 .seek-exclusion-banner-host { min-height: 0; }

@@ -6,9 +6,13 @@ import {
     buildStartupTimingRows,
     startupTrend,
     fmtLatency,
+    formatBootAge,
+    formatStoredBootLine,
     formatRecentSearchLine,
     formatRecentSearchConsole,
     truncateConsoleQuery,
+    STARTUP_HISTORY_MAX,
+    type StartupBootHistoryBackend,
 } from './session-telemetry';
 
 describe('fmtLatency', () => {
@@ -140,18 +144,11 @@ describe('StartupSessionTracker', () => {
 });
 
 describe('StartupBootHistory', () => {
-    let store: Map<string, string>;
+    let disk: string | null;
+    let legacy: Map<string, string>;
     let history: StartupBootHistory;
 
-    beforeEach(() => {
-        store = new Map();
-        history = new StartupBootHistory(() => ({
-            getItem: (k: string) => store.get(k) ?? null,
-            setItem: (k: string, v: string) => void store.set(k, v),
-        } as Storage));
-    });
-
-    const boot = (readyFromStartMs: number) => ({
+    const completeBoot = (readyFromStartMs: number) => ({
         searchableMs: 8000,
         warmPhaseMs: readyFromStartMs - 8000,
         readyFromStartMs,
@@ -159,26 +156,109 @@ describe('StartupBootHistory', () => {
         bootComplete: true,
     });
 
-    it('round-trips a recorded boot', () => {
-        history.record(boot(11500));
-        expect(history.previous()?.readyFromStartMs).toBe(11500);
+    beforeEach(() => {
+        disk = null;
+        legacy = new Map();
+        const backend: StartupBootHistoryBackend = {
+            readRaw: async () => disk,
+            writeRaw: async (json) => { disk = json; },
+            readLegacyLocalStorage: () => {
+                const raw = legacy.get('seek-startup-history');
+                if (!raw) return [];
+                try {
+                    const parsed: unknown = JSON.parse(raw);
+                    if (!Array.isArray(parsed)) return [];
+                    return parsed.filter((v): v is {
+                        searchableMs: number | null;
+                        warmPhaseMs: number | null;
+                        readyFromStartMs: number | null;
+                        warmSkipped: boolean;
+                        at: number;
+                    } => typeof v === 'object' && v != null && 'readyFromStartMs' in v && 'warmSkipped' in v && 'at' in v);
+                } catch {
+                    return [];
+                }
+            },
+            clearLegacyLocalStorage: () => { legacy.delete('seek-startup-history'); },
+        };
+        history = new StartupBootHistory(backend);
     });
 
-    it('keeps only the newest eight boots', () => {
-        for (let i = 1; i <= 10; i++) history.record(boot(10000 + i));
-        expect(history.all()).toHaveLength(8);
+    it('round-trips a recorded boot after load', async () => {
+        await history.load();
+        history.record(completeBoot(11500));
+        await new Promise(r => setTimeout(r, 0));
+        expect(history.previous()?.readyFromStartMs).toBe(11500);
+        expect(disk).toContain('11500');
+    });
+
+    it(`keeps only the newest ${STARTUP_HISTORY_MAX} boots`, async () => {
+        await history.load();
+        for (let i = 1; i <= 10; i++) history.record(completeBoot(10000 + i));
+        await new Promise(r => setTimeout(r, 0));
+        expect(history.all()).toHaveLength(STARTUP_HISTORY_MAX);
         expect(history.previous()?.readyFromStartMs).toBe(10010);
     });
 
-    it('ignores incomplete boots', () => {
+    it('ignores incomplete boots', async () => {
+        await history.load();
         history.record({ searchableMs: 8000, warmPhaseMs: null, readyFromStartMs: null, warmSkipped: false, bootComplete: false });
         expect(history.previous()).toBeNull();
     });
 
-    it('survives corrupt storage and absence', () => {
-        store.set('seek-startup-history', 'not json');
+    it('survives corrupt storage and absence', async () => {
+        disk = 'not json';
+        await history.load();
         expect(history.previous()).toBeNull();
-        expect(new StartupBootHistory(() => null).all()).toEqual([]);
+        disk = null;
+        expect(new StartupBootHistory({
+            readRaw: async () => null,
+            writeRaw: async () => {},
+            readLegacyLocalStorage: () => [],
+            clearLegacyLocalStorage: () => {},
+        }).all()).toEqual([]);
+    });
+
+    it('migrates legacy localStorage into the disk file once', async () => {
+        legacy.set('seek-startup-history', JSON.stringify([
+            { searchableMs: 8000, warmPhaseMs: 3500, readyFromStartMs: 11500, warmSkipped: false, at: 1 },
+        ]));
+        await history.load();
+        expect(history.previous()?.readyFromStartMs).toBe(11500);
+        expect(disk).toContain('11500');
+        expect(legacy.has('seek-startup-history')).toBe(false);
+    });
+
+    it('trims an oversized on-disk file on load', async () => {
+        const many = Array.from({ length: 8 }, (_, i) => ({
+            searchableMs: 8000,
+            warmPhaseMs: 1000,
+            readyFromStartMs: 9007 - i,
+            warmSkipped: false,
+            at: i,
+        }));
+        disk = JSON.stringify(many);
+        await history.load();
+        expect(history.all()).toHaveLength(STARTUP_HISTORY_MAX);
+        expect(history.previous()?.readyFromStartMs).toBe(9007);
+    });
+});
+
+describe('stored boot formatting', () => {
+    it('formats relative boot age', () => {
+        const now = Date.now();
+        expect(formatBootAge(now - 30_000, now)).toBe('just now');
+        expect(formatBootAge(now - 120_000, now)).toBe('2m ago');
+    });
+
+    it('formats a stored boot summary line', () => {
+        expect(formatStoredBootLine({
+            searchableMs: 8000,
+            warmPhaseMs: 3400,
+            readyFromStartMs: 11400,
+            warmSkipped: false,
+            at: 0,
+        })).toBe('11.4s ready · 8.0s searchable · 3.4s warm');
     });
 });
 

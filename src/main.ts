@@ -63,6 +63,7 @@ import {
     StartupSessionTracker,
     type RecentSearchEntry,
     type StartupTimingView,
+    type StoredStartupBoot,
 } from './session-telemetry';
 import { SeekSettingTab } from './settings-tab';
 import { collectPlatformInfo, isMobilePlatform, resolveDevice, recordActiveBackend, maybeDemoteOnCrash, getStartupWarm } from './platform';
@@ -378,9 +379,7 @@ export default class SeekPlugin extends Plugin {
     /** True when the search modal bypassed the boot buffer before it fired. */
     private bootBufferBypassed = false;
     private readonly startupTelemetry = new StartupSessionTracker();
-    private readonly startupHistory = new StartupBootHistory(() => {
-        try { return window.localStorage; } catch { return null; }
-    });
+    private startupHistory!: StartupBootHistory;
     private startupBootRecorded = false;
     private readonly recentSearchRing = new RecentSearchRing();
     private settingsTelemetrySink: SettingsTelemetrySink | null = null;
@@ -559,6 +558,13 @@ export default class SeekPlugin extends Plugin {
         this.loadGeneration++;
         const bootGen = this.loadGeneration;
         this.logger = new SeekLogger(this.app, this.manifest.id);
+        const pluginDir = this.manifest.dir ?? `.obsidian/plugins/${this.manifest.id}`;
+        this.startupHistory = StartupBootHistory.forPlugin(this.app.vault.adapter, pluginDir);
+        void this.startupHistory.load()
+            .then(() => {
+                if (this.isSessionWorkCurrent(bootGen)) this.notifySessionTelemetryChanged();
+            })
+            .catch(e => this.appendErrorIfCurrent('startup-history-load', e, bootGen));
         // Sweep any pre-existing root-level seek-log/init/captures files into the
         // hidden LOG_DIR next to the index, THEN tail-truncate this device's log if it
         // has outgrown MAX_LOG_BYTES (append-only logs have no natural ceiling), THEN
@@ -2524,6 +2530,11 @@ export default class SeekPlugin extends Plugin {
     getPreviousStartupBoot(): { readyFromStartMs: number | null; warmSkipped: boolean } | null {
         const prev = this.startupHistory.previous();
         return prev ? { readyFromStartMs: prev.readyFromStartMs, warmSkipped: prev.warmSkipped } : null;
+    }
+
+    /** Last five completed boots from the on-disk history file. */
+    getStartupBootHistory(): readonly StoredStartupBoot[] {
+        return this.startupHistory.all();
     }
 
     getStartupLiveElapsedMs(): number | null {
