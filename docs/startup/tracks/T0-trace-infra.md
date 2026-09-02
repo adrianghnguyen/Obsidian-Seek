@@ -42,7 +42,7 @@ Without labeled Run A / Run B artifacts, every feature track risked optimizing t
 1. **`startup-trace-probe.ps1`** — Serial gate polling (1–2 s), NDJSON to `.cursor/gate-trace.jsonl`, scorecard copy on completion. Supports `-Run A` (cold-restart) and `-Run B` (warm-reload) with distinct stop conditions.
 2. **`parse-startup-trace.mjs`** — Merges gate trace + `seek-report.json` into comparable parsed scorecards.
 3. **Schema v17 forensics** — `rechunk-live`, `startup-span`, `startup-gate` beats; `TaskContext: hydrating` for long-task attribution (`src/logger.ts`, `src/task-context.ts`, `src/types.ts`).
-4. **Worktree registry** — `.cursor/worktrees.json` + `setup-startup-worktrees.ps1` / `deploy-worktree-to-vault.ps1` for isolated path checkouts.
+4. **Deploy script** — `deploy-worktree-to-vault.ps1` from the main repo checkout; Cursor agent worktrees via `.cursor/worktrees.json`.
 5. **Living scoreboard** — `.cursor/startup-path-results.md` and per-track `.cursor/handoff/T{n}.json`.
 
 **Key files:** `src/logger.ts`, `src/main.ts` (gate bundle exposure), `src/search.ts` (startup-gate hooks), `.cursor/skills/seek-cli-startup-debug/scripts/*`.

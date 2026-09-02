@@ -1,4 +1,4 @@
-# Build and deploy one startup-path worktree to the sandbox vault (vault singleton).
+# Build and deploy the repo to the sandbox vault (vault singleton).
 # Usage:
 #   .\deploy-worktree-to-vault.ps1 -PathId greedy-hydrate
 #   .\deploy-worktree-to-vault.ps1 -PathId compose -SkipTests
@@ -16,22 +16,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).Path
-$registryPath = Join-Path $repoRoot '.cursor\worktrees.json'
-
 $workDir = $repoRoot
-if ($PathId -ne 'persist-cache' -and $PathId -ne 'baseline') {
-    if (-not (Test-Path $registryPath)) {
-        throw "Missing $registryPath - run setup-startup-worktrees.ps1 first"
-    }
-    $reg = Get-Content $registryPath -Raw | ConvertFrom-Json
-    $match = $reg.trees.PSObject.Properties | Where-Object { $_.Value.path_id -eq $PathId } | Select-Object -First 1
-    if (-not $match) { throw "Unknown path_id in registry: $PathId" }
-    $workDir = $match.Value.worktree
-    if ($PathId -eq 'trace-infra') { $PathId = 'baseline' }
-}
+
+if ($PathId -eq 'trace-infra') { $PathId = 'baseline' }
 
 if (-not (Test-Path (Join-Path $workDir 'package.json'))) {
-    throw "Worktree missing package.json: $workDir"
+    throw "Repo missing package.json: $workDir"
 }
 
 Write-Host "=== deploy-worktree path=$PathId dir=$workDir ==="
@@ -42,7 +32,7 @@ try {
     Write-Host "branch=$branch sha=$sha"
 
     if (-not (Test-Path 'node_modules')) {
-        Write-Host 'npm ci (first use in this worktree)...'
+        Write-Host 'npm ci (first use)...'
         npm ci
     }
 

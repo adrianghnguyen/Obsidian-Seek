@@ -175,18 +175,13 @@ Parsed scorecards report actual gate-eval `T_eval_p50_ms`, `T_eval_p95_ms`,
 `T_eval_max_ms`, and `T_eval_n`. Hydrating long-task duration is a separate
 `long_task_hydrating_p50_ms` metric and must not be labeled eval latency.
 
-**Worktree deploy:** one isolated checkout per path under `C:\Coding_projects\Obsidian-Seek-worktrees\` (T4 = main repo). Vault holds a single `main.js`.
+**Deploy:** build from the main repo checkout. Vault holds a single `main.js`. For isolated agent work, use Cursor `/worktree` (setup via `.cursor/worktrees.json`).
 
 ```powershell
-# First time (or after new branches)
-.\.cursor\skills\seek-cli-startup-debug\scripts\setup-startup-worktrees.ps1 -InstallDeps
-
 # Deploy path X, then probe with matching -PathId
 .\.cursor\skills\seek-cli-startup-debug\scripts\deploy-worktree-to-vault.ps1 -PathId greedy-hydrate
 .\.cursor\skills\seek-cli-startup-debug\scripts\startup-trace-probe.ps1 -Run A -PathId greedy-hydrate
 ```
-
-Registry: `.cursor/worktrees.json`
 
 Schema v17 NDJSON types: `rechunk-live` (`filesWalked`, `tokenCountsRpc`), `startup-span`, `startup-gate`, `TaskContext: hydrating` for long-task rollup.
 

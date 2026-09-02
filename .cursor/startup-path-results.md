@@ -4,23 +4,13 @@ _Isolated per-path metrics from worktree verification. Never mix Run A (`cold-re
 
 **Per-track PR reports:** [docs/startup/tracks/README.md](../docs/startup/tracks/README.md) (T0–T6, one file per open PR).
 
-## Worktrees (vault singleton)
+## Deploy (vault singleton)
 
-Only one `main.js` in `C:\Obsidian\.obsidian\plugins\seek\` at measure time. Build/deploy from the path's worktree:
+Only one `main.js` in `C:\Obsidian\.obsidian\plugins\seek\` at measure time. Build/deploy from the main repo checkout (`C:\Coding_projects\Obsidian-Seek`).
 
-| tree | path_id | branch | worktree |
-|------|---------|--------|----------|
-| T0 | trace-infra | `startup/trace-infra` | `C:\Coding_projects\Obsidian-Seek-worktrees\trace-infra` |
-| T1 | greedy-hydrate | `path/greedy-hydrate` | `...\greedy-hydrate` |
-| T2 | cheap-yield | `path/cheap-yield` | `...\cheap-yield` |
-| T3 | batch-rpc | `path/batch-rpc` | `...\batch-rpc` |
-| T4 | persist-cache | `path/persist-cache` | `C:\Coding_projects\Obsidian-Seek` (main repo) |
-| T5 | burst-cap | `path/burst-cap` | `...\burst-cap` |
-| T6 | compose | `path/compose` | `...\compose` |
+Historical path branches (T0–T6) remain on git; deploy uses whatever branch is checked out in the main repo.
 
-Setup: `.cursor\skills\seek-cli-startup-debug\scripts\setup-startup-worktrees.ps1`  
-Deploy: `.cursor\skills\seek-cli-startup-debug\scripts\deploy-worktree-to-vault.ps1 -PathId <path_id>`  
-Registry: `.cursor\worktrees.json`
+Deploy: `.cursor\skills\seek-cli-startup-debug\scripts\deploy-worktree-to-vault.ps1 -PathId <path_id>`
 
 ## Goal coverage
 
