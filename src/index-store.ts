@@ -623,6 +623,10 @@ export function stripContent(c: Chunk): ChunkMeta {
 
 export class IndexStore {
     private db: IDBDatabase | null = null;
+    // Inventory/status surfaces can ask for the same four counts concurrently.
+    // Coalesce them onto one readonly transaction so a stalled backing store
+    // cannot accumulate an unbounded graph of IDBTransaction/IDBRequest objects.
+    private countInFlight: Promise<{ chunks: number; embeddings: number; binary: number; files: number }> | null = null;
     // Resolved per-vault DB name. Set on the first open(scope) — main.ts
     // passes the vault's appId at onload — and reused by every later
     // scope-less open() (the reset path in search.ts reindexAll).
@@ -663,7 +667,10 @@ export class IndexStore {
         opened.onversionchange = () => {
             console.warn('[seek] versionchange received — closing + dropping connection');
             opened.close();
-            if (this.db === opened) this.db = null;
+            if (this.db === opened) {
+                this.db = null;
+                this.countInFlight = null;
+            }
         };
         // Scoped DBs are seek-index:<appId>. A leftover bare seek-index from an
         // older build is harmless; fire-and-forget deleteDatabase here can wedge
@@ -673,6 +680,7 @@ export class IndexStore {
     close(): void {
         this.db?.close();
         this.db = null;
+        this.countInFlight = null;
     }
 
     /**
@@ -1368,15 +1376,24 @@ export class IndexStore {
     }
 
     async count(): Promise<{ chunks: number; embeddings: number; binary: number; files: number }> {
-        const db = this.requireDb();
-        const tx = db.transaction([STORE_CHUNK_META, STORE_EMBEDDINGS, STORE_BINARY, STORE_FILES], 'readonly');
-        const [chunks, embeddings, binary, files] = await Promise.all([
-            awaitRequest(tx.objectStore(STORE_CHUNK_META).count()),
-            awaitRequest(tx.objectStore(STORE_EMBEDDINGS).count()),
-            awaitRequest(tx.objectStore(STORE_BINARY).count()),
-            awaitRequest(tx.objectStore(STORE_FILES).count()),
-        ]);
-        return { chunks, embeddings, binary, files };
+        if (this.countInFlight) return this.countInFlight;
+        const task = (async () => {
+            const db = this.requireDb();
+            const tx = db.transaction([STORE_CHUNK_META, STORE_EMBEDDINGS, STORE_BINARY, STORE_FILES], 'readonly');
+            const [chunks, embeddings, binary, files] = await Promise.all([
+                awaitRequest(tx.objectStore(STORE_CHUNK_META).count()),
+                awaitRequest(tx.objectStore(STORE_EMBEDDINGS).count()),
+                awaitRequest(tx.objectStore(STORE_BINARY).count()),
+                awaitRequest(tx.objectStore(STORE_FILES).count()),
+            ]);
+            return { chunks, embeddings, binary, files };
+        })();
+        this.countInFlight = task;
+        try {
+            return await task;
+        } finally {
+            if (this.countInFlight === task) this.countInFlight = null;
+        }
     }
 }
 

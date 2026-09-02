@@ -7,6 +7,9 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 ### Changed
 - **Settings → Index "Embedder coverage by folder" collapses to top-level folders by default.** Nested folders stay hidden until you click a parent to unfold it; expand/collapse is remembered while Settings stays open (including across the live coverage poll).
 
+### Fixed
+- **Background catch-up no longer locks Obsidian in a runaway retry loop.** Hidden desktop windows now drain with the intended desktop policy, no-progress work waits for a later trigger instead of retrying immediately, and concurrent index inventory checks share one IndexedDB transaction.
+
 ## 1.4.0
 
 Queries can run in a background worker thread, and Settings polish makes the About footer and boot history easier to maintain. No reindex is needed, since the index format is unchanged.

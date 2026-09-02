@@ -2823,6 +2823,10 @@ export default class SeekPlugin extends Plugin {
                     mobile,
                     burstMaxFiles: this.settings.catchUpBurstMaxFiles,
                 });
+                // Desktop catch-up is allowed to drain while the window is hidden;
+                // only mobile pauses for backgrounding (the WebContent/jetsam path).
+                // Keep this predicate aligned with runCatchUp's entry guard above.
+                const shouldPauseForHidden = () => mobile && activeDocument.hidden;
                 // Drain first — never block on warm/restore (G_catchup_ux). Search
                 // serves stale frame / persisted BM25 during bursts; warm runs after
                 // idle or on the search hot path.
@@ -2857,7 +2861,7 @@ export default class SeekPlugin extends Plugin {
                         }
                         return r;
                     },
-                    isHidden: () => activeDocument.hidden,
+                    isHidden: shouldPauseForHidden,
                     isSearchActive: () => this.indexingBlocked,
                     pace: () => pacer.pace(),
                     maxFiles: burst.maxFiles,
@@ -2884,9 +2888,10 @@ export default class SeekPlugin extends Plugin {
                     this.clearExclusionChange();
                     void this.runStartupWarm('post-catchup');
                 }
-                if (this.catchUpPending && (!isMobilePlatform() || !activeDocument.hidden) && !this.indexingBlocked) {
-                    void pacer.pace().then(() => this.runCatchUp());
-                }
+                // drainCatchUp self-chains every progressing burst. A pending return
+                // means it hit a stop/no-progress condition and must wait for an
+                // external trigger (visibility, search completion, file activity, or
+                // the periodic reconcile) rather than immediately retrying forever.
             }
         })();
     }
