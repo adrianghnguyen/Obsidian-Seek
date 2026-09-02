@@ -86,7 +86,7 @@ Success on sandbox (2026-08-29, post cold-build routing): **~3 minutes** for ~3k
 Keep all CLI (`eval`, `seek:search`, `dev:console`) **serial** on one Obsidian session. For first-load forensics, follow `.cursor/skills/seek-cli-startup-debug/SKILL.md` (cold-start may need restart — warn that it closes every vault — then enable; not reload mid-pass).
  (Settings → Seek / `settings-tab.ts`). Do not add a user-tunable flag (synced `data.json` or per-device localStorage) without a corresponding control there. Hidden silent defaults are only for ratified non-user knobs already documented in `DEFAULT_SETTINGS`.
 
-User-facing features, fixes, and settings changes must update `CHANGELOG.md` and bump `manifest.json` per semver in the same turn (PATCH/MINOR/MAJOR — voice and skip list: `.cursor/rules/changelog.mdc`). Upstream sync adopts upstream version; fork-only patches bump fork semver.
+User-facing features, fixes, and settings changes: add bullets to `CHANGELOG.md` `[Unreleased]` when ready; version bump on `main` only — see global skill `~/.cursor/skills/obsidian-plugin-dev/SKILL.md` (Release notes and semantic versioning). Upstream sync adopts upstream version; fork-only patches accumulate under `[Unreleased]` until a fork release on `main`.
 
 ## Upstream sync (this is a fork)
 
