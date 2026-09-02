@@ -182,7 +182,8 @@ Run-Obsidian eval "vault=$Vault" 'code=app.plugins.plugins.seek.openLoggingRepor
 $dateTag = Get-Date -Format 'yyyyMMdd-HHmmss'
 $scoreDir = Join-Path $repoRoot '.cursor\scorecards'
 if (-not (Test-Path $scoreDir)) { New-Item -ItemType Directory -Path $scoreDir | Out-Null }
-$reportSrc = Join-Path (switch ($Vault) { 'Obsidian' { 'C:\Obsidian' } default { 'C:\plugin-sandbox-Obsidian' } }) '.seek-artifacts\seek-report.json'
+$vaultRoot = if ($Vault -eq 'Obsidian') { 'C:\Obsidian' } else { 'C:\plugin-sandbox-Obsidian' }
+$reportSrc = Join-Path $vaultRoot '.seek-artifacts\seek-report.json'
 if (Test-Path $reportSrc) {
     $dest = Join-Path $scoreDir "$PathId-$runLabel-$dateTag.json"
     Copy-Item $reportSrc $dest -Force
