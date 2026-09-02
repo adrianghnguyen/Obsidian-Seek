@@ -4,6 +4,9 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Changed
+- **Settings → Index "Embedder coverage by folder" collapses to top-level folders by default.** Nested folders stay hidden until you click a parent to unfold it; expand/collapse is remembered while Settings stays open (including across the live coverage poll).
+
 ## 1.4.0
 
 Queries can run in a background worker thread, and Settings polish makes the About footer and boot history easier to maintain. No reindex is needed, since the index format is unchanged.

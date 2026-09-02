@@ -186,6 +186,9 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
     private coveragePoll: number | null = null;
     private coverageHost: HTMLElement | null = null;
     private exclusionBannerHost: HTMLElement | null = null;
+    // Session-scoped expand state for the coverage tree (survives poll repaints; resets
+    // when Settings closes). Empty = all folders collapsed to top-level only.
+    private coverageExpandedPaths = new Set<string>();
 
     onSessionTelemetryChanged(): void {
         if (!this.containerEl.isConnected) return;
@@ -555,14 +558,53 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
 
     // Recursively renders one folder node (and its subfolders) as an indented tree
     // row. Each row shows the folder's OWN subtree: covered / relevant files.
+    // Children render only when this path is in coverageExpandedPaths (collapsed by default).
     private renderCoverageNode(container: HTMLElement, node: FolderCoverageNode, depth: number): void {
         const fullyExcluded = node.total === 0 && node.excluded > 0;
-        const row = container.createDiv({ cls: 'seek-coverage-row' + (fullyExcluded ? ' is-excluded' : '') });
-        const name = row.createDiv({ cls: 'seek-coverage-name' });
+        const hasChildren = node.children.length > 0;
+        const expanded = hasChildren && this.coverageExpandedPaths.has(node.path);
+        const row = container.createDiv({
+            cls: 'seek-coverage-row'
+                + (fullyExcluded ? ' is-excluded' : '')
+                + (expanded ? ' is-expanded' : ''),
+        });
+        const name = row.createDiv({
+            cls: 'seek-coverage-name' + (hasChildren ? ' is-expandable' : ''),
+        });
         // Indent by nesting level so the hierarchy reads as a tree.
         name.style.paddingLeft = `${depth * 14}px`;
-        if (depth > 0) name.createSpan({ cls: 'seek-coverage-indent', text: '└ ' });
-        name.createSpan({ text: node.name });
+        if (hasChildren) {
+            name.createSpan({
+                cls: 'seek-coverage-toggle',
+                text: expanded ? '▼' : '▶',
+            });
+            name.setAttr('role', 'button');
+            name.setAttr('aria-expanded', expanded ? 'true' : 'false');
+            name.setAttr('tabindex', '0');
+            const toggle = () => {
+                if (this.coverageExpandedPaths.has(node.path)) {
+                    this.coverageExpandedPaths.delete(node.path);
+                } else {
+                    this.coverageExpandedPaths.add(node.path);
+                }
+                void this.paintCoverage();
+            };
+            name.addEventListener('click', (e) => {
+                e.preventDefault();
+                toggle();
+            });
+            name.addEventListener('keydown', (e) => {
+                if (e.key !== 'Enter' && e.key !== ' ') return;
+                e.preventDefault();
+                toggle();
+            });
+        } else if (depth > 0) {
+            name.createSpan({ cls: 'seek-coverage-indent', text: '└ ' });
+        } else {
+            // Leaf at top level: spacer so names align with expandable rows' caret.
+            name.createSpan({ cls: 'seek-coverage-toggle is-leaf', text: '' });
+        }
+        name.createSpan({ cls: 'seek-coverage-label', text: node.name });
         if (fullyExcluded) name.createSpan({ cls: 'seek-coverage-excluded-tag', text: 'excluded' });
 
         const bar = row.createDiv({ cls: 'seek-coverage-track' });
@@ -577,6 +619,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                 : `${node.covered.toLocaleString()} / ${node.total.toLocaleString()}`,
         });
 
+        if (!expanded) return;
         for (const child of node.children) this.renderCoverageNode(container, child, depth + 1);
     }
 

@@ -1373,18 +1373,45 @@
 }
 .seek-coverage-row {
     display: grid;
-    grid-template-columns: minmax(7em, 16em) 1fr 3.5em 6em;
+    grid-template-columns: minmax(8em, 18em) 1fr 3.5em 6em;
     gap: 8px;
     align-items: center;
     font-size: 12px;
 }
 .seek-coverage-name {
+    display: flex;
+    align-items: center;
+    min-width: 0;
     color: var(--text-normal);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
+.seek-coverage-name.is-expandable {
+    cursor: pointer;
+}
+.seek-coverage-name.is-expandable:hover .seek-coverage-label {
+    color: var(--text-accent);
+}
+.seek-coverage-toggle {
+    flex: 0 0 1em;
+    width: 1em;
+    margin-right: 4px;
+    font-size: 9px;
+    line-height: 1;
+    color: var(--text-faint);
+    text-align: center;
+    user-select: none;
+}
+.seek-coverage-toggle.is-leaf {
+    visibility: hidden;
+}
+.seek-coverage-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
 .seek-coverage-indent {
+    flex: 0 0 auto;
     color: var(--text-faint);
     margin-right: 2px;
 }
