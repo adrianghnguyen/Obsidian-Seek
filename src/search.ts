@@ -3718,25 +3718,26 @@ export class SearchOrchestrator {
         // vector — it launches in embed's then() so it overlaps leftover BM25
         // when embed is the faster of the two.
         const qStart = performance.now();
-        type EmbedOk = { ok: true; vector: Float32Array; iframeLatencyMs: number; queryEmbedMs: number };
-        type EmbedFail = { ok: false; reason: 'nonfinite' | 'dim'; dim: number; iframeLatencyMs: number; queryEmbedMs: number };
+        type EmbedOk = { ok: true; vector: Float32Array; iframeLatencyMs: number; queryEmbedMs: number; embedRoute: 'worker' | 'iframe' };
+        type EmbedFail = { ok: false; reason: 'nonfinite' | 'dim'; dim: number; iframeLatencyMs: number; queryEmbedMs: number; embedRoute: 'worker' | 'iframe' };
         let binaryStart = 0;
         let binaryPromise: Promise<number[]> | null = null;
         const embedPromise: Promise<EmbedOk | EmbedFail> = this.embedder.embed(cleanDenseText(cleanedQuery), signal).then(embedded => {
             const queryEmbedMs = performance.now() - qStart;
             const queryVec = embedded.vector;
+            const embedRoute = embedded.embedRoute ?? 'iframe';
             if (!queryVec.every(Number.isFinite)) {
-                return { ok: false, reason: 'nonfinite' as const, dim: queryVec.length, iframeLatencyMs: embedded.iframeLatencyMs, queryEmbedMs };
+                return { ok: false, reason: 'nonfinite' as const, dim: queryVec.length, iframeLatencyMs: embedded.iframeLatencyMs, queryEmbedMs, embedRoute };
             }
             if (bytesPerVec !== ((queryVec.length + 7) >> 3)) {
-                return { ok: false, reason: 'dim' as const, dim: queryVec.length, iframeLatencyMs: embedded.iframeLatencyMs, queryEmbedMs };
+                return { ok: false, reason: 'dim' as const, dim: queryVec.length, iframeLatencyMs: embedded.iframeLatencyMs, queryEmbedMs, embedRoute };
             }
             binaryStart = performance.now();
             binaryPromise = binaryCandidatesAsync(
                 this.binaryWorker, frameGen, queryVec, activePacked,
                 orderedChunks.length, bytesPerVec, caps.binary, mask ?? null,
             );
-            return { ok: true, vector: queryVec, iframeLatencyMs: embedded.iframeLatencyMs, queryEmbedMs };
+            return { ok: true, vector: queryVec, iframeLatencyMs: embedded.iframeLatencyMs, queryEmbedMs, embedRoute: embedded.embedRoute ?? 'iframe' };
         });
 
         // ---- S0.6: name prefilter (early paint) -------------------------
@@ -3913,6 +3914,7 @@ export class SearchOrchestrator {
         const embedded = await embedPromise;
         const queryEmbedMs = embedded.queryEmbedMs;
         const iframeEmbedMs = embedded.iframeLatencyMs;
+        const embedRoute = embedded.embedRoute;
         if (!embedded.ok) {
             if (embedded.reason === 'nonfinite') {
                 await this.logger.appendError(
@@ -4121,6 +4123,7 @@ export class SearchOrchestrator {
             alignMs: parseFloat(alignMs.toFixed(2)),
             queryEmbedMs: parseFloat(queryEmbedMs.toFixed(2)),
             iframeEmbedMs: parseFloat(iframeEmbedMs.toFixed(2)),
+            embedRoute,
             cosineMs: parseFloat(cosineMs.toFixed(2)),
             bm25Ms: parseFloat(bm25Ms.toFixed(2)),
             bm25CacheHit,
