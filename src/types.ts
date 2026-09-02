@@ -1078,6 +1078,10 @@ export interface SearchEntry {
     alignMs: number;
     queryEmbedMs: number;
     iframeEmbedMs: number;
+    // T8: which realm embedded the query — 'worker' (background route) or
+    // 'iframe' (default pipeline). Absent on entries that never embedded
+    // (lexical-only failures, empty-index fast paths).
+    embedRoute?: 'worker' | 'iframe';
     cosineMs: number;
     bm25Ms: number;
     bm25CacheHit: boolean;
