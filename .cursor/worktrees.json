@@ -6,6 +6,26 @@
       "path_id": "persist-cache",
       "branch": "main",
       "worktree": "C:/Coding_projects/Obsidian-Seek"
+    },
+    "T5": {
+      "path_id": "layout-gate",
+      "branch": "path/layout-gate",
+      "worktree": "C:/Coding_projects/Obsidian-Seek-worktrees/layout-gate"
+    },
+    "T6": {
+      "path_id": "micro-batch",
+      "branch": "path/micro-batch",
+      "worktree": "C:/Coding_projects/Obsidian-Seek-worktrees/micro-batch"
+    },
+    "T7": {
+      "path_id": "worker-offload",
+      "branch": "path/worker-offload",
+      "worktree": "C:/Coding_projects/Obsidian-Seek-worktrees/worker-offload"
+    },
+    "T8": {
+      "path_id": "dedicated-worker",
+      "branch": "explore/dedicated-worker",
+      "worktree": "C:/Coding_projects/Obsidian-Seek-worktrees/dedicated-worker"
     }
   }
 }
