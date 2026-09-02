@@ -27,7 +27,7 @@ import {
 import { formatRecentSearchLine } from './session-telemetry';
 import type { SettingsTelemetrySink } from './main';
 import { formatRoughEta, indexPercent } from './index-eta';
-import { displayFolderName, type FolderCoverageSummary } from './folder-coverage';
+import type { FolderCoverageNode, FolderCoverageSummary } from './folder-coverage';
 import {
     getBackendOverride, setBackendOverride, isWebgpuDemoted, clearWebgpuDemoted,
     getStartupWarm, setStartupWarm, isMobilePlatform,
@@ -497,25 +497,34 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         });
 
         const rows = wrap.createDiv({ cls: 'seek-coverage-rows' });
-        for (const r of summary.rows) {
-            const fullyExcluded = r.excluded > 0 && r.total - r.excluded === 0;
-            const row = rows.createDiv({ cls: 'seek-coverage-row' + (fullyExcluded ? ' is-excluded' : '') });
-            const name = row.createDiv({ cls: 'seek-coverage-name' });
-            name.createSpan({ text: displayFolderName(r.folder) });
-            if (fullyExcluded) name.createSpan({ cls: 'seek-coverage-excluded-tag', text: 'excluded' });
+        for (const child of summary.root.children) this.renderCoverageNode(rows, child, 0);
+    }
 
-            const bar = row.createDiv({ cls: 'seek-coverage-track' });
-            const fill = bar.createDiv({ cls: 'seek-coverage-fill is-' + coverageTone(r) });
-            fill.style.width = `${r.percent}%`;
+    // Recursively renders one folder node (and its subfolders) as an indented tree
+    // row. Each row shows the folder's OWN subtree: covered / relevant files.
+    private renderCoverageNode(container: HTMLElement, node: FolderCoverageNode, depth: number): void {
+        const fullyExcluded = node.total === 0 && node.excluded > 0;
+        const row = container.createDiv({ cls: 'seek-coverage-row' + (fullyExcluded ? ' is-excluded' : '') });
+        const name = row.createDiv({ cls: 'seek-coverage-name' });
+        // Indent by nesting level so the hierarchy reads as a tree.
+        name.style.paddingLeft = `${depth * 14}px`;
+        if (depth > 0) name.createSpan({ cls: 'seek-coverage-indent', text: '└ ' });
+        name.createSpan({ text: node.name });
+        if (fullyExcluded) name.createSpan({ cls: 'seek-coverage-excluded-tag', text: 'excluded' });
 
-            row.createSpan({ cls: 'seek-coverage-pct is-' + coverageTone(r), text: `${r.percent}%` });
-            row.createSpan({
-                cls: 'seek-coverage-meta',
-                text: fullyExcluded
-                    ? `${r.total.toLocaleString()} excluded`
-                    : `${r.covered.toLocaleString()} / ${r.total.toLocaleString()}`,
-            });
-        }
+        const bar = row.createDiv({ cls: 'seek-coverage-track' });
+        const fill = bar.createDiv({ cls: 'seek-coverage-fill is-' + coverageTone(node) });
+        fill.style.width = `${node.percent}%`;
+
+        row.createSpan({ cls: 'seek-coverage-pct is-' + coverageTone(node), text: `${node.percent}%` });
+        row.createSpan({
+            cls: 'seek-coverage-meta',
+            text: fullyExcluded
+                ? `${node.excluded.toLocaleString()} excluded`
+                : `${node.covered.toLocaleString()} / ${node.total.toLocaleString()}`,
+        });
+
+        for (const child of node.children) this.renderCoverageNode(container, child, depth + 1);
     }
 
     private paintExclusionBanner(): void {

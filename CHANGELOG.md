@@ -2,6 +2,13 @@
 
 All notable changes to Seek are documented here. This project adheres to [Semantic Versioning](https://semver.org/).
 
+## 1.7.0
+
+Coverage now shows the whole folder hierarchy, each folder counting only its own notes. No reindex is needed, since the index format is unchanged.
+
+### Changed
+- **Settings → Index "Embedder coverage by folder" now shows the full directory hierarchy.** Every folder — not just top-level ones — appears as an indented tree row, and each row reports the coverage of that folder's own notes (recursively): `embedded files / relevant files` in that subtree, instead of a percentage against the whole vault. A nested folder like `A/B` shows its own embedded/relevant count, so you can see exactly where coverage is thin. Excluded files still don't count against a folder's percentage, and fully-excluded folders are tagged "excluded".
+
 ## 1.6.1
 
 See which folders are fully indexed, and watch Seek backfill when you change what it excludes. No reindex is needed, since the index format is unchanged.

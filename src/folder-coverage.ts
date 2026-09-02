@@ -11,33 +11,42 @@
 // "Coverage" = live indexable files that have a FileRecord, i.e. they were committed
 // through the embedder at some point. A FileRecord only exists once a file is
 // embedded, so a file with no record is, by construction, not yet covered.
+//
+// The coverage is a FULL directory hierarchy: every folder node reports its own
+// subtree, so a nested folder A/B shows "covered / relevant files within A/B",
+// not the whole vault. A file is "relevant" to a folder unless it is currently
+// excluded by Obsidian's ignore rules; percent = covered / relevant.
 
-// Top-level folder key for a vault path. '' (empty) means the file lives directly
-// under the vault root.
-export function folderOf(path: string): string {
-    const i = path.indexOf('/');
-    return i < 0 ? '' : path.slice(0, i);
+// The single-segment name of a folder key ('A/B' → 'B'); '' → ''.
+export function segmentOf(folderKey: string): string {
+    const i = folderKey.lastIndexOf('/');
+    return i < 0 ? folderKey : folderKey.slice(i + 1);
 }
 
-// Human label for a folder key; the root reads better than a blank cell.
+// Human label for a folder node; the vault root reads better than a blank cell.
 export function displayFolderName(folder: string): string {
-    return folder === '' ? 'vault root' : folder;
+    return folder === '' ? 'vault root' : segmentOf(folder);
 }
 
-export interface FolderCoverage {
-    folder: string;         // top-level folder key ('' = vault root)
-    total: number;          // every indexable-extension file in the folder
-    covered: number;        // files with a FileRecord (ran through the embedder)
-    excluded: number;       // files currently excluded by Obsidian's ignore rules
-    // covered / (total - excluded) — % of the files this folder is SUPPOSED to have
-    // covered. Excluded files don't count against coverage. Falls back to 0% when
-    // the folder is fully excluded (denominator 0).
-    percent: number;
+// One directory in the hierarchy. `total` is the count of RELEVANT (non-excluded)
+// files in this folder's own subtree (recursively) — the denominator the user cares
+// about. `covered` is the subset of those that have a FileRecord. `excluded` is the
+// count of files in the subtree currently hidden by Obsidian's ignore rules (they
+// are NOT part of `total`). `percent` = covered / total (0% when total is 0, e.g. a
+// fully-excluded folder).
+export interface FolderCoverageNode {
+    path: string;          // folder key ('' = vault root, 'A', 'A/B', …)
+    name: string;          // single-segment display name
+    total: number;         // relevant (non-excluded) files in the subtree
+    covered: number;       // relevant files in the subtree with a FileRecord
+    excluded: number;      // files in the subtree hidden by ignore rules
+    percent: number;       // covered / total, 0-100
+    children: FolderCoverageNode[]; // nested subfolders (recursive hierarchy)
 }
 
 export interface FolderCoverageSummary {
-    rows: FolderCoverage[]; // one per top-level folder, sorted by total desc then name
-    overall: FolderCoverage;
+    root: FolderCoverageNode;   // the vault node: the whole hierarchy
+    overall: FolderCoverageNode; // alias for root (the grand total)
 }
 
 export interface FolderCoverageInput {
@@ -46,52 +55,98 @@ export interface FolderCoverageInput {
     excludedPaths: string[]; // subset of allPaths currently excluded by ignore rules
 }
 
+// The chain of ancestor folder keys for a file path, from shallowest to deepest.
+// 'A/B/file.md' → ['A', 'A/B']; 'file.md' → [] (root-level file, no folders).
+export function pathFolderChain(path: string): string[] {
+    const parts = path.split('/');
+    parts.pop(); // drop the file name
+    const chain: string[] = [];
+    let acc = '';
+    for (const part of parts) {
+        if (part === '') continue; // skip a leading '/' (never happens in Obsidian, but be safe)
+        acc = acc ? acc + '/' + part : part;
+        chain.push(acc);
+    }
+    return chain;
+}
+
+// Top-level folder key for a vault path (used by the exclusion diff). '' = root.
+export function folderOf(path: string): string {
+    const i = path.indexOf('/');
+    return i < 0 ? '' : path.slice(0, i);
+}
+
 function pct(covered: number, denom: number): number {
     if (denom <= 0) return 0;
     return Math.round((covered / denom) * 100);
 }
 
+// A well-formed empty summary, used by callers (e.g. the plugin) before the
+// orchestrator exists or on a read failure.
+export function emptyFolderCoverage(): FolderCoverageSummary {
+    const root: FolderCoverageNode = {
+        path: '',
+        name: 'vault root',
+        total: 0,
+        covered: 0,
+        excluded: 0,
+        percent: 0,
+        children: [],
+    };
+    return { root, overall: root };
+}
+
 export function computeFolderCoverage(input: FolderCoverageInput): FolderCoverageSummary {
-    const covered = new Set(input.coveredPaths);
-    const excluded = new Set(input.excludedPaths);
+    const coveredSet = new Set(input.coveredPaths);
+    const excludedSet = new Set(input.excludedPaths);
 
-    const total = new Map<string, number>();
-    const cov = new Map<string, number>();
-    const exc = new Map<string, number>();
-    let allTotal = 0, allCov = 0, allExc = 0;
-
-    for (const p of input.allPaths) {
-        const f = folderOf(p);
-        total.set(f, (total.get(f) ?? 0) + 1);
-        allTotal++;
-        if (covered.has(p)) { cov.set(f, (cov.get(f) ?? 0) + 1); allCov++; }
-        if (excluded.has(p)) { exc.set(f, (exc.get(f) ?? 0) + 1); allExc++; }
+    // Mutable accumulator per folder node; children keyed by single segment name.
+    interface Acc {
+        path: string;
+        total: number;
+        covered: number;
+        excluded: number;
+        children: Map<string, Acc>;
     }
+    const makeAcc = (path: string): Acc => ({ path, total: 0, covered: 0, excluded: 0, children: new Map() });
+    const rootAcc = makeAcc('');
 
-    const rows: FolderCoverage[] = [...total.keys()].map((f) => {
-        const t = total.get(f) ?? 0;
-        const c = cov.get(f) ?? 0;
-        const e = exc.get(f) ?? 0;
-        // If the whole folder is excluded there is nothing that SHOULD be covered,
-        // so report 0% (the UI tags the row "excluded"). Otherwise exclude the
-        // excluded files from the denominator so a nested ignore doesn't look like
-        // a coverage hole.
-        const percent = t - e === 0 ? 0 : pct(c, t - e);
-        return { folder: f, total: t, covered: c, excluded: e, percent };
-    });
-
-    rows.sort((a, b) => b.total - a.total || a.folder.localeCompare(b.folder));
-
-    const overallDenom = allTotal - allExc;
-    const overall: FolderCoverage = {
-        folder: '',
-        total: allTotal,
-        covered: allCov,
-        excluded: allExc,
-        percent: overallDenom <= 0 ? 0 : pct(allCov, overallDenom),
+    const bump = (acc: Acc, isCovered: boolean, isExcluded: boolean): void => {
+        if (isExcluded) acc.excluded++;
+        else { acc.total++; if (isCovered) acc.covered++; }
     };
 
-    return { rows, overall };
+    for (const p of input.allPaths) {
+        const isCovered = coveredSet.has(p);
+        const isExcluded = excludedSet.has(p);
+        bump(rootAcc, isCovered, isExcluded);
+        let node = rootAcc;
+        for (const key of pathFolderChain(p)) {
+            const seg = segmentOf(key);
+            let child = node.children.get(seg);
+            if (!child) { child = makeAcc(key); node.children.set(seg, child); }
+            node = child;
+            bump(node, isCovered, isExcluded);
+        }
+    }
+
+    const finalize = (acc: Acc, depth: number): FolderCoverageNode => {
+        const kids = [...acc.children.values()]
+            .sort((a, b) => b.total - a.total || segmentOf(a.path).localeCompare(segmentOf(b.path)));
+        const node: FolderCoverageNode = {
+            path: acc.path,
+            name: displayFolderName(acc.path),
+            total: acc.total,
+            covered: acc.covered,
+            excluded: acc.excluded,
+            percent: pct(acc.covered, acc.total),
+            children: kids.map(c => finalize(c, depth + 1)),
+        };
+        return node;
+    };
+
+    const root = finalize(rootAcc, 0);
+    return { root, overall: root };
 }
 
 // ── Exclusion-list change detection ─────────────────────────────────────────────

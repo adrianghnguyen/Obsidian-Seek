@@ -40,6 +40,7 @@ import { SearchOrchestrator, driftRecoveryDecision, shouldIndexPath, type Recenc
 import {
     diffExcludedPaths,
     exclusionDiffIsEmpty,
+    emptyFolderCoverage,
     type ExclusionDiff,
     type FolderCoverageSummary,
 } from './folder-coverage';
@@ -3031,11 +3032,11 @@ export default class SeekPlugin extends Plugin {
 
     /** Per-folder embedder coverage for the settings surface (passthrough). */
     async getFolderCoverage(): Promise<FolderCoverageSummary> {
-        if (!this.orchestrator) return { rows: [], overall: { folder: '', total: 0, covered: 0, excluded: 0, percent: 0 } };
+        if (!this.orchestrator) return emptyFolderCoverage();
         try {
             return await this.orchestrator.getFolderCoverage();
         } catch {
-            return { rows: [], overall: { folder: '', total: 0, covered: 0, excluded: 0, percent: 0 } };
+            return emptyFolderCoverage();
         }
     }
 

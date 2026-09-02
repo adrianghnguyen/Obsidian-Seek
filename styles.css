@@ -1321,7 +1321,7 @@
 }
 .seek-coverage-row {
     display: grid;
-    grid-template-columns: minmax(6em, 12em) 1fr 3.5em 6em;
+    grid-template-columns: minmax(7em, 16em) 1fr 3.5em 6em;
     gap: 8px;
     align-items: center;
     font-size: 12px;
@@ -1331,6 +1331,10 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+.seek-coverage-indent {
+    color: var(--text-faint);
+    margin-right: 2px;
 }
 .seek-coverage-excluded-tag {
     margin-left: 6px;

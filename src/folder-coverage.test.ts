@@ -1,105 +1,162 @@
-// Pure logic for the settings coverage surface: per-folder embedder coverage and
-// the exclusion-list change diff. No Obsidian / model / IDB — just set math over
-// vault path strings, so it is deterministic and cheap to test.
+// Pure logic for the settings coverage surface: per-folder (full-hierarchy) embedder
+// coverage and the exclusion-list change diff. No Obsidian / model / IDB — just set
+// math over vault path strings, so it is deterministic and cheap to test.
 import { describe, it, expect } from 'vitest';
 import {
     folderOf,
+    segmentOf,
     displayFolderName,
+    pathFolderChain,
     computeFolderCoverage,
+    emptyFolderCoverage,
     diffExcludedPaths,
     exclusionDiffIsEmpty,
+    type FolderCoverageNode,
 } from './folder-coverage';
 
-describe('folderOf', () => {
-    it('returns the top-level folder', () => {
+describe('folderOf / segmentOf / pathFolderChain', () => {
+    it('folderOf returns the top-level folder', () => {
         expect(folderOf('a/b/c.md')).toBe('a');
-    });
-    it('returns "" for a root-level file', () => {
         expect(folderOf('note.md')).toBe('');
     });
-});
-
-describe('displayFolderName', () => {
-    it('labels the vault root', () => {
+    it('segmentOf returns the last path segment', () => {
+        expect(segmentOf('a/b')).toBe('b');
+        expect(segmentOf('a')).toBe('a');
+        expect(segmentOf('')).toBe('');
+    });
+    it('pathFolderChain lists ancestors shallow→deep', () => {
+        expect(pathFolderChain('a/b/c.md')).toEqual(['a', 'a/b']);
+        expect(pathFolderChain('a.md')).toEqual([]);
+    });
+    it('displayFolderName labels the root and shows a single segment', () => {
         expect(displayFolderName('')).toBe('vault root');
-    });
-    it('passes through a normal folder', () => {
-        expect(displayFolderName('Projects')).toBe('Projects');
+        expect(displayFolderName('a/b')).toBe('b');
     });
 });
 
-describe('computeFolderCoverage', () => {
-    it('computes per-folder and overall percentages', () => {
-        const summary = computeFolderCoverage({
-            allPaths: ['a/1.md', 'a/2.md', 'b/1.md', 'root.md'],
-            coveredPaths: ['a/1.md', 'root.md'],
+function byPath(node: FolderCoverageNode, path: string): FolderCoverageNode | undefined {
+    if (node.path === path) return node;
+    for (const c of node.children) {
+        const r = byPath(c, path);
+        if (r) return r;
+    }
+    return undefined;
+}
+
+describe('computeFolderCoverage (hierarchy, per-subtree %)', () => {
+    it('reports each folder as the count of its own subtree, not the whole vault', () => {
+        // A/B has 2 files (1 covered); A/C has 1 file (0 covered); A root file 1 (covered).
+        const s = computeFolderCoverage({
+            allPaths: ['A/B/x.md', 'A/B/y.md', 'A/C/z.md', 'A/root.md'],
+            coveredPaths: ['A/B/x.md', 'A/root.md'],
             excludedPaths: [],
         });
-        const byName = Object.fromEntries(summary.rows.map(r => [r.folder, r]));
-        // a: 1 of 2 covered = 50%; b: 0 of 1 = 0%; root: 1 of 1 = 100%
-        expect(byName['a'].percent).toBe(50);
-        expect(byName['a'].covered).toBe(1);
-        expect(byName['a'].total).toBe(2);
-        expect(byName['b'].percent).toBe(0);
-        expect(byName[''].percent).toBe(100);
-        // overall: 2 of 4 = 50%
-        expect(summary.overall.percent).toBe(50);
-        expect(summary.overall.covered).toBe(2);
-        expect(summary.overall.total).toBe(4);
+        // A subtree: 4 relevant, 2 covered → 50%
+        const a = byPath(s.root, 'A')!;
+        expect(a.total).toBe(4);
+        expect(a.covered).toBe(2);
+        expect(a.percent).toBe(50);
+        // A/B subtree: 2 relevant, 1 covered → 50% (NOT the vault total)
+        const ab = byPath(s.root, 'A/B')!;
+        expect(ab.total).toBe(2);
+        expect(ab.covered).toBe(1);
+        expect(ab.percent).toBe(50);
+        // A/C subtree: 1 relevant, 0 covered → 0%
+        const ac = byPath(s.root, 'A/C')!;
+        expect(ac.total).toBe(1);
+        expect(ac.covered).toBe(0);
+        expect(ac.percent).toBe(0);
+        // overall (root) = 2/4 = 50%
+        expect(s.overall.total).toBe(4);
+        expect(s.overall.covered).toBe(2);
+        expect(s.overall.percent).toBe(50);
     });
 
-    it('sorts rows by total desc then name', () => {
-        const summary = computeFolderCoverage({
-            allPaths: ['z/x.md', 'z/y.md', 'a/1.md'],
+    it('nested folders nest under their parent in the tree', () => {
+        const s = computeFolderCoverage({
+            allPaths: ['A/B/x.md'],
             coveredPaths: [],
             excludedPaths: [],
         });
-        expect(summary.rows.map(r => r.folder)).toEqual(['z', 'a']);
+        const a = s.root.children.find(c => c.path === 'A')!;
+        const ab = a.children.find(c => c.path === 'A/B')!;
+        expect(ab.name).toBe('B');
+        expect(ab.total).toBe(1);
     });
 
-    it('excludes excluded files from the coverage denominator', () => {
-        // a has 3 files, one excluded; 1 of the 2 non-excluded covered = 50%.
-        const summary = computeFolderCoverage({
-            allPaths: ['a/1.md', 'a/2.md', 'a/3.md'],
-            coveredPaths: ['a/1.md'],
-            excludedPaths: ['a/3.md'],
+    it('a parent covers its own files AND its descendants', () => {
+        // A has 1 direct file (covered) + 2 in A/B (1 covered) → A: 3 relevant, 2 covered.
+        const s = computeFolderCoverage({
+            allPaths: ['A/a.md', 'A/B/b1.md', 'A/B/b2.md'],
+            coveredPaths: ['A/a.md', 'A/B/b1.md'],
+            excludedPaths: [],
         });
-        const a = summary.rows.find(r => r.folder === 'a')!;
+        const a = byPath(s.root, 'A')!;
+        expect(a.total).toBe(3);
+        expect(a.covered).toBe(2);
+        expect(a.percent).toBe(67); // round(2/3*100)
+        expect(byPath(s.root, 'A/B')!.total).toBe(2);
+    });
+
+    it('excluded files are removed from every ancestor subtree\'s denominator', () => {
+        // A/B: 2 files, 1 excluded → A/B relevant = 1, 0 covered → 0%.
+        // A: 2 files total, 1 excluded → A relevant = 1, 0 covered → 0%.
+        const s = computeFolderCoverage({
+            allPaths: ['A/B/x.md', 'A/B/y.md'],
+            coveredPaths: [],
+            excludedPaths: ['A/B/x.md'],
+        });
+        const ab = byPath(s.root, 'A/B')!;
+        expect(ab.total).toBe(1);
+        expect(ab.excluded).toBe(1);
+        expect(ab.percent).toBe(0);
+        const a = byPath(s.root, 'A')!;
+        expect(a.total).toBe(1);
         expect(a.excluded).toBe(1);
-        expect(a.percent).toBe(50); // 1 / (3 - 1)
-        expect(a.covered).toBe(1);
+        expect(a.percent).toBe(0);
     });
 
-    it('reports a fully-excluded folder as 0%', () => {
-        const summary = computeFolderCoverage({
-            allPaths: ['arch/1.md', 'arch/2.md', 'main/1.md'],
-            coveredPaths: ['main/1.md'],
-            excludedPaths: ['arch/1.md', 'arch/2.md'],
+    it('a fully-excluded folder shows 0% and is excluded from the overall denominator', () => {
+        const s = computeFolderCoverage({
+            allPaths: ['Arch/1.md', 'Arch/2.md', 'Main/1.md', 'Main/2.md'],
+            coveredPaths: ['Main/1.md', 'Main/2.md'],
+            excludedPaths: ['Arch/1.md', 'Arch/2.md'],
         });
-        const arch = summary.rows.find(r => r.folder === 'arch')!;
-        expect(arch.percent).toBe(0);
-        expect(arch.excluded).toBe(2);
-        // overall denominator excludes the 2 excluded files → 1/1 = 100%
-        expect(summary.overall.percent).toBe(100);
+        expect(byPath(s.root, 'Arch')!.percent).toBe(0);
+        expect(byPath(s.root, 'Arch')!.excluded).toBe(2);
+        // overall: 2 relevant (both in Main), 2 covered → 100%
+        expect(s.overall.percent).toBe(100);
+        expect(s.overall.excluded).toBe(2);
     });
 
-    it('reports 0% for an empty input', () => {
-        const summary = computeFolderCoverage({ allPaths: [], coveredPaths: [], excludedPaths: [] });
-        expect(summary.rows).toEqual([]);
-        expect(summary.overall.percent).toBe(0);
-    });
-
-    it('never counts a covered path that is also excluded toward the denominator', () => {
-        // A path can be both in coveredPaths (has a record) and excludedPaths (now
-        // ignored) during a transition; the denominator is total-excluded, so it is
-        // not double-counted.
-        const summary = computeFolderCoverage({
-            allPaths: ['a/1.md'],
-            coveredPaths: ['a/1.md'],
-            excludedPaths: ['a/1.md'],
+    it('root-level files count toward the vault root, not a folder', () => {
+        const s = computeFolderCoverage({
+            allPaths: ['a.md', 'b.md', 'A/c.md'],
+            coveredPaths: ['a.md'],
+            excludedPaths: [],
         });
-        expect(summary.rows[0].percent).toBe(0);
-        expect(summary.rows[0].excluded).toBe(1);
+        // root total = 3 (a, b, and A/c all roll up to root)
+        expect(s.root.total).toBe(3);
+        expect(s.root.covered).toBe(1);
+        expect(s.root.children.find(c => c.path === 'A')!.total).toBe(1);
+    });
+
+    it('is empty-safe', () => {
+        const s = computeFolderCoverage({ allPaths: [], coveredPaths: [], excludedPaths: [] });
+        expect(s.root.total).toBe(0);
+        expect(s.root.children).toEqual([]);
+        const e = emptyFolderCoverage();
+        expect(e.root.total).toBe(0);
+        expect(e.overall).toBe(e.root);
+    });
+
+    it('sorts sibling children by subtree size desc then name', () => {
+        const s = computeFolderCoverage({
+            allPaths: ['z/1.md', 'z/2.md', 'a/1.md', 'b/1.md'],
+            coveredPaths: [],
+            excludedPaths: [],
+        });
+        expect(s.root.children.map(c => c.path)).toEqual(['z', 'a', 'b']);
     });
 });
 
@@ -129,7 +186,6 @@ describe('diffExcludedPaths', () => {
             ['arch/1.md', 'archive/x/y.md'],
             ['archive/x/y.md', 'temp/1.md'],
         );
-        // arch was revealed, temp was hidden, archive unchanged.
         expect(diff.newlyIncludedFolders).toEqual(['arch']);
         expect(diff.newlyExcludedFolders).toEqual(['temp']);
     });
