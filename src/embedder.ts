@@ -441,7 +441,9 @@ export class LocalEmbedder {
         // works before/without a model load on the iframe path.
         if (getWorkerEmbedRoute() && !this.workerRouteDisabled) {
             try {
-                const w = await this.runner.workerEmbed(text);
+                throwIfAborted();
+                const w = await this.runner.workerEmbed(text, signal);
+                throwIfAborted();
                 if (w.vector.every(Number.isFinite)) {
                     this.queryEmbedCache.set(text, w.vector);
                     if (this.queryEmbedCache.size > LocalEmbedder.QUERY_EMBED_CACHE_MAX) {
@@ -450,13 +452,13 @@ export class LocalEmbedder {
                 }
                 return { vector: w.vector, iframeLatencyMs: w.latencyMs, cacheHit: false, embedRoute: 'worker' };
             } catch (e) {
+                if (signal?.aborted) throwIfAborted();
                 // Fallback, not failure: the iframe pipeline is the durable
                 // path. Sticky-disable the route for this session so a dead
                 // worker doesn't add a failed round trip to every query —
                 // the toggle (or a reload) re-enables it.
                 this.workerRouteDisabled = true;
                 console.warn('[seek] worker embed route failed — falling back to iframe pipeline (worker route disabled until reload):', e);
-                if (signal?.aborted) throwIfAborted();
             }
         }
         if (!this._loaded) {
@@ -473,6 +475,10 @@ export class LocalEmbedder {
         }
         throwIfAborted();
         const r = await this.runner.embed(text, signal);
+        // embed() may return even after the query was superseded (iframe
+        // ignores a late abort). Do not insert into the LRU — a cached hit
+        // would outlive the cancelled search.
+        throwIfAborted();
         // A non-finite vector (WASM numeric fault, torn model load) must not
         // enter the LRU: a cached NaN row would replay the poisoned vector on
         // every repeat of this query until eviction. Return it uncached — the
@@ -503,17 +509,27 @@ export class LocalEmbedder {
     // _loaded true on success, false (and throws) if the rebuild fails.
     async recycle(): Promise<void> {
         this._loaded = false;
-        await this.runner.dispose();
+        // Capture before dispose: teardown() may swap this.runner to a fresh
+        // empty iframe while we await (plugin:reload / idle-unload / Delete-model).
+        // Re-init/load on the replacement would rebuild ~250 MB after teardown
+        // started — or stack with the next load. Idle unload must still be able
+        // to load() later, so this is a one-shot bail, not a sticky latch.
+        const runner = this.runner;
+        await runner.dispose();
+        if (this.runner !== runner) return;
         // Set the rebuild promise into the init memo BEFORE the first await so a
         // CONCURRENT embedder.init() coalesces onto it (init() returns the memo)
         // instead of racing a second runner.init() through the gap the old
         // `_initPromise = null` opened — which appends a second iframe and leaks
         // the older listener (runner.init only guards SEQUENTIAL re-entry). The
         // memo is RETAINED on success (the live rebuilt iframe), matching init().
-        const rebuild = (async (): Promise<InitEntry> => {
-            const init = await this.runner.init();
+        let rebuild!: Promise<InitEntry>;
+        rebuild = (async (): Promise<InitEntry> => {
+            const init = await runner.init();
             if (!init.ready) {
-                this._initPromise = null;   // don't pin a dead iframe — allow retry
+                // Only drop OUR memo. Teardown may already have nulled it and a
+                // later init() on the replacement runner may own _initPromise.
+                if (this._initPromise === rebuild) this._initPromise = null;
                 throw new Error(`recycle: iframe rebuild failed: ${init.error}`);
             }
             return this.toInitEntry(init);
@@ -549,10 +565,12 @@ export class LocalEmbedder {
             // init() succeeded but load() failed: without this the memo pins a
             // resolved "ready" entry pointing at an iframe whose model never
             // loaded, so the next init() short-circuits to a false-ready.
-            this._initPromise = null;
+            // Clear only if still OUR promise — teardown already nulled these
+            // for the replacement runner; a racing load() may own them now.
+            if (this._initPromise === rebuild) this._initPromise = null;
             throw e;
         } finally {
-            this._loadPromise = null;
+            if (this._loadPromise === p) this._loadPromise = null;
         }
     }
 

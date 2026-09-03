@@ -146,6 +146,28 @@ describe('search regression baseline', () => {
         expect(spy).not.toHaveBeenCalled();
     });
 
+    it('R7: abort after the resident frame is served still throws without hanging', async () => {
+        const s = await boot();
+        await indexAll(s);
+        // Warm the frame so ensureFrame returns immediately; abort from the
+        // first partial (after that await) so throwIfAborted after hydrate/onPartial fires.
+        await s.orch.search('pixel', 5);
+        const controller = new AbortController();
+        const p = s.orch.search('alex 1x1', 5, undefined, () => {
+            controller.abort();
+        }, controller.signal);
+        await expect(p).rejects.toMatchObject({ name: 'AbortError' });
+    });
+
+    it('R7: aborted searchLexicalOnly throws AbortError without hanging', async () => {
+        const s = await boot();
+        await indexAll(s);
+        const controller = new AbortController();
+        controller.abort();
+        await expect(s.orch.searchLexicalOnly('concert setlist tour', 5, undefined, controller.signal))
+            .rejects.toMatchObject({ name: 'AbortError' });
+    });
+
     // ---- R8: Empty corpus returns empty results ----
     it('R8: searching an empty (unindexed) corpus returns no results', async () => {
         const s = await boot();

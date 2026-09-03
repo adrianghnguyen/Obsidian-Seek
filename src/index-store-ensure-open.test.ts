@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto';
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { IndexStore, STORE_NOT_OPENED } from './index-store';
+import { IndexStore, STORE_NOT_OPENED, openDbWithTimeout } from './index-store';
 
 describe('IndexStore.ensureOpen (reload / versionchange recovery)', () => {
     const opened: IndexStore[] = [];
@@ -43,6 +43,44 @@ describe('IndexStore.ensureOpen (reload / versionchange recovery)', () => {
         expect(store.isOpen()).toBe(true);
         await store.ensureOpen();
         expect(store.isOpen()).toBe(true);
+    });
+
+    it('two concurrent ensureOpen() after close() share one open() and count() works', async () => {
+        const store = await boot(`ensure-${Math.random().toString(36).slice(2)}`);
+        store.close();
+        const openSpy = vi.spyOn(indexedDB, 'open');
+        try {
+            await Promise.all([store.ensureOpen(), store.ensureOpen()]);
+            expect(store.isOpen()).toBe(true);
+            expect(openSpy).toHaveBeenCalledTimes(1);
+            await expect(store.count()).resolves.toEqual({ files: 0, chunks: 0, embeddings: 0, binary: 0 });
+        } finally {
+            openSpy.mockRestore();
+        }
+    });
+
+    it('openDbWithTimeout closes a connection whose onsuccess fires after timeout', async () => {
+        const close = vi.fn();
+        let onSuccess: (() => void) | undefined;
+        const spy = vi.spyOn(indexedDB, 'open').mockImplementation(() => {
+            const req = {
+                result: { close, onversionchange: null },
+                error: null,
+                set onsuccess(fn: () => void) { onSuccess = fn; },
+                set onerror(_fn: () => void) { /* unused */ },
+                set onupgradeneeded(_fn: () => void) { /* unused */ },
+            };
+            return req as unknown as IDBOpenDBRequest;
+        });
+        try {
+            const p = openDbWithTimeout('seek-test:late-success', 20);
+            await expect(p).rejects.toThrow(/timed out/);
+            expect(close).not.toHaveBeenCalled();
+            onSuccess?.();
+            expect(close).toHaveBeenCalledTimes(1);
+        } finally {
+            spy.mockRestore();
+        }
     });
 
     it('open(scope) never calls indexedDB.deleteDatabase (legacy cleanup removed)', async () => {

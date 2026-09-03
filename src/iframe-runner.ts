@@ -231,6 +231,24 @@ interface Pending {
     timer?: number;
 }
 
+// A send() that is waiting for the single-flight pump. `start` posts the RPC;
+// until then the Promise lives only here, so dispose/failInflight must reject
+// it explicitly — clearing the array alone would leave callers hanging.
+interface QueuedRpc {
+    start: () => void;
+    reject: (error: Error) => void;
+    cleanupAbort: () => void;
+    started: boolean;
+}
+
+function rejectQueued(queue: QueuedRpc[], error: Error): void {
+    for (const item of queue) {
+        if (item.started) continue;
+        item.cleanupAbort();
+        item.reject(error);
+    }
+}
+
 // T8 spike — result of the nested dedicated-worker probe. Spawned inside the
 // iframe realm; answers the four spike questions the research phase left open:
 //   spawnOk   — can this srcdoc iframe create a module Worker at all?
@@ -306,8 +324,11 @@ export class IframeRunner {
     // embed used to contend and hang seek:search for 30s+ (G_catchup_ux). Queue
     // model RPCs one-at-a-time; `embed` jumps ahead of index traffic.
     private rpcBusy = false;
-    private queryRpcQueue: Array<() => void> = [];
-    private indexRpcQueue: Array<() => void> = [];
+    private queryRpcQueue: QueuedRpc[] = [];
+    private indexRpcQueue: QueuedRpc[] = [];
+    // buildIframe() READY_TIMEOUT_MS handle. Cleared on __ready / __error and
+    // on dispose so a mid-init teardown cannot reject 30s later.
+    private readyTimeout: number | null = null;
 
     async init(): Promise<IframeInit> {
         const result: IframeInit = {
@@ -351,8 +372,11 @@ export class IframeRunner {
 
     private buildIframe(): Promise<void> {
         return new Promise((resolve, reject) => {
-            const timeout = window.setTimeout(
-                () => reject(new Error(`iframe ready timeout after ${READY_TIMEOUT_MS}ms`)),
+            this.readyTimeout = window.setTimeout(
+                () => {
+                    this.readyTimeout = null;
+                    reject(new Error(`iframe ready timeout after ${READY_TIMEOUT_MS}ms`));
+                },
                 READY_TIMEOUT_MS,
             );
 
@@ -361,9 +385,15 @@ export class IframeRunner {
                 const data = event.data as IframeMsg | undefined;
                 if (!data || typeof data !== 'object') return;
 
-                if (data.id === '__ready') { window.clearTimeout(timeout); resolve(); return; }
+                if (data.id === '__ready') {
+                    if (this.readyTimeout != null) window.clearTimeout(this.readyTimeout);
+                    this.readyTimeout = null;
+                    resolve();
+                    return;
+                }
                 if (data.id === '__error') {
-                    window.clearTimeout(timeout);
+                    if (this.readyTimeout != null) window.clearTimeout(this.readyTimeout);
+                    this.readyTimeout = null;
                     reject(new Error(`iframe bootstrap failed: ${data.error}`));
                     return;
                 }
@@ -429,8 +459,10 @@ export class IframeRunner {
                 cleanupAbort();
                 reject(queryAbortError());
             };
+            let queued: QueuedRpc;
             const start = () => {
                 started = true;
+                queued.started = true;
                 const id = (crypto as { randomUUID?: () => string }).randomUUID
                     ? (crypto as { randomUUID: () => string }).randomUUID()
                     : `id-${Date.now()}-${Math.random()}`;
@@ -469,13 +501,19 @@ export class IframeRunner {
             const onAbort = (): void => {
                 aborted = true;
                 if (started) return;
-                const queuedAt = queue.indexOf(start);
+                const queuedAt = queue.indexOf(queued);
                 if (queuedAt === -1) return;
                 queue.splice(queuedAt, 1);
                 rejectAborted();
             };
+            queued = {
+                start,
+                reject: (error: Error) => { reject(error); },
+                cleanupAbort,
+                started: false,
+            };
             signal?.addEventListener('abort', onAbort, { once: true });
-            queue.push(start);
+            queue.push(queued);
             this.pumpRpc();
         });
     }
@@ -485,7 +523,7 @@ export class IframeRunner {
         const next = this.queryRpcQueue.shift() ?? this.indexRpcQueue.shift();
         if (!next) return;
         this.rpcBusy = true;
-        next();
+        next.start();
     }
 
     // skipWarmup: parent decision based on the localStorage fingerprint cache
@@ -571,8 +609,8 @@ export class IframeRunner {
     // T8 production route — one embed through the long-lived nested worker.
     // Same RPC the functional test uses, but addressed directly (no cosine
     // comparison, no test bookkeeping).
-    workerEmbed(text: string): Promise<{ vector: Float32Array; latencyMs: number }> {
-        return this.send<{ vector: Float32Array; latencyMs: number }>('embed-worker-embed', { text }, RPC_TIMEOUT_MS);
+    workerEmbed(text: string, signal?: AbortSignal): Promise<{ vector: Float32Array; latencyMs: number }> {
+        return this.send<{ vector: Float32Array; latencyMs: number }>('embed-worker-embed', { text }, RPC_TIMEOUT_MS, signal);
     }
 
     // T8 production route — a batch through the nested worker. The worker
@@ -587,11 +625,21 @@ export class IframeRunner {
             window.removeEventListener('message', this.listener);
             this.listener = null;
         }
+        if (this.readyTimeout != null) {
+            window.clearTimeout(this.readyTimeout);
+            this.readyTimeout = null;
+        }
         // Tag the rejection 'DISPOSED' so the embed catch can distinguish an
         // intentional teardown (plugin unloading → must NOT recycle, or it
         // resurrects a zombie iframe + reloads ~250 MB into a dead plugin) from
         // a recoverable error (SafeInt overflow / TIMEOUT → recycle+retry).
-        // Clear each pending timer first so a timeout can't fire post-rejection.
+        // Reject queued starters first (they never entered `pending`); clearing
+        // the arrays alone would leave those Promises hanging. Then reject
+        // in-flight pending. Clear each pending timer so a timeout can't fire
+        // post-rejection.
+        const disposed = Object.assign(new Error('iframe disposed'), { code: 'DISPOSED' });
+        rejectQueued(this.queryRpcQueue, disposed);
+        rejectQueued(this.indexRpcQueue, disposed);
         this.queryRpcQueue = [];
         this.indexRpcQueue = [];
         this.rpcBusy = false;
@@ -624,6 +672,8 @@ export class IframeRunner {
     // 'DISPOSED' (which would unwind the reindex). The caller's recycle() then
     // replaces the now-dead-device iframe.
     failInflight(message: string): void {
+        rejectQueued(this.queryRpcQueue, new Error(message));
+        rejectQueued(this.indexRpcQueue, new Error(message));
         this.queryRpcQueue = [];
         this.indexRpcQueue = [];
         this.rpcBusy = false;

@@ -390,7 +390,10 @@ export function openDbWithTimeout(
             reject(req.error ?? new Error(`indexedDB.open(${dbName}) failed`));
         };
         req.onsuccess = () => {
-            if (settled) return;
+            if (settled) {
+                req.result.close();
+                return;
+            }
             settled = true;
             window.clearTimeout(timer);
             const db = req.result;
@@ -623,6 +626,12 @@ export function stripContent(c: Chunk): ChunkMeta {
 
 export class IndexStore {
     private db: IDBDatabase | null = null;
+    // Coalesce overlapping ensureOpen() so two callers after close() don't each
+    // open() — last assignment would win and the other IDBDatabase would leak.
+    private openInFlight: Promise<void> | null = null;
+    // Bumped by close() so an in-flight open() can tell the handle was disposed
+    // while it awaited indexedDB.open, and close that extra connection.
+    private openGeneration = 0;
     // Inventory/status surfaces can ask for the same four counts concurrently.
     // Coalesce them onto one readonly transaction so a stalled backing store
     // cannot accumulate an unbounded graph of IDBTransaction/IDBRequest objects.
@@ -650,20 +659,42 @@ export class IndexStore {
 
     /** Reopen using the last resolved vault scope when the connection was dropped. */
     async ensureOpen(): Promise<void> {
-        if (!this.db) await this.open();
+        if (this.db) return;
+        if (!this.openInFlight) {
+            this.openInFlight = this.open().finally(() => { this.openInFlight = null; });
+        }
+        await this.openInFlight;
+        if (this.db) return;
+        // close() raced the in-flight open; start a fresh one rather than
+        // returning with this.db still null.
+        if (!this.openInFlight) {
+            this.openInFlight = this.open().finally(() => { this.openInFlight = null; });
+        }
+        await this.openInFlight;
     }
 
     async open(scope?: string, dbPrefix: string = LEGACY_DB_NAME): Promise<void> {
         if (scope) this.configure(scope, dbPrefix);
         if (this.db && !scope) return;
-        this.db = await openDb(this._dbName);
+        const gen = this.openGeneration;
+        const opened = await openDb(this._dbName);
+        if (this.openGeneration !== gen) {
+            // close() ran while we awaited indexedDB.open — don't pin the handle.
+            opened.close();
+            return;
+        }
+        const previous = this.db;
+        this.db = opened;
+        if (previous && previous !== opened) {
+            // A concurrent open already assigned a handle; close the extra.
+            previous.close();
+        }
         // GAP-3: openDb's onversionchange closes the connection on a cross-window
         // schema upgrade but leaves this.db pointing at the now-closed handle, so
         // every later op throws an opaque InvalidStateError. Re-wire it to also drop
         // the reference → requireDb fails cleanly ("not opened"), and a later open()
         // can rebuild. (The IndexCoordinator mutex serializes Seek's OWN writes, not
         // another vault window's versionchange.)
-        const opened = this.db;
         opened.onversionchange = () => {
             console.warn('[seek] versionchange received — closing + dropping connection');
             opened.close();
@@ -678,6 +709,10 @@ export class IndexStore {
     }
 
     close(): void {
+        // Don't null openInFlight — that would not cancel the in-flight open, and
+        // a later ensureOpen must still join it. open() closes the handle if this
+        // generation no longer matches.
+        this.openGeneration++;
         this.db?.close();
         this.db = null;
         this.countInFlight = null;

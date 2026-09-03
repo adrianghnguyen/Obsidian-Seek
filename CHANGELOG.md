@@ -8,6 +8,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 - **Settings → Index "Embedder coverage by folder" collapses to top-level folders by default.** Nested folders stay hidden until you click a parent to unfold it; expand/collapse is remembered while Settings stays open (including across the live coverage poll).
 
 ### Fixed
+- **Cancelled searches actually stop.** Typing a new query (or closing the modal) now aborts after each pipeline wait — including lexical results while the model is still loading — instead of finishing BM25, body hydrate, and ranking in the background. Queued embed work is rejected when Seek unloads, instead of hanging.
+- **Reloading Seek during a full reindex no longer rebuilds a leftover embed runtime.** The post-index GPU-pool recycle bails if teardown already swapped the iframe, so a ~250 MB model load cannot start after disable/reload.
+- **Index open and sidecar rebuild no longer race themselves.** Concurrent database opens share one connection (a timed-out open closes its leftover handle). Wiping then restoring from the sidecar stays under one write lock, so a live edit cannot land on an empty index; a search during hydrate is not cached as the complete corpus.
+
 - **Background catch-up no longer locks Obsidian in a runaway retry loop.** Hidden desktop windows now drain with the intended desktop policy, no-progress work waits for a later trigger instead of retrying immediately, and concurrent index inventory checks share one IndexedDB transaction.
 
 ## 1.4.0
