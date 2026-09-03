@@ -2505,14 +2505,22 @@ export class SearchOrchestrator {
     // null when the sidecar is off. Idempotent: a warm index hydrates nothing.
     async hydrateSidecar(): Promise<HydrateResult | null> {
         if (!this.coord.sidecarOn()) return null;
-        // Was the index empty BEFORE this hydrate? Captured outside the mutex; a race
-        // that populates it concurrently only costs the identity stamp below (degrades
-        // to the un-stamped path), never correctness.
-        const wasEmpty = (await this.store.count()).chunks === 0;
         const result = await this.coord.runExclusive(() =>
-            hydrateFromSidecar(this.hydrateDepsGreedy()),
+            this.hydrateSidecarExclusive(),
         );
-        this._peerAhead = result.peerAhead; // refresh the "newer index exists" signal per scan
+        return this.afterHydrateExclusive(result);
+    }
+
+    // Hydrate body that assumes the write mutex is already held. Used by
+    // hydrateSidecar (which acquires the lock) and rebuildFromSidecar (which
+    // must clearAllStores + hydrate in ONE critical section — releasing
+    // between them left isWriting() false so flushDirty/full reindex could
+    // run against an empty store). Must NOT call runExclusive (FIFO deadlock).
+    private async hydrateSidecarExclusive(): Promise<HydrateResult> {
+        // Count inside the exclusive section (R3): a concurrent writer cannot
+        // populate the store between the empty check and hydrate.
+        const wasEmpty = (await this.store.count()).chunks === 0;
+        const result = await hydrateFromSidecar(this.hydrateDepsGreedy());
         // Stamp the build identity when hydrating onto a PREVIOUSLY-EMPTY index: every
         // chunk came from a metaAccepts-filtered (current-identity) producer, so the
         // index is provably at the current identity. This lets a hydrate-only device
@@ -2522,7 +2530,7 @@ export class SearchOrchestrator {
         // non-empty hydrate: that index may still hold stale orphans, and only a nuke
         // (or the Phase-3 subtractive hydrate) clears them — claiming current identity
         // there would mask them from the gate.
-        if (wasEmpty && result && result.hydrated > 0) {
+        if (wasEmpty && result.hydrated > 0) {
             const id = pluginIdentity();
             const m = await this.store.getMeta();
             await this.store.setMeta({ ...m, modelId: m.modelId ?? MODEL_ID, chunkerVersion: id.chunkerVersion, analyzerVersion: id.analyzerVersion, revision: id.revision });
@@ -2532,20 +2540,27 @@ export class SearchOrchestrator {
         // fill when absent — a local full reindex's stats describe THIS index more
         // faithfully and must win. Invalidate the cached accessor so the next
         // search re-reads.
-        if (result && result.bgMean != null && result.bgStd != null) {
+        if (result.bgMean != null && result.bgStd != null) {
             const m = await this.store.getMeta();
             if (m.bgMean == null) {
                 await this.store.setMeta({ ...m, bgMean: result.bgMean, bgStd: result.bgStd });
                 this.bgStatsGen = -1;
             }
         }
+        return result;
+    }
+
+    // peerAhead + cache drop/warm AFTER the exclusive section (warm is off-mutex
+    // by design). Shared by hydrateSidecar and rebuildFromSidecar.
+    private async afterHydrateExclusive(result: HydrateResult): Promise<HydrateResult> {
+        this._peerAhead = result.peerAhead; // refresh the "newer index exists" signal per scan
         // A hydrate is a store mutation: drop caches so the next search rebuilds
         // against the restored index (mirrors reindex/delta completion).
-        if (result && result.hydrated > 0) {
+        if (result.hydrated > 0) {
             this.invalidateBm25Cache();
             void this.warmCaches('hydrate');
             this.warnedStranded = false; // index is populated again — re-arm the empty-net warning
-        } else if (result) {
+        } else {
             // Restored nothing — if the index is also empty, search will silently
             // return no results. Surface that (the net-is-gone case).
             await this.warnIfIndexStranded(result);
@@ -2576,19 +2591,20 @@ export class SearchOrchestrator {
             // signals the caller to tell the user the sidecar hasn't synced yet.
             return { scanned: 0, needed: 0, hydrated: 0, skippedPartialNotes: 0, refusedProducers: 0, acceptedProducers: 0, peerAhead: false, hydratedNotePaths: [] };
         }
-        // 1. Nuke + reopen under the write mutex (mirrors reindexAllInner's reset) so a
-        //    delta/search can't race the close→delete→open window. modelId = the
-        //    canonical sidecar model (NOT embedder.modelId, which is '' on a cold
-        //    mobile embedder) so the rebuilt index's stamp matches the producer's.
-        await this.coord.runExclusive(async () => {
+        // Nuke + stamp + hydrate under ONE write mutex. Releasing between
+        // clearAllStores and hydrate left isWriting() false so flushDirty/full
+        // reindex could run against an empty store. hydrateSidecarExclusive
+        // must not call runExclusive (the FIFO lock would deadlock on itself).
+        const result = await this.coord.runExclusive(async () => {
             await this.store.clearAllStores();
             const id = pluginIdentity();
             await this.store.setMeta({ embeddingDim: EMBEDDING_DIM, lastIndexedAt: null, schemaVersion: META_SCHEMA_VERSION, modelId: MODEL_ID, chunkerVersion: id.chunkerVersion, analyzerVersion: id.analyzerVersion, revision: id.revision });
+            return this.hydrateSidecarExclusive();
         });
-        // 2. Drop every resident cache that referenced the nuked index, then hydrate
-        //    (its own write mutex; the now-empty store forces a full reconcile).
+        // Drop every resident cache that referenced the nuked index, then the
+        // post-mutex warm/peerAhead path (same as hydrateSidecar).
         this.invalidateBm25Cache();
-        return this.hydrateSidecar();
+        return this.afterHydrateExclusive(result);
     }
 
     // Does ANY other device have a sidecar in the index dir, regardless of its identity?
@@ -3625,6 +3641,7 @@ export class SearchOrchestrator {
 
         if (!frame) {
             const entry: SearchEntry = this.emptySearchEntry(query, cleanedQuery, filters, topK, searchId, idbReadMs, performance.now() - t0);
+            throwIfAborted();
             await this.appendSearchTelemetry(entry);
             return { results: [], entry };
         }
@@ -3674,6 +3691,7 @@ export class SearchOrchestrator {
             // Negation matches on body text, but the frame is metadata-only — so
             // fetch the corpus bodies on demand. Paid ONLY on a `-term` query.
             const bodyMap = await this.store.getBodiesMap(orderedIds);
+            throwIfAborted();
             const excludedNotes = excludedNotePaths(orderedChunks, filters.exclude, id => bodyMap.get(id));
             if (excludedNotes.size > 0) {
                 if (!mask) mask = new Array<boolean>(orderedChunks.length).fill(true);
@@ -3715,12 +3733,14 @@ export class SearchOrchestrator {
                 if (results.length >= topK) break;
             }
             await this.hydrateBodies(results);
+            throwIfAborted();
             const snippetChars = SNIPPET_PREVIEW_LIMITS[this.settings.snippetPreview].chars;
             for (const r of results) r.snippet = makeSnippet(r.content, [], snippetChars);
             const entry = this.emptySearchEntry(query, cleanedQuery, filters, topK, searchId, idbReadMs, performance.now() - t0);
             entry.totalChunks = orderedChunks.length;
             entry.candidateUnionSize = matchedChunks.length;
             entry.recencyCount = matchedChunks.length;
+            throwIfAborted();
             await this.appendSearchTelemetry(entry);
             return { results, entry };
         }
@@ -3763,6 +3783,9 @@ export class SearchOrchestrator {
             );
             return { ok: true, vector: queryVec, iframeLatencyMs: embedded.iframeLatencyMs, queryEmbedMs, embedRoute: embedded.embedRoute ?? 'iframe' };
         });
+        // If we abort after name/lexical partials, we throw before awaiting
+        // embedPromise — attach a handler so that rejection is not unhandled.
+        void embedPromise.catch(() => {});
 
         // ---- S0.6: name prefilter (early paint) -------------------------
         // Note-level basename/alias scan. O(files), not O(chunks). A confident
@@ -3790,6 +3813,7 @@ export class SearchOrchestrator {
                 };
             });
             await this.hydrateBodies(early);
+            throwIfAborted();
             const snippetChars = SNIPPET_PREVIEW_LIMITS[this.settings.snippetPreview].chars;
             const passageTerms = buildPassageTerms(cleanedQuery, () => 0);
             for (const r of early) r.snippet = makeSnippet(r.content, passageTerms, snippetChars);
@@ -3801,7 +3825,9 @@ export class SearchOrchestrator {
                 nameHitCount: nameHits.length,
                 cleanedQuery,
             });
+            throwIfAborted();
             await cheapYield();
+            throwIfAborted();
         }
 
         // ---- S1b: BM25 candidate-gen (cached) ---------------------------
@@ -3818,14 +3844,18 @@ export class SearchOrchestrator {
         if (!this.bm25CacheValid(orderedChunks)) {
             if (!(this.bm25Cache && this.coord.isWriting())) {
                 await this.tryLoadPersistedBm25(orderedChunks);
+                throwIfAborted();
                 if (!this.bm25CacheValid(orderedChunks)) {
                     await this.tryLoadCrossDeviceBm25(orderedChunks);
+                    throwIfAborted();
                 }
             }
         }
         const bm25CacheHit = await this.ensureBm25(orderedChunks);
+        throwIfAborted();
         if (!this.bm25Cache) {
             const entry = this.emptySearchEntry(query, cleanedQuery, filters, topK, searchId, idbReadMs, performance.now() - t0);
+            throwIfAborted();
             await this.appendSearchTelemetry(entry);
             return { results: [], entry };
         }
@@ -3840,6 +3870,7 @@ export class SearchOrchestrator {
         if (this.bm25Cache && !frameBm25Coherent(frame, this.bm25Cache)) {
             this.onCoherenceDrift('search');
             const entry = this.emptySearchEntry(query, cleanedQuery, filters, topK, searchId, idbReadMs, performance.now() - t0);
+            throwIfAborted();
             await this.appendSearchTelemetry(entry);
             return { results: [], entry };
         }
@@ -3917,6 +3948,7 @@ export class SearchOrchestrator {
                 const lexResults = dedupByPath(lexRanked, topK);
                 if (lexResults.length > 0) {
                     await this.hydrateBodies(lexResults);
+                    throwIfAborted();
                     const snippetChars = SNIPPET_PREVIEW_LIMITS[this.settings.snippetPreview].chars;
                     const passageTerms = buildPassageTerms(cleanedQuery, () => 0);
                     for (const r of lexResults) r.snippet = makeSnippet(r.content, passageTerms, snippetChars);
@@ -3926,6 +3958,7 @@ export class SearchOrchestrator {
                         source: 'lexical',
                         cleanedQuery,
                     });
+                    throwIfAborted();
                     lexPartialFired = true;
                 }
             }
@@ -3936,6 +3969,7 @@ export class SearchOrchestrator {
         // from embed's then() — await embed first so a non-finite/dim failure
         // does not wait on a scan that never started.
         const embedded = await embedPromise;
+        throwIfAborted();
         const queryEmbedMs = embedded.queryEmbedMs;
         const iframeEmbedMs = embedded.iframeLatencyMs;
         const embedRoute = embedded.embedRoute;
@@ -3954,11 +3988,13 @@ export class SearchOrchestrator {
                     ),
                 );
             }
+            throwIfAborted();
             const entry: SearchEntry = this.emptySearchEntry(query, cleanedQuery, filters, topK, searchId, idbReadMs, performance.now() - t0);
             entry.nameMatchMs = parseFloat(nameMatchMs.toFixed(2));
             entry.nameHitCount = nameHits.length;
             entry.nameEarlyPainted = nameEarlyPainted;
             entry.namePartialMs = parseFloat(namePartialMs.toFixed(2));
+            throwIfAborted();
             await this.appendSearchTelemetry(entry);
             return { results: [], entry };
         }
@@ -3967,6 +4003,7 @@ export class SearchOrchestrator {
         // Await the (possibly off-thread) binary candidates. binaryMs spans
         // dispatch→await (overlap with leftover BM25 included), not raw scan cost.
         const binaryTopIdx = binaryPromise ? await binaryPromise : [];
+        throwIfAborted();
         const binaryMs = binaryStart > 0 ? performance.now() - binaryStart : 0;
 
         // ---- S1 union ---------------------------------------------------
@@ -4001,6 +4038,7 @@ export class SearchOrchestrator {
         } else {
             const candidateIds = candidateIndices.map(i => orderedIds[i]);
             fp32Maybe = await this.store.getEmbeddingsByIds(candidateIds);
+            throwIfAborted();
         }
         const selectFetchMs = performance.now() - fetchStart;
 
@@ -4086,6 +4124,7 @@ export class SearchOrchestrator {
         // Frame-lite: rank() set content to the '' placeholder; fetch the ≤topK
         // bodies now so snippets (and the modal's click-time highlight) have text.
         await this.hydrateBodies(results);
+        throwIfAborted();
 
         // Display-only confidence: each result's raw cosine expressed relative to
         // this corpus's dense background (read once per generation; absent on a
@@ -4094,6 +4133,7 @@ export class SearchOrchestrator {
         // above — rankedPool was already final. Independent of hydrateBodies (it
         // reads denseRaw, a ranking signal, not the body).
         const bgStats = await this.getDenseBgStats();
+        throwIfAborted();
         if (bgStats) {
             for (const r of results) {
                 r.ranking_signals.confidence = calibratedConfidence(
@@ -4188,6 +4228,7 @@ export class SearchOrchestrator {
             bm25Bound: parseFloat(bm25Bound.toFixed(4)),
             searchId,
         };
+        throwIfAborted();
         await this.appendSearchTelemetry(entry);
 
         // Catch-up is deliberately NOT triggered here. Firing a foreground embed
@@ -4433,7 +4474,7 @@ export class SearchOrchestrator {
         // misses the (now stale-gen) cache, and rebuilds; bounded by the rare
         // completion bump, so it converges in one extra pass.
         if (shouldDiscardPartialFrame(buildGeneration, this.coord.generation)) return this.ensureFrame();
-        this.frameCache = {
+        const assembled: ResidentFrame = {
             orderedChunks, orderedIds, activePacked, bytesPerVec,
             residentInt8: resident ? resident.int8 : null,
             residentScales: resident ? resident.scales : null,
@@ -4448,6 +4489,15 @@ export class SearchOrchestrator {
             // this.coord.generation here by the re-check guard, but explicit.
             generation: buildGeneration,
         };
+        // Writer still landing chunks (e.g. hydrate after onGoodEnough invalidated
+        // then continued putBatch without a generation bump). Serve this assembly
+        // for THIS call but do not pin it as frameCache — the next search rebuilds
+        // from IDB until the writer finishes. An already-cached frame is still
+        // served stale while isWriting() (early returns above).
+        if (this.coord.isWriting()) {
+            return assembled;
+        }
+        this.frameCache = assembled;
         return this.frameCache;
     }
 
@@ -4480,14 +4530,17 @@ export class SearchOrchestrator {
         this.synonymCache = null;
     }
 
-    private async ensureBm25(orderedChunks: ChunkMeta[]): Promise<boolean> {
+    private async ensureBm25(orderedChunks: ChunkMeta[], fromWarm = false): Promise<boolean> {
         let hit = this.bm25CacheValid(orderedChunks);
         if (!hit) {
-            // A warmCaches fit is already in flight — do not start a second
-            // getBodiesMap/fit (that hung seek:search 20s+). Also do not await
-            // the warm here: pre-catchup fit is 15–20s and would miss G_catchup_ux.
-            // Serve empty until warm stamps bm25Cache; the next keystroke hits.
-            if (this.warmPromise && !this.warming) {
+            // A warmCaches fit is in flight (warming) or a search is joining that
+            // fit (warmPromise still set). Do not start a second getBodiesMap/fit
+            // from the search path — during the fit `warming === true`, so the old
+            // `&& !this.warming` gate let search start a duplicate fit. runWarmCaches
+            // passes fromWarm so ITS call is the one fit. Also do not await the warm
+            // here: pre-catchup fit is 15–20s and would miss G_catchup_ux.
+            // Return whether the cache is already valid (false until warm stamps).
+            if (this.warmPromise && !fromWarm) {
                 return this.bm25CacheValid(orderedChunks);
             }
             // Writer holds the IDB lock (or no resident BM25 yet): never start
@@ -4871,7 +4924,7 @@ export class SearchOrchestrator {
                     await this.tryLoadPersistedBm25(frame.orderedChunks);
                 }
                 if (!this.bm25CacheValid(frame.orderedChunks) && !this.coord.isWriting()) {
-                    await this.ensureBm25(frame.orderedChunks);
+                    await this.ensureBm25(frame.orderedChunks, true);
                 }
                 warmedChunks = frame.orderedChunks;
                 if (singlePass) break;
@@ -4993,19 +5046,29 @@ export class SearchOrchestrator {
         query: string,
         topK = 10,
         onPartial?: (partial: SearchPartial) => void | Promise<void>,
+        signal?: AbortSignal,
     ): Promise<{ results: ScoredChunk[] }> {
+        const throwIfAborted = (): void => {
+            if (signal?.aborted) {
+                throw Object.assign(new Error('Query superseded'), { name: 'AbortError', code: 'ABORTED' });
+            }
+        };
+        throwIfAborted();
         const t0 = performance.now();
         const cleanedQuery = parseQuery(query, this.buildFilterContext()).cleanedQuery;
         if (!cleanedQuery.trim()) return { results: [] };
 
         const frame = await this.ensureFrame({ skipResidentInt8: true });
+        throwIfAborted();
         if (!frame || frame.orderedChunks.length === 0) return { results: [] };
 
         const orderedChunks = frame.orderedChunks;
         if (!this.bm25CacheValid(orderedChunks)) {
             await this.tryLoadPersistedBm25(orderedChunks);
+            throwIfAborted();
         }
         const bm25CacheHit = await this.ensureBm25(orderedChunks);
+        throwIfAborted();
         if (!this.bm25Cache) return { results: [] };
         if (!frameBm25Coherent(frame, this.bm25Cache)) return { results: [] };
 
@@ -5035,11 +5098,13 @@ export class SearchOrchestrator {
                     };
                 });
                 await this.hydrateBodies(early);
+                throwIfAborted();
                 const snippetChars = SNIPPET_PREVIEW_LIMITS[this.settings.snippetPreview].chars;
                 const passageTerms = buildPassageTerms(cleanedQuery, () => 0);
                 for (const r of early) r.snippet = makeSnippet(r.content, passageTerms, snippetChars);
                 nameEarlyPainted = true;
                 await onPartial({ results: early, source: 'name', nameHitCount: nameHits.length, cleanedQuery });
+                throwIfAborted();
             }
         }
 
@@ -5070,12 +5135,14 @@ export class SearchOrchestrator {
         for (const r of lexRanked) r.lexicalOnly = true;
         const results = dedupByPath(lexRanked, topK);
         await this.hydrateBodies(results);
+        throwIfAborted();
         const snippetChars = SNIPPET_PREVIEW_LIMITS[this.settings.snippetPreview].chars;
         const passageTerms = buildPassageTerms(cleanedQuery, () => 0);
         for (const r of results) r.snippet = makeSnippet(r.content, passageTerms, snippetChars);
 
         if (onPartial && !nameEarlyPainted) {
             await onPartial({ results, source: 'lexical', cleanedQuery });
+            throwIfAborted();
         }
 
         return { results };

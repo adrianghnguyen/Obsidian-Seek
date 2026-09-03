@@ -776,106 +776,118 @@ export class SeekSearchModal extends Modal {
     private async runSearch(query: string): Promise<void> {
         const id = ++this.currentSearch;
 
+        // Abort previous query before the lexical cold path so cancelled
+        // keystrokes don't keep running MiniSearch/hydrate while the model loads.
+        const controller = new AbortController();
+        this.activeSearchAbort?.abort();
+        this.activeSearchAbort = controller;
+
         // Reset the pipeline stage machine — the search id check below guards
         // against stale advancement from a superseded search.
         this.advancePipeline({ type: 'query' });
 
-        // Cold-start gate: emit BM25 lexical results immediately if the BM25
-        // cache is available, then upgrade to hybrid results when the model loads.
-        // This provides useful results even before the embedding model is ready.
-        if (!this.modelReady) {
-            if (this.modelLoadError) {
-                this.renderStatus(`Model load failed: ${this.modelLoadError.message}`);
-                return;
-            }
-
-            // Serve lexical results while the model loads. searchLexicalOnly
-            // builds the frame + BM25 lazily on first use, so this works even
-            // when the startup cache warm hasn't landed yet — during catch-up
-            // ensureFrame serves a briefly-stale frame, which is exactly the
-            // useful-early-results trade the progressive ladder is for.
-            // Warming may also be skipped by an active full rebuild — the
-            // footer already shows Indexing, and the modal's 750 ms poll
-            // re-runs the query when coverage arrives.
-            await this.orchestrator.searchLexicalOnly(
-                query,
-                MAX_RESULTS,
-                (partial: SearchPartial) => {
-                    if (id !== this.currentSearch || this.closed) return;
-                    this.earlyCleanedQuery = partial.cleanedQuery;
-                    this.latestResultsShown = partial.results;
-                    this.renderResults(partial.results);
-                    // Lexical rows on the cold path are provisional — explain
-                    // that above the list until the hybrid upgrade replaces them.
-                    if (partial.results.length > 0) this.paintWarmupHint();
-                    this.advancePipeline({ type: SeekSearchModal.partialSourceEvent(partial.source) });
-                },
-            );
-            if (id !== this.currentSearch || this.closed) return;
-            // Empty lexical page + no model yet: the index itself is still
-            // warming (cold build / restoring). A wait state keeps its
-            // informative card; otherwise say the model is loading instead of
-            // leaving "No notes match." while hybrid search is still ahead.
-            if (this.currentResults.length === 0 && !this.latestSearchEntry
-                && !isIndexWaitKind(this.currentLoadSpec().kind)) {
-                this.renderStatus('Loading model… your query will run as soon as it’s ready.');
-            }
-            try {
-                await this.modelReadyPromise;
-            } catch (e) {
-                if (id !== this.currentSearch || this.closed) return;
-                this.renderStatus(`Model load failed: ${e instanceof Error ? e.message : String(e)}`);
-                return;
-            }
-            // Bail if a newer query superseded us during load OR the modal was
-            // closed while we waited — either way there's nothing left to paint.
-            if (id !== this.currentSearch || this.closed) return;
-            this.modelReady = true;
-        }
-
-        const controller = new AbortController();
-        this.activeSearchAbort?.abort();
-        this.activeSearchAbort = controller;
-        this.beginInFlight();
-        this.searchLatencyStartMs = performance.now();
-        this.searchLatencyRecordedFor = 0;
         try {
-            this.setSearching();
-            this.earlyCleanedQuery = '';
-            const { results, entry } = await this.orchestrator.search(
-                query,
-                MAX_RESULTS,
-                undefined,
-                (partial: SearchPartial) => {
+            // Cold-start gate: emit BM25 lexical results immediately if the BM25
+            // cache is available, then upgrade to hybrid results when the model loads.
+            // This provides useful results even before the embedding model is ready.
+            if (!this.modelReady) {
+                if (this.modelLoadError) {
+                    this.renderStatus(`Model load failed: ${this.modelLoadError.message}`);
+                    return;
+                }
+
+                // Serve lexical results while the model loads. searchLexicalOnly
+                // builds the frame + BM25 lazily on first use, so this works even
+                // when the startup cache warm hasn't landed yet — during catch-up
+                // ensureFrame serves a briefly-stale frame, which is exactly the
+                // useful-early-results trade the progressive ladder is for.
+                // Warming may also be skipped by an active full rebuild — the
+                // footer already shows Indexing, and the modal's 750 ms poll
+                // re-runs the query when coverage arrives.
+                try {
+                    await this.orchestrator.searchLexicalOnly(
+                        query,
+                        MAX_RESULTS,
+                        (partial: SearchPartial) => {
+                            if (id !== this.currentSearch || this.closed) return;
+                            this.earlyCleanedQuery = partial.cleanedQuery;
+                            this.latestResultsShown = partial.results;
+                            this.renderResults(partial.results);
+                            // Lexical rows on the cold path are provisional — explain
+                            // that above the list until the hybrid upgrade replaces them.
+                            if (partial.results.length > 0) this.paintWarmupHint();
+                            this.advancePipeline({ type: SeekSearchModal.partialSourceEvent(partial.source) });
+                        },
+                        controller.signal,
+                    );
+                } catch (e) {
+                    if (e instanceof Error && e.name === 'AbortError') return;
+                    throw e;
+                }
+                if (id !== this.currentSearch || this.closed) return;
+                // Empty lexical page + no model yet: the index itself is still
+                // warming (cold build / restoring). A wait state keeps its
+                // informative card; otherwise say the model is loading instead of
+                // leaving "No notes match." while hybrid search is still ahead.
+                if (this.currentResults.length === 0 && !this.latestSearchEntry
+                    && !isIndexWaitKind(this.currentLoadSpec().kind)) {
+                    this.renderStatus('Loading model… your query will run as soon as it’s ready.');
+                }
+                try {
+                    await this.modelReadyPromise;
+                } catch (e) {
                     if (id !== this.currentSearch || this.closed) return;
-                    this.earlyCleanedQuery = partial.cleanedQuery;
-                    this.latestResultsShown = partial.results;
-                    this.renderResults(partial.results);
-                    this.advancePipeline({ type: SeekSearchModal.partialSourceEvent(partial.source) });
-                    this.maybeRecordSearchLatency(id, query, partial.results);
-                },
-                controller.signal,
-            );
-            // Stale (a newer query landed) or the modal closed mid-search — in
-            // the closed case `renderResults` would otherwise paint into
-            // detached DOM and (via updateSentinel) spin up a fresh
-            // IntersectionObserver that onClose already ran and will never
-            // disconnect.
-            if (id !== this.currentSearch || this.closed) return;
-            this.earlyCleanedQuery = '';
-            this.latestSearchEntry = entry;
-            this.latestResultsShown = results;
-            this.latestSearchCompletedAt = performance.now();
-            this.renderResults(results);
-            this.advancePipeline({ type: 'final' });
-            this.maybeRecordSearchLatency(id, query, results);
-        } catch (e) {
-            if (e instanceof Error && e.name === 'AbortError') return;
-            if (id !== this.currentSearch || this.closed) return;
-            this.renderStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
+                    this.renderStatus(`Model load failed: ${e instanceof Error ? e.message : String(e)}`);
+                    return;
+                }
+                // Bail if a newer query superseded us during load OR the modal was
+                // closed while we waited — either way there's nothing left to paint.
+                if (id !== this.currentSearch || this.closed) return;
+                this.modelReady = true;
+            }
+
+            this.beginInFlight();
+            this.searchLatencyStartMs = performance.now();
+            this.searchLatencyRecordedFor = 0;
+            try {
+                this.setSearching();
+                this.earlyCleanedQuery = '';
+                const { results, entry } = await this.orchestrator.search(
+                    query,
+                    MAX_RESULTS,
+                    undefined,
+                    (partial: SearchPartial) => {
+                        if (id !== this.currentSearch || this.closed) return;
+                        this.earlyCleanedQuery = partial.cleanedQuery;
+                        this.latestResultsShown = partial.results;
+                        this.renderResults(partial.results);
+                        this.advancePipeline({ type: SeekSearchModal.partialSourceEvent(partial.source) });
+                        this.maybeRecordSearchLatency(id, query, partial.results);
+                    },
+                    controller.signal,
+                );
+                // Stale (a newer query landed) or the modal closed mid-search — in
+                // the closed case `renderResults` would otherwise paint into
+                // detached DOM and (via updateSentinel) spin up a fresh
+                // IntersectionObserver that onClose already ran and will never
+                // disconnect.
+                if (id !== this.currentSearch || this.closed) return;
+                this.earlyCleanedQuery = '';
+                this.latestSearchEntry = entry;
+                this.latestResultsShown = results;
+                this.latestSearchCompletedAt = performance.now();
+                this.renderResults(results);
+                this.advancePipeline({ type: 'final' });
+                this.maybeRecordSearchLatency(id, query, results);
+            } catch (e) {
+                if (e instanceof Error && e.name === 'AbortError') return;
+                if (id !== this.currentSearch || this.closed) return;
+                this.renderStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
+            } finally {
+                this.endInFlight();
+            }
         } finally {
             if (this.activeSearchAbort === controller) this.activeSearchAbort = null;
-            this.endInFlight();
         }
     }
 

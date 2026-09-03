@@ -151,6 +151,45 @@ function fakeRecycleRunnerGatedInit() {
     };
 }
 
+// Recycle vs teardown: dispose() holds a deferred promise so the test can
+// swap this.runner (teardown) while recycle is still awaiting dispose.
+function fakeRecycleRunnerDeferredDispose() {
+    let initCalls = 0;
+    let loadCalls = 0;
+    let disposeCalls = 0;
+    let live = true;
+    let releaseDispose!: () => void;
+    const disposeGate = new Promise<void>((res) => { releaseDispose = res; });
+    return {
+        initCalls: () => initCalls,
+        loadCalls: () => loadCalls,
+        disposeCalls: () => disposeCalls,
+        releaseDispose: () => releaseDispose(),
+        dispose: () => {
+            disposeCalls++;
+            live = false;
+            return disposeGate;
+        },
+        init: async () => {
+            initCalls++;
+            live = true;
+            return {
+                buildTimestamp: 't', cdnUrl: 'c', transformersVersion: '4.2.0',
+                ready: true, error: null, initMs: 1,
+            };
+        },
+        load: async () => {
+            if (!live) throw new Error('iframe not initialized');
+            loadCalls++;
+            return {
+                device: 'wasm', dtype: 'q4', coldStartMs: 1,
+                warmupMs: null, warmupSkipped: false,
+                webgpuAttempted: false, webgpuError: null, glue: null,
+            };
+        },
+    };
+}
+
 describe('iframe init coalescing (startup deferral)', () => {
     it('a load() fired before init resolves WAITS for it (no \'iframe not initialized\')', async () => {
         const { e, fr } = mkLoad();
@@ -362,6 +401,48 @@ describe('load single-flight + recycle memo (F4 / ADJ-1)', () => {
         (e as unknown as { _loaded: boolean })._loaded = false;
         await expect(e.embed('x')).rejects.toThrow(/Model not loaded/);
     });
+
+    it('recycle() bails when teardown swaps the runner mid-dispose (no init on the replacement)', async () => {
+        const e = new LocalEmbedder();
+        const fr = fakeRecycleRunnerDeferredDispose();
+        (e as unknown as { runner: unknown }).runner = fr;
+        (e as unknown as { _loaded: boolean })._loaded = true;
+
+        const recycleP = e.recycle();
+        while (fr.disposeCalls() < 1) await Promise.resolve();
+
+        // plugin:reload / idle-unload / Delete-model during recycle's dispose await
+        e.teardown();
+        const replacement = (e as unknown as { runner: { init: () => Promise<unknown> } }).runner;
+        let replacementInitCalls = 0;
+        const origInit = replacement.init.bind(replacement);
+        replacement.init = async () => {
+            replacementInitCalls++;
+            return origInit();
+        };
+
+        expect((e as unknown as { _initPromise: unknown })._initPromise).toBeNull();
+        expect((e as unknown as { _loadPromise: unknown })._loadPromise).toBeNull();
+
+        fr.releaseDispose();
+        await recycleP;
+
+        expect(fr.initCalls()).toBe(0);            // original runner not rebuilt
+        expect(fr.loadCalls()).toBe(0);
+        expect(replacementInitCalls).toBe(0);      // replacement not inited either
+        expect((e as unknown as { _initPromise: unknown })._initPromise).toBeNull();
+        expect((e as unknown as { _loadPromise: unknown })._loadPromise).toBeNull();
+        expect((e as unknown as { _loaded: boolean })._loaded).toBe(false);
+
+        // Idle-unload contract: a later load() on a fresh runner still works
+        // (no sticky "never recycle/load again" latch).
+        const next = fakeInitRunner();
+        (e as unknown as { runner: unknown }).runner = next;
+        next.releaseInit();
+        await e.load('wasm', 'q4');
+        expect(next.initCalls()).toBe(1);
+        expect(next.loadCalls()).toBe(1);
+    });
 });
 
 describe('query-embed LRU cache', () => {
@@ -413,5 +494,60 @@ describe('query-embed LRU cache', () => {
 
         expect((await e.embed('q1')).cacheHit).toBe(false);   // q1 was evicted
         expect((await e.embed('q0')).cacheHit).toBe(true);    // q0 survived via recency
+    });
+
+    it('aborted iframe embed does not enter the LRU after the runner returns', async () => {
+        const e = new LocalEmbedder();
+        let resolveEmbed!: (v: { vector: Float32Array; latencyMs: number }) => void;
+        const gate = new Promise<{ vector: Float32Array; latencyMs: number }>((res) => { resolveEmbed = res; });
+        const fr = {
+            embed: async (_text: string, _signal?: AbortSignal) => gate,
+        };
+        (e as unknown as { runner: unknown }).runner = fr;
+        (e as unknown as { _loaded: boolean })._loaded = true;
+
+        const controller = new AbortController();
+        const embedP = e.embed('late abort', controller.signal);
+        controller.abort();
+        resolveEmbed({ vector: new Float32Array([1, 2, 3, 4]), latencyMs: 5 });
+
+        await expect(embedP).rejects.toMatchObject({ name: 'AbortError' });
+        const cache = (e as unknown as { queryEmbedCache: Map<string, Float32Array> }).queryEmbedCache;
+        expect(cache.has('late abort')).toBe(false);
+    });
+
+    it('aborted worker-route embed does not enter the LRU', async () => {
+        const prev = (window as unknown as { localStorage?: unknown }).localStorage;
+        const store: Record<string, string> = { 'seek-worker-embed-route': '1' };
+        (window as unknown as { localStorage: unknown }).localStorage = {
+            getItem: (k: string) => (k in store ? store[k] : null),
+            setItem: (k: string, v: string) => { store[k] = String(v); },
+            removeItem: (k: string) => { delete store[k]; },
+            clear: () => { for (const k of Object.keys(store)) delete store[k]; },
+        };
+        try {
+            const e = new LocalEmbedder();
+            let resolveEmbed!: (v: { vector: Float32Array; latencyMs: number }) => void;
+            const gate = new Promise<{ vector: Float32Array; latencyMs: number }>((res) => { resolveEmbed = res; });
+            const fr = {
+                workerEmbed: async (_text: string, _signal?: AbortSignal) => gate,
+                embed: async () => { throw new Error('iframe path must not run'); },
+            };
+            (e as unknown as { runner: unknown }).runner = fr;
+            (e as unknown as { _loaded: boolean })._loaded = true;
+
+            const controller = new AbortController();
+            const embedP = e.embed('worker query', controller.signal);
+            controller.abort();
+            resolveEmbed({ vector: new Float32Array([1, 2, 3, 4]), latencyMs: 5 });
+
+            await expect(embedP).rejects.toMatchObject({ name: 'AbortError' });
+            const cache = (e as unknown as { queryEmbedCache: Map<string, Float32Array> }).queryEmbedCache;
+            expect(cache.has('worker query')).toBe(false);
+            // Abort is not a worker failure — the route stays enabled.
+            expect((e as unknown as { workerRouteDisabled: boolean }).workerRouteDisabled).toBe(false);
+        } finally {
+            (window as unknown as { localStorage?: unknown }).localStorage = prev;
+        }
     });
 });

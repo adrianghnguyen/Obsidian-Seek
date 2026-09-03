@@ -206,6 +206,36 @@ describe('IframeRunner query-priority RPC queue (G_catchup_ux)', () => {
     });
 });
 
+describe('IframeRunner queued RPC rejection (R8)', () => {
+    it('dispose rejects a queued embed with DISPOSED (does not hang)', async () => {
+        const r = withDeadIframe();
+        const inflight = r.embedBatch(['hello']);
+        const queued = r.embed('query');
+        expect((r as unknown as { queryRpcQueue: unknown[] }).queryRpcQueue).toHaveLength(1);
+
+        const disposeP = r.dispose();
+        await expect(queued).rejects.toMatchObject({ code: 'DISPOSED', message: 'iframe disposed' });
+        await expect(inflight).rejects.toMatchObject({ code: 'DISPOSED' });
+        await disposeP;
+    });
+
+    it('failInflight rejects a queued embed with the recoverable message, not DISPOSED', async () => {
+        const r = withDeadIframe();
+        const inflight = r.embedBatch(['hello']);
+        const queued = r.embed('query');
+        expect((r as unknown as { queryRpcQueue: unknown[] }).queryRpcQueue).toHaveLength(1);
+
+        r.failInflight('webgpu device lost');
+        const queuedErr = await queued.then(
+            () => { throw new Error('queued embed should have rejected'); },
+            (e: Error & { code?: string }) => e,
+        );
+        expect(queuedErr.message).toBe('webgpu device lost');
+        expect(queuedErr.code).not.toBe('DISPOSED');
+        await expect(inflight).rejects.toThrow('webgpu device lost');
+    });
+});
+
 describe('IframeRunner per-RPC timeout (F5)', () => {
     it('rejects a never-answered embedBatch with a recoverable TIMEOUT error', async () => {
         vi.useFakeTimers();
