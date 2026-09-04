@@ -232,11 +232,11 @@ export function formatBootAge(atMs: number, nowMs = Date.now()): string {
 /** One-line summary for a stored boot in the Settings history list. */
 export function formatStoredBootLine(boot: StoredStartupBoot): string {
     if (boot.readyFromStartMs == null) return '—';
-    const ready = fmtLatency(boot.readyFromStartMs);
-    if (boot.warmSkipped) return `${ready} ready · warm skipped`;
     const searchable = boot.searchableMs != null ? fmtLatency(boot.searchableMs) : '—';
+    const ready = fmtLatency(boot.readyFromStartMs);
+    if (boot.warmSkipped) return `${searchable} searchable · warm skipped · ${ready} ready`;
     const warm = boot.warmPhaseMs != null ? fmtLatency(boot.warmPhaseMs) : '—';
-    return `${ready} ready · ${searchable} searchable · ${warm} warm`;
+    return `${searchable} searchable · ${warm} warm · ${ready} ready`;
 }
 
 function isStoredBoot(v: unknown): v is StoredStartupBoot {

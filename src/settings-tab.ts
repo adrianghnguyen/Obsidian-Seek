@@ -829,7 +829,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         }
         block.createDiv({
             cls: 'seek-progressive-desc',
-            text: 'Seek streams results through these stages as they become available. Each stage replaces the previous one in-place, so you always see the best results so far. On a fresh start, name match and lexical BM25 read your notes on disk — they do not wait for the search-index cache — and semantic ranking joins once the model and caches are ready.',
+            text: 'Seek streams results through these stages as they become available. When "Search progression stages" is enabled under Display settings, all three stages are shown in the search modal footer and highlight progressively as each step completes. Each stage replaces the previous one in-place, so you always see the best results so far. On a fresh start, name match and lexical BM25 read your notes on disk — they do not wait for the search-index cache — and semantic ranking joins once the model and caches are ready.',
         });
     }
 
@@ -926,6 +926,11 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             .setName('Keyboard hints bar')
             .setDesc('Displays a keyboard hint bar under results in the results modal.')
             .addToggle(t => t.setValue(this.s.showHotkeyHints).onChange(async v => { this.s.showHotkeyHints = v; await this.save(); }));
+
+        new Setting(containerEl)
+            .setName('Search progression stages')
+            .setDesc('Displays the 3-stage search pipeline (Name match → Lexical BM25 → Hybrid semantic) in the modal footer bar.')
+            .addToggle(t => t.setValue(this.s.showSearchStages).onChange(async v => { this.s.showSearchStages = v; await this.save(); }));
 
         const widthLabels: Record<SearchModalWidth, string> = {
             default: 'Default (640px)',

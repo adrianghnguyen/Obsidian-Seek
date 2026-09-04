@@ -44,6 +44,7 @@ import {
     nextPipelineStage,
     initialPipelineStageState,
     PIPELINE_STAGE_ORDER,
+    type PipelineStageId,
 } from './pipeline-stage';
 import type { PipelineStages, PipelineStageEvent } from './pipeline-stage';
 
@@ -233,6 +234,8 @@ export class SeekSearchModal extends Modal {
     // onPartial event. Reset on a new query, cleared on close/error.
     private pipelineStages: PipelineStages = initialPipelineStageState();
     private pipeStageEl: HTMLElement | null = null;
+    private pipeStageEls: Map<PipelineStageId, HTMLElement> = new Map();
+    private pipeStageArrowEls: HTMLElement[] = [];
     // The currently displayed, ordered results — the array the keyboard model
     // indexes into via `selectedIndex`.
     private currentResults: ScoredChunk[] = [];
@@ -590,6 +593,11 @@ export class SeekSearchModal extends Modal {
     private buildFooter(parent: HTMLElement): void {
         const foot = parent.createDiv({ cls: 'seek-foot' });
         const kbd = (g: HTMLElement, key: string) => g.createEl('kbd', { text: key });
+        if (this.settings.showSearchStages) {
+            this.pipeStageEl = foot.createSpan({ cls: 'seek-pipe-run' });
+            this.buildPipelineStages();
+            this.syncPipelineStages();
+        }
         if (this.settings.showHotkeyHints) {
             const hints = foot.createDiv({ cls: 'seek-foot-hints' });
             const grp = (build: (g: HTMLElement) => void): void => {
@@ -622,8 +630,6 @@ export class SeekSearchModal extends Modal {
             });
         }
         const closeGrp = foot.createSpan({ cls: 'seek-foot-grp seek-foot-close' });
-        this.pipeStageEl = closeGrp.createSpan({ cls: 'seek-pipe-run' });
-        this.syncPipelineStages();
         this.footStatusEl = closeGrp.createSpan({ cls: 'seek-foot-status' });
         this.footStatusEl.setAttr('role', 'status');
         this.footStatusIconEl = this.footStatusEl.createSpan({ cls: 'seek-foot-status-icon' });
@@ -632,34 +638,69 @@ export class SeekSearchModal extends Modal {
         closeGrp.createSpan({ text: ' close' });
     }
 
-    // Paint the pipeline stage labels into the footer. Each stage shows as a
-    // short text label; active is bold + accent, done is dimmed, pending is
-    // hidden. Arrows between them. The whole group collapses when idle or
-    // all-done so the footer stays clean at rest.
-    private syncPipelineStages(): void {
+    // Build the persistent pipeline stage labels and arrows in the footer once.
+    // The three progressive stages remain permanently rendered in the DOM so
+    // there is zero layout flicker when searching.
+    private buildPipelineStages(): void {
         if (!this.pipeStageEl) return;
-        const st = this.pipelineStages;
-        const allDone = st.name === 'done' && st.lexical === 'done' && st.hybrid === 'done';
-        const idle = st.name === 'pending' && st.lexical === 'pending' && st.hybrid === 'pending';
         this.pipeStageEl.empty();
-        if (allDone || idle) {
-            this.pipeStageEl.style.display = 'none';
-            return;
-        }
-        this.pipeStageEl.style.display = '';
-        const labelMap: Record<string, string> = {
+        this.pipeStageEls.clear();
+        this.pipeStageArrowEls = [];
+        const labelMap: Record<PipelineStageId, string> = {
             name: 'Name match', lexical: 'Lexical BM25', hybrid: 'Hybrid semantic',
         };
         for (let i = 0; i < PIPELINE_STAGE_ORDER.length; i++) {
             const id = PIPELINE_STAGE_ORDER[i];
-            const phase = st[id];
-            const span = this.pipeStageEl.createSpan({ cls: 'seek-pipe-stage' });
-            if (phase === 'active') span.addClass('is-active');
-            else if (phase === 'done') span.addClass('is-done');
-            else span.addClass('is-pending');
-            span.setText(labelMap[id]);
+            const span = this.pipeStageEl.createSpan({ cls: 'seek-pipe-stage', text: labelMap[id] });
+            this.pipeStageEls.set(id, span);
             if (i < PIPELINE_STAGE_ORDER.length - 1) {
-                this.pipeStageEl.createSpan({ cls: 'seek-pipe-stage-arrow', text: '→' });
+                const arrow = this.pipeStageEl.createSpan({ cls: 'seek-pipe-stage-arrow', text: '→' });
+                this.pipeStageArrowEls.push(arrow);
+            }
+        }
+    }
+
+    // Paint the pipeline stage states into the footer. Each stage shows as a
+    // short text label; active is bold + accent, done is muted, pending/idle is
+    // faint. All three progressive stages remain permanently visible so the
+    // bar stays stable with no jarring pop-in or pop-out.
+    private syncPipelineStages(): void {
+        if (!this.pipeStageEl) return;
+        if (this.pipeStageEls.size === 0) {
+            this.buildPipelineStages();
+        }
+        const st = this.pipelineStages;
+        const idle = st.name === 'pending' && st.lexical === 'pending' && st.hybrid === 'pending';
+
+        for (let i = 0; i < PIPELINE_STAGE_ORDER.length; i++) {
+            const id = PIPELINE_STAGE_ORDER[i];
+            const span = this.pipeStageEls.get(id);
+            if (!span) continue;
+            const phase = st[id];
+            span.className = 'seek-pipe-stage';
+            if (idle) {
+                span.addClass('is-idle');
+            } else if (phase === 'active') {
+                span.addClass('is-active');
+            } else if (phase === 'done') {
+                span.addClass('is-done');
+            } else {
+                span.addClass('is-pending');
+            }
+        }
+
+        for (let i = 0; i < this.pipeStageArrowEls.length; i++) {
+            const arrow = this.pipeStageArrowEls[i];
+            arrow.className = 'seek-pipe-stage-arrow';
+            if (idle) {
+                arrow.addClass('is-idle');
+            } else {
+                const prevId = PIPELINE_STAGE_ORDER[i];
+                if (st[prevId] === 'done') {
+                    arrow.addClass('is-done');
+                } else {
+                    arrow.addClass('is-pending');
+                }
             }
         }
     }

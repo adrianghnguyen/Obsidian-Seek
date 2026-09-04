@@ -5,6 +5,7 @@
 // last boot's total plus a trend while this boot is still working). Status-bar
 // hover keeps calling renderIndexStatusCard without these.
 
+import { setIcon, setTooltip } from 'obsidian';
 import {
     buildStartupTimingRows,
     startupTrend,
@@ -50,9 +51,21 @@ export function renderSettingsIndexStatusCard(
         && opts.prevBoot && !opts.prevBoot.warmSkipped && opts.prevBoot.readyFromStartMs != null;
 
     const block = card.createDiv({ cls: 'seek-status-startup' });
-    block.createDiv({ cls: 'seek-status-startup-head', text: 'startup' });
+    const current = block.createDiv({ cls: 'seek-status-startup-current' });
+    const head = current.createDiv({ cls: 'seek-status-startup-head' });
+    head.createSpan({ text: 'startup' });
+    const info = head.createSpan({ cls: 'seek-status-startup-info' });
+    setIcon(info, 'info');
+    const tooltipText = [
+        'Startup stages:',
+        '• Searchable: Time until search is ready to accept queries',
+        '• Cache warm: Preloading index into memory for instant first query',
+        '• Fully ready: Total time until all startup initialization finishes',
+    ].join('\n');
+    info.setAttr('aria-label', tooltipText);
+    setTooltip(info, tooltipText);
 
-    const rows = block.createDiv({ cls: 'seek-status-startup-rows' });
+    const rows = current.createDiv({ cls: 'seek-status-startup-rows' });
     for (const row of buildStartupTimingRows(startup ?? {
         searchableMs: null,
         warmPhaseMs: null,
@@ -67,13 +80,13 @@ export function renderSettingsIndexStatusCard(
 
     const trend = startup ? startupTrend(startup, opts.prevBoot ?? null) : null;
     if (trend) {
-        const foot = block.createDiv({
+        const foot = current.createDiv({
             cls: `seek-status-startup-trend is-${trend.direction}`,
             text: trend.text,
         });
         foot.setAttr('aria-label', 'Fully ready time compared with the previous boot on this device');
     } else if (showTrendWhileWorking && opts.prevBoot?.readyFromStartMs != null) {
-        block.createDiv({
+        current.createDiv({
             cls: 'seek-status-startup-trend is-baseline',
             text: `last boot ${fmtLatency(opts.prevBoot.readyFromStartMs)}`,
         });

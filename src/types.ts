@@ -492,6 +492,11 @@ export interface SeekSettings {
     // modal opens.
     showHotkeyHints: boolean;
 
+    // Search progression stages indicator in modal footer. ON: show the 3-stage
+    // progression (Name match → Lexical BM25 → Hybrid semantic) in the search
+    // modal footer bar. OFF (default): hide the stage indicator.
+    showSearchStages: boolean;
+
     // Insert-link subpath from section hits (Alt+Enter / Alt+Shift+Enter / seek:insert-link).
     // ON: include #heading for section results ([[Note#Section|…]]). OFF (default): link to the
     // note only ([[Note|…]]). See insert-link.ts resolveInsertLinkSubpath.
@@ -628,6 +633,7 @@ export const DEFAULT_SETTINGS: SeekSettings = {
     verboseTrace: false,       // OFF: persist only the top-10 ranking trace per search (what the report shows); ON = full 50-deep tail for offline eval. Diagnostic-only, no UI
     redactReport: true,        // ON: salted tokens for paths/titles/queries in the generated report — the share-safe default for a file made to be pasted into a public issue; see field comment
     showHotkeyHints: true,     // ON: show the modal footer keyboard-hint bar + result counter; OFF = full-results-only modal
+    showSearchStages: false,   // OFF by default: show the 3-stage progression (Name match → Lexical BM25 → Hybrid semantic) in the modal footer bar; opt-in via Display settings
     insertLinkIncludeHeading: false, // OFF (default): note-only links; ON adds #heading for section hits
     showResultAliases: true,   // ON: show frontmatter aliases on result rows (truncated per resultAliasLimit)
     resultAliasLimit: 3,       // max aliases before "+N more"; 0 = show all

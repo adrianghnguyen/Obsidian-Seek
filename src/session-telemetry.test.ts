@@ -251,14 +251,24 @@ describe('stored boot formatting', () => {
         expect(formatBootAge(now - 120_000, now)).toBe('2m ago');
     });
 
-    it('formats a stored boot summary line', () => {
+    it('formats a stored boot summary line in searchable -> warm -> ready order', () => {
         expect(formatStoredBootLine({
             searchableMs: 8000,
             warmPhaseMs: 3400,
             readyFromStartMs: 11400,
             warmSkipped: false,
             at: 0,
-        })).toBe('11.4s ready · 8.0s searchable · 3.4s warm');
+        })).toBe('8.0s searchable · 3.4s warm · 11.4s ready');
+    });
+
+    it('formats a stored boot summary line when warm is skipped', () => {
+        expect(formatStoredBootLine({
+            searchableMs: 8000,
+            warmPhaseMs: null,
+            readyFromStartMs: 8000,
+            warmSkipped: true,
+            at: 0,
+        })).toBe('8.0s searchable · warm skipped · 8.0s ready');
     });
 });
 

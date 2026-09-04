@@ -969,23 +969,31 @@
 
 /* ---- Pipeline stage indicator (footer, between status and hints) ---- */
 
-/* The indicator only appears during an active search; when idle or done
-   the container is hidden entirely (the JS sets display:none). Same font
-   size as the footer hints so it blends. */
+/* The indicator is permanently visible in the footer bar so the user can
+   follow the 3-stage search progression (Name match → Lexical BM25 → Hybrid semantic)
+   without distracting layout shifts or pop-in/pop-out flickering. */
 .seek-pipe-run {
 	display: inline-flex;
 	align-items: center;
-	gap: 3px;
-	margin-right: 6px;
+	gap: 4px;
+	margin-right: 12px;
 	font-size: 10.5px;
 	font-weight: 500;
 	color: var(--text-muted);
 	white-space: nowrap;
+	flex-shrink: 0;
 }
 
 .seek-pipe-stage {
 	padding: 0 1px;
-	transition: color 80ms, font-weight 80ms;
+	transition: color 120ms ease, font-weight 120ms ease;
+}
+
+/* Idle and pending stages rest in a quiet faint tone. */
+.seek-pipe-stage.is-idle,
+.seek-pipe-stage.is-pending {
+	color: var(--text-faint);
+	font-weight: 500;
 }
 
 /* Active pipeline stage gets the theme accent + bold weight. */
@@ -994,20 +1002,23 @@
 	font-weight: 700;
 }
 
-/* Done stage is dimmed back to faint to de-emphasize it. */
+/* Done stage transitions to muted, indicating completion. */
 .seek-pipe-stage.is-done {
-	color: var(--text-faint);
-}
-
-/* Pending stage is hidden (visibility, not display, to keep layout stable). */
-.seek-pipe-stage.is-pending {
-	visibility: hidden;
+	color: var(--text-muted);
+	font-weight: 500;
 }
 
 /* Arrow between pipeline stage labels. */
 .seek-pipe-stage-arrow {
 	color: var(--text-faint);
 	font-size: 10.5px;
+	opacity: 0.7;
+	transition: color 120ms ease, opacity 120ms ease;
+}
+
+.seek-pipe-stage-arrow.is-done {
+	color: var(--text-muted);
+	opacity: 1;
 }
 
 /* Shed the pipeline indicator on very narrow modals. The container query
@@ -1214,12 +1225,43 @@
     margin-top: 4px;
     padding-top: 10px;
     border-top: 1px solid var(--background-modifier-border);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 24px;
+}
+.seek-settings .seek-status-startup-current {
+    flex: 0 0 auto;
+    min-width: 140px;
 }
 .seek-settings .seek-status-startup-head {
+    display: flex;
+    align-items: center;
+    gap: 5px;
     font-size: 11px;
     color: var(--text-muted);
     text-transform: lowercase;
     margin-bottom: 6px;
+}
+.seek-settings .seek-status-startup-info {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-faint);
+    cursor: help;
+    line-height: 1;
+}
+.seek-settings .seek-status-startup-info:hover {
+    color: var(--text-muted);
+}
+.seek-settings .seek-status-startup-info svg {
+    width: 12px;
+    height: 12px;
+    pointer-events: none;
+}
+.tooltip {
+    text-align: left;
+    white-space: pre-line;
 }
 .seek-settings .seek-status-startup-rows {
     display: flex;
@@ -1256,9 +1298,10 @@
     color: var(--text-faint);
 }
 .seek-settings .seek-status-startup-history {
-    margin-top: 8px;
-    padding-top: 8px;
-    border-top: 1px dashed var(--background-modifier-border);
+    flex: 1 1 280px;
+    min-width: 0;
+    padding-left: 20px;
+    border-left: 1px dashed var(--background-modifier-border);
 }
 .seek-settings .seek-status-startup-history-rows {
     display: flex;
@@ -1278,6 +1321,16 @@
 }
 .seek-settings .seek-status-startup-history-value {
     color: var(--text-muted);
+}
+@media (max-width: 540px) {
+    .seek-settings .seek-status-startup-history {
+        flex-basis: 100%;
+        padding-left: 0;
+        border-left: none;
+        border-top: 1px dashed var(--background-modifier-border);
+        padding-top: 8px;
+        margin-top: 4px;
+    }
 }
 
 /* ---- Exclusion-change backfill banner (Settings → Index) ---- */
