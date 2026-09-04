@@ -1,3 +1,34 @@
+/**
+ * @file sidecar-coordinator.ts
+ * @module SidecarCoordinator
+ *
+ * ## Responsibilities
+ * Durability and multi-device synchronization manager for file-based sidecars (`.seek-artifacts/`):
+ * - **Peer Hydration (`hydrateFromSidecar`)**: Reads sidecar chunk shards produced by other devices
+ *   (e.g. desktop Mac/PC) and ingests them into the local IndexedDB without re-running embedding models.
+ * - **Live Re-chunking (`rechunkLiveNotes`)**: Synchronizes hydrated chunk metadata with active vault
+ *   file contents, updating text bodies and heading paths.
+ * - **Shard Compaction & Coalescing (`compactDevice`, `coalesceSmallShards`)**: Merges fragmented append
+ *   shards into dense, consolidated storage files to prevent vault clutter.
+ * - **Dead Identity & Orphan Cleanup (`sweepDeadSidecarDevices`, `cleanStaleDeviceSidecars`)**: Purges
+ *   abandoned device directories and incompatible sidecar format versions.
+ * - **Sidecar Rebuild (`rebuildSidecar`)**: Exports current IndexedDB state to disk sidecars on reset.
+ *
+ * ## Order Dependencies & Lifecycle
+ * - **Dependency tier**: Durability & Multi-Device Sync Layer. Instantiated inside `SearchOrchestrator`.
+ * - **CRITICAL Lifecycle Ordering**:
+ *   1. **Hydration MUST precede Catch-Up Indexing**: On startup, sidecar hydration MUST execute
+ *      before `runCatchUp` computes vault deltas. Running hydration first ensures peer-embedded chunks
+ *      are already present in IndexedDB, avoiding expensive, redundant re-embedding of peer notes.
+ *   2. **Write Mutex Prerequisite**: Ingestion and compaction MUST run inside `IndexCoordinator.runExclusive`
+ *      to serialize IndexedDB transactions and avoid concurrent write races.
+ *   3. **Post-Hydration Cache Coordination**: Following hydration, `CacheManager` caches must either be
+ *      incrementally updated via `pushDeltaAdds` or invalidated so the query frame reflects newly
+ *      hydrated notes.
+ *   4. **Deferred Background Sweeps**: Compaction, coalescing, and orphan sweeps are scheduled on deferred
+ *      idle timers to avoid consuming CPU/IO during the initial startup burst.
+ */
+
 import type { App } from 'obsidian';
 import { TFile } from 'obsidian';
 import {

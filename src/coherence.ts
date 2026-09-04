@@ -1,3 +1,30 @@
+/**
+ * @file coherence.ts
+ * @module Coherence
+ *
+ * ## Responsibilities
+ * Pure decision functions and invariants for memory cache coherence and drift recovery:
+ * - Frame compaction trigger (`COMPACTION_TOMBSTONE_FRACTION = 0.25`): governs when
+ *   accumulated tombstones warrant an O(N) re-indexing pass to reclaim holes.
+ * - Cache drift circuit breaker (`coherenceDriftDecision`): throttles UI toasts and
+ *   expensive re-warms if drift re-trips within `COHERENCE_DRIFT_COOLDOWN_MS` (30s).
+ * - Partial frame discard predicate (`shouldDiscardPartialFrame`): guards against race
+ *   conditions where the index generation advanced while a frame was being assembled.
+ * - Spot-check verification (`frameBm25Coherent`): tests random row samples to verify
+ *   that resident frame chunk IDs and BM25 document IDs are in exact 1:1 alignment.
+ * - Drift recovery scheduling (`driftRecoveryDecision`): guards embed-free background
+ *   drift recovery from concurrent or redundant execution.
+ *
+ * ## Order Dependencies & Lifecycle
+ * - **Dependency tier**: Pure foundation layer. Depends only on `ResidentFrame` type definition.
+ * - **Call-order prerequisite**: Evaluated during `CacheManager.ensureFrame()` immediately
+ *   after frame assembly and during `SearchOrchestrator` delta index updates.
+ * - **Concurrency Invariants**:
+ *   - Frame assembly MUST verify `shouldDiscardPartialFrame` before publishing the frame.
+ *   - Drift detection ALWAYS invalidates caches immediately (`invalidate: true`), but
+ *     warm/notify actions are deferred if the cooldown has not elapsed.
+ */
+
 import type { ResidentFrame } from './frame-utils';
 
 // Compaction fires when this fraction of rows are tombstones — the amortized O(N)

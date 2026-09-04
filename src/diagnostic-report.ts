@@ -1,3 +1,29 @@
+/**
+ * @file diagnostic-report.ts
+ * @module DiagnosticReport
+ *
+ * ## Responsibilities
+ * Generates structured diagnostics and human-readable telemetry summaries for Seek:
+ * - Compiles vault-root markdown report (`seek-report.md`): human-readable tables detailing
+ *   recent searches, indexing jobs, startup gates, memory pressure, and periodic stall analysis.
+ * - Compiles structured JSON telemetry snapshot (`.seek-artifacts/seek-report.json`): machine-parsable
+ *   log dump for profiling, automated analysis, and bug reports.
+ * - Privacy & Redaction: Strips note content and hashes titles (`redactEntries`) when user
+ *   privacy redaction is enabled.
+ * - Telemetry Capping: Enforces recency caps (`REPORT_CAPS`) on high-frequency log entries
+ *   (searches, progress updates) while preserving 100% of critical anomaly events (crashes, errors).
+ *
+ * ## Order Dependencies & Lifecycle
+ * - **Dependency tier**: Diagnostics & Tooling Layer.
+ * - **Invocation**: Triggered on-demand by the user via Command Palette ("Generate logging report")
+ *   or Settings tab ("Generate logging report" button).
+ * - **Concurrency & Sync Safety**:
+ *   - Uses single-writer-at-a-time, full atomic file overwrite. Safe under iCloud Drive sync
+ *     because it avoids concurrent append conflicts.
+ *   - Does NOT acquire the `IndexCoordinator` write mutex, ensuring that report generation
+ *     never blocks active queries or background indexing passes.
+ */
+
 import type { App } from 'obsidian';
 import { Notice, TFile } from 'obsidian';
 import type {

@@ -1,3 +1,28 @@
+/**
+ * @file cli-handlers.ts
+ * @module CliHandlers
+ *
+ * ## Responsibilities
+ * Headless CLI bridge exposing Seek search and navigation to the `obsidian-cli` IPC interface:
+ * - `seek:search`: Runs semantic hybrid search, returning structured JSON or human-readable text.
+ *   Supports recency overrides (`recencyWeight`, `recencyHalflife`) and candidate limits.
+ * - `seek:open`: Searches the vault and opens the top (or Nth ranked) hit in the active or target
+ *   pane (`tab`, `split`, `window`), navigating directly to the matched heading anchor if present.
+ * - `seek:insert-link`: Searches the vault and inserts a markdown link (`[[note#heading|alias]]`)
+ *   at the current cursor position in the active Markdown editor.
+ *
+ * ## Order Dependencies & Lifecycle
+ * - **Dependency tier**: Host Integration / Interface Adapter.
+ * - **Registration**: Mounted in `SeekPlugin.onload()` via `registerSeekCliHandlers(this)`.
+ * - **Serial Execution Invariant**:
+ *   - Obsidian's CLI IPC uses a single, serial message queue. CLI commands MUST NOT be executed
+ *     concurrently or pipelined without waiting for earlier commands to finish.
+ * - **Query / Indexing Coordination**:
+ *   - Calls `host.cliSearchGateMessage()` to verify the search index is warm and ready before querying.
+ *   - Queries are wrapped in `host.withQueryInFlight()`, which signals `PluginSchedulerManager`
+ *     to defer background incremental flushes while a CLI query is actively executing.
+ */
+
 import type { App } from 'obsidian';
 import { TFile } from 'obsidian';
 import type { SeekSettings, ScoredChunk, SearchEntry } from './types';

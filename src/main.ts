@@ -1,20 +1,39 @@
-// Seek plugin entry. Three commands per v0 scope:
-//   1. seek-search        — open the search modal
-//   2. seek-reindex       — full reindex (nuke + rebuild)
-//   3. seek-generate-log  — write seek-report.md from seek-log.ndjson
-//
-// Plus a headless CLI query handler (registerCliHandler), exposed only when the
-// obsidian-cli bridge is present: `obsidian seek:search query="..."`. Unlike the
-// palette command (which opens a modal and returns void), the CLI handler returns
-// a string the bridge writes to stdout — readable text by default, JSON with
-// `format=json`. See the registration in onload.
-//
-// Intentional non-features for v0:
-//   - No settings tab (zero admin console, per task brief)
-//   - No incremental reindex
-//   - No sync sidecar protocol
-//   - No model-cache management
-//   - No MCP wrapper
+/**
+ * @file main.ts
+ * @module SeekPlugin
+ *
+ * ## Responsibilities
+ * Root entry point for the Obsidian Seek plugin:
+ * - Manages plugin lifecycle (`onload`, `onunload`), settings migration, and store lock acquisition.
+ * - Coordinates top-level UI components: search modal (`SeekSearchModal`), settings tab (`SeekSettingTab`),
+ *   and status bar (`IndexStatusBar`).
+ * - Bridges Obsidian host events (file modifications, renames, app focus/blur) to background services.
+ *
+ * ## Domain Module Coordination
+ * `SeekPlugin` coordinates specialized domain managers:
+ * - **`SearchOrchestrator` (`src/search.ts`)**: Primary engine for chunking, embedding, indexing, and querying.
+ * - **`PluginSchedulerManager` (`src/plugin-schedulers.ts`)**: Owns debounced incremental flushes,
+ *   periodic catch-up indexing, exclusion watchers, and mobile memory idle unloader.
+ * - **`CliHandlers` (`src/cli-handlers.ts`)**: Registers headless IPC commands (`seek:search`, `seek:open`,
+ *   `seek:insert-link`) for terminal and automation scripts.
+ * - **`DriftRecoveryCoordinator` (`src/drift-recovery-coordinator.ts`)**: Self-healing state machine for
+ *   embed-free recovery when cache drift is detected.
+ * - **`DiagnosticReport` (`src/diagnostic-report.ts`)**: Compiles vault-root markdown reports and JSON logs.
+ * - **`ConfirmModal` (`src/confirm-modal.ts`)**: Mobile-safe asynchronous confirmation prompts.
+ *
+ * ## Startup Lifecycle & Order Dependencies
+ * 1. **Session Boot & Logging**: Initializes `SeekLogger` and validates boot session generations.
+ * 2. **Store Acquisition**: Opens `IndexStore` (IndexedDB) with retry/backoff scheduling to prevent
+ *    cross-window database lock collisions.
+ * 3. **Orchestrator Boot**: Instantiates `SearchOrchestrator` with store, embedder, and settings.
+ * 4. **Startup Hydration**: Executes `sidecarCoord.hydrateFromSidecar()` BEFORE catch-up indexing to
+ *    ingest peer chunks and avoid redundant local embedding.
+ * 5. **Scheduler Wire-up**: Instantiates `PluginSchedulerManager` to hook vault file events (`modify`,
+ *    `delete`, `rename`) and starts periodic background catch-up timers.
+ * 6. **Interface Registration**: Registers Obsidian commands, settings tab, status bar, and CLI handlers.
+ * 7. **Clean Teardown (`onunload`)**: Disposes schedulers, closes `IndexStore`, terminates worker threads,
+ *    and unloads the embedder iframe.
+ */
 
 import { Notice, Plugin, TFile } from 'obsidian';
 import type { App } from 'obsidian';

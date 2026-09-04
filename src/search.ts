@@ -1,24 +1,44 @@
-// SearchOrchestrator — owns the chunk-vault → embed → store → search loop.
-//
-// reindexAll() is intentionally the simple "nuke and rebuild" path: drop the
-// IndexedDB database, walk all markdown files, chunk → embed → write. Larger
-// vaults will want incremental, but the design doc explicitly defers that;
-// the user asked for a "total nuke and reset" full reindex as one of the
-// three v0 commands.
-//
-// ── Module boundaries (decomposition) ─────────────────────────────────────
-// This file is ~5k lines. Pure helpers already live in frame-utils.ts,
-// coherence.ts, and bm25-persist.ts (re-exported at the file tail). Future
-// splits follow docs/SEARCH-DECOMPOSITION.md — phase order:
-//   1. Pure helpers (done / PR #25)
-//   2. CacheManager — single owner of frameCache, bm25Cache, warmCaches,
-//      ensureFrame (must DELETE orchestrator copies in the same PR)
-//   3. SearchQuery — search() + searchLexicalOnly() (delegate, don't duplicate)
-//   4. Indexing slices — reindexDelta, sidecar hydrate (last; highest conflict)
-// Anti-pattern: copy a class out but leave the orchestrator implementation —
-// that creates dual caches and subtle incremental-delete bugs. One move per PR.
-// Contract tests: src/search-integration.test.ts
-// ───────────────────────────────────────────────────────────────────────────
+/**
+ * @file search.ts
+ * @module SearchOrchestrator
+ *
+ * ## Responsibilities
+ * Primary coordinator for Seek's vault indexing and semantic/lexical search subsystem:
+ * - Coordinates the end-to-end lifecycle: chunking -> embedding -> indexing -> caching -> retrieval.
+ * - Manages full vault reindexing (`reindexAll`), incremental delta updates (`reindexDelta`), and
+ *   coherence verification (`onCoherenceDrift`).
+ *
+ * ## Domain Submodule Architecture
+ * `SearchOrchestrator` delegates specialized domains to extracted single-responsibility modules:
+ * - **`CacheManager` (`src/cache-manager.ts`)**: Single authority owning all query-time RAM structures
+ *   (`frameCache`, `bm25Cache`, `binaryIndex`, `synonymCache`). Zero dual-cache duplication.
+ * - **`SearchQuery` (`src/search-query.ts`)**: Retrieval pipeline engine executing Stage 0 ladder,
+ *   Stage 1 Hamming + BM25, candidate pooling, Stage 2 dense reranking, and TM2C2 score fusion.
+ * - **`SidecarCoordinator` (`src/sidecar-coordinator.ts`)**: Multi-device sync, peer chunk hydration,
+ *   shard compaction, and dead device directory sweeps.
+ * - **`IndexCoordinator` (`src/index-coordinator.ts`)**: Concurrency authority providing the single
+ *   write serialization mutex (`runExclusive`), generation counter, and cooperative pacer yielding.
+ * - **`FrameUtils` (`src/frame-utils.ts`)**: Low-level packed sign vector and int8 row space layout.
+ * - **`Coherence` (`src/coherence.ts`)**: Drift circuit breakers, generation guards, and coherence checks.
+ * - **`Bm25Persist` (`src/bm25-persist.ts`)**: Disk serialization identity stamps for the BM25 index.
+ *
+ * ## Lifecycle & Order Dependencies
+ * 1. **Initialization**:
+ *    - `SearchOrchestrator` instantiates sub-coordinators (`IndexCoordinator`, `CacheManager`,
+ *      `SearchQuery`, `SidecarCoordinator`).
+ *    - Opens `IndexStore` and verifies database schema compatibility.
+ * 2. **Startup Sequence**:
+ *    - **Hydration First**: `sidecarCoord.hydrateFromSidecar()` runs before catch-up indexing.
+ *      Hydrating peer embeddings directly into IndexedDB avoids redundant re-embedding.
+ *    - **Cache Warming**: `cacheMgr.warmCaches()` loads resident frames and BM25 index into RAM.
+ * 3. **Write Operations (`reindexDelta`, `reindexAll`)**:
+ *    - Must acquire `IndexCoordinator.runExclusive()` to serialize IDB writes.
+ *    - Mutates `CacheManager` in lockstep (`appendFrameRows` + `bm25.add`) or invalidates atomically.
+ *    - Increments `IndexCoordinator.generation` to signal index changes.
+ * 4. **Query Operations (`search`)**:
+ *    - Strictly read-only; delegates to `SearchQuery.search()`.
+ *    - Does NOT acquire the write mutex, allowing queries to interleave with paced background indexing.
+ */
 
 import type { App } from 'obsidian';
 import { Notice, TFile } from 'obsidian'; // value imports: reindexDelta uses `instanceof TFile`; the quota gate toasts
