@@ -49,6 +49,16 @@ import {
 import { SeekSearchModal, type IndexBanner } from './search-modal';
 import { parsePaneType, openFileAtTarget, openBaseAtTarget, type OpenTarget } from './open-target';
 import { registerSeekCliHandlers } from './cli-handlers';
+import {
+    PluginSchedulerManager,
+    type PluginSchedulerHost,
+    isIndexableFile,
+    IDLE_FLUSH_MS,
+    STRUCT_FLUSH_MS,
+    IDLE_UNLOAD_MS,
+    UNLOAD_CHECK_MS,
+    BULK_DELTA_THRESHOLD,
+} from './plugin-schedulers';
 import { indexBannerSpec, resolveIndexLoadPhase, resolveCliSearchGate, CLI_SEARCH_WARMING, resolveIndexUiStatus, resolveSidecarWait, retainIndexInventory, INDEX_STALE_MSG, INDEX_SYNCING_MSG, INDEX_PEER_AHEAD_MSG, type DegradedReason, type IndexLoadState } from './index-notice';
 import { IndexStatusBar, extendIndexPassTotal, parseIndexedProgress } from './index-status-bar';
 import type { IndexJobKind, IndexStatusHealth, IndexStatusJob } from './index-status-card';
@@ -99,30 +109,6 @@ const LONG_TASK_THRESHOLD_MS = 250;
 // search. Kept small: user-approved budget is "a few seconds, no more".
 const POST_LAYOUT_BOOT_BUFFER_MS = 3500;
 
-// Extensions Seek indexes: markdown notes always, plus .base files (Obsidian
-// Bases — YAML view definitions, indexed via a synthetic doc; see
-// base-extractor.ts) when `indexBases` is on. The orchestrator's collection set
-// (indexableFiles) must agree with this, so both gate on the same setting.
-function isIndexableFile(f: TFile, indexBases: boolean): boolean {
-    if (f.extension === 'md') return true;
-    return indexBases && f.extension === 'base';
-}
-
-
-// Incremental-indexing debounces. Edits wait out a 5-min idle window after the
-// user leaves a note (so flipping back to keep writing never triggers a flush
-// mid-thought); deletes/moves apply on a short window (they're model-free and a
-// dead search result is jarring). See wireIncrementalIndexing.
-const IDLE_FLUSH_MS = 5 * 60 * 1000;
-const STRUCT_FLUSH_MS = 1500;
-
-// Mobile-only embedder unload (see maybeUnloadEmbedder). After this long with no
-// model use in a quiescent state, tear down the iframe to release its ~240 MB
-// model + ratcheted WASM heap; the next search pays one cold reload. The race
-// with a pending edit flush is settled by the unload PREDICATE (an armed flush
-// timer counts as `pending`), not by the relative size of these constants.
-// Checked on a coarse interval — a minute of slack on a 3-minute idle is fine.
-const IDLE_UNLOAD_MS = 3 * 60 * 1000;
 
 // Sidecar compaction: how many 'incomplete-rechunk' verdicts (each = a full
 // vault re-chunk that found an unreadable/untokenizable file) to tolerate per
@@ -134,14 +120,6 @@ const SIDECAR_COMPACT_MAX_INCOMPLETE_RETRIES = 3;
 // off for the session (transient iCloud/WKWebView IO deserves a few retries;
 // a persistent disk-full must not re-run a rewrite every 5 minutes).
 const SIDECAR_COALESCE_MAX_FAILURES = 3;
-const UNLOAD_CHECK_MS = 60 * 1000;
-
-// A delta larger than this isn't an edit — it's a bulk import (paste, vault sync,
-// git checkout). flushDirty treats it as a mini-reindex: progress is surfaced, a
-// live query preempts the embed, and a cold desktop model is deferred rather than
-// force-loaded for a background paste. At or below it, the single-note force path
-// is unchanged (a 1-2 file embed is too short to be worth the extra machinery).
-const BULK_DELTA_THRESHOLD = 50;
 
 
 // DTOs returned to the settings tab by getIndexStats() / getModelStatus(). Defined
@@ -242,35 +220,47 @@ export default class SeekPlugin extends Plugin {
     // manifest-id + vault scoping as forensics. Null only during early onload.
     private recents: RecentSearches | null = null;
 
-    // Incremental indexing state (see wireIncrementalIndexing). The queues hold
-    // paths touched THIS session; the durable dirty signal is always on-disk
-    // mtime vs. the stored FileRecord, so the startup sweep (reconcileOnLoad) is
-    // the real catch-up and these are just a live-session optimization.
-    private dirtyQueue = new Set<string>();
-    private deletedQueue = new Set<string>();
+    // Background schedulers and queue state (see plugin-schedulers.ts).
+    private _schedulers?: PluginSchedulerManager;
+    /* internal */ get schedulers(): PluginSchedulerManager {
+        if (!this._schedulers) {
+            this._schedulers = new PluginSchedulerManager(this as unknown as PluginSchedulerHost);
+        }
+        return this._schedulers;
+    }
+
+    private get dirtyQueue(): Set<string> { return this.schedulers.dirtyQueue; }
+    private set dirtyQueue(val: Set<string>) {
+        this.schedulers.dirtyQueue.clear();
+        for (const item of val) this.schedulers.dirtyQueue.add(item);
+    }
+    private get deletedQueue(): Set<string> { return this.schedulers.deletedQueue; }
+    private set deletedQueue(val: Set<string>) {
+        this.schedulers.deletedQueue.clear();
+        for (const item of val) this.schedulers.deletedQueue.add(item);
+    }
     // False until onLayoutReady: vault.on('create') fires for every existing note
     // while the adapter is still enumerating. Those are not real creates — they
     // queued the whole vault as dirty (main vault 2026-08-29: 4528-note bulk flush)
     // and made computeDelta see live:0 vs thousands stored.
     private vaultIndexEventsReady = false;
-    private lastActiveFile: TFile | null = null;
-    private idleTimer: number | null = null;   // 5-min debounce for edits
-    private structTimer: number | null = null;  // short debounce for deletes/moves
+    private get lastActiveFile(): TFile | null { return this.schedulers.lastActiveFile; }
+    private set lastActiveFile(val: TFile | null) { this.schedulers.lastActiveFile = val; }
+    private get idleTimer(): number | null { return this.schedulers.idleTimer; }
+    private set idleTimer(val: number | null) { this.schedulers.idleTimer = val; }
+    private get structTimer(): number | null { return this.schedulers.structTimer; }
+    private set structTimer(val: number | null) { this.schedulers.structTimer = val; }
     private lastModelUseAt = 0;                  // epoch ms of the last ensureModelLoaded; drives the idle-unload timer (mobile)
-    // ── Exclusion-list change detection (settings coverage surface) ──────────────
-    // Obsidian's "Excluded files" (Settings → Files & Links) has no plugin event,
-    // so we poll its effective-excluded live-path set. A change means a folder was
-    // hidden (soft-delete its chunks) or revealed (backfill it). The snapshot is
-    // seeded on first poll (after layout-ready) so the initial state is never a
-    // false-positive backfill; only LATER deltas trigger.
-    private lastExcludedPaths: string[] | null = null;
-    // Last change detected, for the settings banner ("detected a change in folder: X").
-    // Cleared when the index catches up (runCatchUp finish / full reindex) so a stale
-    // banner never lingers.
-    private exclusionChange: ExclusionDiff | null = null;
-    private exclusionChangeDetectedAt = 0;
-    private exclusionWatcherArmed = false;   // true once the first snapshot is seeded
-    private flushing = false;                    // flushDirty re-entrancy guard
+    private get lastExcludedPaths(): string[] | null { return this.schedulers.lastExcludedPaths; }
+    private set lastExcludedPaths(val: string[] | null) { this.schedulers.lastExcludedPaths = val; }
+    private get exclusionChange(): ExclusionDiff | null { return this.schedulers.exclusionChange; }
+    private set exclusionChange(val: ExclusionDiff | null) { this.schedulers.exclusionChange = val; }
+    private get exclusionChangeDetectedAt(): number { return this.schedulers.exclusionChangeDetectedAt; }
+    private set exclusionChangeDetectedAt(val: number) { this.schedulers.exclusionChangeDetectedAt = val; }
+    private get exclusionWatcherArmed(): boolean { return this.schedulers.exclusionWatcherArmed; }
+    private set exclusionWatcherArmed(val: boolean) { this.schedulers.exclusionWatcherArmed = val; }
+    private get flushing(): boolean { return this.schedulers.flushing; }
+    private set flushing(val: boolean) { this.schedulers.flushing = val; }
     private catchUpPending = false;              // cold-mobile deferred an embed
     private catchUpRunning = false;              // runCatchUp re-entrancy guard
     private coldBuildScheduled = false;          // scheduleColdBuild single-flight
@@ -740,29 +730,8 @@ export default class SeekPlugin extends Plugin {
             POST_LAYOUT_BOOT_BUFFER_MS,
         );
 
-        // Periodic sidecar reconcile: remote arrivals don't fire vault events for
-        // .obsidian/ dotfiles, so poll for another device's freshly-synced index
-        // every 5 min. reconcileSidecarIfChanged gates on a cheap (persisted) dir
-        // signature, so a warm index with no new sidecar files skips the
-        // whole-vault re-chunk entirely. Cleared automatically on unload.
-        this.registerInterval(window.setInterval(() => void this.periodicReconcile(), 5 * 60 * 1000));
-
-        // Exclusion-list watch: Obsidian's "Excluded files" has no plugin event, so
-        // poll its effective excluded live-path set every 5s. Cheap (in-memory filter
-        // over the TFile list, no IDB, no reads) and self-gating — it no-ops while a
-        // write/boot pass is running, and only fires on a real path-set change.
-        this.registerInterval(window.setInterval(() => this.pollExclusionChanges(), 5000));
-
-        // Mobile: reset the WASM heap during genuine idle. Once a minute, if the
-        // model hasn't been used for IDLE_UNLOAD_MS, tear it down (when quiescent);
-        // the next search reloads. Desktop is excluded — the heap ratchet is a
-        // mobile/iOS problem, and a cold reload on every post-idle desktop search
-        // would be a latency regression for no benefit. Cleared on unload.
-        if (isMobilePlatform()) {
-            this.registerInterval(window.setInterval(() => {
-                if (Date.now() - this.lastModelUseAt >= IDLE_UNLOAD_MS) this.maybeUnloadEmbedder('idle');
-            }, UNLOAD_CHECK_MS));
-        }
+        // Periodic sidecar reconcile, exclusion-list watch, and mobile idle model unload.
+        this.schedulers.wireBackgroundIntervals((id) => this.registerInterval(id));
 
         // Wire global observers + handlers BEFORE we do anything else, so
         // any error in the init path itself gets logged.
@@ -1194,8 +1163,7 @@ export default class SeekPlugin extends Plugin {
         if (this.onUnhandledRejection) window.removeEventListener('unhandledrejection', this.onUnhandledRejection);
         if (this.onVisibilityChange && this.visibilityDoc) this.visibilityDoc.removeEventListener('visibilitychange', this.onVisibilityChange);
         if (this.onPageHide) window.removeEventListener('pagehide', this.onPageHide);
-        if (this.idleTimer != null) window.clearTimeout(this.idleTimer);
-        if (this.structTimer != null) window.clearTimeout(this.structTimer);
+        this.schedulers.dispose();
         // vault/workspace events and the window 'blur' DOM event are registered
         // via registerEvent/registerDomEvent, so Obsidian tears them down for us.
     }
@@ -1838,215 +1806,31 @@ export default class SeekPlugin extends Plugin {
     // flush (a no-op when nothing's left). Startup reconciliation (reconcileOnLoad)
     // backstops anything missed while Seek wasn't running.
     private wireIncrementalIndexing(): void {
-        this.lastActiveFile = this.app.workspace.getActiveFile();
-
-        // Edits: index the note you LEAVE, not the one you arrive at.
-        this.registerEvent(this.app.workspace.on('active-leaf-change', () => {
-            const left = this.lastActiveFile;
-            this.lastActiveFile = this.app.workspace.getActiveFile();
-            if (left) void this.enqueueIfDirty(left);
-        }));
-
-        // Structural events — discrete, rare, no blur equivalent. Gated on
-        // vaultIndexEventsReady so the initial adapter enumeration is not treated
-        // as thousands of creates (reconcileOnLoad diffs the settled vault).
-        this.registerEvent(this.app.vault.on('create', (f) => {
-            if (!this.vaultIndexEventsReady) return;
-            if (f instanceof TFile && isIndexableFile(f, this.settings.indexBases)) { this.dirtyQueue.add(f.path); this.scheduleFlush(); }
-        }));
-        this.registerEvent(this.app.vault.on('delete', (f) => {
-            if (!this.vaultIndexEventsReady) return;
-            if (!(f instanceof TFile) || !isIndexableFile(f, this.settings.indexBases)) return;
-            this.deletedQueue.add(f.path);
-            this.dirtyQueue.delete(f.path);
-            this.flushStructuralSoon();
-        }));
-        this.registerEvent(this.app.vault.on('rename', (f, oldPath) => {
-            if (!this.vaultIndexEventsReady) return;
-            // Drop the old path (covers plain rename, move, and move-into-ignored
-            // = soft-delete) and index the new one. shouldIndex/reindexDelta decide
-            // the archive/un-archive outcome by destination.
-            this.deletedQueue.add(oldPath);
-            this.dirtyQueue.delete(oldPath);
-            if (f instanceof TFile && isIndexableFile(f, this.settings.indexBases)) this.dirtyQueue.add(f.path);
-            this.flushStructuralSoon();
-        }));
-
-        // Window blur (desktop alt-tab) — same intent as visibilitychange:hidden.
-        // registerDomEvent auto-tears-down on unload.
-        this.registerDomEvent(window, 'blur', () => this.flushOnBackground());
+        this.schedulers.wireIncrementalIndexing(
+            (ref) => this.registerEvent(ref),
+            (el, type, handler) => this.registerDomEvent(el, type, handler),
+        );
     }
 
-    // Enqueue a note for re-index only if it actually changed since we last
-    // indexed it (the mtime guard) — so navigating through notes to READ them
-    // never triggers an embed. One quick IDB read per note-leave.
+    // Delegated to this.schedulers (see plugin-schedulers.ts)
     private async enqueueIfDirty(file: TFile | null): Promise<void> {
-        if (this.unloading) return;
-        if (!file || !isIndexableFile(file, this.settings.indexBases)) return;
-        if (!this.orchestrator) return;
-        try {
-            const stored = await this.store.getFileRecord(file.path);
-            if (!stored || file.stat.mtime > stored.mtimeMs) {
-                this.dirtyQueue.add(file.path);
-                this.scheduleFlush();
-            }
-        } catch (e) {
-            this.appendErrorIfCurrent('enqueueIfDirty', e);
-        }
+        return this.schedulers.enqueueIfDirty(file);
     }
 
-    // 5-min idle debounce for edits: resets on every enqueue, so flipping back to
-    // keep writing pushes the flush out rather than firing mid-thought.
     private scheduleFlush(): void {
-        if (this.idleTimer != null) window.clearTimeout(this.idleTimer);
-        this.idleTimer = window.setTimeout(() => { this.idleTimer = null; void this.flushDirty(); }, IDLE_FLUSH_MS);
+        this.schedulers.scheduleFlush();
     }
 
-    // Short debounce for structural changes — model-free, so flush them soon
-    // rather than waiting out the 5-min edit window (a dead result is jarring).
     private flushStructuralSoon(): void {
-        if (this.structTimer != null) window.clearTimeout(this.structTimer);
-        this.structTimer = window.setTimeout(() => { this.structTimer = null; void this.flushDirty(); }, STRUCT_FLUSH_MS);
+        this.schedulers.flushStructuralSoon();
     }
 
-    // Backgrounding flush: capture the note currently being edited (it may never
-    // have fired active-leaf-change) and drain immediately, before the OS can
-    // reclaim the WebView.
     private flushOnBackground(): void {
-        const active = this.app.workspace.getActiveFile();
-        const flushed = active
-            ? this.enqueueIfDirty(active).then(() => this.flushDirty())
-            : this.flushDirty();
-        // Mobile: once the last-safe-window flush settles, free the model before
-        // iOS can jetsam-kill the backgrounded WebView. Chained AFTER the flush so
-        // the unload predicate sees its settled state (not a half-armed queue);
-        // any embeds the mobile flush deferred are re-found by computeDelta and
-        // reloaded on the next foreground, so this never drops work.
-        if (isMobilePlatform()) void flushed.then(() => {
-            if (!this.unloading) this.maybeUnloadEmbedder('background');
-        }).catch(() => {});
+        this.schedulers.flushOnBackground();
     }
 
-    // Drain the dirty/deleted queues through one reindexDelta. Deletes/moves
-    // always apply (model-free structural phase); the embed half runs now on
-    // desktop or a warm model, and defers on a cold mobile model (the edit's old
-    // version stays searchable and the post-serve catch-up re-embeds it).
     private async flushDirty(): Promise<void> {
-        if (this.unloading) return;
-        const workGen = this.loadGeneration;
-        if (this.flushing || !this.orchestrator) {
-            // A timer fired while a flush was already running (the in-progress flush
-            // snapshotted BEFORE these items, so they need their own cycle). Re-arm
-            // one so queued edits don't wait for the next unrelated enqueue or a
-            // restart. Guard on no pending timer to avoid stacking; a stale re-arm
-            // is harmless — flushDirty no-ops on an empty queue.
-            if (this.flushing && (this.dirtyQueue.size > 0 || this.deletedQueue.size > 0)
-                && this.idleTimer == null && this.structTimer == null) {
-                this.scheduleFlush();
-            }
-            return;
-        }
-        if (this.dirtyQueue.size === 0 && this.deletedQueue.size === 0) return;
-        this.flushing = true;
-        let bulkProgress = false;
-        let bulkJobId: number | null = null;
-        // Span the whole drain: the incremental path was the biggest un-wrapped
-        // jank source (issue #5 — all its long tasks logged as 'idle').
-        this.pushTaskContext('indexing');
-        const orchestrator = this.orchestrator;
-        try {
-            const dirty = [...this.dirtyQueue];
-            const deleted = [...this.deletedQueue];
-            // Snapshot each dirty file's mtime so the cleanup below can tell "this
-            // exact version was flushed" from "re-edited during the await". A re-edit
-            // bumps the mtime and enqueueIfDirty re-adds the path; a blind delete
-            // would then clobber that second edit (lost until reconcileOnLoad).
-            // -1 = the file vanished (deleted/moved) — handled via deletedQueue.
-            const dirtyMtimes = new Map<string, number>();
-            for (const p of dirty) {
-                const f = this.app.vault.getAbstractFileByPath(p);
-                dirtyMtimes.set(p, f instanceof TFile ? f.stat.mtime : -1);
-            }
-            const bulk = dirty.length > BULK_DELTA_THRESHOLD;
-            // Cold-model embed deferral. Mobile: a cold model always defers (the
-            // jetsam rule). Desktop: additionally defer a BULK cold flush — a
-            // background paste/sync shouldn't force a ~250 MB model load; treat it
-            // like reconcileOnLoad and let the first search drive the embed. A small
-            // cold delta still loads, because the user is actively in that note.
-            const coldMobile = isMobilePlatform() && !this.embedder.loaded;
-            const coldDesktopBulk = !isMobilePlatform() && !this.embedder.loaded && bulk;
-            // Peer-ahead grind-stop (mobile): a newer-version peer index exists that this
-            // build can't read, so any local embed now is throwaway work (discarded the
-            // moment the user updates Seek and hydrates the peer's index). Defer instead —
-            // the file keeps its old chunks (queryable, stale-not-wrong) and the banner
-            // tells the user to update. Mobile-only: desktop embedding isn't jetsam-bound
-            // and a desktop is the fleet's heal path.
-            const peerAheadDefer = isMobilePlatform() && (this.orchestrator?.peerAhead ?? false);
-            const deferEmbed = coldMobile || coldDesktopBulk || peerAheadDefer;
-            if (!deferEmbed) await this.ensureModelLoaded();
-
-            if (bulk) {
-                // Mini-reindex path. Status-bar percent; skipped when the
-                // embed is deferred (nothing to count). A live query aborts the burst
-                // (shouldContinue); hide the bar so it can reopen on the drain.
-                if (!deferEmbed) {
-                    bulkJobId = this.beginIndexJob('catchup', dirty.length, `Seek: indexing ${dirty.length} changed notes…`);
-                    bulkProgress = true;
-                }
-                const result = await orchestrator.reindexDelta(dirty, deleted, {
-                    embed: !deferEmbed,
-                    shouldContinue: () => !this.indexingBlocked,
-                    onProgress: deferEmbed ? undefined : (msg) => {
-                        if (bulkJobId != null) this.indexProgress.updateFromProgress(msg, bulkJobId);
-                    },
-                });
-                // Summary counts what actually committed — an embed preempted by a
-                // query reports the partial total honestly; the drain finishes the
-                // rest silently. No toast on throw (flushDirty's catch logs it).
-                if (!deferEmbed && result.embedded) {
-                    new Notice(`Seek: indexed ${result.embedded.committedFilePaths.length} files · ${result.embedded.chunksIndexed} chunks`, 5000);
-                }
-                // Reconcile whatever the embed left undone (deferred cold, or
-                // preempted by a query). runCatchUp is self-guarding (no-op while
-                // searching / hidden / model cold) and computeDelta-idempotent — a
-                // fully-completed pass just costs one empty diff.
-                this.catchUpPending = true;
-                this.runCatchUp();
-            } else {
-                // Single-note fast path. Still preempt on a live OR in-flight query
-                // so a just-edited note can't force a main-thread embed mid-search —
-                // the foreground query must win the shared iOS thread (the note's
-                // "indexing must wait for the query"). A preempted (or cold-deferred)
-                // note keeps its old chunks, doesn't advance its file record, and so
-                // stays dirty + pending for runCatchUp, which fires the moment the
-                // query completes (onQueryInFlight(false)) — computeDelta re-finds it.
-                await orchestrator.reindexDelta(dirty, deleted, {
-                    embed: !deferEmbed,
-                    shouldContinue: () => !this.indexingBlocked,
-                });
-                if ((deferEmbed || this.indexingBlocked) && dirty.length > 0) this.catchUpPending = true;
-                this.runCatchUp();
-            }
-
-            // Clear exactly what we snapshotted — but only dirty paths NOT re-edited
-            // mid-flush (mtime unchanged since the snapshot). A re-enqueued path
-            // stays for the next flush instead of being clobbered; new paths queued
-            // during the await were never in `dirty`. Deletes are unconditional.
-            for (const p of deleted) this.deletedQueue.delete(p);
-            for (const p of dirty) {
-                const f = this.app.vault.getAbstractFileByPath(p);
-                const current = f instanceof TFile ? f.stat.mtime : -1;
-                if (current === dirtyMtimes.get(p)) this.dirtyQueue.delete(p);
-            }
-        } catch (e) {
-            this.appendErrorIfCurrent('flushDirty', e, workGen);
-        } finally {
-            if (this.isSessionWorkCurrent(workGen)) this.popTaskContext('indexing');
-            this.flushing = false;
-            if (bulkJobId != null) this.indexProgress.hide(bulkJobId);
-            else if (!bulkProgress) this.refreshIndexStatusBar();
-            if (this.isSessionWorkCurrent(workGen)) void this.touchIndexInventory();
-        }
+        return this.schedulers.flushDirty();
     }
 
     // Startup mtime-diff sweep. Authoritative diff of the persisted index vs. the
@@ -2730,77 +2514,23 @@ export default class SeekPlugin extends Plugin {
     // each later poll set-diffs against it. A path that left the excluded set came back
     // (backfill it — its chunks were soft-deleted or never built); a path that entered
     // it was hidden (soft-delete its chunks). Only real path-set changes fire — a
-    // whitespace/case-only filter edit leaves the matched set identical and is ignored.
+    // Delegated to this.schedulers (see plugin-schedulers.ts)
     private pollExclusionChanges(): void {
-        if (!this.vaultIndexEventsReady || !this.orchestrator || this.unloading) return;
-        // Don't snapshot while a write is in flight OR while boot reconciliation is
-        // still running — a mid-reconcile/mid-reindex enumeration could read a
-        // partially-updated live set and manufacture a spurious diff.
-        if (this.flushing || this.catchUpRunning || this.indexBootPending || this.sidecarHydrating) return;
-        let next: string[];
-        try {
-            next = this.orchestrator.getExcludedLivePaths();
-        } catch { return; }
-        const prev = this.lastExcludedPaths;
-        this.lastExcludedPaths = next;
-        if (prev === null) { this.exclusionWatcherArmed = true; return; }  // seed baseline
-        const diff = diffExcludedPaths(prev, next);
-        if (exclusionDiffIsEmpty(diff)) return;
-        this.exclusionChange = diff;
-        this.exclusionChangeDetectedAt = Date.now();
-        this.notifyFolderCoverageChanged();
-        this.driveExclusionBackfill(diff);
+        this.schedulers.pollExclusionChanges();
     }
 
-    // Drive an index pass for the detected exclusion change. Newly-included files have
-    // no FileRecord, so computeDelta already flags them dirty and drainCatchUp backfills
-    // them; newly-excluded files are in computeDelta's deleted set, so the same pass
-    // soft-deletes them. This just arms + surfaces the pass. Desktop loads the model and
-    // drains now (the user just changed exclusions); mobile defers to a safe foreground
-    // window via catchUpPending (scheduleStartupCatchUp no-ops on mobile, matching the
-    // existing lazy mobile behavior).
     private driveExclusionBackfill(diff: ExclusionDiff): void {
-        if (!this.orchestrator || this.unloading) return;
-        this.catchUpPending = true;
-        this.syncWarmDeferred();
-        const count = Math.max(diff.newlyIncludedPaths.length, diff.newlyExcludedPaths.length, 1);
-        // Surface the pass on the status bar immediately so it reads "indexing…".
-        this.syncCatchUpJob(count);
-        if (isMobilePlatform()) {
-            this.scheduleStartupCatchUp();
-            return;
-        }
-        const workGen = this.loadGeneration;
-        const pacer = new CompositorPacer();
-        void pacer.pace().then(async () => {
-            if (!this.isSessionWorkCurrent(workGen) || !this.catchUpPending) return;
-            try {
-                await this.ensureModelLoaded();
-                if (!this.isSessionWorkCurrent(workGen)) return;
-                this.runCatchUp();
-            } catch {
-                // Leave catchUpPending set — a later trigger (search end / foreground)
-                // retries the drain.
-            }
-        });
+        this.schedulers.driveExclusionBackfill(diff);
     }
 
     /** The last exclusion-list change, or null. `backfilling` = a pass is in flight. */
     getExclusionChange(): { diff: ExclusionDiff; detectedAt: number; backfilling: boolean } | null {
-        if (!this.exclusionChange || exclusionDiffIsEmpty(this.exclusionChange)) return null;
-        return {
-            diff: this.exclusionChange,
-            detectedAt: this.exclusionChangeDetectedAt,
-            backfilling: this.catchUpPending || this.catchUpRunning,
-        };
+        return this.schedulers.getExclusionChange();
     }
 
     /** Called when the backfill for a detected change finishes (catch-up drained). */
-    private clearExclusionChange(): void {
-        if (this.exclusionChange === null) return;
-        this.exclusionChange = null;
-        this.exclusionChangeDetectedAt = 0;
-        this.notifyFolderCoverageChanged();
+    /* internal */ clearExclusionChange(): void {
+        this.schedulers.clearExclusionChange();
     }
 
     private notifyFolderCoverageChanged(): void {
@@ -2825,7 +2555,7 @@ export default class SeekPlugin extends Plugin {
     // Force an exclusion re-check now (used when the user flips "Honor excluded
     // folders" in Settings, rather than waiting for the 5s poll).
     forcePollExclusions(): void {
-        this.pollExclusionChanges();
+        this.schedulers.forcePollExclusions();
     }
     // branch). Gen-keyed suppression: only escalate once per index generation, so a
     // degraded index re-tripping drift on every keystroke doesn't re-arm recovery — a
