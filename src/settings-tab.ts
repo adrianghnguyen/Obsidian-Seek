@@ -829,7 +829,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         }
         block.createDiv({
             cls: 'seek-progressive-desc',
-            text: 'Seek streams results through these stages as they become available. Each stage replaces the previous one in-place, so you always see the best results so far. On a fresh start, lexical results can appear while Seek is still warming up — semantic ranking joins once the model and caches are ready.',
+            text: 'Seek streams results through these stages as they become available. Each stage replaces the previous one in-place, so you always see the best results so far. On a fresh start, name match and lexical BM25 read your notes on disk — they do not wait for the search-index cache — and semantic ranking joins once the model and caches are ready.',
         });
     }
 

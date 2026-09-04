@@ -36,6 +36,15 @@ describe('search early name paint', () => {
         await s.coldStart();
     }
 
+    it('vault ladder matches alias prefix without a resident frame', async () => {
+        const s = await boot();
+        writeFixture(s, 50);
+        const { results, entry } = await s.orch.search('alex che', 5);
+        expect(results[0]?.note_path).toBe('People/Alex Chen.md');
+        expect(entry.nameEarlyPainted).toBe(true);
+        expect(entry.totalChunks).toBe(0);
+    });
+
     it('fused rank-1 for filename and alias queries at 50 distractors (baseline)', async () => {
         const s = await boot();
         await index(s, 50);
@@ -94,13 +103,17 @@ describe('search early name paint', () => {
         const partial = events.find(e => e.kind === 'partial');
         const embedEnd = events.find(e => e.kind === 'embed-end');
         expect(partial).toBeDefined();
-        expect(embedEnd).toBeDefined();
-        expect(partial!.t).toBeLessThan(embedEnd!.t);
         expect(early[0]?.note_path).toBe('People/Alex Chen.md');
         expect(results[0]?.note_path).toBe('People/Alex Chen.md');
-        expect(entry.namePartialMs).toBeGreaterThan(0);
-        expect(entry.namePartialMs!).toBeLessThan(entry.queryEmbedMs);
-        expect(entry.queryEmbedMs).toBeGreaterThanOrEqual(30);
+        expect(entry.nameEarlyPainted).toBe(true);
+        // Hybrid embed only runs when the resident frame is already in RAM.
+        // During Starting the vault ladder returns without touching the embedder.
+        if (embedEnd) {
+            expect(partial!.t).toBeLessThan(embedEnd.t);
+            expect(entry.namePartialMs).toBeGreaterThan(0);
+            expect(entry.namePartialMs!).toBeLessThan(entry.queryEmbedMs);
+            expect(entry.queryEmbedMs).toBeGreaterThanOrEqual(30);
+        }
     });
 
     it('name hits still surface at 200 body-distractor files', async () => {

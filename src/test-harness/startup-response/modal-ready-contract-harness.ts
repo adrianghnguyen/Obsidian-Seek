@@ -35,6 +35,7 @@ export class ModalReadyContractHarness {
         const orchestrator = {
             indexedChunkCount: async () => self.chunks,
             warmCaches: async () => {},
+            hasSearchableFrame: () => false,
         } as unknown as SearchOrchestrator;
         const logger = {
             append: async () => {},

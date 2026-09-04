@@ -352,12 +352,10 @@ describe('search progressive pipeline', () => {
         expect(results).toEqual([]);
     });
 
-    // ---- P8: searchLexicalOnly builds its caches lazily on a cold session ----
+    // ---- P8: searchLexicalOnly serves vault files when caches are cold ----
     // The modal's warm-up fallback calls searchLexicalOnly BEFORE any
-    // warmCaches pass (startup warm is deferred behind catch-up, and the old
-    // hasBm25Cache() gate refused to search in exactly that window). The
-    // lexical path must therefore build frame + BM25 from IndexedDB on first
-    // use, never requiring a prior warm.
+    // warmCaches pass. Name + BM25 come from live vault files (no IDB lock);
+    // a resident frame is used only when it is already in RAM.
     it('P8: searchLexicalOnly works with no warm caches and no embedder (lazy frame + BM25 build)', async () => {
         const s = await boot();
         await indexAll(s);

@@ -33,6 +33,13 @@ import { TaskContextTracker } from './task-context';
 import { rank, cosineScores, DEFAULT_RANKING_CONFIG } from './ranker';
 import { browseOrder, recencyDate } from './fusion';
 import { collectNameHits, shouldEarlyPaint } from './name-match';
+import {
+    buildVaultLexIndex,
+    vaultFileSignature,
+    vaultFileToMeta,
+    type FileCacheLite,
+    type VaultLexIndex,
+} from './vault-lex';
 import { IndexStore, classifyFileDelta, findOrphanChunkIds, isStoreClosedError, isQuotaError, stripContent, META_SCHEMA_VERSION, type MetaConfig, type FileRecord } from './index-store';
 import { computeFolderCoverage, type FolderCoverageSummary } from './folder-coverage';
 import { INDEX_QUOTA_MSG } from './index-notice';
@@ -3590,6 +3597,255 @@ export class SearchOrchestrator {
     // basename/alias hits (prefix-aware last token) BEFORE query embed and the
     // binary scan finish, so the modal can show a useful row on a known-item
     // keystroke. Final fused results still come from the returned promise.
+    // Serve from RAM only. A miss must NOT call listAllMeta / wait on
+    // currentDelta / isWriting / warmPromise — those are the Starting locks.
+    private peekResidentFrame(): ResidentFrame | null {
+        const f = this.frameCache;
+        if (!f || f.orderedChunks.length === 0) return null;
+        if (f.generation === this.coord.generation) return f;
+        if (this.coord.isWriting()) return f;
+        return null;
+    }
+
+    private vaultFileCache(file: TFile): FileCacheLite | null {
+        try {
+            const cache = this.app.metadataCache as { getFileCache?: (f: TFile) => FileCacheLite | null };
+            return cache.getFileCache?.(file) ?? null;
+        } catch {
+            return null;
+        }
+    }
+
+    private async ensureVaultLex(signal?: AbortSignal): Promise<VaultLexIndex | null> {
+        const files = this.app.vault.getMarkdownFiles().filter(f => this.shouldIndex(f.path));
+        if (files.length === 0) return null;
+        const sig = vaultFileSignature(files);
+        if (this.vaultLex && this.vaultLex.signature === sig) return this.vaultLex;
+        if (this.vaultLexPromise) {
+            try { return await this.vaultLexPromise; } catch { return this.vaultLex; }
+        }
+        const work = buildVaultLexIndex(
+            files,
+            f => this.vaultFileCache(f),
+            f => this.app.vault.cachedRead(f),
+            {
+                searchableProperties: this.settings.searchableProperties,
+                headingsField: this.settings.headingsField || this.settings.boostedBm25,
+                yieldFn: cheapYield,
+                signal,
+            },
+        );
+        this.vaultLexPromise = work;
+        try {
+            const built = await work;
+            if (built.signature === vaultFileSignature(
+                this.app.vault.getMarkdownFiles().filter(f => this.shouldIndex(f.path)),
+            )) {
+                this.vaultLex = built;
+            }
+            return built;
+        } catch (e) {
+            if (e instanceof Error && e.name === 'AbortError') throw e;
+            console.warn('[seek] vault lexical index failed', e);
+            return null;
+        } finally {
+            if (this.vaultLexPromise === work) this.vaultLexPromise = null;
+        }
+    }
+
+    private async fillVaultSnippets(
+        results: ScoredChunk[],
+        bodies: ReadonlyMap<string, string> | null,
+        cleanedQuery: string,
+        signal?: AbortSignal,
+    ): Promise<void> {
+        const snippetChars = SNIPPET_PREVIEW_LIMITS[this.settings.snippetPreview].chars;
+        const passageTerms = buildPassageTerms(cleanedQuery, () => 0);
+        for (const r of results) {
+            if (signal?.aborted) {
+                throw Object.assign(new Error('Query superseded'), { name: 'AbortError', code: 'ABORTED' });
+            }
+            let body = bodies?.get(r.chunk_id) ?? '';
+            if (!body) {
+                const file = this.app.vault.getAbstractFileByPath(r.note_path);
+                if (file instanceof TFile) {
+                    try { body = await this.app.vault.cachedRead(file); } catch { body = ''; }
+                }
+            }
+            r.content = body;
+            r.snippet = makeSnippet(body, passageTerms, snippetChars);
+        }
+    }
+
+    private async emitVaultLadder(
+        cleanedQuery: string,
+        topK: number,
+        onPartial: ((partial: SearchPartial) => void | Promise<void>) | undefined,
+        signal: AbortSignal | undefined,
+        t0: number,
+    ): Promise<{
+        results: ScoredChunk[];
+        namePainted: boolean;
+        lexPainted: boolean;
+        nameMatchMs: number;
+        nameHitCount: number;
+        namePartialMs: number;
+        lexPartialMs: number;
+    }> {
+        const empty = {
+            results: [] as ScoredChunk[],
+            namePainted: false, lexPainted: false,
+            nameMatchMs: 0, nameHitCount: 0, namePartialMs: 0, lexPartialMs: 0,
+        };
+        if (!cleanedQuery.trim()) return empty;
+        const throwIfAborted = (): void => {
+            if (signal?.aborted) {
+                throw Object.assign(new Error('Query superseded'), { name: 'AbortError', code: 'ABORTED' });
+            }
+        };
+
+        const files = this.app.vault.getMarkdownFiles().filter(f => this.shouldIndex(f.path));
+        const nameChunks: ChunkMeta[] = files.map(f => vaultFileToMeta(f, this.vaultFileCache(f)));
+        const nameStart = performance.now();
+        const nameHits = collectNameHits(nameChunks, cleanedQuery);
+        const nameMatchMs = performance.now() - nameStart;
+        let namePainted = false;
+        let namePartialMs = 0;
+        let results: ScoredChunk[] = [];
+        if (shouldEarlyPaint(nameHits)) {
+            const titleBoost = this.settings.navTitleBoost;
+            const early = nameHits.slice(0, topK).map(h => {
+                const c = nameChunks[h.index];
+                return {
+                    ...c,
+                    title: c.note_path.split('/').pop()?.replace(/\.md$/i, '') ?? c.title,
+                    content: '',
+                    score: h.score,
+                    ranking_signals: {
+                        dense: 0, bm25: 0, hybrid: 0, recency: 0,
+                        title_boost: titleBoost * h.score,
+                        denseRaw: 0,
+                    },
+                    lexicalOnly: true as const,
+                };
+            });
+            await this.fillVaultSnippets(early, this.vaultLex?.bodies ?? null, cleanedQuery, signal);
+            throwIfAborted();
+            namePartialMs = performance.now() - t0;
+            namePainted = true;
+            results = early;
+            if (onPartial) {
+                await onPartial({
+                    results: early,
+                    source: 'name',
+                    nameHitCount: nameHits.length,
+                    cleanedQuery,
+                });
+                throwIfAborted();
+                await cheapYield();
+                throwIfAborted();
+            }
+        }
+
+        const lexStart = performance.now();
+        const lex = await this.ensureVaultLex(signal);
+        throwIfAborted();
+        let lexPainted = false;
+        if (lex) {
+            const { scores: bm25Scores, bound: bm25Bound } = lex.bm25.getScoresWithCoverage(cleanedQuery, {
+                boosts: this.bm25FieldBoosts(),
+                fuzzy: this.settings.fuzzyEnabled ? FUZZY_BY_LENGTH : false,
+                prefix: this.settings.prefixLastToken ? PREFIX_LAST_TOKEN : false,
+            });
+            const caps = poolCaps(lex.chunks.length);
+            const bm25TopIdx = topNIndices(bm25Scores, caps.bm25, null);
+            const recencyTopIdx = this.topByRecency(lex.chunks, caps.recency, null);
+            const lexUnion = new Set<number>();
+            for (const i of bm25TopIdx) lexUnion.add(i);
+            for (const i of recencyTopIdx) lexUnion.add(i);
+            if (lexUnion.size > 0) {
+                const lexIndices = Array.from(lexUnion);
+                const lexChunks = lexIndices.map(i => lex.chunks[i]);
+                const lexBm25 = lexIndices.map(i => bm25Scores[i]);
+                const zeroDense = new Float64Array(lexIndices.length);
+                const lexRankConfig = {
+                    ...DEFAULT_RANKING_CONFIG,
+                    alpha: this.settings.denseWeight,
+                    titleBoost: this.settings.navTitleBoost,
+                    recencyEpsilon: this.settings.recencyEpsilon,
+                    recencyHalfLifeDays: this.settings.recencyHalfLifeDays,
+                    recencyKey: this.settings.recencyKey,
+                    createdProp: this.settings.createdProp,
+                };
+                const { results: lexRanked } = rank(
+                    lexChunks, zeroDense, new Float64Array(lexBm25),
+                    cleanedQuery, Math.min(caps.binary + caps.bm25 + caps.recency, lexIndices.length),
+                    lexRankConfig, bm25Bound,
+                );
+                for (const r of lexRanked) r.lexicalOnly = true;
+                const lexResults = dedupByPath(lexRanked, topK);
+                if (lexResults.length > 0) {
+                    await this.fillVaultSnippets(lexResults, lex.bodies, cleanedQuery, signal);
+                    throwIfAborted();
+                    lexPainted = true;
+                    if (namePainted && results.length > 0) {
+                        const seen = new Set(results.map(r => r.note_path));
+                        const merged = [...results];
+                        for (const r of lexResults) {
+                            if (seen.has(r.note_path)) continue;
+                            seen.add(r.note_path);
+                            merged.push(r);
+                        }
+                        results = merged.slice(0, topK);
+                    } else {
+                        results = lexResults;
+                    }
+                    if (onPartial) {
+                        await onPartial({ results: lexResults, source: 'lexical', cleanedQuery });
+                        throwIfAborted();
+                    }
+                }
+            }
+        }
+        return {
+            results,
+            namePainted,
+            lexPainted,
+            nameMatchMs,
+            nameHitCount: nameHits.length,
+            namePartialMs,
+            lexPartialMs: performance.now() - lexStart,
+        };
+    }
+
+    private async vaultFilterBrowse(
+        filters: QueryFilters,
+        filterCtx: FilterContext,
+        topK: number,
+        signal?: AbortSignal,
+    ): Promise<ScoredChunk[]> {
+        const files = this.app.vault.getMarkdownFiles().filter(f => this.shouldIndex(f.path));
+        const matcher = compileMatcher(filters, filterCtx);
+        const metas = files.map(f => vaultFileToMeta(f, this.vaultFileCache(f)));
+        const matched = matcher ? metas.filter(c => matcher(c)) : metas;
+        const seenPaths = new Set<string>();
+        const results: ScoredChunk[] = [];
+        for (const c of browseOrder(matched, this.settings.recencyKey, this.settings.createdProp)) {
+            if (seenPaths.has(c.note_path)) continue;
+            seenPaths.add(c.note_path);
+            results.push({
+                ...c,
+                content: '',
+                score: 0,
+                ranking_signals: { dense: 0, bm25: 0, hybrid: 0, recency: 0, title_boost: 0, denseRaw: 0 },
+                lexicalOnly: true,
+            });
+            if (results.length >= topK) break;
+        }
+        await this.fillVaultSnippets(results, this.vaultLex?.bodies ?? null, '', signal);
+        return results;
+    }
+
     async search(
         query: string,
         topK = 10,
@@ -3616,6 +3872,39 @@ export class SearchOrchestrator {
         const filterCtx = this.buildFilterContext(recencyOverride);
         const { cleanedQuery, filters } = parseQuery(query, filterCtx);
 
+        // Vault-file ladder when the resident frame is not in RAM. Do not call
+        // ensureFrame on a miss — listAllMeta / warmJoin / isWriting wait lock
+        // the process against boot hydrate and miss the 10s SLO.
+        let vault = {
+            results: [] as ScoredChunk[],
+            namePainted: false, lexPainted: false,
+            nameMatchMs: 0, nameHitCount: 0, namePartialMs: 0, lexPartialMs: 0,
+        };
+        if (!this.peekResidentFrame()) {
+            if (cleanedQuery.trim()) {
+                vault = await this.emitVaultLadder(cleanedQuery, topK, onPartial, signal, t0);
+            } else if (filters) {
+                vault.results = await this.vaultFilterBrowse(filters, filterCtx, topK, signal);
+            }
+            throwIfAborted();
+            // Always return vault results on a cold frame. Falling through to
+            // hybrid here would re-enter ensureBm25 / embed while boot hydrate
+            // still holds the writer — the lock that missed the 10s SLO.
+            // The modal retries search() when hasSearchableFrame() flips true.
+            const entry = this.emptySearchEntry(
+                query, cleanedQuery, filters, topK, searchId, 0, performance.now() - t0,
+            );
+            entry.nameMatchMs = parseFloat(vault.nameMatchMs.toFixed(2));
+            entry.nameHitCount = vault.nameHitCount;
+            entry.nameEarlyPainted = vault.namePainted;
+            entry.namePartialMs = parseFloat(vault.namePartialMs.toFixed(2));
+            entry.lexPartialFired = vault.lexPainted;
+            entry.lexPartialMs = parseFloat(vault.lexPartialMs.toFixed(2));
+            throwIfAborted();
+            await this.appendSearchTelemetry(entry);
+            return { results: vault.results, entry };
+        }
+
         // ---- S0: resident-tier read ------------------------------------
         // listAllChunks is unavoidable: BM25 needs all chunks to build its
         // inverse index, and the result UI needs chunk text/metadata. But it's
@@ -3632,7 +3921,8 @@ export class SearchOrchestrator {
         // ensureFrame; they're not retrievable anyway since the UI needs text.
         const idbStart = performance.now();
         const frameWasCached = !!(this.frameCache && this.frameCache.generation === this.coord.generation);
-        const frame = await this.ensureFrame();
+        // RAM only — never listAllMeta / wait on writers from the search path.
+        const frame = this.peekResidentFrame();
         const idbReadMs = performance.now() - idbStart;
         throwIfAborted();
         // Frame and binary index are built together under one dataGeneration, so
@@ -3640,10 +3930,22 @@ export class SearchOrchestrator {
         const binaryCacheHitFlag = frameWasCached;
 
         if (!frame) {
+            if (vault.results.length === 0 && cleanedQuery.trim()) {
+                vault = await this.emitVaultLadder(cleanedQuery, topK, onPartial, signal, t0);
+                throwIfAborted();
+            } else if (vault.results.length === 0 && filters) {
+                vault.results = await this.vaultFilterBrowse(filters, filterCtx, topK, signal);
+            }
             const entry: SearchEntry = this.emptySearchEntry(query, cleanedQuery, filters, topK, searchId, idbReadMs, performance.now() - t0);
+            entry.nameMatchMs = parseFloat(vault.nameMatchMs.toFixed(2));
+            entry.nameHitCount = vault.nameHitCount;
+            entry.nameEarlyPainted = vault.namePainted;
+            entry.namePartialMs = parseFloat(vault.namePartialMs.toFixed(2));
+            entry.lexPartialFired = vault.lexPainted;
+            entry.lexPartialMs = parseFloat(vault.lexPartialMs.toFixed(2));
             throwIfAborted();
             await this.appendSearchTelemetry(entry);
-            return { results: [], entry };
+            return { results: vault.results, entry };
         }
 
         const orderedChunks = frame.orderedChunks;
@@ -4872,6 +5174,13 @@ export class SearchOrchestrator {
     hasBm25Cache(): boolean {
         return this.bm25Cache !== null && this.bm25CacheGeneration === this.coord.generation && this.bm25CacheChunkCount > 0;
     }
+    /** Resident frame already in RAM — no IDB, no mutex wait. */
+    hasSearchableFrame(): boolean {
+        return this.peekResidentFrame() != null;
+    }
+    // Vault-file MiniSearch (Starting ladder). Never joins IDB / warmCaches.
+    private vaultLex: VaultLexIndex | null = null;
+    private vaultLexPromise: Promise<VaultLexIndex> | null = null;
     /** In-flight warmCaches promise — concurrent callers await instead of no-op. */
     private warmPromise: Promise<void> | null = null;
     async warmCaches(trigger: string): Promise<void> {
@@ -5058,94 +5367,11 @@ export class SearchOrchestrator {
         const cleanedQuery = parseQuery(query, this.buildFilterContext()).cleanedQuery;
         if (!cleanedQuery.trim()) return { results: [] };
 
-        const frame = await this.ensureFrame({ skipResidentInt8: true });
+        // Always vault files during model-load. ensureFrame / hydrateBodies /
+        // ensureBm25 contend with boot hydrate and miss the 10s SLO.
+        const vault = await this.emitVaultLadder(cleanedQuery, topK, onPartial, signal, t0);
         throwIfAborted();
-        if (!frame || frame.orderedChunks.length === 0) return { results: [] };
-
-        const orderedChunks = frame.orderedChunks;
-        if (!this.bm25CacheValid(orderedChunks)) {
-            await this.tryLoadPersistedBm25(orderedChunks);
-            throwIfAborted();
-        }
-        const bm25CacheHit = await this.ensureBm25(orderedChunks);
-        throwIfAborted();
-        if (!this.bm25Cache) return { results: [] };
-        if (!frameBm25Coherent(frame, this.bm25Cache)) return { results: [] };
-
-        const { scores: bm25Scores, bound: bm25Bound } = this.bm25Cache.getScoresWithCoverage(cleanedQuery, {
-            boosts: this.bm25FieldBoosts(),
-            fuzzy: this.settings.fuzzyEnabled ? FUZZY_BY_LENGTH : false,
-            prefix: this.settings.prefixLastToken ? PREFIX_LAST_TOKEN : false,
-        });
-        void bm25CacheHit;
-
-        const caps = poolCaps(orderedChunks.length - frame.tombstoneCount);
-        const bm25TopIdx = topNIndices(bm25Scores, caps.bm25, null);
-        const recencyTopIdx = this.topByRecency(orderedChunks, caps.recency, null);
-
-        // Name hits for early paint (same as full search)
-        let nameEarlyPainted = false;
-        if (onPartial) {
-            const nameHits = collectNameHits(orderedChunks, cleanedQuery);
-            if (shouldEarlyPaint(nameHits)) {
-                const titleBoost = this.settings.navTitleBoost;
-                const early: ScoredChunk[] = nameHits.slice(0, topK).map(h => {
-                    const c = orderedChunks[h.index];
-                    return {
-                        ...c, content: '', score: h.score,
-                        ranking_signals: { dense: 0, bm25: 0, hybrid: 0, recency: 0, title_boost: titleBoost * h.score, denseRaw: 0 },
-                        lexicalOnly: true,
-                    };
-                });
-                await this.hydrateBodies(early);
-                throwIfAborted();
-                const snippetChars = SNIPPET_PREVIEW_LIMITS[this.settings.snippetPreview].chars;
-                const passageTerms = buildPassageTerms(cleanedQuery, () => 0);
-                for (const r of early) r.snippet = makeSnippet(r.content, passageTerms, snippetChars);
-                nameEarlyPainted = true;
-                await onPartial({ results: early, source: 'name', nameHitCount: nameHits.length, cleanedQuery });
-                throwIfAborted();
-            }
-        }
-
-        // BM25 lexical ranking
-        const lexUnion = new Set<number>();
-        for (const i of bm25TopIdx) lexUnion.add(i);
-        for (const i of recencyTopIdx) lexUnion.add(i);
-        if (lexUnion.size === 0) return { results: [] };
-
-        const lexIndices = Array.from(lexUnion);
-        const lexChunks = lexIndices.map(i => orderedChunks[i]);
-        const lexBm25 = lexIndices.map(i => bm25Scores[i]);
-        const zeroDense = new Float64Array(lexIndices.length);
-        const lexRankConfig = {
-            ...DEFAULT_RANKING_CONFIG,
-            alpha: this.settings.denseWeight,
-            titleBoost: this.settings.navTitleBoost,
-            recencyEpsilon: this.settings.recencyEpsilon,
-            recencyHalfLifeDays: this.settings.recencyHalfLifeDays,
-            recencyKey: this.settings.recencyKey,
-            createdProp: this.settings.createdProp,
-        };
-        const { results: lexRanked } = rank(
-            lexChunks, zeroDense, new Float64Array(lexBm25),
-            cleanedQuery, Math.min(caps.binary + caps.bm25 + caps.recency, lexIndices.length),
-            lexRankConfig, bm25Bound,
-        );
-        for (const r of lexRanked) r.lexicalOnly = true;
-        const results = dedupByPath(lexRanked, topK);
-        await this.hydrateBodies(results);
-        throwIfAborted();
-        const snippetChars = SNIPPET_PREVIEW_LIMITS[this.settings.snippetPreview].chars;
-        const passageTerms = buildPassageTerms(cleanedQuery, () => 0);
-        for (const r of results) r.snippet = makeSnippet(r.content, passageTerms, snippetChars);
-
-        if (onPartial && !nameEarlyPainted) {
-            await onPartial({ results, source: 'lexical', cleanedQuery });
-            throwIfAborted();
-        }
-
-        return { results };
+        return { results: vault.results };
     }
 
     // BM25 cache. Validity is determined by:
