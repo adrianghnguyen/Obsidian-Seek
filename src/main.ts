@@ -16,8 +16,9 @@
 //   - No model-cache management
 //   - No MCP wrapper
 
-import { Modal, Notice, Plugin, TFile } from 'obsidian';
+import { Notice, Plugin, TFile } from 'obsidian';
 import type { App } from 'obsidian';
+import { ConfirmModal } from './confirm-modal';
 import { LocalEmbedder, LOCAL_MODEL, LEGACY_ENGLISH_MODEL_ID, EMBEDDING_DIM } from './embedder';
 import type { WorkerProbeResult, WorkerEmbedTestResult } from './iframe-runner';
 import { activeModelSpec, resolveOverrideSpec, evictStaleModelCaches, deleteModelCaches, probeModelDownloaded } from './model-registry';
@@ -49,6 +50,7 @@ import {
 import { SeekSearchModal, type IndexBanner } from './search-modal';
 import { parsePaneType, openFileAtTarget, openBaseAtTarget, type OpenTarget } from './open-target';
 import { registerSeekCliHandlers } from './cli-handlers';
+import { DriftRecoveryCoordinator } from './drift-recovery-coordinator';
 import {
     PluginSchedulerManager,
     type PluginSchedulerHost,
@@ -288,9 +290,13 @@ export default class SeekPlugin extends Plugin {
     // embed-free recovery ladder (warm → sidecar hydrate → verify). Re-escalation is
     // suppressed per index generation (see driftRecoveryDecision); indexHealth surfaces
     // a terminal 'degraded' on the settings page when the ladder can't re-couple.
-    private driftRecoveryPending = false;        // a persistent-drift escalation is queued for a safe window
-    private driftRecoveryRunning = false;        // runDriftRecovery re-entrancy guard
-    private lastDriftRecoveryGen = -1;           // coord generation we last escalated for; -1 = never
+    private driftRecoveryCoordinator!: DriftRecoveryCoordinator;
+    get driftRecoveryPending(): boolean { return this.driftRecoveryCoordinator?.pending ?? false; }
+    set driftRecoveryPending(val: boolean) { if (this.driftRecoveryCoordinator) this.driftRecoveryCoordinator.pending = val; }
+    get driftRecoveryRunning(): boolean { return this.driftRecoveryCoordinator?.running ?? false; }
+    set driftRecoveryRunning(val: boolean) { if (this.driftRecoveryCoordinator) this.driftRecoveryCoordinator.running = val; }
+    get lastDriftRecoveryGen(): number { return this.driftRecoveryCoordinator?.lastRecoveryGen ?? -1; }
+    set lastDriftRecoveryGen(val: number) { if (this.driftRecoveryCoordinator) this.driftRecoveryCoordinator.lastRecoveryGen = val; }
     private indexHealth: 'healthy' | 'recovering' | 'degraded' = 'healthy';
     get indexHealthState(): 'healthy' | 'recovering' | 'degraded' { return this.indexHealth; }
     // WHY the index is in a non-healthy state, so the search-modal banner says the true
@@ -672,6 +678,17 @@ export default class SeekPlugin extends Plugin {
         // existing index off it into the literal path on upgrade.
         const legacySidecarDir = this.manifest.dir ? `${this.manifest.dir}/index` : null;
         this.orchestrator = new SearchOrchestrator(this.app, this.store, this.embedder, this.logger, this.settings, this.forensics, sidecarIndexDir, this.taskCtx);
+        this.driftRecoveryCoordinator = new DriftRecoveryCoordinator({
+            getOrchestrator: () => this.orchestrator,
+            getIndexHealth: () => this.indexHealth,
+            setIndexHealth: (h) => { this.indexHealth = h; },
+            setDegradedReason: (r) => { this.degradedReason = r; },
+            isIndexingBlocked: () => this.indexingBlocked,
+            isSessionWorkCurrent: (gen) => this.isSessionWorkCurrent(gen),
+            getLoadGeneration: () => this.loadGeneration,
+            appendErrorIfCurrent: (ctx, e, gen) => this.appendErrorIfCurrent(ctx, e, gen),
+            withSidecarHydrate: (fn) => this.withSidecarHydrate(fn),
+        });
         // The orchestrator is pull-based; this is its one injected outbound edge — it
         // fires when persistent frame/BM25 drift survives the cooldown, and we drive the
         // embed-free recovery ladder from the plugin (which owns scheduling + gating).
@@ -2557,124 +2574,16 @@ export default class SeekPlugin extends Plugin {
     forcePollExclusions(): void {
         this.schedulers.forcePollExclusions();
     }
-    // branch). Gen-keyed suppression: only escalate once per index generation, so a
-    // degraded index re-tripping drift on every keystroke doesn't re-arm recovery — a
-    // later mutation (delta/reindex/invalidate/hydrate) bumps the generation and
-    // re-arms it for the new state. Sets pending + drives; the actual ladder runs on
-    // the next safe edge (mirrors catch-up's pending/drive split).
     private onPersistentDrift(): void {
-        if (!this.orchestrator) return;
-        const currentGen = this.orchestrator.currentGeneration();
-        const { schedule } = driftRecoveryDecision({
-            running: this.driftRecoveryRunning,
-            health: this.indexHealth,
-            lastRecoveryGen: this.lastDriftRecoveryGen,
-            currentGen,
-        });
-        if (!schedule) return;
-        this.lastDriftRecoveryGen = currentGen;
-        this.driftRecoveryPending = true;
-        this.runDriftRecovery();
+        this.driftRecoveryCoordinator.onPersistentDrift();
     }
 
-    // The embed-free recovery ladder, run in a gated, single-flighted scheduler (the
-    // sibling of runCatchUp). Execution order is sidecar hydrate (reconcile the IDB
-    // against the vault; tokenizer-only re-chunk, NO embed; null no-op when sidecar is
-    // off) → warm (rebuild frame + BM25 from the reconciled IDB) → verify. NEVER reaches
-    // reindexAll/embedAndCommitFiles/embedder.embed* — re-embedding is never the fix for
-    // a row-space coupling bug. Unlike runCatchUp it does NOT require embedder.loaded
-    // (the ladder is tokenizer-only). On exhaustion: indexHealth='degraded' +
-    // console.error (NO Notice on this path), surfaced on the settings page.
     private runDriftRecovery(): void {
-        if (!this.driftRecoveryPending || this.driftRecoveryRunning || !this.orchestrator) return;
-        if (activeDocument.hidden || this.indexingBlocked) return;  // never start in a bad window (typing OR a query in flight)
-        this.driftRecoveryRunning = true;
-        this.indexHealth = 'recovering';
-        const orchestrator = this.orchestrator;
-        const workGen = this.loadGeneration;
-        void (async () => {
-            if (!this.isSessionWorkCurrent(workGen)) {
-                this.driftRecoveryRunning = false;
-                return;
-            }
-            // The generation verifyCoherent actually evaluated; -1 until we reach verify.
-            // A user-initiated full reindex (and any delta) runs OFF this ladder's write
-            // mutex — warmCaches/verifyCoherent read the store un-serialized — so it can
-            // land mid-verify, advancing the generation and OWNING the index's outcome.
-            // We therefore commit our verdict + suppression key only when that generation
-            // is still live (optimistic concurrency, mirroring ensureFrame's F2
-            // shouldDiscardPartialFrame discard). If a mutation raced us it is
-            // authoritative — its reindex left a coherent 'healthy' index, or its delta
-            // re-armed a fresh drift trip — so a stale 'degraded' here would wrongly stick.
-            let verifiedGen = -1;
-            try {
-                // Step 1 — sidecar hydrate: reconcile IDB against the live vault
-                // (embed-free; null no-op when sidecar off), which itself re-warms on a
-                // >0 hydrate. On the write mutex, so it can't overlap a reindex's store.close().
-                await this.withSidecarHydrate(() => orchestrator.hydrateSidecar());
-                // Step 2 — warm: co-rebuild frame + BM25 from one (reconciled) IDB
-                // snapshot, fixing the transient row-space desync (on cold mobile
-                // warmCaches no-ops, but the verify below rebuilds via ensureFrame/ensureBm25).
-                await orchestrator.warmCaches('drift-recovery');
-                // Verify the rebuild actually re-coupled the row spaces.
-                verifiedGen = orchestrator.currentGeneration();
-                const ok = await orchestrator.verifyCoherent();
-                if (orchestrator.currentGeneration() !== verifiedGen) {
-                    // Raced: a reindex/delta landed off our mutex during verify and owns
-                    // the outcome. Leave health 'recovering' (invisible in settings) and
-                    // the escalation suppression key untouched, so the new generation
-                    // re-arms recovery on the next drift trip.
-                } else {
-                    this.commitDriftHealth(ok ? 'healthy' : 'degraded', verifiedGen);
-                    if (ok) {
-                        /* intentionally empty: the re-couple succeeded and is already committed as 'healthy' above — nothing further to do */
-                    } else {
-                        console.error('[seek] drift auto-recovery exhausted (embed-free warm + sidecar reconcile did not re-couple the frame/BM25 row space) — indexHealth=degraded; a full reindex recovers it');
-                    }
-                }
-            } catch (e) {
-                if (!this.isSessionWorkCurrent(workGen)) {
-                    /* torn-down session — defer without logging */
-                } else if (verifiedGen < 0) {
-                    // Threw before verify (e.g. a hydrate failure) — a real recovery error.
-                    this.commitDriftHealth('degraded', orchestrator.currentGeneration());
-                    this.appendErrorIfCurrent('runDriftRecovery', e, workGen);
-                } else if (orchestrator.currentGeneration() === verifiedGen) {
-                    // Verify threw with the generation unchanged — a real failure
-                    // (corrupt store, not a concurrent writer).
-                    this.commitDriftHealth('degraded', verifiedGen);
-                    this.appendErrorIfCurrent('runDriftRecovery', e, workGen);
-                } else {
-                    // The generation advanced: a concurrent reindex/delta closed the store
-                    // mid-verify and owns the outcome. Expected under the race — defer, and
-                    // don't log it as an error (it isn't one).
-                }
-            } finally {
-                if (this.isSessionWorkCurrent(workGen)) {
-                    this.driftRecoveryPending = false;
-                    this.driftRecoveryRunning = false;
-                } else {
-                    this.driftRecoveryRunning = false;
-                }
-            }
-        })();
+        this.driftRecoveryCoordinator.runDriftRecovery();
     }
 
-    // Commit a terminal drift-recovery verdict: set indexHealth AND re-baseline the
-    // suppression key to the SAME generation the verdict describes. Coupling them keeps
-    // the two from disagreeing — re-reading currentGeneration() in a finally (as an
-    // earlier cut did) could pin suppression to a later, UN-verified generation (a delta
-    // that raced verify), hiding the degraded affordance for a state we never checked.
     private commitDriftHealth(health: 'healthy' | 'degraded', gen: number): void {
-        this.indexHealth = health;
-        // Tag the cause so the modal banner stays truthful: a drift degradation must not
-        // wear the version-stale copy (INDEX_STALE_MSG). 'healthy' clears it. NOTE: if the
-        // index was version-stale when drift recovery ran, this overwrites/clears the
-        // 'version' reason — but that's self-correcting: the next periodicReconcile re-runs
-        // enforceIndexIdentity, re-detects the still-mismatched identity, and re-sets
-        // degradedReason='version' (no duplicate toast — identityHealNotified stays latched).
-        this.degradedReason = health === 'degraded' ? 'drift' : null;
-        this.lastDriftRecoveryGen = gen;
+        this.driftRecoveryCoordinator.commitDriftHealth(health, gen);
     }
 
     // Full reindex: nuke the index and re-embed every markdown file. Shared by the
@@ -3173,48 +3082,6 @@ export default class SeekPlugin extends Plugin {
             heapMB,
         };
         await this.logger.append(entry);
-    }
-}
-
-// Minimal confirm dialog. Replaces the native window.confirm(), which is
-// unreliable on mobile (the WebView can suppress it). Resolves true when the
-// user confirms, false on Cancel or any dismissal (Esc / click-outside).
-class ConfirmModal extends Modal {
-    private settled = false;
-    private resolve: ((value: boolean) => void) | null = null;
-
-    constructor(app: App, private readonly message: string) {
-        super(app);
-    }
-
-    openAndConfirm(): Promise<boolean> {
-        return new Promise<boolean>((resolve) => {
-            this.resolve = resolve;
-            this.open();
-        });
-    }
-
-    onOpen(): void {
-        for (const line of this.message.split('\n')) {
-            this.contentEl.createEl('p', { text: line });
-        }
-        const buttons = this.contentEl.createDiv({ cls: 'modal-button-container' });
-        const proceed = buttons.createEl('button', { text: 'Proceed', cls: 'mod-cta' });
-        proceed.addEventListener('click', () => this.settle(true));
-        const cancel = buttons.createEl('button', { text: 'Cancel' });
-        cancel.addEventListener('click', () => this.settle(false));
-    }
-
-    onClose(): void {
-        // Dismissed without a button (Esc / click-outside) → treat as Cancel.
-        this.settle(false);
-    }
-
-    private settle(value: boolean): void {
-        if (this.settled) return;
-        this.settled = true;
-        this.resolve?.(value);
-        this.close();
     }
 }
 
