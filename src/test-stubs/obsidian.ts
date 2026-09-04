@@ -142,6 +142,68 @@ export const MarkdownRenderer = {
     render: async (): Promise<void> => {},
 };
 
+export class App {
+    vault: Record<string, unknown> = {};
+    workspace: Record<string, unknown> = {};
+    metadataCache: Record<string, unknown> = {};
+    fileManager: Record<string, unknown> = {};
+    appId = 'test-vault';
+}
+
+export class Plugin extends Component {
+    app: App;
+    manifest: Record<string, unknown>;
+    constructor(app?: App, manifest?: Record<string, unknown>) {
+        super();
+        this.app = app ?? new App();
+        this.manifest = manifest ?? { id: 'seek', name: 'Seek', version: '1.4.0' };
+    }
+    async loadData(): Promise<unknown> { return {}; }
+    async saveData(_data: unknown): Promise<void> {}
+    addCommand(_cmd: unknown): unknown { return _cmd; }
+    addSettingTab(_tab: unknown): void {}
+    registerObsidianProtocolHandler(_action: string, _handler: unknown): void {}
+    registerEvent(_eventRef: unknown): void {}
+    registerDomEvent(_el: unknown, _type: string, _callback: unknown): void {}
+    registerInterval(id: number): number { return id; }
+    addStatusBarItem(): HTMLElement { return stubEl() as unknown as HTMLElement; }
+}
+
+export class PluginSettingTab {
+    app: App;
+    plugin: Plugin;
+    containerEl: StubEl;
+    constructor(app?: App, plugin?: Plugin) {
+        this.app = app ?? new App();
+        this.plugin = plugin ?? ({} as Plugin);
+        this.containerEl = stubEl();
+    }
+    display(): void {}
+    hide(): void {}
+}
+
+export class Setting {
+    settingEl: StubEl;
+    nameEl: StubEl;
+    descEl: StubEl;
+    controlEl: StubEl;
+    constructor(_containerEl?: unknown) {
+        this.settingEl = stubEl();
+        this.nameEl = stubEl();
+        this.descEl = stubEl();
+        this.controlEl = stubEl();
+    }
+    setName(_name: string): this { return this; }
+    setDesc(_desc: unknown): this { return this; }
+    addText(_cb: (text: unknown) => void): this { return this; }
+    addToggle(_cb: (toggle: unknown) => void): this { return this; }
+    addSlider(_cb: (slider: unknown) => void): this { return this; }
+    addDropdown(_cb: (dropdown: unknown) => void): this { return this; }
+    addButton(_cb: (button: unknown) => void): this { return this; }
+    setClass(_cls: string): this { return this; }
+    setDisabled(_disabled: boolean): this { return this; }
+}
+
 // Obsidian's real `parseYaml` is a thin wrapper over a YAML parser, so the
 // dev-only `yaml` dependency is a faithful runtime stand-in for tests (base-
 // extractor.ts is the only consumer). The real build uses Obsidian's export at
