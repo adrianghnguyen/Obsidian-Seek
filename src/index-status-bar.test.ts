@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
     IndexStatusBar,
     extendIndexPassTotal,
+    indexChunksPerSec,
     parseIndexedProgress,
     quantizePercent,
 } from './index-status-bar';
@@ -83,17 +84,32 @@ function textOf(el: StubEl): string {
 }
 
 describe('parseIndexedProgress', () => {
-    it('reads a simple indexed-files line', () => {
-        expect(parseIndexedProgress('Indexed 12 files · 40 chunks')).toEqual({ files: 12 });
+    it('reads file and chunk counts', () => {
+        expect(parseIndexedProgress('Indexed 12 files · 40 chunks')).toEqual({ files: 12, chunks: 40 });
     });
 
     it('reads comma-grouped counts and a pause suffix', () => {
-        expect(parseIndexedProgress('Indexed 1,234 files · 40 chunks — paused while you search…'))
-            .toEqual({ files: 1234 });
+        expect(parseIndexedProgress('Indexed 1,234 files · 5,678 chunks — paused while you search…'))
+            .toEqual({ files: 1234, chunks: 5678 });
+    });
+
+    it('allows files without a chunk suffix', () => {
+        expect(parseIndexedProgress('Indexed 3 files')).toEqual({ files: 3, chunks: null });
     });
 
     it('returns null for garbage', () => {
         expect(parseIndexedProgress('still working')).toBeNull();
+    });
+});
+
+describe('indexChunksPerSec', () => {
+    it('returns zero without chunks or elapsed time', () => {
+        expect(indexChunksPerSec(0, 1000)).toBe(0);
+        expect(indexChunksPerSec(100, 0)).toBe(0);
+    });
+
+    it('computes rolling throughput', () => {
+        expect(indexChunksPerSec(100, 10_000)).toBe(10);
     });
 });
 
@@ -127,16 +143,19 @@ describe('IndexStatusBar', () => {
         onOpenSettings: () => {},
     };
 
-    it('paints exact percent on the label and progress bar', () => {
+    it('paints file counts on the label, chunk rate in smaller text, and progress bar', () => {
         const root = stubEl();
         const bar = new IndexStatusBar();
         bar.mount(root as unknown as HTMLElement, hooks);
         bar.show(5, 'Seek: indexing…');
-        bar.update(1, 5);
-        expect(root.querySelector('.seek-status-bar-label')?.textContent).toBe('20%');
+        bar.updateFromProgress('Indexed 1 files · 10 chunks');
+        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe('1/5');
+        expect(root.querySelector('.seek-status-bar-chunks')?.textContent).toMatch(/^10 ch/);
         expect(root.querySelector('progress')?.value).toBe(20);
-        bar.update(2, 5);
-        expect(root.querySelector('.seek-status-bar-label')?.textContent).toBe('40%');
+        bar.updateFromProgress('Indexed 2 files · 25 chunks');
+        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe('2/5');
+        expect(root.querySelector('.seek-status-bar-chunks')?.textContent).toMatch(/^25 ch/);
+        expect(root.querySelector('progress')?.value).toBe(40);
     });
 
     it('uses detailed tooltip while a pass is in flight', () => {
@@ -147,7 +166,7 @@ describe('IndexStatusBar', () => {
         bar.mount(root as unknown as HTMLElement, hooks);
         bar.show(15, 'Seek: indexing 15 notes…');
         bar.update(3, 15);
-        expect(labels.at(-1)).toMatch(/Seek: Indexing 3 \/ 15 · 20%/);
+        expect(labels.at(-1)).toMatch(/Seek: Indexing 3 \/ 15 files · 20%/);
     });
 
     it('returns to idle Seek on hide', () => {
@@ -157,7 +176,8 @@ describe('IndexStatusBar', () => {
         bar.show(5, 'Seek: indexing…');
         bar.update(1, 5);
         bar.hide();
-        expect(root.querySelector('.seek-status-bar-label')?.textContent).toBe('Seek');
+        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe('Seek');
+        expect(root.querySelector('.seek-status-bar-chunks')?.className).toContain('is-hidden');
         expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-good');
         expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)).toBeNull();
     });
@@ -204,10 +224,10 @@ describe('IndexStatusBar', () => {
         bar.refreshIdle();
         expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-info');
         health = 'ok';
-        bar.update(3, 15);
+        bar.updateFromProgress('Indexed 3 files · 12 chunks');
         bar.refreshIdle();
         expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)?.textContent).toBe('12');
-        expect(root.querySelector('.seek-status-bar-label')?.textContent).toBe('20%');
+        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe('3/15');
     });
 
     it('clamps done to total and ignores stale job ids', () => {

@@ -1484,9 +1484,21 @@
     cursor: pointer;
 }
 .seek-status-bar-label {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 5px;
     font-size: 12px;
     font-variant-numeric: tabular-nums;
 }
+.seek-status-bar-files {
+    font-size: inherit;
+}
+.seek-status-bar-chunks {
+    font-size: 10px;
+    opacity: 0.75;
+    font-variant-numeric: tabular-nums;
+}
+.seek-status-bar-chunks.is-hidden { display: none; }
 .seek-status-bar-label.is-hidden { display: none; }
 .seek-status-bar-progress {
     width: 48px;

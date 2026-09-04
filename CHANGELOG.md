@@ -5,6 +5,7 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 ## [Unreleased]
 
 ### Changed
+- **Status bar indexing shows file counts and chunk throughput.** During a pass the label reads `done/total` files; chunk count and rolling `ch/s` appear in smaller text beside it. The progress bar and remaining-files badge are unchanged.
 - **Settings → Index "Embedder coverage by folder" collapses to top-level folders by default.** Nested folders stay hidden until you click a parent to unfold it; expand/collapse is remembered while Settings stays open (including across the live coverage poll).
 
 ### Fixed
