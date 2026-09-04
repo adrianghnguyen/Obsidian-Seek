@@ -53,6 +53,7 @@ import { CompositorPacer, cheapYield } from './pacer';
 import { isMobilePlatform, residentInt8Enabled } from './platform';
 import { CacheManager } from './cache-manager';
 import { SearchQuery, type RecencyOverride, dedupByPath, topKByScore } from './search-query';
+import { SidecarCoordinator } from './sidecar-coordinator';
 import {
     alignCandidate,
     buildResidentRerankBlock,
@@ -255,6 +256,7 @@ export class SearchOrchestrator {
     private binaryWorker: BinaryScorerWorker;
     private cacheManager: CacheManager;
     private searchQuery: SearchQuery;
+    private sidecarCoordinator: SidecarCoordinator;
 
     // Set once, in dispose() (plugin unload / disable). A reindex that is still
     // embedding when the plugin unloads keeps running on the microtask queue AFTER
@@ -342,6 +344,20 @@ export class SearchOrchestrator {
                     this.vaultFilterBrowse(filters, filterCtx, topK, signal),
                 hydrateBodies: (results) => this.hydrateBodies(results),
             },
+        });
+        this.sidecarCoordinator = new SidecarCoordinator({
+            app: this.app,
+            store: this.store,
+            coord: this.coord,
+            embedder: this.embedder,
+            logger: this.logger,
+            settings: this.settings,
+            cacheManager: this.cacheManager,
+            forensics: this.forensics,
+            chunksFor: (content, path, modifiedIso) => this.chunksFor(content, path, modifiedIso),
+            indexableFiles: () => this.indexableFiles(),
+            shouldIndex: (path) => this.shouldIndex(path),
+            onGoodEnough: () => this.onGoodEnough?.(),
         });
     }
 
@@ -2538,814 +2554,50 @@ export class SearchOrchestrator {
         void this.warmCaches('coherence-drift');
     }
 
-    // Rebuild the IDB index from the vault-file sidecar without re-embedding —
-    // the iOS-eviction / fresh-device recovery path. Runs under the write mutex
-    // (can't overlap a reindex/delta), reproduces ids by re-chunking the live
-    // vault, and writes only the intersection that isn't already in IDB. Returns
-    // null when the sidecar is off. Idempotent: a warm index hydrates nothing.
+    get peerAhead(): boolean {
+        return this.sidecarCoordinator.peerAhead;
+    }
+
     async hydrateSidecar(): Promise<HydrateResult | null> {
-        if (!this.coord.sidecarOn()) return null;
-        const result = await this.coord.runExclusive(() =>
-            this.hydrateSidecarExclusive(),
-        );
-        return this.afterHydrateExclusive(result);
+        return this.sidecarCoordinator.hydrateSidecar();
     }
 
-    // Hydrate body that assumes the write mutex is already held. Used by
-    // hydrateSidecar (which acquires the lock) and rebuildFromSidecar (which
-    // must clearAllStores + hydrate in ONE critical section — releasing
-    // between them left isWriting() false so flushDirty/full reindex could
-    // run against an empty store). Must NOT call runExclusive (FIFO deadlock).
-    private async hydrateSidecarExclusive(): Promise<HydrateResult> {
-        // Count inside the exclusive section (R3): a concurrent writer cannot
-        // populate the store between the empty check and hydrate.
-        const wasEmpty = (await this.store.count()).chunks === 0;
-        const result = await hydrateFromSidecar(this.hydrateDepsGreedy());
-        // Stamp the build identity when hydrating onto a PREVIOUSLY-EMPTY index: every
-        // chunk came from a metaAccepts-filtered (current-identity) producer, so the
-        // index is provably at the current identity. This lets a hydrate-only device
-        // (cold iOS, lastIndexedAt=null) report a current identity on its next boot —
-        // without it the boot gate would needlessly nuke+rehydrate, or (no peer that
-        // boot) falsely drop into the "wait for desktop" empty state. NOT stamped on a
-        // non-empty hydrate: that index may still hold stale orphans, and only a nuke
-        // (or the Phase-3 subtractive hydrate) clears them — claiming current identity
-        // there would mask them from the gate.
-        if (wasEmpty && result.hydrated > 0) {
-            const id = pluginIdentity();
-            const m = await this.store.getMeta();
-            await this.store.setMeta({ ...m, modelId: m.modelId ?? MODEL_ID, chunkerVersion: id.chunkerVersion, analyzerVersion: id.analyzerVersion, revision: id.revision });
-        }
-        // Inherit display calibration from the producer when this device has none
-        // of its own (a hydrate-only iOS device that never full-reindexed). Only
-        // fill when absent — a local full reindex's stats describe THIS index more
-        // faithfully and must win. Invalidate the cached accessor so the next
-        // search re-reads.
-        if (result.bgMean != null && result.bgStd != null) {
-            const m = await this.store.getMeta();
-            if (m.bgMean == null) {
-                await this.store.setMeta({ ...m, bgMean: result.bgMean, bgStd: result.bgStd });
-                this.bgStatsGen = -1;
-            }
-        }
-        return result;
-    }
-
-    // peerAhead + cache drop/warm AFTER the exclusive section (warm is off-mutex
-    // by design). Shared by hydrateSidecar and rebuildFromSidecar.
-    private async afterHydrateExclusive(result: HydrateResult): Promise<HydrateResult> {
-        this._peerAhead = result.peerAhead; // refresh the "newer index exists" signal per scan
-        // A hydrate is a store mutation: drop caches so the next search rebuilds
-        // against the restored index (mirrors reindex/delta completion).
-        if (result.hydrated > 0) {
-            this.invalidateBm25Cache();
-            void this.warmCaches('hydrate');
-            this.warnedStranded = false; // index is populated again — re-arm the empty-net warning
-        } else {
-            // Restored nothing — if the index is also empty, search will silently
-            // return no results. Surface that (the net-is-gone case).
-            await this.warnIfIndexStranded(result);
-        }
-        return result;
-    }
-
-    // Embed-free convergence: nuke this device's IDB, then hydrate it from the synced
-    // sidecar. The mobile-safe counterpart to "Full reindex" — it loads the TOKENIZER
-    // only (no 250 MB model, no WASM embed, no jetsam), so it rebuilds a clean index
-    // in seconds instead of a hot multi-minute on-device embed. Use it when a device
-    // has accumulated STALE/orphan chunks it never cleaned up (e.g. it never cleanly
-    // re-chunked after a chunker change, so computeDelta — which only re-examines
-    // file-watcher-flagged files — never deleted the old chunks). reChunkLive
-    // reproduces only the CURRENT chunker's ids, so the orphans are simply not
-    // recreated; ~all current chunks come back from the sidecar (vectors + the Phase-3
-    // BM25 blob), and the few genuinely-local chunks fall to the normal gentle catch-up.
-    //
-    // SAFETY: refuses to nuke unless a compatible sidecar producer is actually present
-    // — otherwise a not-yet-synced sidecar would leave the index empty. The device's
-    // OWN shard is kept (it's a producer too), so its local-only chunks re-hydrate.
     async rebuildFromSidecar(): Promise<HydrateResult | null> {
-        if (!this.coord.sidecarOn()) return null;
-        const expect = expectationFor();
-        const producers = await rankAcceptedProducers(this.app.vault.adapter, this.coord.dir!, expect);
-        if (producers.length === 0) {
-            // Nothing compatible to rebuild FROM — do NOT nuke. acceptedProducers:0
-            // signals the caller to tell the user the sidecar hasn't synced yet.
-            return { scanned: 0, needed: 0, hydrated: 0, skippedPartialNotes: 0, refusedProducers: 0, acceptedProducers: 0, peerAhead: false, hydratedNotePaths: [] };
-        }
-        // Nuke + stamp + hydrate under ONE write mutex. Releasing between
-        // clearAllStores and hydrate left isWriting() false so flushDirty/full
-        // reindex could run against an empty store. hydrateSidecarExclusive
-        // must not call runExclusive (the FIFO lock would deadlock on itself).
-        const result = await this.coord.runExclusive(async () => {
-            await this.store.clearAllStores();
-            const id = pluginIdentity();
-            await this.store.setMeta({ embeddingDim: EMBEDDING_DIM, lastIndexedAt: null, schemaVersion: META_SCHEMA_VERSION, modelId: MODEL_ID, chunkerVersion: id.chunkerVersion, analyzerVersion: id.analyzerVersion, revision: id.revision });
-            return this.hydrateSidecarExclusive();
-        });
-        // Drop every resident cache that referenced the nuked index, then the
-        // post-mutex warm/peerAhead path (same as hydrateSidecar).
-        this.invalidateBm25Cache();
-        return this.afterHydrateExclusive(result);
+        return this.sidecarCoordinator.rebuildFromSidecar();
     }
 
-    // Does ANY other device have a sidecar in the index dir, regardless of its identity?
-    // A cheap, embed-free signal (a directory listing — no meta read, no model) that this
-    // vault is multi-device. When the local index is version-stale and rebuildFromSidecar
-    // found no CURRENT-identity producer, a present peer means a current index is (or will
-    // be) on its way — so the UI says "syncing", not "reindex". Self is excluded: our own
-    // stale sidecar is not an incoming heal. A long-dead peer's leftover sidecar is a rare,
-    // benign false-positive (it only keeps the calm banner up a little longer; reapDead-
-    // IdentitySidecars clears it at the next full reindex on some device).
     async peerSidecarPresent(): Promise<boolean> {
-        if (!this.coord.sidecarOn()) return false;
-        const ids = await listSidecarDeviceIds(this.app.vault.adapter, this.coord.dir!);
-        return ids.some(id => id !== this.logger.deviceId);
+        return this.sidecarCoordinator.peerSidecarPresent();
     }
 
-    // Referential-integrity sweep (Phase 3 steady-state GC): delete every chunk no
-    // FILES record references — orphans from an overwritten file record (hydrate /
-    // applyDelta swapping a changed note's ids) or a missed delete event. They sit
-    // in chunk_meta, so they can surface stale content; this is freshness + space,
-    // not just disk. Pure IDB set-arithmetic — NO re-chunk / embed / GPU — so it is
-    // mobile-safe; batched under the write mutex with an optional abort so it never
-    // blocks an active search for long. Re-syncs caches after any delete (orphans
-    // sit in the resident frame until invalidate + warm rebuilds it). Returns the
-    // count removed + whether the pass completed (a backgrounding abort resumes on
-    // the next poll). Complements the identity cascade: that clears VERSION-bump
-    // orphans (nuke + rehydrate), this clears SAME-version churn.
     async sweepOrphanChunks(opts: { shouldContinue?: () => boolean } = {}): Promise<{ removed: number; completed: boolean }> {
-        // Snapshot all chunk ids + the referenced set TOGETHER under the write mutex.
-        // The embed commit is one atomic tx now (S1: chunks + file record together),
-        // but the HYDRATE path still flushes chunk batches before its file records
-        // land (batches span file boundaries), so an UNLOCKED snapshot could catch a
-        // just-hydrated chunk before its record and delete it as a false orphan —
-        // and pre-S1 indexes can still hold genuinely record-less chunks. (Content-
-        // addressing makes that self-healing, but it is still a real freshness hit,
-        // so keep the snapshot locked.) The only residual — a rare re-add of the SAME
-        // content between batches — reuses the same id and is itself self-healing.
-        const orphans = await this.coord.runExclusive(async () => {
-            const allIds = await this.store.getAllChunkIds();
-            const referenced = new Set<string>();
-            for (const rec of await this.store.listFileRecords()) {
-                for (const id of rec.chunk_ids) referenced.add(id);
-            }
-            return findOrphanChunkIds(allIds, referenced);
-        });
-        if (orphans.length === 0) return { removed: 0, completed: true };
-        const BATCH = 500;
-        let deleted = 0;
-        let completed = true;
-        for (let i = 0; i < orphans.length; i += BATCH) {
-            if (opts.shouldContinue && !opts.shouldContinue()) { completed = false; break; }
-            const batch = orphans.slice(i, i + BATCH);
-            await this.coord.runExclusive(() => this.store.deleteChunksByIds(batch));
-            deleted += batch.length;
-        }
-        if (deleted > 0) {
-            this.invalidateBm25Cache();
-            void this.warmCaches('orphan-sweep');
-        }
-        return { removed: deleted, completed };
+        return this.sidecarCoordinator.sweepOrphanChunks(opts);
     }
 
-    // Dead-identity sidecar reap (Phase 3 §4): at a full reindex — which republishes
-    // THIS device at the current identity — remove every OTHER device's sidecar files
-    // whose meta identity no longer matches this build. Provably useless (metaAccepts
-    // refuses them, so no current-version device can hydrate from them), so which
-    // device wrote them is irrelevant; sync-safe because an un-updated device just
-    // re-creates its own until it updates. Never reaps self (just rewritten) or a
-    // current-identity peer (a valid producer). A null/torn meta fails the gate and is
-    // reaped too — it was unusable anyway. Returns the device count reaped.
-    //
-    // Enumerates by listSidecarDeviceIds (the UNION of all artifact types), NOT by
-    // jsonl alone: clearDevice deletes a device's four files non-atomically and sync
-    // propagates each independently, so a dead device's jsonl can already be gone
-    // while its meta/bm25/shards linger. A jsonl-keyed reap would never revisit those
-    // leftovers (permanent disk leak); the union re-finds a half-cleared device and
-    // clearDevice — idempotent + exists-guarded — finishes it on this or a later
-    // pass. The metaAccepts gate is unchanged, so a current peer mid-sync (meta
-    // present, current identity) is still kept; only provably-stale or unprovable
-    // (no/torn meta) devices are reaped, exactly as before.
-    private async reapDeadIdentitySidecars(): Promise<number> {
-        if (!this.coord.sidecarOn()) return 0;
-        const dir = this.coord.dir!;
-        const adapter = this.app.vault.adapter;
-        const expect = expectationFor();
-        let reaped = 0;
-        for (const dev of await listSidecarDeviceIds(adapter, dir)) {
-            if (dev === this.logger.deviceId) continue;     // never reap self
-            if (metaAccepts(await readDeviceMeta(adapter, dir, dev), expect)) continue; // current peer — keep
-            await clearDevice(adapter, dir, dev);
-            reaped++;
-        }
-        return reaped;
+    /* internal */ async reapDeadIdentitySidecars(): Promise<number> {
+        return this.sidecarCoordinator.reapDeadIdentitySidecars();
     }
 
-    // Post-recovery health check: rebuild the frame + BM25 from the (reconciled)
-    // IDB and assert their row spaces agree. Embed-free — ensureFrame/ensureBm25
-    // only read the store + fit BM25, no model touch. full=true runs the exhaustive
-    // id↔row check (rare, off the hot path). True when coherent (or empty — an empty
-    // index can't be incoherent); false when drift survived the rebuild (a genuinely
-    // corrupt IDB → the plugin flips indexHealth to 'degraded').
     async verifyCoherent(): Promise<boolean> {
-        const frame = await this.ensureFrame();
-        if (!frame) return true;
-        await this.ensureBm25(frame.orderedChunks);
-        if (!this.bm25Cache) return true;
-        return frameBm25Coherent(frame, this.bm25Cache, true);
+        return this.sidecarCoordinator.verifyCoherent();
     }
 
-    // In-session cache of the sidecar-dir signature at the last successful
-    // reconcile. Seeded from localStorage on first use (see reconcileSigKey) so
-    // the gate SURVIVES reloads — without that, an iOS crash-relaunch loop reset
-    // this to null every rebirth and re-chunked the entire vault on each onload.
-    private lastReconcileSig: string | null = null;
-
-    // Reconcile-signature storage key. App#saveLocalStorage vault-scopes by the
-    // vault's appId, so cross-VAULT clobber is handled automatically; we KEEP
-    // dbName in the key so two co-installed Seek builds (id 'seek' + 'seek-prototype')
-    // in the SAME vault still don't clobber each other's gate (same appId namespace).
-    private reconcileSigKey(): string {
-        return `seek:reconcile-sig:${this.store.dbName}`;
-    }
-
-    private loadPersistedReconcileSig(): string | null {
-        try {
-            const v: unknown = this.app.loadLocalStorage(this.reconcileSigKey());
-            return typeof v === 'string' ? v : null;
-        }
-        catch { return null; }   // unavailable (private mode/quota) → fall back to in-memory gating
-    }
-
-    private persistReconcileSig(sig: string): void {
-        this.lastReconcileSig = sig;
-        try { this.app.saveLocalStorage(this.reconcileSigKey(), sig); }
-        catch { /* best-effort; in-memory cache still gates this session */ }
-    }
-
-    // Empty-store probe for the reconcile gate's mandatory eviction guard. A
-    // count() failure is treated as empty (sweep) — the safe side: a needless
-    // sweep costs time, a skipped recovery costs all search results.
-    private async indexIsEmpty(): Promise<boolean> {
-        try { return (await this.store.count()).files === 0; }
-        catch { return true; }
-    }
-
-    // Public cold-start probe for the search modal. Returns the indexed chunk count,
-    // or null when the store can't be read yet (mid-init / not open). The modal flips
-    // to its "not indexed" onboarding copy only on a confirmed 0 and leaves its resting
-    // copy untouched on null — so a still-warming index is never mislabeled "not
-    // indexed". chunks (not files) is the true "is anything searchable" signal.
     async indexedChunkCount(): Promise<number | null> {
-        try { return (await this.store.count()).chunks; }
-        catch { return null; }
+        return this.sidecarCoordinator.indexedChunkCount();
     }
 
-    // Gated whole-vault reconcile, shared by BOTH the onload sweep and the 5-min
-    // interval. Skips the expensive reChunkLive sweep when the sidecar dir is
-    // byte-identical to the last successful reconcile AND the local index is
-    // populated; always sweeps when the store is empty (iOS eviction / fresh
-    // device — see shouldReconcileSidecar). The signature is persisted, so a
-    // crash-relaunch with an unchanged vault no longer re-chunks for nothing.
-    // The manual `seek-sidecar-reconcile` command and the drift-recovery ladder
-    // deliberately bypass this and call hydrateSidecar() directly (explicit
-    // user / recovery intent must never be gated).
     async reconcileSidecarIfChanged(): Promise<HydrateResult | null> {
-        if (!this.coord.sidecarOn()) return null;
-        const sig = await sidecarDirSignature(this.app.vault.adapter, this.coord.dir!, this.logger.deviceId);
-        const prev = this.lastReconcileSig ?? this.loadPersistedReconcileSig();
-        if (!shouldReconcileSidecar(sig, prev, await this.indexIsEmpty())) {
-            // Signature unchanged → the (expensive) hydrate is skipped, but _peerAhead resets
-            // to false on every new orchestrator and ONLY hydrateSidecar refreshes it. Recover
-            // the bit with a cheap meta-only probe so the peer-ahead banner + mobile grind-stop
-            // survive an app relaunch on an unchanged vault (the common iOS case) instead of
-            // silently disengaging while falsely reading "healthy". No reChunk, no mutation —
-            // just a producer-meta read; mirrors hydrateFromSidecar's own peerAhead predicate.
-            this._peerAhead = await probePeerAhead(this.app.vault.adapter, this.coord.dir!, expectationFor());
-            return null;
-        }
-        const result = await this.hydrateSidecar();
-        this.persistReconcileSig(sig);
-        return result;
+        return this.sidecarCoordinator.reconcileSidecarIfChanged();
     }
 
-    // Re-chunk every live, indexable note AND .base — the liveness oracle for a
-    // full hydrate. Mirrors computeDelta's file filter (indexableFiles, so bases
-    // are included) AND embedAndCommitFiles' full chunk pipeline: chunksFor THEN
-    // enforceTokenBudget, so chunk_ids match exactly what indexing produced —
-    // including base chunks (chunksFor → chunkBase), which is what lets the phone
-    // rehydrate base vectors embed-free instead of dropping them. The token-budget
-    // re-split is load-bearing,
-    // NOT optional: chunk_id = chunkIdFor(path, title, content), and on long
-    // notes indexing splits oversize chunks into new contents → new ids. Without
-    // reproducing that split here, the sidecar lookup missed every split note
-    // (hydrated:0 → fell back to a full on-device re-embed → iPhone jetsam; see
-    // the 2026-06-14 forensics). Loads the tokenizer ONLY (a few MB, no ~250 MB
-    // model) so the hydrate stays mobile-safe.
-    private async reChunkOneLiveFile(
-        f: TFile,
-        countTokens: (texts: string[]) => Promise<number[]>,
-        logLabel = 'reChunkLive',
-    ): Promise<{ note: ReChunkedNote | null; skipped: boolean; abortWalk: boolean }> {
-        let content: string;
-        try {
-            content = await this.app.vault.cachedRead(f);
-        } catch {
-            return { note: null, skipped: true, abortWalk: false };
-        }
-        let chunks = this.chunksFor(content, f.path, new Date(f.stat.mtime).toISOString());
-        if (chunks.length === 0) return { note: null, skipped: false, abortWalk: false };
-        try {
-            chunks = (await enforceTokenBudget(chunks, countTokens)).chunks;
-        } catch (e) {
-            await this.logger.appendError(`${logLabel}-tokenBudget:${f.path}`, e);
-            const abortWalk = e instanceof Error && /Neither model nor tokenizer loaded/i.test(e.message);
-            return { note: null, skipped: true, abortWalk };
-        }
-        if (chunks.length === 0) return { note: null, skipped: false, abortWalk: false };
-        return {
-            note: { notePath: f.path, mtimeMs: f.stat.mtime, chunks, contentHash: cyrb53Hex(content) },
-            skipped: false,
-            abortWalk: false,
-        };
-    }
-
-    private async reChunkLive(): Promise<ReChunkedNote[]> {
-        const t0 = performance.now();
-        await this.embedder.ensureTokenizer();
-        const out: ReChunkedNote[] = [];
-        let filesWalked = 0;
-        let filesSkipped = 0;
-        let tokenCountsRpc = 0;
-        let complete = true;
-        let sinceYield = 0;
-        const files = this.indexableFiles().filter(f => this.shouldIndex(f.path));
-        for (let i = 0; i < files.length; i += TOKEN_COUNTS_BATCH) {
-            if (++sinceYield >= 8) { sinceYield = 0; await cheapYield(); }
-            const batch = files.slice(i, i + TOKEN_COUNTS_BATCH);
-            const batcher = createBatchedTokenCounter(ts => this.embedder.tokenCounts(ts));
-            const results = await Promise.all(
-                batch.map(f => {
-                    filesWalked++;
-                    return this.reChunkOneLiveFile(f, batcher.countTokens);
-                }),
-            );
-            await batcher.flush();
-            tokenCountsRpc += batcher.getRpcCount();
-            for (const r of results) {
-                if (r.skipped) filesSkipped++;
-                if (r.note) out.push(r.note);
-                if (r.abortWalk) {
-                    complete = false;
-                    break;
-                }
-            }
-            if (!complete) break;
-        }
-        void this.logger.append({
-            type: 'rechunk-live',
-            timestamp: new Date().toISOString(),
-            filesWalked,
-            filesSkipped,
-            tokenCountsRpc,
-            durationMs: Math.round(performance.now() - t0),
-            complete,
-        }).catch(() => {});
-        return out;
-    }
-
-    /** Greedy hydrate oracle — only the given files, mtime order, with cheapYield. */
-    private async reChunkLiveSubset(
-        files: Array<{ path: string; mtimeMs: number }>,
-        shouldStop?: () => boolean,
-    ): Promise<ReChunkedNote[]> {
-        const t0 = performance.now();
-        await this.embedder.ensureTokenizer();
-        const out: ReChunkedNote[] = [];
-        let filesWalked = 0;
-        let filesSkipped = 0;
-        let tokenCountsRpc = 0;
-        let complete = true;
-        let sinceYield = 0;
-        for (let i = 0; i < files.length; i += TOKEN_COUNTS_BATCH) {
-            if (shouldStop?.()) {
-                complete = false;
-                break;
-            }
-            if (++sinceYield >= 8) { sinceYield = 0; await cheapYield(); }
-            const batch = files.slice(i, i + TOKEN_COUNTS_BATCH);
-            const batcher = createBatchedTokenCounter(ts => this.embedder.tokenCounts(ts));
-            const results = await Promise.all(batch.map(async ref => {
-                if (shouldStop?.()) return { note: null as ReChunkedNote | null, skipped: false, abortWalk: false, stopped: true };
-                const f = this.app.vault.getAbstractFileByPath(ref.path);
-                if (!(f instanceof TFile)) return { note: null, skipped: false, abortWalk: false, stopped: false };
-                filesWalked++;
-                const r = await this.reChunkOneLiveFile(f, batcher.countTokens, 'reChunkLiveSubset');
-                return { ...r, stopped: false };
-            }));
-            await batcher.flush();
-            tokenCountsRpc += batcher.getRpcCount();
-            for (const r of results) {
-                if (r.stopped) {
-                    complete = false;
-                    break;
-                }
-                if (r.skipped) filesSkipped++;
-                if (r.note) out.push(r.note);
-                if (r.abortWalk) {
-                    complete = false;
-                    break;
-                }
-            }
-            if (!complete) break;
-            if (shouldStop?.()) {
-                complete = false;
-                break;
-            }
-        }
-        void this.logger.append({
-            type: 'rechunk-live',
-            timestamp: new Date().toISOString(),
-            filesWalked,
-            filesSkipped,
-            tokenCountsRpc,
-            durationMs: Math.round(performance.now() - t0),
-            complete,
-            subset: true,
-            filesInTier: files.length,
-        }).catch(() => {});
-        return out;
-    }
-
-    private listHydrateFilesSorted(): Array<{ path: string; mtimeMs: number }> {
-        return this.indexableFiles()
-            .filter(f => this.shouldIndex(f.path))
-            .map(f => ({ path: f.path, mtimeMs: f.stat.mtime }))
-            .sort((a, b) => b.mtimeMs - a.mtimeMs);
-    }
-
-    // Greedy hydrate runs inside the boot IIFE, often before the vault file list is
-    // populated; an empty enumeration yields tiersRun:0 with fresh ids pending.
-    private async listHydrateFilesForGreedy(): Promise<Array<{ path: string; mtimeMs: number }>> {
-        for (let i = 0; i < 40; i++) {
-            const files = this.listHydrateFilesSorted();
-            if (files.length > 0) return files;
-            await new Promise(r => setTimeout(r, 50));
-        }
-        return this.listHydrateFilesSorted();
-    }
-
-    // The live-vault chunk_id set + whether it is COMPLETE — the liveness oracle for
-    // sidecar compaction. Mirrors reChunkLive's id pipeline (chunksFor THEN
-    // enforceTokenBudget over indexableFiles, so ids match what indexing wrote for
-    // both notes and bases — without the base coverage compaction would count every
-    // base chunk dead and GC it). Returns only ids and,
-    // critically, a completeness flag: reChunkLive SWALLOWS per-note read/tokenizer
-    // errors (hydrate only skips, which is non-destructive), but compaction DELETES on
-    // this oracle, so a single skipped note would wrongly drop that note's live records.
-    // `complete:false` on ANY skip tells the caller to abort the compaction and retry
-    // when the transient error clears. Empty notes (no chunks) are not skips — they have
-    // no ids to drop. Kept separate from reChunkLive on purpose: the load-bearing hydrate
-    // path stays untouched, at the cost of one extra (tokenizer-only) re-chunk per session.
-    private async collectLiveIds(): Promise<{ ids: Set<string>; complete: boolean }> {
-        const ids = new Set<string>();
-        try {
-            await this.embedder.ensureTokenizer();
-        } catch (e) {
-            // A tokenizer-load failure (model files mid-sync on a cold mobile launch) makes
-            // the whole snapshot untrustworthy — report incomplete (transient → caller
-            // retries) rather than throwing into an anonymous swallowed catch upstream.
-            await this.logger.appendError('collectLiveIds-ensureTokenizer', e);
-            return { ids, complete: false };
-        }
-        let complete = true;
-        let sinceYield = 0;
-        for (const f of this.indexableFiles().filter(f => this.shouldIndex(f.path))) {
-            // Yield the main thread every few files: this whole-vault re-chunk +
-            // tokenizer pass runs at least once per session (any sidecar past the
-            // byte floor reaches the oracle even when nothing is dead) and was a
-            // solid CPU burn with no yields — issue #5-class background jank.
-            // cheapYield (scheduler.yield / setTimeout(0)), NOT the rIC pacer:
-            // this runs inside compactDevice's dir lock, and an rIC wait can
-            // stall up to its 1 s timeout per yield under interaction — starving
-            // a concurrent flush's sidecar append. ~ms-bounded cost instead.
-            if (++sinceYield >= 8) { sinceYield = 0; await cheapYield(); }
-            let content: string;
-            try {
-                content = await this.app.vault.cachedRead(f);
-            } catch (e) {
-                // read error (e.g. an iCloud file not yet downloaded) → snapshot incomplete →
-                // unsafe to delete. Logged with the path: this is the likeliest cause of a
-                // persistent 'incomplete-rechunk' skip, so it must not be silent.
-                complete = false;
-                await this.logger.appendError(`collectLiveIds-read:${f.path}`, e);
-                continue;
-            }
-            let chunks = this.chunksFor(content, f.path, new Date(f.stat.mtime).toISOString());
-            if (chunks.length === 0) continue; // genuinely empty note — no ids, not a skip
-            try {
-                chunks = (await enforceTokenBudget(chunks, ts => this.embedder.tokenCounts(ts))).chunks;
-            } catch (e) {
-                complete = false; // tokenizer hiccup → incomplete
-                await this.logger.appendError(`collectLiveIds-tokenBudget:${f.path}`, e);
-                // Mid-pass teardown/reload clears the tokenizer latch; every later
-                // note fails the same way. Abort once — incomplete already tells
-                // compact to retry — instead of thousands of identical errors.
-                if (e instanceof Error && /Neither model nor tokenizer loaded/i.test(e.message)) {
-                    return { ids, complete: false };
-                }
-                continue;
-            }
-            for (const c of chunks) ids.add(c.chunk_id);
-        }
-        return { ids, complete };
-    }
-
-    // Compact THIS device's own sidecar (jsonl + shards) if it has accumulated enough
-    // dead bytes. Model-FREE — a pure byte-copy of existing vectors, peak ~8 MB (one
-    // source + one dest shard) — so, unlike a full reindex, it is safe on mobile (no
-    // GPU/model heap → no jetsam). It is also the ONLY reclaim path for a
-    // device that never reaches a desktop: a version-bump reindex and hydrate-from-a-
-    // compacted-peer both need connectivity an off-grid phone/iPad may lack for months,
-    // and its own edit churn would otherwise pile up unbounded. Called at most once per
-    // session from periodicReconcile. Returns null when the sidecar is off.
     async compactOwnSidecar(): Promise<CompactResult | null> {
-        if (!this.coord.sidecarOn()) return null;
-        const adapter = this.app.vault.adapter;
-        const dir = this.coord.dir!;
-        const dev = this.logger.deviceId;
-
-        // A SIDECAR_FORMAT bump is deliberately excluded from identityMatches (it
-        // governs only the cross-device file protocol, not local IDB validity — see
-        // identity.ts), so this device can carry a stale-format sidecar on disk
-        // indefinitely: nothing forces a full reindex (the only path that clears it
-        // via clearDevice) just because the format constant moved. compactDevice()
-        // decodes every record with the CURRENT fixed stride unconditionally — run
-        // against a genuinely stale-format shard, every record misaligns, fails its
-        // CRC, and gets shed as "corrupt", permanently destroying this device's
-        // pre-upgrade vector history (and leaving a peer's later hydration attempt
-        // to hit the same misread). Detect the mismatch from this device's own last-
-        // written meta BEFORE compacting and, instead of misreading, explicitly wipe
-        // via the same primitive a full reindex uses — the sidecar self-heals from
-        // normal incremental commits afterward, same as any other reap.
-        const ownMeta = await readDeviceMeta(adapter, dir, dev);
-        if (staleSidecarFormat(ownMeta)) {
-            // Census the shards BEFORE wiping, and leave the same once-per-session
-            // sidecar-compact breadcrumb as a normal compaction: this path makes
-            // the largest disk-state change compaction can make (every shard on
-            // the device deleted), and a forensics trace showing shard counts drop
-            // to zero between sessions must record which path did it.
-            const preWipe = await listDeviceShards(adapter, dir, dev);
-            const bytesBefore = preWipe.reduce((sum, s) => sum + s.size, 0);
-            await clearDevice(adapter, dir, dev, { preserveSeqFloor: true });
-            this.forensics?.beat('sidecar-compact', {
-                reason: 'format-mismatch', shardsBefore: preWipe.length, shardsAfter: 0,
-                bytesBefore, bytesAfter: 0,
-            });
-            return { compacted: false, reason: 'format-mismatch', recordsBefore: 0, recordsAfter: 0, bytesBefore, bytesAfter: 0, shed: 0, shardsBefore: preWipe.length, shardsAfter: 0 };
-        }
-
-        // Off-grid means no iCloud re-upload now (it lands as a SMALLER upload on
-        // reconnect), but the rewrite still costs IO — so a higher floor on mobile.
-        const floor = isMobilePlatform() ? 4 * 1024 * 1024 : 2 * 1024 * 1024;
-        // NOTE: no stat-only pre-gate here on purpose. deviceShardBytes(...) < floor would
-        // sum ALL on-disk shard bytes, including crash-leaked orphans (shards referenced by
-        // zero jsonl lines — see compactDevice's header comment), and skip calling
-        // compactDevice entirely for any device whose live+orphan total stays under the
-        // floor. compactDevice's own orphan reclaim runs BEFORE its internal below-floor
-        // check (on live bytes only), so it must always be reachable — a caller-side
-        // pre-gate on the unfiltered total would make a small, quiet device's leaked
-        // shards unreclaimable forever. compactDevice is cheap to call here regardless:
-        // this path runs at most once per session (see main.ts), and its own below-floor
-        // check bails before the expensive live-id re-chunk.
-        // The live-id oracle runs INSIDE compactDevice's dir lock so the snapshot and the
-        // on-disk scan exclude concurrent appends — the drop decision needs no clock.
-        const result = await compactDevice(adapter, dir, dev, () => this.collectLiveIds(), { minDeadRatio: 0.5, minShardBytes: floor });
-        // Once-per-session shard-census beat: the field channel for watching
-        // append-only flush proliferation (1A). shardsBefore trending high while
-        // reason stays below-floor/below-ratio = tighten the compaction trigger.
-        this.forensics?.beat('sidecar-compact', {
-            reason: result.reason ?? 'none', shardsBefore: result.shardsBefore, shardsAfter: result.shardsAfter,
-            bytesBefore: result.bytesBefore, bytesAfter: result.bytesAfter,
-        });
-        // Refresh the persisted reconcile sig after a self jsonl rewrite. With self now
-        // excluded from sidecarDirSignature (a device's own writes don't move its own
-        // signature), this compaction touches only our own jsonl so the signature is
-        // already unchanged — this re-persist is belt-and-suspenders, kept so the
-        // persisted sig is recomputed with the SAME selfDeviceId convention as the live
-        // gate, and to stay correct if compaction ever touches a non-self artifact.
-        if (result.compacted) {
-            try {
-                this.persistReconcileSig(await sidecarDirSignature(adapter, dir, dev));
-            } catch (e) {
-                await this.logger.appendError('compact-sig-refresh', e);
-            }
-        }
-        return result;
+        return this.sidecarCoordinator.compactOwnSidecar();
     }
 
-    // Oracle-free shard-count hygiene for the append-only sidecar (1A): fold
-    // accumulated per-flush small shards into dense ones once enough pile up.
-    // Byte-copy only — no vault re-chunk, no model — so unlike compactOwnSidecar
-    // it is safe to call every reconcile poll; below the count gate it costs one
-    // directory listing. SKIPS (never wipes) a stale-format sidecar: records must
-    // be decoded with the stride they were written under, and the format-mismatch
-    // wipe is compactOwnSidecar's job — running once per session, it always gets
-    // its chance before shard count matters.
     async coalesceOwnSidecar(): Promise<CoalesceResult | null> {
-        if (!this.coord.sidecarOn()) return null;
-        const adapter = this.app.vault.adapter;
-        const dir = this.coord.dir!;
-        const dev = this.logger.deviceId;
-        if (staleSidecarFormat(await readDeviceMeta(adapter, dir, dev))) return null;
-        const result = await coalesceSmallShards(adapter, dir, dev);
-        if (result.coalesced) {
-            // Census beat only when a fold actually ran — the every-poll below-count
-            // no-op would otherwise flood the forensics ring.
-            this.forensics?.beat('sidecar-coalesce', {
-                smallShards: result.smallShards, shardsBefore: result.shardsBefore, shardsAfter: result.shardsAfter,
-                bytesMoved: result.bytesMoved, shed: result.shed, skippedLines: result.skippedLines,
-            });
-            // Same belt-and-suspenders sig refresh as compactOwnSidecar: self is
-            // excluded from sidecarDirSignature, so this should be a no-op — kept so
-            // the persisted sig always reflects the same convention as the live gate.
-            try {
-                this.persistReconcileSig(await sidecarDirSignature(adapter, dir, dev));
-            } catch (e) {
-                await this.logger.appendError('coalesce-sig-refresh', e);
-            }
-        }
-        return result;
+        return this.sidecarCoordinator.coalesceOwnSidecar();
     }
 
-    // Devices already warned about a version-gate refusal this session, keyed by
-    // `${device}:${reason}` so each distinct staleness is reported once — not on
-    // every reconcile / delta flush.
-    private warnedRefusals = new Set<string>();
-
-    // True when the last sidecar scan refused a producer at a HIGHER chunkerVersion than
-    // this build — another device holds a newer index this plugin is too old to read.
-    // Set/cleared per scan (so updating Seek clears it on the next reconcile). The plugin
-    // reads it to raise the "update Seek" banner AND, on mobile, to skip the futile local
-    // re-embed (a v7 device grinding out chunks it discards the moment it updates to v8).
-    private _peerAhead = false;
-    get peerAhead(): boolean { return this._peerAhead; }
-
-    // A version-gate refusal is EXPECTED and self-healing — e.g. right after a
-    // CHUNKER_VERSION bump the other device's sidecar is one version behind until
-    // it re-embeds. So it's a one-time warn (no stack trace, not an `error` entry):
-    // the old appendError fired two red console lines + an error log on every
-    // reconcile, flooding the console for a benign, transient state. Refusing the
-    // producer is correct (a stale chunk_id space can't be reproduced locally) —
-    // only the loudness was the bug.
-    private warnRefusedProducer(dev: string, meta: SidecarMeta | null, expect: MetaExpectation): void {
-        const reason = !meta
-            ? 'missing/unreadable meta'
-            : [
-                  meta.format !== SIDECAR_FORMAT ? `format ${meta.format}≠${SIDECAR_FORMAT}` : '',
-                  meta.modelId !== expect.modelId ? `model ${meta.modelId}≠${expect.modelId}` : '',
-                  meta.chunkerVersion !== expect.chunkerVersion ? `chunker v${meta.chunkerVersion}≠v${expect.chunkerVersion}` : '',
-                  meta.dim !== expect.dim ? `dim ${meta.dim}≠${expect.dim}` : '',
-              ]
-                  .filter(Boolean)
-                  .join(', ');
-        const key = `${dev}:${reason}`;
-        if (this.warnedRefusals.has(key)) return;
-        this.warnedRefusals.add(key);
-        console.warn(`[seek] skipping sidecar producer ${dev} (${reason}) — its index predates this device; will hydrate once that device re-embeds`);
-        // One NDJSON breadcrumb (not an error entry) so device reports still show a
-        // producer was paused. Reuses SidecarHydrateEntry's open index signature.
-        void this.logger.append({ type: 'sidecar-hydrate', timestamp: new Date().toISOString(), phase: 'version-gate-refused', device: dev, reason }).catch(() => {});
-    }
-
-    // Set once we've warned this session that the index is empty AND the sidecar
-    // restored nothing — cleared again the moment a hydrate repopulates the index,
-    // so a later strand still warns. Keeps onload + first periodic + manual
-    // reconcile from each re-logging the same dead-net state.
-    private warnedStranded = false;
-
-    // The failure the sidecar exists to PREVENT: sidecar is on, yet after a
-    // hydrate the IDB index is still empty → the next search returns ZERO results
-    // with no error. Causes: iOS evicted the IDB and no producer has synced in, or
-    // the index dir was deleted / never reached this device (the config-folder
-    // split). This used to be silent — only a `producerFilesFound:0` debug line.
-    // Surface it as a real console error ONCE, gated on a true-empty index (cheap
-    // IDB count) so a healthy warm index never trips it. Cause is read off the
-    // hydrate result so the message is actionable.
-    private async warnIfIndexStranded(result: HydrateResult): Promise<void> {
-        if (this.warnedStranded) return;
-        const { chunks } = await this.store.count();
-        if (chunks > 0) return; // index is populated — search works, nothing stranded
-        this.warnedStranded = true;
-        const cause =
-            result.refusedProducers > 0
-                ? `all ${result.refusedProducers} sidecar producer(s) were version-refused — the other device's plugin/model is out of date`
-                : result.skippedPartialNotes > 0
-                  ? `sidecar files are still arriving (${result.skippedPartialNotes} note(s) only partially synced)`
-                  : result.acceptedProducers === 0
-                    ? 'no sidecar index files were found here — deleted, or no other device has synced its index to this folder yet'
-                    : 'the sidecar held nothing this device could reproduce';
-        console.error(
-            `[seek] index is EMPTY and the sidecar restored nothing — search will return no results. ` +
-                `Cause: ${cause}. Fix: run a full reindex on this device, or let another device's sidecar sync in.`,
-        );
-        // Persist to NDJSON too — console.error is invisible on mobile (no
-        // devtools), and mobile is exactly where eviction strands the index.
-        void this.logger
-            .append({
-                type: 'sidecar-hydrate',
-                timestamp: new Date().toISOString(),
-                phase: 'index-stranded',
-                cause,
-                refusedProducers: result.refusedProducers,
-                acceptedProducers: result.acceptedProducers,
-                skippedPartialNotes: result.skippedPartialNotes,
-            })
-            .catch(() => {});
-    }
-
-    // Shared HydrateDeps; only the re-chunk source varies (whole vault vs the
-    // dirty subset for delta dedup).
-    // addsSink (Seek scaling A1): when present, putQuantized ALSO surfaces each
-    // hydrated chunk into the delta change-set, so a sidecar-dedup delta can be
-    // applied incrementally (applyDelta) instead of forcing a full rebuild. Only
-    // the delta path (dedupViaSidecar) passes it; the standalone hydrateSidecar
-    // does its own invalidate+warm, so it leaves it undefined.
-    private hydrateDeps(reChunk: () => Promise<ReChunkedNote[]>, addsSink?: DeltaAdd[]): HydrateDeps {
-        return {
-            adapter: this.app.vault.adapter,
-            indexDir: this.coord.dir!,
-            expect: expectationFor(),
-            reChunk,
-            existingIds: async () => new Set((await this.store.listAllMeta()).map(c => c.chunk_id)),
-            putQuantized: async (chunks, tiers) => {
-                await this.store.putBatchQuantized(chunks, tiers);
-                // After the IDB write, so the sink holds only rows that landed.
-                if (addsSink) pushDeltaAdds(addsSink, chunks, tiers);
-            },
-            putFileRecord: rec => this.store.putFileRecord(rec),
-            onRefusedProducer: (dev, meta, expect) => this.warnRefusedProducer(dev, meta, expect),
-            log: (msg, detail) => {
-                // Persist to the NDJSON log too — console.log is invisible on
-                // mobile (no devtools), which is why hydrate outcomes never
-                // surfaced in iPhone reports. Flatten arrays → counts to fit the
-                // SidecarHydrateEntry scalar index signature (hydratedNotePaths
-                // can be large).
-                const flat: Record<string, string | number | boolean | null> = {};
-                if (detail && typeof detail === 'object') {
-                    for (const [k, v] of Object.entries(detail as Record<string, unknown>)) {
-                        if (Array.isArray(v)) flat[`${k}Count`] = v.length;
-                        else if (v == null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') flat[k] = v ?? null;
-                        else flat[k] = String(v);
-                    }
-                }
-                void this.logger.append({ type: 'sidecar-hydrate', timestamp: new Date().toISOString(), phase: msg, ...flat }).catch(() => {});
-            },
-        };
-    }
-
-    private hydrateDepsGreedy(addsSink?: DeltaAdd[]): HydrateDeps {
-        const base = this.hydrateDeps(() => this.reChunkLive(), addsSink);
-        return {
-            ...base,
-            greedyHydrate: true,
-            listHydrateFiles: () => this.listHydrateFilesForGreedy(),
-            ensureTokenizer: () => this.embedder.ensureTokenizer(),
-            reChunkSubset: (files, shouldStop) => this.reChunkLiveSubset(files, shouldStop),
-            onGoodEnough: () => {
-                this.invalidateBm25Cache();
-                this.onGoodEnough?.();
-            },
-            log: (msg, detail) => {
-                const flat: Record<string, string | number | boolean | null> = {};
-                if (detail && typeof detail === 'object') {
-                    for (const [k, v] of Object.entries(detail as Record<string, unknown>)) {
-                        if (Array.isArray(v)) flat[`${k}Count`] = v.length;
-                        else if (v == null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') flat[k] = v ?? null;
-                        else flat[k] = String(v);
-                    }
-                }
-                const ts = new Date().toISOString();
-                if (msg === 'sidecar-hydrate-tier') {
-                    void this.logger.append({ type: 'sidecar-hydrate-tier', timestamp: ts, ...flat } as import('./types').SidecarHydrateTierEntry).catch(() => {});
-                } else if (msg === 'sidecar-hydrate-greedy') {
-                    void this.logger.append({ type: 'sidecar-hydrate-greedy', timestamp: ts, ...flat } as import('./types').SidecarHydrateGreedyEntry).catch(() => {});
-                } else {
-                    void this.logger.append({ type: 'sidecar-hydrate', timestamp: ts, phase: msg, ...flat }).catch(() => {});
-                }
-            },
-        };
-    }
-
-    // Dedup-before-embed: hydrate the dirty files the sidecar already covers
-    // (another device embedded the same content) instead of re-embedding them,
-    // and return the files that still need the model. Pure optimization — a
-    // miss just embeds. Stale rows are handled HERE now (chunk-diff, issue #5:
-    // the delta's wholesale pre-delete is gone): after a note hydrates, any
-    // old-record id its new chunk set no longer references is deleted + surfaced
-    // through the removal sinks, exactly like the engine's diff. Pre-edit ids
-    // lingering in existingIds are harmless — coverage is judged against the
-    // NEW chunk ids, and a still-present id just means "nothing to hydrate"
-    // (which now correctly skips re-writing rows a revert already has).
     private async dedupViaSidecar(
         files: TFile[],
         addsSink?: DeltaAdd[],
@@ -3353,104 +2605,7 @@ export class SearchOrchestrator {
         removedBodiesSink?: Map<string, string>,
         metaPatchSink?: Array<{ id: string; meta: ChunkMeta }>,
     ): Promise<TFile[]> {
-        if (!this.coord.sidecarOn() || files.length === 0) return files;
-        // Same chunk_id-reproduction requirement as reChunkLive: apply the
-        // token-budget split so split notes match the sidecar (without it this
-        // dedup silently missed every long note and re-embedded it). The model
-        // is loaded on this path (reindexDelta's embed half), so ensureTokenizer
-        // is a no-op; the guard just makes the dependency explicit.
-        await this.embedder.ensureTokenizer();
-        const notes: ReChunkedNote[] = [];
-        for (const f of files) {
-            let content: string;
-            try {
-                content = await this.app.vault.cachedRead(f);
-            } catch {
-                continue;
-            }
-            let chunks = this.chunksFor(content, f.path, new Date(f.stat.mtime).toISOString());
-            if (chunks.length === 0) continue;
-            try {
-                chunks = (await enforceTokenBudget(chunks, ts => this.embedder.tokenCounts(ts))).chunks;
-            } catch (e) {
-                await this.logger.appendError(`dedupViaSidecar-tokenBudget:${f.path}`, e);
-                continue;
-            }
-            if (chunks.length > 0) notes.push({ notePath: f.path, mtimeMs: f.stat.mtime, chunks, contentHash: cyrb53Hex(content) });
-        }
-        if (notes.length === 0) return files;
-        // Called from inside reindexDelta's runExclusive — invoke the engine
-        // directly (NOT hydrateSidecar, which would re-enter the mutex). addsSink
-        // (when the delta path supplies it) surfaces the hydrated chunks into the
-        // change-set so applyDelta can apply them incrementally.
-        // Old records AND old metas of id-stable chunks read BEFORE the hydrate
-        // overwrites them — the stale-row cleanup and the id-stable metadata
-        // reconciliation below both diff against pre-hydrate state.
-        const oldRecs = new Map<string, FileRecord>();
-        const oldStableMetas = new Map<string, ChunkMeta>();
-        for (const n of notes) {
-            const rec = await this.store.getFileRecord(n.notePath).catch(() => null);
-            if (!rec) continue;
-            oldRecs.set(n.notePath, rec);
-            const newIdSet = new Set(n.chunks.map(c => c.chunk_id));
-            const stableIds = rec.chunk_ids.filter(id => newIdSet.has(id));
-            if (stableIds.length > 0) {
-                try {
-                    for (const [id, m] of await this.store.getChunkMetasByIds(stableIds)) oldStableMetas.set(id, m);
-                } catch { /* classification degrades to nothing; the engine path heals on the next edit */ }
-            }
-        }
-        const res = await hydrateFromSidecar(this.hydrateDeps(async () => notes, addsSink));
-        this._peerAhead = res.peerAhead; // refresh the "newer index exists" signal per scan
-        const done = new Set(res.hydratedNotePaths);
-        // Reconciliation for hydrated notes (chunk-diff, issue #5). The hydrate
-        // rewrote EVERY chunk's IDB rows and pushed them all into addsSink, but
-        // applyDelta's freshDeltaAdds drops the ones whose id is still LIVE in
-        // the row space — so without the lanes below, an id-stable chunk whose
-        // note-level metadata drifted (inline #tag in another section) would
-        // have fresh IDB meta and a stale frame/BM25 doc FOREVER (the next
-        // diff compares IDB-old vs new, sees them equal, and never patches).
-        //   - stale ids (dropped from the note): delete + exact-removal entries.
-        //   - id-stable, meta drifted, BM25-irrelevant: metaPatchSink (frame swap).
-        //   - id-stable, BM25-relevant drift: removal entry; the hydrate's OWN
-        //     addsSink entry then survives freshDeltaAdds (row freed) and
-        //     re-adds the doc with fresh meta — no extra add needed here.
-        const newChunksByPath = new Map(notes.map(n => [n.notePath, n.chunks]));
-        for (const p of res.hydratedNotePaths) {
-            const rec = oldRecs.get(p);
-            const newChunks = newChunksByPath.get(p);
-            if (!rec || !newChunks) continue;
-            const newIdSet = new Set(newChunks.map(c => c.chunk_id));
-            const stale = rec.chunk_ids.filter(id => !newIdSet.has(id));
-            try {
-                if (stale.length > 0) {
-                    if (removedBodiesSink) {
-                        for (const [id, body] of await this.store.getBodiesMap(stale)) removedBodiesSink.set(id, body);
-                        const missingBodies = stale.filter(id => !removedBodiesSink.has(id));
-                        if (missingBodies.length > 0) {
-                            throw new Error(`sidecar stale bodies missing (${missingBodies.length})`);
-                        }
-                    }
-                    await this.store.deleteChunksByIds(stale);
-                    removedSink?.push(...stale);
-                }
-                for (const c of newChunks) {
-                    const old = oldStableMetas.get(c.chunk_id);
-                    if (!old) continue;                       // genuinely new — hydrate's add covers it
-                    const next = stripContent(c);
-                    if (chunkMetaEqual(old, next)) continue;  // untouched
-                    if (MultiFieldBM25.docFieldsEqual(old, next)) {
-                        metaPatchSink?.push({ id: c.chunk_id, meta: next });
-                    } else if (removedSink && removedBodiesSink) {
-                        removedBodiesSink.set(c.chunk_id, c.content ?? '');
-                        removedSink.push(c.chunk_id);
-                    }
-                }
-            } catch (e) {
-                await this.logger.appendError(`sidecarDedup-stale-cleanup:${p}`, e);
-            }
-        }
-        return files.filter(f => !done.has(f.path));
+        return this.sidecarCoordinator.dedupViaSidecar(files, addsSink, removedSink, removedBodiesSink, metaPatchSink);
     }
 
     // F13 carry-over: harvest the rerank/sign tiers of every chunk about to be
@@ -3882,3 +3037,8 @@ export {
     dedupByPath,
     topKByScore,
 } from './search-query';
+export {
+    SidecarCoordinator,
+    type SidecarCoordinatorDeps,
+} from './sidecar-coordinator';
+
