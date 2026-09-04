@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.5.0
+
+Search modal and Settings Index surfaces show live pipeline and indexing progress more clearly. No reindex is needed, since the index format is unchanged.
+
 ### Added
 - **Search progression stages indicator in search modal.** A new toggle under Settings → Display enables a persistent 3-stage progression indicator (`Name match → Lexical BM25 → Hybrid semantic`) left-aligned in the modal footer bar, showing live search pipeline progress without pop-in or flickering.
 
