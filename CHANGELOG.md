@@ -7,8 +7,7 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 ### Added
 - **Search progression stages indicator in search modal.** A new toggle under Settings → Display enables a persistent 3-stage progression indicator (`Name match → Lexical BM25 → Hybrid semantic`) left-aligned in the modal footer bar, showing live search pipeline progress without pop-in or flickering.
 
-### Changed
-- **Settings → Index layout places recent boots side-by-side with startup metrics.** Recent boot history renders to the right of the current startup breakdown for better card ergonomics. Boot entries follow chronological ordering (`searchable → warm → ready`), and an info icon beside "startup" provides an explanatory tooltip for each stage.
+- **Settings → Index layout places recent boots side-by-side with startup metrics.** Recent boot history now renders to the right of the current startup breakdown to make better use of card space. Metrics are formatted in consistent chronological order (`searchable → warm → ready`), and an info hover icon beside the "startup" header opens a left-aligned popover explaining each lifecycle stage.
 - **Status bar indexing shows file counts and chunk throughput.** During a pass the label reads `done/total` files; chunk count and rolling `ch/s` appear in smaller text beside it. The progress bar and remaining-files badge are unchanged.
 - **Settings → Index "Embedder coverage by folder" collapses to top-level folders by default.** Nested folders stay hidden until you click a parent to unfold it; expand/collapse is remembered while Settings stays open (including across the live coverage poll).
 

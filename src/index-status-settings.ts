@@ -5,7 +5,7 @@
 // last boot's total plus a trend while this boot is still working). Status-bar
 // hover keeps calling renderIndexStatusCard without these.
 
-import { setIcon, setTooltip } from 'obsidian';
+import { setIcon } from 'obsidian';
 import {
     buildStartupTimingRows,
     startupTrend,
@@ -51,19 +51,27 @@ export function renderSettingsIndexStatusCard(
         && opts.prevBoot && !opts.prevBoot.warmSkipped && opts.prevBoot.readyFromStartMs != null;
 
     const block = card.createDiv({ cls: 'seek-status-startup' });
+
     const current = block.createDiv({ cls: 'seek-status-startup-current' });
     const head = current.createDiv({ cls: 'seek-status-startup-head' });
     head.createSpan({ text: 'startup' });
     const info = head.createSpan({ cls: 'seek-status-startup-info' });
     setIcon(info, 'info');
-    const tooltipText = [
-        'Startup stages:',
-        '• Searchable: Time until search is ready to accept queries',
-        '• Cache warm: Preloading index into memory for instant first query',
-        '• Fully ready: Total time until all startup initialization finishes',
-    ].join('\n');
-    info.setAttr('aria-label', tooltipText);
-    setTooltip(info, tooltipText);
+    info.setAttr('aria-label', 'Startup stages: Searchable, Cache warm, Fully ready');
+
+    const pop = info.createDiv({ cls: 'seek-status-startup-popover' });
+    pop.createDiv({ cls: 'seek-startup-popover-title', text: 'Startup stages' });
+
+    const stages = [
+        { name: 'Searchable', desc: 'Search modal accepts queries and returns initial results.' },
+        { name: 'Cache warm', desc: 'Preloads index into memory for instant first queries (or skipped).' },
+        { name: 'Fully ready', desc: 'Total time until background cache warming and startup tasks finish.' },
+    ];
+    for (const s of stages) {
+        const item = pop.createDiv({ cls: 'seek-startup-popover-stage' });
+        item.createSpan({ cls: 'seek-startup-popover-name', text: s.name });
+        item.createSpan({ cls: 'seek-startup-popover-desc', text: s.desc });
+    }
 
     const rows = current.createDiv({ cls: 'seek-status-startup-rows' });
     for (const row of buildStartupTimingRows(startup ?? {

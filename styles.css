@@ -1244,6 +1244,7 @@
     margin-bottom: 6px;
 }
 .seek-settings .seek-status-startup-info {
+    position: relative;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -1257,11 +1258,51 @@
 .seek-settings .seek-status-startup-info svg {
     width: 12px;
     height: 12px;
-    pointer-events: none;
 }
-.tooltip {
+.seek-settings .seek-status-startup-popover {
+    display: none;
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0;
+    z-index: var(--layer-popover, 50);
+    width: 300px;
+    padding: 10px 12px;
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    box-shadow: var(--shadow-s);
     text-align: left;
-    white-space: pre-line;
+    text-transform: none;
+    cursor: default;
+    pointer-events: none;
+    box-sizing: border-box;
+}
+.seek-settings .seek-status-startup-info:hover .seek-status-startup-popover,
+.seek-settings .seek-status-startup-info:focus-within .seek-status-startup-popover {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.seek-settings .seek-startup-popover-title {
+    font-weight: 600;
+    font-size: 12px;
+    color: var(--text-normal);
+    margin-bottom: 2px;
+}
+.seek-settings .seek-startup-popover-stage {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+.seek-settings .seek-startup-popover-name {
+    font-weight: 600;
+    font-size: 11.5px;
+    color: var(--text-normal);
+}
+.seek-settings .seek-startup-popover-desc {
+    font-size: 11px;
+    line-height: 1.35;
+    color: var(--text-muted);
 }
 .seek-settings .seek-status-startup-rows {
     display: flex;
