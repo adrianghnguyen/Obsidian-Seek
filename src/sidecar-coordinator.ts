@@ -152,6 +152,14 @@ export class SidecarCoordinator {
         return this.afterHydrateExclusive(result);
     }
 
+    async hydrateFromSidecar(): Promise<{ importedChunks: number } | null> {
+        if (!this.coord.sidecarOn()) return null;
+        const result = this.coord.isWriting()
+            ? await this.hydrateSidecarExclusive()
+            : await this.hydrateSidecar();
+        return result ? { importedChunks: result.hydrated } : null;
+    }
+
     // Hydrate body that assumes the write mutex is already held. Used by
     // hydrateSidecar (which acquires the lock) and rebuildFromSidecar (which
     // must clearAllStores + hydrate in ONE critical section — releasing

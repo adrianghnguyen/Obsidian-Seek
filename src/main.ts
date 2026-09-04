@@ -70,6 +70,7 @@ import { SeekSearchModal, type IndexBanner } from './search-modal';
 import { parsePaneType, openFileAtTarget, openBaseAtTarget, type OpenTarget } from './open-target';
 import { registerSeekCliHandlers } from './cli-handlers';
 import { DriftRecoveryCoordinator } from './drift-recovery-coordinator';
+import { WorkflowCoordinator } from './workflow-coordinator';
 import {
     PluginSchedulerManager,
     type PluginSchedulerHost,
@@ -240,6 +241,7 @@ export default class SeekPlugin extends Plugin {
     // Recent searches (see recents.ts) — per-device localStorage, same
     // manifest-id + vault scoping as forensics. Null only during early onload.
     private recents: RecentSearches | null = null;
+    /* internal */ workflowCoordinator!: WorkflowCoordinator;
 
     // Background schedulers and queue state (see plugin-schedulers.ts).
     private _schedulers?: PluginSchedulerManager;
@@ -697,6 +699,20 @@ export default class SeekPlugin extends Plugin {
         // existing index off it into the literal path on upgrade.
         const legacySidecarDir = this.manifest.dir ? `${this.manifest.dir}/index` : null;
         this.orchestrator = new SearchOrchestrator(this.app, this.store, this.embedder, this.logger, this.settings, this.forensics, sidecarIndexDir, this.taskCtx);
+        this.workflowCoordinator = this.orchestrator.getWorkflowCoordinator();
+        this.workflowCoordinator.setSchedulers(this.schedulers);
+        this.workflowCoordinator.setRunCatchUp(() => this.runCatchUp());
+        this.workflowCoordinator.setHooks({
+            isQueryInFlight: () => this.queryInFlightCount > 0,
+            onHealthChange: (health, reason) => {
+                this.indexHealth = health;
+                if (health === 'degraded' && reason) {
+                    this.degradedReason = 'drift';
+                } else if (health === 'healthy') {
+                    this.degradedReason = null;
+                }
+            },
+        });
         this.driftRecoveryCoordinator = new DriftRecoveryCoordinator({
             getOrchestrator: () => this.orchestrator,
             getIndexHealth: () => this.indexHealth,
@@ -2684,6 +2700,10 @@ export default class SeekPlugin extends Plugin {
             this.indexProgress.hide(jobId);
             void this.touchIndexInventory();
         }
+    }
+
+    getWorkflowCoordinator(): WorkflowCoordinator {
+        return this.workflowCoordinator;
     }
 
     // Index health snapshot for the settings Index status card. Read-only; gathers the

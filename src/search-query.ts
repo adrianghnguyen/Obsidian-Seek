@@ -99,6 +99,13 @@ export interface RecencyOverride {
     halfLifeDays?: number;
 }
 
+export interface SearchQueryOptions {
+    recencyOverride?: RecencyOverride;
+    onPartial?: (partial: SearchPartial) => void | Promise<void>;
+    signal?: AbortSignal;
+    [key: string]: unknown;
+}
+
 export function dedupByPath(rankedPool: ScoredChunk[], topK: number): ScoredChunk[] {
     const seenPaths = new Set<string>();
     const out: ScoredChunk[] = [];

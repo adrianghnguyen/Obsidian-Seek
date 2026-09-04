@@ -509,7 +509,7 @@ export class CacheManager {
         }
     }
 
-    async warmCaches(trigger: string): Promise<void> {
+    async warmCaches(trigger: string = 'boot'): Promise<void> {
         const bgWarm = trigger === 'startup' || trigger === 'startup-good-enough'
             || trigger === 'pre-catchup' || trigger === 'modal-open';
         if (this.warmDeferred && bgWarm) return;
@@ -564,5 +564,9 @@ export class CacheManager {
         this.binaryIndex = null;
         this.frameCache = null;
         this.coord.bumpGeneration();
+    }
+
+    invalidateCaches(): void {
+        this.invalidateBm25Cache();
     }
 }
