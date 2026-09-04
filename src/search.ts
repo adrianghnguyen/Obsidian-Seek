@@ -1855,7 +1855,7 @@ export class SearchOrchestrator {
     // ── Phase 4 decomposition seam (indexing) ── reindexDelta + applyDelta share
     // removal-body capture, incremental BM25 patch, and coord.currentDelta gating.
     // Extract only after CacheManager owns frameCache (Phase 2). See
-    // docs/SEARCH-DECOMPOSITION.md
+    // docs/archive/SEARCH-DECOMPOSITION.md
     async reindexDelta(
         dirtyPaths: string[],
         deletedPaths: string[],
@@ -2765,7 +2765,7 @@ export class SearchOrchestrator {
     // ── Phase 3 decomposition seam (SearchQuery) ── search() + searchLexicalOnly()
     // + telemetry belong in search-query.ts once CacheManager (Phase 2) is the sole
     // cache owner. Orchestrator should delegate, not duplicate. See
-    // docs/SEARCH-DECOMPOSITION.md
+    // docs/archive/SEARCH-DECOMPOSITION.md
     //
     //   S0  resident frame (corpus + binary index, cached by dataGeneration —
     //       listAllChunks runs only on a cache miss, i.e. after a reindex)

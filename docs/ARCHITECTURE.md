@@ -22,6 +22,7 @@ This document describes how the codebase is organized, how major subsystems inte
 12. [Build, test & release](#12-build-test--release)
 13. [External integration points](#13-external-integration-points)
 14. [Design themes](#14-design-themes)
+15. [Monolith decomposition & modularization learnings](#15-monolith-decomposition--modularization-learnings)
 
 ---
 
@@ -680,9 +681,45 @@ CLI handlers register only when `registerCliHandler` exists on the plugin instan
 
 ---
 
+## 15. Monolith decomposition & modularization learnings
+
+During the refactoring of Seek's primary God Objects (`search.ts` and `main.ts`), critical architectural lessons, phase order requirements, and anti-patterns were established to maintain stability across a ~100k-LOC codebase running inside Obsidian's single-threaded JavaScript environment.
+
+### 15.1 The Zero-Dual-Cache Principle & Anti-Patterns
+In an earlier refactor attempt, `CacheManager` and `SearchQuery` were copied out of `SearchOrchestrator`, but original cache fields and implementations were left in place:
+- `SearchOrchestrator` still owned `frameCache`, `bm25Cache`, and `ensureFrame()`.
+- `SearchQuery` was constructed but never delegated to — creating dead code.
+- Incremental deletion (`wantRemovalBodies`) checked one cache owner while `applyDelta` read another, causing silent removal-body bugs and desynchronization.
+
+| Anti-pattern | Consequence | Rule |
+| :--- | :--- | :--- |
+| **Copy class out, leave orchestrator copy** | Dual cache drift, non-deterministic bugs; tests pass on dead instance while live path fails. | Never leave duplicate implementations. Code must be moved and original fields deleted or delegated in the exact same change. |
+| **Instantiate extracted class without delegating** | Dead code and misleading "contract tests" that don't execute the extracted class. | Delegate immediately on extraction; verify callers hit the extracted instance. |
+| **Split cache ownership across multiple objects** | Subtly desynchronized states between readers and writers (e.g. `wantRemovalBodies` vs `applyDelta`). | Single-authority state ownership is non-negotiable (`CacheManager` is sole cache owner). |
+| **Extract before composing integration tests** | No safety net for subtle delta application and search interactions. | Run Tier-2 full-pipeline tests (`search-integration.test.ts`, `scenario.ts`) on every extraction step. |
+
+### 15.2 Decomposition Phase Order (Leaf-First to Coordinator)
+To decompose large interconnected monoliths safely without introducing regressions:
+1. **Phase 1: Pure Stateless Helpers First**: Extract leaf utilities that touch no instance state (`frame-utils.ts`, `coherence.ts`, `bm25-persist.ts`). Re-export at tail for backwards compatibility.
+2. **Phase 2: Extract State Authorities Next**: Establish the single source of truth for in-memory structures (`cache-manager.ts`) before extracting consumers. Delete orchestrator cache fields in the same commit.
+3. **Phase 3: Extract Retrieval / Consumer Pipelines**: Extract query execution engines (`search-query.ts`) and delegate from the orchestrator.
+4. **Phase 4: Extract Durability & Sync**: Isolate high-conflict file/sidecar hydration and compaction (`sidecar-coordinator.ts`).
+5. **Phase 5: Extract Host Lifecycle & Schedulers**: Isolate background debounce timers, watchers, and CLI handlers (`plugin-schedulers.ts`, `cli-handlers.ts`, `drift-recovery-coordinator.ts`, `confirm-modal.ts`, `diagnostic-report.ts`).
+
+### 15.3 Contract Testing & Integration Safety Net
+Unit tests on isolated functions cannot detect regressions caused by cross-module lifecycle interactions (e.g. delta application + search query interleaving, progressive partial ordering, or cache invalidation). 
+- Always gate extractions against Tier-2 composed integration tests (`src/search-integration.test.ts` and `src/test-harness/scenario.ts`), which boot a real `SearchOrchestrator` + `IndexStore` against a deterministic fake embedder.
+
+### 15.4 Remaining Seams (Candidate Write Slices)
+The following candidate slices remain in `src/search.ts` if future work requires further decomposition of the write pipeline:
+- `reindexDelta` / `applyDelta` (~800 lines): Removal-body capture, incremental BM25 patching.
+- Full reindex embed loop (`reindexAllInner`, ~600 lines): Pacer, token-budget rolling buffers, quota gating.
+
+---
+
 ## Related docs
 
-- [SEARCH-DECOMPOSITION.md](./SEARCH-DECOMPOSITION.md) — how to split `search.ts` safely (phase order, anti-patterns, test gates)
+- [SEARCH-DECOMPOSITION.md](./archive/SEARCH-DECOMPOSITION.md) — archived decomposition roadmap and reference (phase order, anti-patterns, test gates)
 - [seek-architecture.canvas.tsx](./seek-architecture.canvas.tsx) — interactive Cursor canvas (system map, index/search/persistence drill-downs)
 - [README.md](../README.md) — user-facing install and privacy summary
 - [CHANGELOG.md](../CHANGELOG.md) — release history
