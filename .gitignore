@@ -17,6 +17,9 @@ captures/
 # Throwaway diagnostic probes / scratch HTML (e.g. lazyrelease-probe). Local-only.
 experiments/
 
+# Temp artifacts (screenshots, debug dumps, temp scripts)
+.tmp/
+
 # Seek diagnostic JSON (vault-style artifacts dir + repo probe copies). Summary .md may be kept.
 .seek-artifacts/
 .cursor/artifacts/
