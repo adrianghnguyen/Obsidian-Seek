@@ -1,3 +1,38 @@
+/**
+ * @file cache-manager.ts
+ * @module CacheManager
+ *
+ * ## Responsibilities
+ * Single authority and lifecycle manager for all resident in-memory search caches:
+ * - `frameCache`: The aligned `ResidentFrame` containing chunk metadata, 1-bit sign vectors,
+ *   and quantized int8 vectors for Hamming/dot-product query execution.
+ * - `bm25Cache`: The in-memory `MultiFieldBM25` lexical search index.
+ * - `binaryIndex`: Contiguous binary sign vector index for fast Hamming distance scoring.
+ * - `synonymCache`: Vault synonym lookup map (`SynonymMap`).
+ * - Persisting and loading serialized BM25 index blobs to/from disk (`saveBm25DiskCache`,
+ *   `loadBm25DiskCache`) to bypass expensive lexical re-parsing on startup.
+ *
+ * ## Order Dependencies & Lifecycle
+ * - **Dependency tier**: State Authority Layer. Instantiated synchronously in the
+ *   `SearchOrchestrator` constructor.
+ * - **Initialization sequence**:
+ *   1. Instantiated empty on plugin load.
+ *   2. `IndexStore` opens and verifies schema/identity.
+ *   3. `warmCaches()` is called after startup hydrate or initial delta scan completes.
+ *   4. `SearchQuery` accesses `ensureFrame()` / `getBm25Cache()` during searches.
+ *   5. On index writes or reindex, caches are mutated incrementally in lockstep or
+ *      cleared atomically via `invalidateCaches()`.
+ * - **Critical Invariants**:
+ *   - **Single Cache Authority**: There are NO dual caches in `SearchOrchestrator`. All query
+ *     and indexing operations interact with caches exclusively through this instance.
+ *   - **Generation Freshness**: `ensureFrame()` captures `coord.generation` before reading
+ *     from `IndexStore` and verifies it upon completion via `shouldDiscardPartialFrame()`.
+ *     If the index generation advanced during assembly, the partial frame is immediately
+ *     discarded to prevent serving stale/corrupt data.
+ *   - **Write Mutex Coordination**: Invalidation and mutations must occur under
+ *     `IndexCoordinator.runExclusive` or in locked coordination with write batches.
+ */
+
 import type { App } from 'obsidian';
 import type { ChunkMeta, SeekSettings } from './types';
 import { MultiFieldBM25 } from './bm25';

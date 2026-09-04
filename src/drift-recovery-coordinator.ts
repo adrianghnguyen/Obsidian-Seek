@@ -1,3 +1,28 @@
+/**
+ * @file drift-recovery-coordinator.ts
+ * @module DriftRecoveryCoordinator
+ *
+ * ## Responsibilities
+ * Embed-free drift recovery state machine for self-healing the search index:
+ * - Detects persistent index drift between memory caches (`frameCache`, `bm25Cache`) and IndexedDB.
+ * - Executes an embed-free recovery pass by hydrating existing embeddings from sidecar shards
+ *   without burning battery or CPU re-running the embedding model.
+ * - Re-warms in-memory caches, verifies row-space coherence, and transitions index health
+ *   state (`healthy` -> `recovering` -> `healthy` or `degraded`).
+ *
+ * ## Order Dependencies & Lifecycle
+ * - **Dependency tier**: Host Lifecycle & Health Recovery Layer. Instantiated in `SeekPlugin.onload()`.
+ * - **Triggering**: Triggered by `SearchOrchestrator.onCoherenceDrift()` when row alignment
+ *   checks fail repeatedly beyond the circuit-breaker cooldown window.
+ * - **Concurrency & Recovery Invariants**:
+ *   - **Single-Flight Coalescing**: `running` and `pending` state flags coalesce multiple rapid drift
+ *     triggers into a single recovery pass.
+ *   - **Generation Gating**: Recovery is suppressed if a pass has already executed on the current
+ *     index generation (`lastRecoveryGen === currentGen`) to prevent recursive recovery loops.
+ *   - **Window Backgrounding Awareness**: If Obsidian is hidden in the background (`document.hidden`),
+ *     execution is deferred until the app gains focus to prevent mobile process freezes.
+ */
+
 import type { SearchOrchestrator } from './search';
 import { driftRecoveryDecision } from './coherence';
 

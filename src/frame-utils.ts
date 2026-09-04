@@ -1,3 +1,29 @@
+/**
+ * @file frame-utils.ts
+ * @module FrameUtils
+ *
+ * ## Responsibilities
+ * Stateless low-level operations for Seek's in-memory query row space (`ResidentFrame`):
+ * - Flat memory layout for 1-bit packed sign vectors (`activePacked`), resident int8
+ *   quantized vectors (`residentInt8`), row scale factors (`residentScales`), and row
+ *   validity bitsets (`validRows`).
+ * - In-place row mutations: appending new chunk rows (`appendFrameRows`) and marking
+ *   deleted/updated chunks as tombstones (`tombstoneFrameRows`) without reallocating arrays.
+ * - Quantized vector block assembly (`buildResidentRerankBlock`) and candidate alignment
+ *   (`alignCandidate`) for Stage 2 reranking.
+ *
+ * ## Order Dependencies & Lifecycle
+ * - **Dependency tier**: Pure foundation layer. Has ZERO dependencies on `SearchOrchestrator`,
+ *   `IndexStore`, or Obsidian runtime values. Can be tested and loaded in isolation.
+ * - **Call-order prerequisite**: Frame mutations (`appendFrameRows`, `tombstoneFrameRows`)
+ *   MUST be executed in lockstep with lexical index mutations (`MultiFieldBM25.add`,
+ *   `MultiFieldBM25.remove`) under `IndexCoordinator.runExclusive`.
+ * - **Coherence Invariant**: Row index `i` in `orderedChunks[i]`, `orderedIds[i]`,
+ *   `activePacked[i * bytesPerVec...]`, and `residentInt8[i * embDim...]` MUST correspond 1:1
+ *   with the BM25 internal doc index `idToIdx.get(id)`. Any divergence constitutes drift
+ *   and triggers cache invalidation via `coherence.ts`.
+ */
+
 import type { Chunk, ChunkMeta } from './types';
 import type { QuantVec } from './quant';
 

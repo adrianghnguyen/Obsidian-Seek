@@ -1,3 +1,33 @@
+/**
+ * @file plugin-schedulers.ts
+ * @module PluginSchedulers
+ *
+ * ## Responsibilities
+ * Background lifecycle scheduling, vault event watchers, debounce queues, and memory watchdog:
+ * - **Incremental Indexing Debounce (`queueDirty`, `flushDirty`)**: Batches modified notes with
+ *   a 5-minute idle window (`IDLE_FLUSH_MS`) so active typing is never interrupted, while
+ *   structural changes (deletions/moves) flush on a short 1.5s delay (`STRUCT_FLUSH_MS`).
+ * - **Periodic Catch-Up (`runCatchUp`)**: Runs catch-up indexing passes at startup and every 5
+ *   minutes to reconcile offline vault modifications.
+ * - **Exclusion Folder Watcher (`reconcileFolderExclusions`)**: Diffs active vault folders against
+ *   settings exclusions, purging newly excluded folders or queueing newly included notes.
+ * - **Mobile Memory Watchdog (`maybeUnloadEmbedder`)**: Unloads the ~240 MB embedder iframe after
+ *   3 minutes of quiescence (`IDLE_UNLOAD_MS`) on mobile platforms to prevent OS memory kills.
+ *
+ * ## Order Dependencies & Lifecycle
+ * - **Dependency tier**: Host Integration & Lifecycle Scheduler Layer.
+ * - **Lifecycle Sequence**:
+ *   1. Instantiated in `SeekPlugin.onload()` after `SearchOrchestrator` and `IndexStore` are live.
+ *   2. Registers vault listeners (`vault.on('modify')`, `vault.on('delete')`, `vault.on('rename')`).
+ *   3. Initial catch-up indexing MUST be scheduled only AFTER startup sidecar hydration completes.
+ *   4. Periodic background intervals run every 5 minutes for catch-up and 1 minute for mobile watchdog.
+ *   5. Disposed cleanly on plugin unload (`dispose()`), clearing all timers and event references.
+ * - **Concurrency Invariants**:
+ *   - Background flushes yield immediately when `isQueryInFlight` is true (user typing in search modal
+ *     or CLI query executing) to protect UI responsiveness.
+ *   - Mobile unload predicate never disposes the embedder if an edit flush timer is armed or query is pending.
+ */
+
 import type { App, EventRef } from 'obsidian';
 import { Notice, TFile } from 'obsidian';
 import type { SeekSettings } from './types';

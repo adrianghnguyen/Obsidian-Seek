@@ -1,3 +1,26 @@
+/**
+ * @file bm25-persist.ts
+ * @module Bm25Persist
+ *
+ * ## Responsibilities
+ * Validation stamping and compatibility gating for persisted BM25 lexical indices:
+ * - Computes and verifies `Bm25PersistStamp`, ensuring that cached MiniSearch index
+ *   blobs saved to disk match the current analyzer version and runtime settings.
+ * - Prevents stale or incompatible lexical indices from being loaded after code
+ *   changes (tokenizer, analyzer formulas, token boosts) or model swaps.
+ *
+ * ## Order Dependencies & Lifecycle
+ * - **Dependency tier**: Foundation layer. Depends on `bm25.ts` for `ANALYZER_VERSION`
+ *   and types from `index-store.ts` / `embedder.ts`.
+ * - **Call-order prerequisite**: Evaluated by `CacheManager.loadBm25DiskCache()` during
+ *   startup cache warm BEFORE instantiating or hydrating `MultiFieldBM25`.
+ * - **Compatibility Invariant**:
+ *   - Any mismatch in gated fields (`analyzerVersion`, `modelId`, `embeddingDim`, `props`,
+ *     `headings`) forces a full in-memory refit from IndexedDB chunk records.
+ *   - `chunkCount` and `lastIndexedAt` are diagnostic-only and non-gating, allowing
+ *     safe warm-load of compatible blobs which are then caught up via incremental delta.
+ */
+
 import type { SeekSettings } from './types';
 import type { MetaConfig } from './index-store';
 import { ANALYZER_VERSION } from './bm25';

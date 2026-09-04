@@ -1,3 +1,20 @@
+/**
+ * @file confirm-modal.ts
+ * @module ConfirmModal
+ *
+ * ## Responsibilities
+ * Mobile-safe asynchronous confirmation dialog:
+ * - Replaces native browser `window.confirm()`, which is suppressed or blocks the main UI
+ *   thread in mobile WebViews (iOS/iPadOS and Android).
+ * - Renders a modal prompt with formatted multiline text and explicit "Proceed" / "Cancel" buttons.
+ * - Resolves a Promise with `true` on explicit proceed, or `false` on cancel / click-outside / Esc.
+ *
+ * ## Order Dependencies & Lifecycle
+ * - **Dependency tier**: UI / Presentation Layer.
+ * - **Lifecycle**: Ephemeral dialog. Instantiated on-demand by `SeekPlugin.runFullReindex()`
+ *   before initiating destructive index resets, and closes immediately upon user choice.
+ */
+
 import { App, Modal } from 'obsidian';
 
 // Minimal confirm dialog. Replaces the native window.confirm(), which is

@@ -1,3 +1,45 @@
+/**
+ * @file search-query.ts
+ * @module SearchQuery
+ *
+ * ## Responsibilities
+ * Query execution engine and retrieval pipeline coordinator for Seek:
+ * - Multi-stage hybrid search (`search`):
+ *   - **Stage 0 (Fast Path / Ladder)**: `emitVaultLadder`, `vaultFilterBrowse`, and `topByRecency`
+ *     deliver instant (<5ms) results for empty queries, filter browsing, or recency sorts.
+ *   - **Stage 1 (Coarse Retrieval)**: Runs 1-bit Hamming distance scoring via Web Worker
+ *     (`BinaryScorerWorker`) and BM25 lexical scoring in parallel.
+ *   - **Candidate Pooling**: Merges candidates using dynamic pool sizing (`poolCaps`) based on query
+ *     complexity and lexical confidence.
+ *   - **Stage 2 (Dense Reranking)**: Calculates int8 quantized dot products or dequantized cosine
+ *     similarity against top candidates.
+ *   - **Stage 3 (TM2C2 Fusion)**: Normalizes, boosts, and combines dense, lexical, recency, and name
+ *     match signals into final scored results (`ScoredChunk[]`).
+ * - **Progressive UI Updates**: Emits intermediate Stage 1 results via `onPartial` to allow instant UI
+ *   rendering while Stage 2 reranking completes asynchronously.
+ * - **Lexical-Only Retrieval (`searchLexicalOnly`)**: Bypasses vector embedding completely for fast
+ *   keyword matching or when the embedder is inactive.
+ *
+ * ## Order Dependencies & Lifecycle
+ * - **Dependency tier**: Retrieval & Query Pipeline Layer. Instantiated inside `SearchOrchestrator`.
+ * - **Prerequisites & Dependencies**:
+ *   - `CacheManager`: Provides the query-time `ResidentFrame`, `MultiFieldBM25`, and binary vector index.
+ *   - `LocalEmbedder`: Generates query vectors in the background iframe worker.
+ *   - `BinaryScorerWorker`: Offloads SIMD/bit-parallel Hamming distance computation to a dedicated worker.
+ *   - `IndexStore`: Fetches chunk bodies and metadata for top-ranked candidate chunks.
+ * - **Execution Pipeline Sequence**:
+ *   1. `parseQuery` parses query terms and filters (e.g. tag:, path:, date:).
+ *   2. Empty queries immediately bypass embedding and route to `emitVaultLadder`.
+ *   3. Non-empty queries trigger `cacheMgr.ensureFrame()` to guarantee cache availability.
+ *   4. Lexical BM25 search and Query Vector Embedding execute concurrently.
+ *   5. Hamming distance scoring executes over `activePacked` sign vectors in the worker.
+ *   6. Top candidates are pooled, optionally firing `onPartial` for early UI paint.
+ *   7. Top candidates undergo cosine reranking and fusion scoring.
+ * - **Concurrency Invariants**:
+ *   - Search operations are strictly **read-only** and never acquire the exclusive write mutex.
+ *   - Search yields periodically via `cheapYield()` to avoid starving the main thread compositor.
+ */
+
 import type { App } from 'obsidian';
 import { TFile } from 'obsidian';
 import type {
