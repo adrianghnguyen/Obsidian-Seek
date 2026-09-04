@@ -25,21 +25,11 @@ import { Notice, TFile } from 'obsidian'; // value imports: reindexDelta uses `i
 import type { Chunk, ChunkMeta, ScoredChunk, SearchEntry, SearchPartial, IndexCompleteEntry, IndexProgressEntry, ResetEntry, DeltaApplyEntry, QueryFilters, FilterContext, SeekSettings, MemorySnapshot } from './types';
 import { snapshotMemory, memoryDelta, distributionStats } from './types';
 import { MarkdownChunker, cyrb53Hex } from './chunker';
-import { cleanDenseText } from './dense-clean';
 import { extractBaseDocs } from './base-extractor';
-import { MultiFieldBM25, DEFAULT_FIELD_BOOSTS, PREFIX_LAST_TOKEN, FUZZY_BY_LENGTH, ANALYZER_VERSION, BM25_COVERAGE_POW } from './bm25';
-import { buildSynonymMap, chunkDeclaresAlias, SYNONYM_WEIGHT, type SynonymMap } from './synonyms';
+import { MultiFieldBM25 } from './bm25';
+import { buildSynonymMap, chunkDeclaresAlias, type SynonymMap } from './synonyms';
 import { TaskContextTracker } from './task-context';
-import { rank, cosineScores, DEFAULT_RANKING_CONFIG } from './ranker';
-import { browseOrder, recencyDate } from './fusion';
-import { collectNameHits, shouldEarlyPaint } from './name-match';
-import {
-    buildVaultLexIndex,
-    vaultFileSignature,
-    vaultFileToMeta,
-    type FileCacheLite,
-    type VaultLexIndex,
-} from './vault-lex';
+import type { FileCacheLite, VaultLexIndex } from './vault-lex';
 import { IndexStore, classifyFileDelta, findOrphanChunkIds, isStoreClosedError, isQuotaError, stripContent, META_SCHEMA_VERSION, type MetaConfig, type FileRecord } from './index-store';
 import { computeFolderCoverage, type FolderCoverageSummary } from './folder-coverage';
 import { INDEX_QUOTA_MSG } from './index-notice';
@@ -49,12 +39,10 @@ import { seekPerf } from './perf-console';
 import { Forensics } from './forensics';
 import { selectIndexBucket } from './iframe-runner';
 import { enforceTokenBudget, embedInput, createBatchedTokenCounter, TOKEN_COUNTS_BATCH, type TokenBudgetResult } from './token-budget';
-import { concatPacked, topNIndices, packSignBits } from './binary';
-import { selectTopNIndices } from './select';
-import { poolCaps, POOL_FLOORS } from './pool';
-import { BinaryScorerWorker, binaryCandidatesAsync } from './binary-scorer';
+import { packSignBits } from './binary';
+import { BinaryScorerWorker } from './binary-scorer';
 import { quantizeInt8, dequantizeInt8, type QuantVec } from './quant';
-import { VecReservoir, denseBgStats, calibratedConfidence, BG_RESERVOIR, MIN_BG_SAMPLE } from './dense-stats';
+import { VecReservoir, denseBgStats, BG_RESERVOIR, MIN_BG_SAMPLE } from './dense-stats';
 import { bulkAppend, clearDevice, sidecarDirSignature, shouldReconcileSidecar, staleSidecarFormat, SIDECAR_FORMAT, bm25PathFor, writeBytesAtomic, ensureDir, listSidecarDeviceIds, listDeviceShards, compactDevice, coalesceSmallShards, type CompactResult, type CoalesceResult, type TierBytes } from './sidecar';
 import { writeDeviceMeta, readDeviceMeta, metaAccepts, expectationFor, type SidecarMeta, type MetaExpectation } from './sidecar-meta';
 import { hydrateFromSidecar, rankAcceptedProducers, probePeerAhead, type ReChunkedNote, type HydrateResult, type HydrateDeps } from './sidecar-sync';
@@ -63,11 +51,8 @@ import { gzipString, gunzipToString, gzipAvailable } from './gzip';
 import { IndexCoordinator } from './index-coordinator';
 import { CompositorPacer, cheapYield } from './pacer';
 import { isMobilePlatform, residentInt8Enabled } from './platform';
-import { parseQuery, compileMatcher, excludedNotePaths } from './query-parser';
-import { makeSnippet, SNIPPET_PREVIEW_LIMITS } from './snippet';
-import { buildPassageTerms } from './passage';
-import { enumerateNumberPropertyNames } from './prop-types';
 import { CacheManager } from './cache-manager';
+import { SearchQuery, type RecencyOverride, dedupByPath, topKByScore } from './search-query';
 import {
     alignCandidate,
     buildResidentRerankBlock,
@@ -228,18 +213,6 @@ export function shouldIndexPath(app: App, settings: SeekSettings, path: string):
     return true;
 }
 
-// Per-call recency override for search() — the seek:search CLI's
-// recencyWeight/recencyHalflife params (main.ts). Either field may be absent
-// (only one of the two CLI params given); absent means "use this.settings
-// for that field". Deliberately a plain call argument, never written into
-// SeekSettings: the settings object is shared by reference with the plugin
-// and read by every concurrent search caller, so mutating it for an
-// override's duration let a concurrent plain search transparently rank
-// against someone else's in-flight override (2026-07-02 review).
-export interface RecencyOverride {
-    epsilon?: number;
-    halfLifeDays?: number;
-}
 
 // 1C: an index pass's deferred sidecar flush. embedAndCommitFiles always runs
 // inside the write mutex; instead of flushing the sidecar there (pure file IO the
@@ -281,6 +254,7 @@ export class SearchOrchestrator {
     // everywhere). Owns its Worker; disposed on plugin unload. See binary-scorer.ts.
     private binaryWorker: BinaryScorerWorker;
     private cacheManager: CacheManager;
+    private searchQuery: SearchQuery;
 
     // Set once, in dispose() (plugin unload / disable). A reindex that is still
     // embedding when the plugin unloads keeps running on the microtask queue AFTER
@@ -345,6 +319,29 @@ export class SearchOrchestrator {
             logger: this.logger,
             forensics: this.forensics ?? undefined,
             taskCtx: this.taskCtx ?? undefined,
+        });
+        this.searchQuery = new SearchQuery({
+            app: this.app,
+            store: this.store,
+            cacheManager: this.cacheManager,
+            coord: this.coord,
+            embedder: this.embedder,
+            binaryWorker: this.binaryWorker,
+            settings: this.settings,
+            logger: this.logger,
+            shouldIndex: (path) => this.shouldIndex(path),
+            onCoherenceDrift: (where) => this.onCoherenceDrift(where),
+            delegates: {
+                getBinaryWorker: () => this.binaryWorker,
+                peekResidentFrame: () => this.peekResidentFrame(),
+                topByRecency: (chunks, k, mask) => this.topByRecency(chunks, k, mask),
+                appendSearchTelemetry: (entry) => this.appendSearchTelemetry(entry),
+                emitVaultLadder: (cleanedQuery, topK, onPartial, signal, t0) =>
+                    this.emitVaultLadder(cleanedQuery, topK, onPartial, signal, t0),
+                vaultFilterBrowse: (filters, filterCtx, topK, signal) =>
+                    this.vaultFilterBrowse(filters, filterCtx, topK, signal),
+                hydrateBodies: (results) => this.hydrateBodies(results),
+            },
         });
     }
 
@@ -3585,14 +3582,7 @@ export class SearchOrchestrator {
     // query-time override never has to touch this.settings to take effect here.
     // See [[Seek Typed-Value Filters Design]].
     private buildFilterContext(recencyOverride?: RecencyOverride): FilterContext {
-        const epsilon = recencyOverride?.epsilon ?? this.settings.recencyEpsilon;
-        const recencyOn = epsilon > 0;
-        return {
-            dateField: recencyOn
-                ? { key: this.settings.recencyKey, createdProp: this.settings.createdProp }
-                : null,
-            numericKeys: enumerateNumberPropertyNames(this.app),
-        };
+        return this.searchQuery.buildFilterContext(recencyOverride);
     }
 
     // Search path (two-stage, v7+):
@@ -3640,49 +3630,11 @@ export class SearchOrchestrator {
     }
 
     private vaultFileCache(file: TFile): FileCacheLite | null {
-        try {
-            const cache = this.app.metadataCache as { getFileCache?: (f: TFile) => FileCacheLite | null };
-            return cache.getFileCache?.(file) ?? null;
-        } catch {
-            return null;
-        }
+        return this.searchQuery.vaultFileCache(file);
     }
 
     private async ensureVaultLex(signal?: AbortSignal): Promise<VaultLexIndex | null> {
-        const files = this.app.vault.getMarkdownFiles().filter(f => this.shouldIndex(f.path));
-        if (files.length === 0) return null;
-        const sig = vaultFileSignature(files);
-        if (this.vaultLex && this.vaultLex.signature === sig) return this.vaultLex;
-        if (this.vaultLexPromise) {
-            try { return await this.vaultLexPromise; } catch { return this.vaultLex; }
-        }
-        const work = buildVaultLexIndex(
-            files,
-            f => this.vaultFileCache(f),
-            f => this.app.vault.cachedRead(f),
-            {
-                searchableProperties: this.settings.searchableProperties,
-                headingsField: this.settings.headingsField || this.settings.boostedBm25,
-                yieldFn: cheapYield,
-                signal,
-            },
-        );
-        this.vaultLexPromise = work;
-        try {
-            const built = await work;
-            if (built.signature === vaultFileSignature(
-                this.app.vault.getMarkdownFiles().filter(f => this.shouldIndex(f.path)),
-            )) {
-                this.vaultLex = built;
-            }
-            return built;
-        } catch (e) {
-            if (e instanceof Error && e.name === 'AbortError') throw e;
-            console.warn('[seek] vault lexical index failed', e);
-            return null;
-        } finally {
-            if (this.vaultLexPromise === work) this.vaultLexPromise = null;
-        }
+        return this.searchQuery.ensureVaultLex(signal);
     }
 
     private async fillVaultSnippets(
@@ -3691,22 +3643,7 @@ export class SearchOrchestrator {
         cleanedQuery: string,
         signal?: AbortSignal,
     ): Promise<void> {
-        const snippetChars = SNIPPET_PREVIEW_LIMITS[this.settings.snippetPreview].chars;
-        const passageTerms = buildPassageTerms(cleanedQuery, () => 0);
-        for (const r of results) {
-            if (signal?.aborted) {
-                throw Object.assign(new Error('Query superseded'), { name: 'AbortError', code: 'ABORTED' });
-            }
-            let body = bodies?.get(r.chunk_id) ?? '';
-            if (!body) {
-                const file = this.app.vault.getAbstractFileByPath(r.note_path);
-                if (file instanceof TFile) {
-                    try { body = await this.app.vault.cachedRead(file); } catch { body = ''; }
-                }
-            }
-            r.content = body;
-            r.snippet = makeSnippet(body, passageTerms, snippetChars);
-        }
+        return this.searchQuery.fillVaultSnippets(results, bodies, cleanedQuery, signal);
     }
 
     private async emitVaultLadder(
@@ -3715,139 +3652,8 @@ export class SearchOrchestrator {
         onPartial: ((partial: SearchPartial) => void | Promise<void>) | undefined,
         signal: AbortSignal | undefined,
         t0: number,
-    ): Promise<{
-        results: ScoredChunk[];
-        namePainted: boolean;
-        lexPainted: boolean;
-        nameMatchMs: number;
-        nameHitCount: number;
-        namePartialMs: number;
-        lexPartialMs: number;
-    }> {
-        const empty = {
-            results: [] as ScoredChunk[],
-            namePainted: false, lexPainted: false,
-            nameMatchMs: 0, nameHitCount: 0, namePartialMs: 0, lexPartialMs: 0,
-        };
-        if (!cleanedQuery.trim()) return empty;
-        const throwIfAborted = (): void => {
-            if (signal?.aborted) {
-                throw Object.assign(new Error('Query superseded'), { name: 'AbortError', code: 'ABORTED' });
-            }
-        };
-
-        const files = this.app.vault.getMarkdownFiles().filter(f => this.shouldIndex(f.path));
-        const nameChunks: ChunkMeta[] = files.map(f => vaultFileToMeta(f, this.vaultFileCache(f)));
-        const nameStart = performance.now();
-        const nameHits = collectNameHits(nameChunks, cleanedQuery);
-        const nameMatchMs = performance.now() - nameStart;
-        let namePainted = false;
-        let namePartialMs = 0;
-        let results: ScoredChunk[] = [];
-        if (shouldEarlyPaint(nameHits)) {
-            const titleBoost = this.settings.navTitleBoost;
-            const early = nameHits.slice(0, topK).map(h => {
-                const c = nameChunks[h.index];
-                return {
-                    ...c,
-                    title: c.note_path.split('/').pop()?.replace(/\.md$/i, '') ?? c.title,
-                    content: '',
-                    score: h.score,
-                    ranking_signals: {
-                        dense: 0, bm25: 0, hybrid: 0, recency: 0,
-                        title_boost: titleBoost * h.score,
-                        denseRaw: 0,
-                    },
-                    lexicalOnly: true as const,
-                };
-            });
-            await this.fillVaultSnippets(early, this.vaultLex?.bodies ?? null, cleanedQuery, signal);
-            throwIfAborted();
-            namePartialMs = performance.now() - t0;
-            namePainted = true;
-            results = early;
-            if (onPartial) {
-                await onPartial({
-                    results: early,
-                    source: 'name',
-                    nameHitCount: nameHits.length,
-                    cleanedQuery,
-                });
-                throwIfAborted();
-                await cheapYield();
-                throwIfAborted();
-            }
-        }
-
-        const lexStart = performance.now();
-        const lex = await this.ensureVaultLex(signal);
-        throwIfAborted();
-        let lexPainted = false;
-        if (lex) {
-            const { scores: bm25Scores, bound: bm25Bound } = lex.bm25.getScoresWithCoverage(cleanedQuery, {
-                boosts: this.bm25FieldBoosts(),
-                fuzzy: this.settings.fuzzyEnabled ? FUZZY_BY_LENGTH : false,
-                prefix: this.settings.prefixLastToken ? PREFIX_LAST_TOKEN : false,
-            });
-            const caps = poolCaps(lex.chunks.length);
-            const bm25TopIdx = topNIndices(bm25Scores, caps.bm25, null);
-            const recencyTopIdx = this.topByRecency(lex.chunks, caps.recency, null);
-            const lexUnion = new Set<number>();
-            for (const i of bm25TopIdx) lexUnion.add(i);
-            for (const i of recencyTopIdx) lexUnion.add(i);
-            if (lexUnion.size > 0) {
-                const lexIndices = Array.from(lexUnion);
-                const lexChunks = lexIndices.map(i => lex.chunks[i]);
-                const lexBm25 = lexIndices.map(i => bm25Scores[i]);
-                const zeroDense = new Float64Array(lexIndices.length);
-                const lexRankConfig = {
-                    ...DEFAULT_RANKING_CONFIG,
-                    alpha: this.settings.denseWeight,
-                    titleBoost: this.settings.navTitleBoost,
-                    recencyEpsilon: this.settings.recencyEpsilon,
-                    recencyHalfLifeDays: this.settings.recencyHalfLifeDays,
-                    recencyKey: this.settings.recencyKey,
-                    createdProp: this.settings.createdProp,
-                };
-                const { results: lexRanked } = rank(
-                    lexChunks, zeroDense, new Float64Array(lexBm25),
-                    cleanedQuery, Math.min(caps.binary + caps.bm25 + caps.recency, lexIndices.length),
-                    lexRankConfig, bm25Bound,
-                );
-                for (const r of lexRanked) r.lexicalOnly = true;
-                const lexResults = dedupByPath(lexRanked, topK);
-                if (lexResults.length > 0) {
-                    await this.fillVaultSnippets(lexResults, lex.bodies, cleanedQuery, signal);
-                    throwIfAborted();
-                    lexPainted = true;
-                    if (namePainted && results.length > 0) {
-                        const seen = new Set(results.map(r => r.note_path));
-                        const merged = [...results];
-                        for (const r of lexResults) {
-                            if (seen.has(r.note_path)) continue;
-                            seen.add(r.note_path);
-                            merged.push(r);
-                        }
-                        results = merged.slice(0, topK);
-                    } else {
-                        results = lexResults;
-                    }
-                    if (onPartial) {
-                        await onPartial({ results: lexResults, source: 'lexical', cleanedQuery });
-                        throwIfAborted();
-                    }
-                }
-            }
-        }
-        return {
-            results,
-            namePainted,
-            lexPainted,
-            nameMatchMs,
-            nameHitCount: nameHits.length,
-            namePartialMs,
-            lexPartialMs: performance.now() - lexStart,
-        };
+    ) {
+        return this.searchQuery.emitVaultLadder(cleanedQuery, topK, onPartial, signal, t0);
     }
 
     private async vaultFilterBrowse(
@@ -3856,26 +3662,7 @@ export class SearchOrchestrator {
         topK: number,
         signal?: AbortSignal,
     ): Promise<ScoredChunk[]> {
-        const files = this.app.vault.getMarkdownFiles().filter(f => this.shouldIndex(f.path));
-        const matcher = compileMatcher(filters, filterCtx);
-        const metas = files.map(f => vaultFileToMeta(f, this.vaultFileCache(f)));
-        const matched = matcher ? metas.filter(c => matcher(c)) : metas;
-        const seenPaths = new Set<string>();
-        const results: ScoredChunk[] = [];
-        for (const c of browseOrder(matched, this.settings.recencyKey, this.settings.createdProp)) {
-            if (seenPaths.has(c.note_path)) continue;
-            seenPaths.add(c.note_path);
-            results.push({
-                ...c,
-                content: '',
-                score: 0,
-                ranking_signals: { dense: 0, bm25: 0, hybrid: 0, recency: 0, title_boost: 0, denseRaw: 0 },
-                lexicalOnly: true,
-            });
-            if (results.length >= topK) break;
-        }
-        await this.fillVaultSnippets(results, this.vaultLex?.bodies ?? null, '', signal);
-        return results;
+        return this.searchQuery.vaultFilterBrowse(filters, filterCtx, topK, signal);
     }
 
     async search(
@@ -3885,694 +3672,7 @@ export class SearchOrchestrator {
         onPartial?: (partial: SearchPartial) => void | Promise<void>,
         signal?: AbortSignal,
     ): Promise<{ results: ScoredChunk[]; entry: SearchEntry }> {
-        const throwIfAborted = (): void => {
-            if (signal?.aborted) {
-                throw Object.assign(new Error('Query superseded'), { name: 'AbortError', code: 'ABORTED' });
-            }
-        };
-        throwIfAborted();
-        const t0 = performance.now();
-        const searchId = `${Date.now()}-${query.slice(0, 20)}`;
-
-        // Parse inline filter syntax (#tag / tag: / path: / [k:v] / numeric /
-        // dates). `cleanedQuery` is the residual text we embed + BM25; `filters`
-        // drives the candidate-selection match-mask below. A null `filters` means a
-        // plain query — the mask stays undefined and the path is unchanged. The
-        // FilterContext threads vault-specific facts (Number-typed props, the
-        // Recency date field) into the otherwise-pure parser/matcher; same object
-        // is reused by compileMatcher so parse and match agree on types/field.
-        const filterCtx = this.buildFilterContext(recencyOverride);
-        const { cleanedQuery, filters } = parseQuery(query, filterCtx);
-
-        // Vault-file ladder when the resident frame is not in RAM. Do not call
-        // ensureFrame on a miss — listAllMeta / warmJoin / isWriting wait lock
-        // the process against boot hydrate and miss the 10s SLO.
-        let vault = {
-            results: [] as ScoredChunk[],
-            namePainted: false, lexPainted: false,
-            nameMatchMs: 0, nameHitCount: 0, namePartialMs: 0, lexPartialMs: 0,
-        };
-        if (!this.peekResidentFrame()) {
-            if (cleanedQuery.trim()) {
-                vault = await this.emitVaultLadder(cleanedQuery, topK, onPartial, signal, t0);
-            } else if (filters) {
-                vault.results = await this.vaultFilterBrowse(filters, filterCtx, topK, signal);
-            }
-            throwIfAborted();
-            // Always return vault results on a cold frame. Falling through to
-            // hybrid here would re-enter ensureBm25 / embed while boot hydrate
-            // still holds the writer — the lock that missed the 10s SLO.
-            // The modal retries search() when hasSearchableFrame() flips true.
-            const entry = this.emptySearchEntry(
-                query, cleanedQuery, filters, topK, searchId, 0, performance.now() - t0,
-            );
-            entry.nameMatchMs = parseFloat(vault.nameMatchMs.toFixed(2));
-            entry.nameHitCount = vault.nameHitCount;
-            entry.nameEarlyPainted = vault.namePainted;
-            entry.namePartialMs = parseFloat(vault.namePartialMs.toFixed(2));
-            entry.lexPartialFired = vault.lexPainted;
-            entry.lexPartialMs = parseFloat(vault.lexPartialMs.toFixed(2));
-            throwIfAborted();
-            await this.appendSearchTelemetry(entry);
-            return { results: vault.results, entry };
-        }
-
-        // ---- S0: resident-tier read ------------------------------------
-        // listAllChunks is unavoidable: BM25 needs all chunks to build its
-        // inverse index, and the result UI needs chunk text/metadata. But it's
-        // pure text — no fp32 vectors traverse the cursor anymore (that was a
-        // full-embeddings dequant scan, removed from the hot path).
-        // ---- S0: resident frame (cached by dataGeneration) -------------
-        // The frame is the corpus in binary-index order with its aligned packed
-        // buffer; all three S1 arms and S2 index into it, so "candidate index i"
-        // has one meaning. ensureFrame() reads the full chunk store + assembles
-        // the frame only on a cache miss (reindex); a warm keystroke returns the
-        // cached frame with zero IDB traffic — this is what removes the old
-        // per-query listAllChunks read (2026-06-03: ~55% of warm latency).
-        // Orphans (binary row without chunk sibling) are dropped inside
-        // ensureFrame; they're not retrievable anyway since the UI needs text.
-        const idbStart = performance.now();
-        const frameWasCached = !!(this.frameCache && this.frameCache.generation === this.coord.generation);
-        // RAM only — never listAllMeta / wait on writers from the search path.
-        const frame = this.peekResidentFrame();
-        const idbReadMs = performance.now() - idbStart;
-        throwIfAborted();
-        // Frame and binary index are built together under one dataGeneration, so
-        // a frame hit implies the binary index was served from cache too.
-        const binaryCacheHitFlag = frameWasCached;
-
-        if (!frame) {
-            if (vault.results.length === 0 && cleanedQuery.trim()) {
-                vault = await this.emitVaultLadder(cleanedQuery, topK, onPartial, signal, t0);
-                throwIfAborted();
-            } else if (vault.results.length === 0 && filters) {
-                vault.results = await this.vaultFilterBrowse(filters, filterCtx, topK, signal);
-            }
-            const entry: SearchEntry = this.emptySearchEntry(query, cleanedQuery, filters, topK, searchId, idbReadMs, performance.now() - t0);
-            entry.nameMatchMs = parseFloat(vault.nameMatchMs.toFixed(2));
-            entry.nameHitCount = vault.nameHitCount;
-            entry.nameEarlyPainted = vault.namePainted;
-            entry.namePartialMs = parseFloat(vault.namePartialMs.toFixed(2));
-            entry.lexPartialFired = vault.lexPainted;
-            entry.lexPartialMs = parseFloat(vault.lexPartialMs.toFixed(2));
-            throwIfAborted();
-            await this.appendSearchTelemetry(entry);
-            return { results: vault.results, entry };
-        }
-
-        const orderedChunks = frame.orderedChunks;
-        const orderedIds = frame.orderedIds;
-        const activePacked = frame.activePacked;
-        const bytesPerVec = frame.bytesPerVec;
-        const residentInt8 = frame.residentInt8;
-        const residentScales = frame.residentScales;
-        const embDim = frame.embDim;
-        const frameGen = frame.generation;
-
-        // ---- Corpus-scaled candidate-pool caps (scaling-doc C) ----------
-        // liveN = rows minus incremental-delete tombstones (orderedChunks still
-        // carries them until compaction), so a churned vault doesn't inflate the
-        // pool. poolCaps grows binary + bm25 by √N and holds recency flat; at our
-        // current scale this returns exactly the legacy 200/100/50 (see pool.ts).
-        const liveN = orderedChunks.length - frame.tombstoneCount;
-        const caps = poolCaps(liveN);
-
-        // ---- Inline-filter pre-filter (match-mask) ---------------------
-        // Build a boolean mask over orderedChunks. Filtering is applied at
-        // candidate SELECTION (topNIndices / topByRecency below), NOT by
-        // shrinking orderedChunks — that keeps the BM25 + binary indexes
-        // (built over the full corpus) cache-valid across filtered queries.
-        // null filters → undefined mask → byte-identical to a no-filter build.
-        const matcher = filters ? compileMatcher(filters, filterCtx) : null;
-        // buildSelectionMask folds frame liveness (validRows) AND the inline
-        // filter into one mask, so a single downstream `mask` carries BOTH to
-        // every consumer: the binary scan, the bm25/recency selection arms, the
-        // filter-only browse loop, and the negation AND below. Tombstoned rows
-        // (incremental deletes awaiting compaction) are excluded everywhere —
-        // including the browse path, whose `!mask ||` short-circuit would
-        // otherwise admit holes. undefined only when fully-live AND unfiltered
-        // (the byte-identical no-filter fast path).
-        let mask = buildSelectionMask(orderedChunks, frame.validRows, frame.tombstoneCount, matcher);
-
-        // Note-level negation (`-term`). compileMatcher is metadata-only and a
-        // per-chunk predicate, so it can't express "drop the whole note if any
-        // chunk contains X" — we resolve that here over the full corpus and AND
-        // it into the same selection mask. Obsidian's `-` is file-level, so we
-        // exclude every chunk of a matched note, not just the matching chunk.
-        // Folded into `mask`, it costs nothing downstream and covers both the
-        // main path and the filter-only fast path below.
-        if (filters?.exclude && filters.exclude.length > 0) {
-            // Negation matches on body text, but the frame is metadata-only — so
-            // fetch the corpus bodies on demand. Paid ONLY on a `-term` query.
-            const bodyMap = await this.store.getBodiesMap(orderedIds);
-            throwIfAborted();
-            const excludedNotes = excludedNotePaths(orderedChunks, filters.exclude, id => bodyMap.get(id));
-            if (excludedNotes.size > 0) {
-                if (!mask) mask = new Array<boolean>(orderedChunks.length).fill(true);
-                for (let i = 0; i < orderedChunks.length; i++) {
-                    if (mask[i] && excludedNotes.has(orderedChunks[i].note_path ?? '')) {
-                        mask[i] = false;
-                    }
-                }
-            }
-        }
-
-        // ---- Filter-only fast path ------------------------------------
-        // The query was nothing but operators (e.g. "#meetings", "path:X/*").
-        // With no semantic/lexical text there is no relevance signal — this is
-        // a BROWSE, ordered by the explicit recency-desc sort in browseOrder
-        // (fusion.ts; keyed by the vault's recencyKey setting), NOT the ranking
-        // formula. It must stay independent of rank()/RankingConfig so ranking
-        // changes can never park the ordering out from under it again (audit
-        // 2026-06-09 §1). Scores are honest zeros: nothing is scored here.
-        if (cleanedQuery === '') {
-            const matchedChunks: ChunkMeta[] = [];
-            for (let i = 0; i < orderedChunks.length; i++) {
-                if (!mask || mask[i]) matchedChunks.push(orderedChunks[i]);
-            }
-            // Inline dedup-by-note over the sorted chunks (dedupByPath wants
-            // pre-scored input; building ScoredChunks for every match just to
-            // throw most away would copy the whole matched set).
-            const seenPaths = new Set<string>();
-            const results: ScoredChunk[] = [];
-            for (const c of browseOrder(matchedChunks, this.settings.recencyKey, this.settings.createdProp)) {
-                if (seenPaths.has(c.note_path)) continue;
-                seenPaths.add(c.note_path);
-                results.push({
-                    ...c,
-                    content: '',   // frame-lite: hydrated below from chunk_body
-                    score: 0,
-                    ranking_signals: { dense: 0, bm25: 0, hybrid: 0, recency: 0, title_boost: 0, denseRaw: 0 },
-                });
-                if (results.length >= topK) break;
-            }
-            await this.hydrateBodies(results);
-            throwIfAborted();
-            const snippetChars = SNIPPET_PREVIEW_LIMITS[this.settings.snippetPreview].chars;
-            for (const r of results) r.snippet = makeSnippet(r.content, [], snippetChars);
-            const entry = this.emptySearchEntry(query, cleanedQuery, filters, topK, searchId, idbReadMs, performance.now() - t0);
-            entry.totalChunks = orderedChunks.length;
-            entry.candidateUnionSize = matchedChunks.length;
-            entry.recencyCount = matchedChunks.length;
-            throwIfAborted();
-            await this.appendSearchTelemetry(entry);
-            return { results, entry };
-        }
-
-        // ---- S0.5: query embedding (overlapped with name + BM25) --------
-        // granite-r2 is symmetric (no query/doc prompt), so the query takes the
-        // SAME pass as the doc side. As of v8 (2026-06-28) the doc side is no
-        // longer raw: cleanDenseBody/cleanDenseText run in the chunker (wikilinks
-        // → alias, URLs → readable words, HTML stripped), so the query must be
-        // dense-cleaned too or the two vectors drift on any query carrying [[…]],
-        // a URL, or markdown syntax. cleanDenseText is a no-op on a plain-text
-        // query, so ordinary queries are byte-identical to before. (BM25 below
-        // keeps the raw cleanedQuery: seekTokenize fragments that same syntax
-        // symmetrically on both index and query side, so the lexical channel
-        // needs no parallel cleaning pass.)
-        //
-        // The embed promise starts NOW so BM25 + the name prefilter run on the
-        // main thread while the iframe works. Binary still needs the query
-        // vector — it launches in embed's then() so it overlaps leftover BM25
-        // when embed is the faster of the two.
-        const qStart = performance.now();
-        type EmbedOk = { ok: true; vector: Float32Array; iframeLatencyMs: number; queryEmbedMs: number; embedRoute: 'worker' | 'iframe' };
-        type EmbedFail = { ok: false; reason: 'nonfinite' | 'dim'; dim: number; iframeLatencyMs: number; queryEmbedMs: number; embedRoute: 'worker' | 'iframe' };
-        let binaryStart = 0;
-        let binaryPromise: Promise<number[]> | null = null;
-        const embedPromise: Promise<EmbedOk | EmbedFail> = this.embedder.embed(cleanDenseText(cleanedQuery), signal).then(embedded => {
-            const queryEmbedMs = performance.now() - qStart;
-            const queryVec = embedded.vector;
-            const embedRoute = embedded.embedRoute ?? 'iframe';
-            if (!queryVec.every(Number.isFinite)) {
-                return { ok: false, reason: 'nonfinite' as const, dim: queryVec.length, iframeLatencyMs: embedded.iframeLatencyMs, queryEmbedMs, embedRoute };
-            }
-            if (bytesPerVec !== ((queryVec.length + 7) >> 3)) {
-                return { ok: false, reason: 'dim' as const, dim: queryVec.length, iframeLatencyMs: embedded.iframeLatencyMs, queryEmbedMs, embedRoute };
-            }
-            binaryStart = performance.now();
-            binaryPromise = binaryCandidatesAsync(
-                this.binaryWorker, frameGen, queryVec, activePacked,
-                orderedChunks.length, bytesPerVec, caps.binary, mask ?? null,
-            );
-            return { ok: true, vector: queryVec, iframeLatencyMs: embedded.iframeLatencyMs, queryEmbedMs, embedRoute: embedded.embedRoute ?? 'iframe' };
-        });
-        // If we abort after name/lexical partials, we throw before awaiting
-        // embedPromise — attach a handler so that rejection is not unhandled.
-        void embedPromise.catch(() => {});
-
-        // ---- S0.6: name prefilter (early paint) -------------------------
-        // Note-level basename/alias scan. O(files), not O(chunks). A confident
-        // hit set paints via onPartial before embed/binary resolve; topical
-        // queries with no name coverage skip this and wait for fusion.
-        const nameStart = performance.now();
-        const nameHits = collectNameHits(orderedChunks, cleanedQuery, mask);
-        const nameMatchMs = performance.now() - nameStart;
-        let nameEarlyPainted = false;
-        let namePartialMs = 0;
-        if (onPartial && shouldEarlyPaint(nameHits)) {
-            const titleBoost = this.settings.navTitleBoost;
-            const early: ScoredChunk[] = nameHits.slice(0, topK).map(h => {
-                const c = orderedChunks[h.index];
-                return {
-                    ...c,
-                    content: '',
-                    score: h.score,
-                    ranking_signals: {
-                        dense: 0, bm25: 0, hybrid: 0, recency: 0,
-                        title_boost: titleBoost * h.score,
-                        denseRaw: 0,
-                    },
-                    lexicalOnly: true,
-                };
-            });
-            await this.hydrateBodies(early);
-            throwIfAborted();
-            const snippetChars = SNIPPET_PREVIEW_LIMITS[this.settings.snippetPreview].chars;
-            const passageTerms = buildPassageTerms(cleanedQuery, () => 0);
-            for (const r of early) r.snippet = makeSnippet(r.content, passageTerms, snippetChars);
-            namePartialMs = performance.now() - t0;
-            nameEarlyPainted = true;
-            await onPartial({
-                results: early,
-                source: 'name',
-                nameHitCount: nameHits.length,
-                cleanedQuery,
-            });
-            throwIfAborted();
-            await cheapYield();
-            throwIfAborted();
-        }
-
-        // ---- S1b: BM25 candidate-gen (cached) ---------------------------
-        // BM25 fits over orderedChunks (parallel to the binary array — same
-        // index space) so its score array slots directly alongside the binary
-        // arm. The dataGeneration cache pattern is unchanged from v0.
-        const bm25Start = performance.now();
-        // Cold cache → try the local persisted MiniSearch index (IDB), then the
-        // cross-device sidecar artifact, before fitting. Guarded on bm25CacheValid so
-        // a WARM keystroke skips the await/IDB entirely. The cross-device fallback only
-        // runs when the local blob is ABSENT (a fresh/evicted device whose IDB has no
-        // BM25 yet) — for a normal device with a local blob it never executes, so the
-        // hot path pays zero. bm25Ms therefore times the load-or-fit, whichever ran.
-        if (!this.bm25CacheValid(orderedChunks)) {
-            if (!(this.bm25Cache && this.coord.isWriting())) {
-                await this.tryLoadPersistedBm25(orderedChunks);
-                throwIfAborted();
-                if (!this.bm25CacheValid(orderedChunks)) {
-                    await this.tryLoadCrossDeviceBm25(orderedChunks);
-                    throwIfAborted();
-                }
-            }
-        }
-        const bm25CacheHit = await this.ensureBm25(orderedChunks);
-        throwIfAborted();
-        if (!this.bm25Cache) {
-            const entry = this.emptySearchEntry(query, cleanedQuery, filters, topK, searchId, idbReadMs, performance.now() - t0);
-            throwIfAborted();
-            await this.appendSearchTelemetry(entry);
-            return { results: [], entry };
-        }
-        // Query-entry drift guard (Seek scaling A1): the frame and BM25 index are
-        // about to be jointly indexed by a single row id (the candidate union
-        // below), so verify that coupling holds before trusting it. A trip should
-        // be impossible — applyDelta verifies + re-stamps under the delta mutex, and
-        // the caches are mutated nowhere else — so on the off chance one slips
-        // through, serve nothing for THIS keystroke and drop to a full rebuild
-        // rather than return silently mis-joined scores; the next search hits the
-        // rebuilt cache.
-        if (this.bm25Cache && !frameBm25Coherent(frame, this.bm25Cache)) {
-            this.onCoherenceDrift('search');
-            const entry = this.emptySearchEntry(query, cleanedQuery, filters, topK, searchId, idbReadMs, performance.now() - t0);
-            throwIfAborted();
-            await this.appendSearchTelemetry(entry);
-            return { results: [], entry };
-        }
-        const synEnabled = this.settings.synonymExpansion;
-        // Coverage = per-doc fraction of distinct query terms matched (soft-AND).
-        // Multiplied into raw BM25 just before fusion (candidate loop below) when
-        // settings.bm25Coverage is on, so a doc that matched only part of a multi-
-        // term query is discounted vs one that matched all of it — without hard
-        // AND's recall cliff. Both arrays come from one MiniSearch pass. Candidate
-        // SELECTION (bm25TopIdx) still uses the un-weighted scores, so coverage
-        // re-ranks the pool without shrinking recall.
-        const { scores: bm25Scores, coverage: bm25Coverage, bound: bm25Bound } = this.bm25Cache!.getScoresWithCoverage(cleanedQuery, {
-            boosts: this.bm25FieldBoosts(),
-            // Explicit on/off so the toggles deterministically override the
-            // index's baked-in fuzzy:false / prefix:false. Fuzzy "on" = edit
-            // distance scaled by term length (≤2 exact / 3–5 = 1 / ≥6 = 2),
-            // skipping CJK + digit-bearing tokens — edit-1 on a 2-char token or
-            // a year is uncontrolled expansion, not typo tolerance (see bm25.ts
-            // FUZZY_BY_LENGTH); prefix "on" = expand only the final query token
-            // at ≥3 chars (see bm25.ts PREFIX_LAST_TOKEN).
-            fuzzy: this.settings.fuzzyEnabled ? FUZZY_BY_LENGTH : false,
-            prefix: this.settings.prefixLastToken ? PREFIX_LAST_TOKEN : false,
-            // Alias-dictionary expansion (experimental, default off): mates
-            // query at the eval-tuned discount; empty dictionary = inert.
-            ...(synEnabled && this.synonymCache && this.synonymCache.mates.size > 0 && {
-                synonyms: { map: this.synonymCache.mates, weight: SYNONYM_WEIGHT },
-            }),
-        });
-        const bm25TopIdx = topNIndices(bm25Scores, caps.bm25, mask);
-        const bm25Ms = performance.now() - bm25Start;
-
-        // ---- S1c: recency candidate-gen ---------------------------------
-        // Sorts by frontmatter `created` (mtime fallback), descending — same
-        // source the reranker scores on (see topByRecency / ranker.ts). Cheap
-        // (one pass + sort) and the arm is purely for *coverage* of recent notes
-        // that may not surface via
-        // dense/BM25; recency *blending* in the rerank still does the heavy
-        // lifting via recency_weight (see ranker.ts DEFAULT_RANKING_CONFIG).
-        const recencyTopIdx = this.topByRecency(orderedChunks, caps.recency, mask);
-
-        // ---- S1d: lexical partial (BM25 + recency + title boost only) ---
-        // Fire BM25-only results before the embedder finishes, so the user sees
-        // useful lexical results immediately — the "progressive" search ladder.
-        // These are replaced when the full hybrid results return.
-        let lexPartialFired = false;
-        const lexPartialMsStart = performance.now();
-        if (onPartial) {
-            // Build rankConfig early — it only depends on settings + recencyOverride,
-            // both available from the start (bm25Bound was returned by getScoresWithCoverage).
-            const lexRankConfig = {
-                ...DEFAULT_RANKING_CONFIG,
-                alpha: this.settings.denseWeight,
-                titleBoost: this.settings.navTitleBoost,
-                recencyEpsilon: recencyOverride?.epsilon ?? this.settings.recencyEpsilon,
-                recencyHalfLifeDays: recencyOverride?.halfLifeDays ?? this.settings.recencyHalfLifeDays,
-                recencyKey: this.settings.recencyKey,
-                createdProp: this.settings.createdProp,
-            };
-            // Union of BM25 + recency candidates (name-only hits are already painted).
-            const lexUnion = new Set<number>();
-            for (const i of bm25TopIdx) lexUnion.add(i);
-            for (const i of recencyTopIdx) lexUnion.add(i);
-            if (lexUnion.size > 0) {
-                const lexIndices = Array.from(lexUnion);
-                const lexChunks = lexIndices.map(i => orderedChunks[i]);
-                const lexBm25 = lexIndices.map(i => bm25Scores[i]);
-                const zeroDense = new Float64Array(lexIndices.length);
-                const lexPoolSize = Math.min(caps.binary + caps.bm25 + caps.recency, lexIndices.length);
-                const { results: lexRanked } = rank(
-                    lexChunks, zeroDense, new Float64Array(lexBm25),
-                    cleanedQuery, lexPoolSize, lexRankConfig, bm25Bound,
-                );
-                // Mark all as lexicalOnly so the modal's score rendering handles them correctly
-                for (const r of lexRanked) r.lexicalOnly = true;
-                const lexResults = dedupByPath(lexRanked, topK);
-                if (lexResults.length > 0) {
-                    await this.hydrateBodies(lexResults);
-                    throwIfAborted();
-                    const snippetChars = SNIPPET_PREVIEW_LIMITS[this.settings.snippetPreview].chars;
-                    const passageTerms = buildPassageTerms(cleanedQuery, () => 0);
-                    for (const r of lexResults) r.snippet = makeSnippet(r.content, passageTerms, snippetChars);
-                    lexPartialMsStart; // keep the start anchor for telemetry
-                    await onPartial({
-                        results: lexResults,
-                        source: 'lexical',
-                        cleanedQuery,
-                    });
-                    throwIfAborted();
-                    lexPartialFired = true;
-                }
-            }
-        }
-        const lexPartialMs = performance.now() - lexPartialMsStart;
-
-        // Embed may still be in flight (BM25 overlapped it). Binary launches
-        // from embed's then() — await embed first so a non-finite/dim failure
-        // does not wait on a scan that never started.
-        const embedded = await embedPromise;
-        throwIfAborted();
-        const queryEmbedMs = embedded.queryEmbedMs;
-        const iframeEmbedMs = embedded.iframeLatencyMs;
-        const embedRoute = embedded.embedRoute;
-        if (!embedded.ok) {
-            if (embedded.reason === 'nonfinite') {
-                await this.logger.appendError(
-                    'searchQueryVectorNonFinite',
-                    new Error(`Query embedding contains non-finite values (dim ${embedded.dim}) — corrupt embedder output; retry the search.`),
-                );
-            } else {
-                await this.logger.appendError(
-                    'searchDimMismatch',
-                    new Error(
-                        `Binary index was packed for ${bytesPerVec * 8}-d vectors but the loaded model emits ` +
-                        `${embedded.dim}-d. Run "Seek: Full reindex" to rebuild.`,
-                    ),
-                );
-            }
-            throwIfAborted();
-            const entry: SearchEntry = this.emptySearchEntry(query, cleanedQuery, filters, topK, searchId, idbReadMs, performance.now() - t0);
-            entry.nameMatchMs = parseFloat(nameMatchMs.toFixed(2));
-            entry.nameHitCount = nameHits.length;
-            entry.nameEarlyPainted = nameEarlyPainted;
-            entry.namePartialMs = parseFloat(namePartialMs.toFixed(2));
-            throwIfAborted();
-            await this.appendSearchTelemetry(entry);
-            return { results: [], entry };
-        }
-        const queryVec = embedded.vector;
-
-        // Await the (possibly off-thread) binary candidates. binaryMs spans
-        // dispatch→await (overlap with leftover BM25 included), not raw scan cost.
-        const binaryTopIdx = binaryPromise ? await binaryPromise : [];
-        throwIfAborted();
-        const binaryMs = binaryStart > 0 ? performance.now() - binaryStart : 0;
-
-        // ---- S1 union ---------------------------------------------------
-        // Per-arm counts measure the unique contribution of each arm BEFORE
-        // dedup; useful for telemetry that asks "is the recency arm actually
-        // contributing anything new, or is dense already covering it?"
-        const unionSet = new Set<number>();
-        for (const i of binaryTopIdx) unionSet.add(i);
-        const binaryCount = unionSet.size;
-        for (const i of bm25TopIdx) unionSet.add(i);
-        const bm25Count = unionSet.size - binaryCount;
-        for (const i of recencyTopIdx) unionSet.add(i);
-        const recencyCount = unionSet.size - binaryCount - bm25Count;
-        const candidateIndices = Array.from(unionSet);
-
-        // ---- S2 prep: rerank vectors for the candidate union -----------
-        // The whole point of stage 1 is to avoid touching every rerank vector.
-        // Prefer the RESIDENT int8 block (assembled in ensureFrame, aligned to
-        // the frame index space): dequantize each candidate from RAM by its
-        // frame index, dropping the per-keystroke IDB round-trip (selectFetchMs,
-        // the one controllable warm cost). Bit-identical to the IDB path — same
-        // {q,s} bytes, same dequantizeInt8, Float64 scale — so only the fetch
-        // location changes. Falls back to getEmbeddingsByIds when the block is
-        // absent (cold/empty/half-migrated index), which keeps the original
-        // per-id null handling. Either way fp32Maybe[i] is the vector for
-        // candidateIndices[i], so the align loop below is unchanged.
-        const fetchStart = performance.now();
-        let fp32Maybe: Array<Float32Array | null>;
-        if (residentInt8 && residentScales) {
-            fp32Maybe = candidateIndices.map(idx =>
-                dequantizeInt8(residentInt8.subarray(idx * embDim, (idx + 1) * embDim), residentScales[idx]));
-        } else {
-            const candidateIds = candidateIndices.map(i => orderedIds[i]);
-            fp32Maybe = await this.store.getEmbeddingsByIds(candidateIds);
-            throwIfAborted();
-        }
-        const selectFetchMs = performance.now() - fetchStart;
-
-        // See alignCandidate: a missing/mismatched fp32 row degrades to the
-        // lexical-only floor instead of dropping the candidate. The zero vector's
-        // cosine is discarded — rank() floors denseScores for any lexicalOnly
-        // chunk to the real-candidate min before it's used.
-        const zeroFp32 = new Float32Array(queryVec.length);
-        const alignStart = performance.now();
-        const candidateChunks: ChunkMeta[] = [];
-        const candidateFp32: Float32Array[] = [];
-        const candidateBm25: number[] = [];
-        const applyCoverage = this.settings.bm25Coverage;
-        for (let i = 0; i < candidateIndices.length; i++) {
-            const idx = candidateIndices[i];
-            const aligned = alignCandidate(orderedChunks[idx], fp32Maybe[i], queryVec.length);
-            if (!aligned) continue;
-            candidateChunks.push(aligned.chunk);
-            candidateFp32.push(aligned.missingFp32 ? zeroFp32 : (fp32Maybe[i] as Float32Array));
-            // Soft-AND: discount a partial multi-term match by its coverage^P (the
-            // coordination-level penalty; see BM25_COVERAGE_POW in bm25.ts). The weight
-            // is 1 for single-term queries and full-coverage docs (no-op regardless of P),
-            // and never 0 for a real partial match (recall-safe). P=2 hardens the discount
-            // so a rare-place-token-only match can't out-rank a full-coverage answer
-            // ("bars in sf"/"bars in austin" fix). rank() then TM2C2-normalizes this.
-            candidateBm25.push(applyCoverage ? bm25Scores[idx] * Math.pow(bm25Coverage[idx], BM25_COVERAGE_POW) : bm25Scores[idx]);
-        }
-        const alignMs = performance.now() - alignStart;
-
-        // ---- S2 score: exact cosine over the candidate set --------------
-        const cosineStart = performance.now();
-        const denseScoresCand = cosineScores(queryVec, candidateFp32);
-        const cosineMs = performance.now() - cosineStart;
-
-        // ---- S2 fuse + rank ---------------------------------------------
-        // Same ranker with one settings-driven lever: navTitleBoost raises the
-        // exact basename/alias match weight (the 2026-06-02 study's free win —
-        // the entity page outranking pages that merely mention it). Everything
-        // else (min-max norm, recency decay, hybrid alpha) is the v0 pipeline.
-        const rankConfig = {
-            ...DEFAULT_RANKING_CONFIG,
-            alpha: this.settings.denseWeight,
-            titleBoost: this.settings.navTitleBoost,
-            // Recency (2026-06-19): ε weight, half-life, AND the definition of
-            // "recent" are all settings-driven now — read fresh from this.settings
-            // every query, so a UI change takes effect on the NEXT search with no
-            // reindex. ε defaults to the 0.02 tiebreaker; raise it for a deliberate
-            // high-recency mode. A query-time override (recencyOverride, from the
-            // seek:search CLI params) is resolved here, per-call, falling back to
-            // this.settings when absent — see the search() doc comment for why
-            // it's a local argument and not a this.settings mutation.
-            recencyEpsilon: recencyOverride?.epsilon ?? this.settings.recencyEpsilon,
-            recencyHalfLifeDays: recencyOverride?.halfLifeDays ?? this.settings.recencyHalfLifeDays,
-            recencyKey: this.settings.recencyKey,
-            createdProp: this.settings.createdProp,
-        };
-        const fusionStart = performance.now();
-        // Dedup over the FULL scored candidate union, not a topK-proportional
-        // slice. rank() already scores+sorts every candidate (cheap arithmetic
-        // over the ≤~350-chunk stage-1 union), so returning the whole sorted
-        // list lets dedupByPath reliably reach topK UNIQUE notes. The old
-        // topK×3 pool starved dedup whenever one large multi-chunk note
-        // dominated the head (e.g. "evaluation" → Evaluation.md's many chunks
-        // filled a 9-chunk pool → only 1 doc at topK=3). dedupByPath still caps
-        // the displayed rows at topK.
-        const rankPoolSize = candidateChunks.length;
-        const { results: rankedPool, breakdown } = rank(
-            candidateChunks,
-            denseScoresCand,
-            new Float64Array(candidateBm25),
-            cleanedQuery,
-            rankPoolSize,
-            rankConfig,
-            // Theoretical bound from the same MiniSearch pass — fusion divides
-            // by it instead of the empirical max (falls back when 0; fusion.ts).
-            bm25Bound,
-        );
-        const fusionMs = performance.now() - fusionStart;
-
-        // ---- S3: dedup + snippet ----------------------------------------
-        const results = dedupByPath(rankedPool, topK);
-
-        // Frame-lite: rank() set content to the '' placeholder; fetch the ≤topK
-        // bodies now so snippets (and the modal's click-time highlight) have text.
-        await this.hydrateBodies(results);
-        throwIfAborted();
-
-        // Display-only confidence: each result's raw cosine expressed relative to
-        // this corpus's dense background (read once per generation; absent on a
-        // pre-stats index → field stays undefined and the UI shows no conf). This
-        // is the ONLY place the calibration is consumed; it never touched ranking
-        // above — rankedPool was already final. Independent of hydrateBodies (it
-        // reads denseRaw, a ranking signal, not the body).
-        const bgStats = await this.getDenseBgStats();
-        throwIfAborted();
-        if (bgStats) {
-            for (const r of results) {
-                r.ranking_signals.confidence = calibratedConfidence(
-                    r.ranking_signals.denseRaw, bgStats.mean, bgStats.std);
-            }
-        }
-
-        const snippetStart = performance.now();
-        const snippetChars = SNIPPET_PREVIEW_LIMITS[this.settings.snippetPreview].chars;
-        const passageTerms = buildPassageTerms(
-            cleanedQuery, t => this.bm25Cache?.termDocFraction(t) ?? 0);
-        for (const r of results) r.snippet = makeSnippet(r.content, passageTerms, snippetChars);
-        const snippetMs = performance.now() - snippetStart;
-
-        // ---- Telemetry ---------------------------------------------------
-        // Raw-top-5 traces are reported over the CANDIDATE set, not all chunks
-        // — that's what the binary/bm25 arms actually saw. The cross-vault
-        // headline "did stage 1 see this candidate at all" is the candidate
-        // arm counts above; rawDenseTop5/rawBm25Top5 are for "given the
-        // candidate set, what did exact rerank rank highest pre-fusion."
-        const rawDenseTop5 = topKByScore(denseScoresCand, candidateChunks, 5);
-        const rawBm25Top5 = topKByScore(new Float64Array(candidateBm25), candidateChunks, 5);
-        // Persisted ranking-trace depth. The report only ever renders the top 10
-        // (generateReport → rows.slice(0, 10)), so normal runs persist 10 — a ~5×
-        // smaller search row that keeps the append-only NDJSON from ballooning.
-        // verboseTrace keeps the full 50-deep tail for offline pandas/eval. The field
-        // name stays `fusedTop50` for log-schema stability; it now holds ≤50 rows.
-        const traceDepth = this.settings.verboseTrace ? 50 : 10;
-        const fusedTop50 = rankedPool.slice(0, traceDepth).map((r, i) => ({
-            chunk_id: r.chunk_id,
-            note_path: r.note_path,
-            rank: i + 1,
-            score: r.score,
-            dense: r.ranking_signals.dense,
-            denseRaw: r.ranking_signals.denseRaw,
-            bm25: r.ranking_signals.bm25,
-            recency: r.ranking_signals.recency,
-            title_boost: r.ranking_signals.title_boost,
-            title: r.title,
-        }));
-
-        const totalMs = performance.now() - t0;
-        const entry: SearchEntry = {
-            type: 'search',
-            timestamp: new Date().toISOString(),
-            query, topK,
-            cleanedQuery, filters,
-            idbReadMs: parseFloat(idbReadMs.toFixed(2)),
-            binaryMs: parseFloat(binaryMs.toFixed(2)),
-            selectFetchMs: parseFloat(selectFetchMs.toFixed(2)),
-            alignMs: parseFloat(alignMs.toFixed(2)),
-            queryEmbedMs: parseFloat(queryEmbedMs.toFixed(2)),
-            iframeEmbedMs: parseFloat(iframeEmbedMs.toFixed(2)),
-            embedRoute,
-            cosineMs: parseFloat(cosineMs.toFixed(2)),
-            bm25Ms: parseFloat(bm25Ms.toFixed(2)),
-            bm25CacheHit,
-            fusionMs: parseFloat(fusionMs.toFixed(2)),
-            snippetMs: parseFloat(snippetMs.toFixed(2)),
-            totalMs: parseFloat(totalMs.toFixed(2)),
-            totalChunks: orderedChunks.length,
-            binaryTopN: caps.binary,
-            bm25TopM: caps.bm25,
-            recencyTopK: caps.recency,
-            binaryCount,
-            bm25Count,
-            recencyCount,
-            candidateUnionSize: candidateChunks.length,
-            binaryCacheHit: binaryCacheHitFlag,
-            rawDenseTop5,
-            rawBm25Top5,
-            fusedTop50,
-            alpha: rankConfig.alpha,
-            recencyWeight: rankConfig.recencyEpsilon,
-            recencyKey: rankConfig.recencyKey,
-            // blendMode/rrfK no longer written (RRF deleted 2026-06-11; the
-            // optional SearchEntry fields remain so historical rows parse).
-            bm25Coverage: applyCoverage,
-            prefixLastToken: this.settings.prefixLastToken,
-            synonymExpansion: synEnabled,
-            searchableProperties: this.settings.searchableProperties,
-            headingsField: this.settings.headingsField,
-            nameMatchMs: parseFloat(nameMatchMs.toFixed(2)),
-            nameHitCount: nameHits.length,
-            nameEarlyPainted,
-            namePartialMs: parseFloat(namePartialMs.toFixed(2)),
-            lexPartialMs: parseFloat(lexPartialMs.toFixed(2)),
-            lexPartialFired,
-            // Theoretical BM25 bound for this query (0 = bound had no opinion →
-            // fusion used the empirical-max fallback). Diagnoses weak-lexical
-            // queries: max(rawBm25)/bm25Bound is the channel's confidence.
-            bm25Bound: parseFloat(bm25Bound.toFixed(4)),
-            searchId,
-        };
-        throwIfAborted();
-        await this.appendSearchTelemetry(entry);
-
-        // Catch-up is deliberately NOT triggered here. Firing a foreground embed
-        // per keystroke piled embed load onto the shared iOS WebContent process at
-        // the exact moment it was busiest (model warm, frame built, a query in
-        // flight) → jetsam. The drain now fires from onSearchSessionEnd (query
-        // settled / modal closed), wired by the plugin — see drainCatchUp.
-
-        void breakdown;
-        return { results, entry };
+        return this.searchQuery.search(query, topK, recencyOverride, onPartial, signal);
     }
 
     // ── Single Cache Authority (CacheManager) ──
@@ -4668,50 +3768,21 @@ export class SearchOrchestrator {
         return this.cacheManager.warmCaches(trigger);
     }
 
-    // Vault-file MiniSearch (Starting ladder). Never joins IDB / warmCaches.
-    private vaultLex: VaultLexIndex | null = null;
-    private vaultLexPromise: Promise<VaultLexIndex> | null = null;
+    get vaultLex(): VaultLexIndex | null { return this.searchQuery.vaultLex; }
+    set vaultLex(val: VaultLexIndex | null) { this.searchQuery.vaultLex = val; }
+    get vaultLexPromise(): Promise<VaultLexIndex> | null { return this.searchQuery.vaultLexPromise; }
+    set vaultLexPromise(val: Promise<VaultLexIndex> | null) { this.searchQuery.vaultLexPromise = val; }
 
-    // Pick top-K chunks by recency descending, keyed on the vault's recencyKey
-    // setting through the SHARED recencyDate accessor (fusion.ts) — the same
-    // source the ranker's ε-tiebreaker and browseOrder read, so the candidate
-    // ARM admits the same notes the scorer rewards. (The 06-07 lesson: a key
-    // change applied to the scorer but not the arm pulls in candidates the
-    // ranker then scores as old.) Skips chunks with no parseable date — this
-    // arm is additive recall coverage, unlike browseOrder, which must keep
-    // every matched chunk.
-    // Frame-lite hydration: results are spread from metadata-only frame rows, so
-    // their `content` is the '' placeholder rank()/the browse path set. Fetch the
-    // ≤topK bodies from chunk_body and assign them, so makeSnippet — and the
-    // modal's click-time highlight (search-modal.ts reads ScoredChunk.content) —
-    // see the real text. ≤topK gets, off the per-query scoring path.
     private async hydrateBodies(results: ScoredChunk[]): Promise<void> {
-        if (results.length === 0) return;
-        const bodies = await this.store.getBodiesByIds(results.map(r => r.chunk_id));
-        for (let i = 0; i < results.length; i++) results[i].content = bodies[i] ?? '';
+        return this.searchQuery.hydrateBodies(results);
     }
 
     private topByRecency(chunks: ChunkMeta[], k: number, mask?: boolean[] | null): number[] {
-        // Parse each eligible chunk's recency date once into a parallel buffer;
-        // NaN marks ineligible (filtered out by mask, or no parseable date).
-        // selectTopNIndices then picks the k most recent in (date desc, index
-        // asc) order — identical members and order to the old
-        // build-{idx,date}-objects-then-sort, minus the per-chunk object array
-        // and the corpus-length sort.
-        const n = chunks.length;
-        const dates = new Float64Array(n);
-        for (let i = 0; i < n; i++) {
-            if (mask && !mask[i]) { dates[i] = NaN; continue; }
-            const raw = recencyDate(chunks[i], this.settings.recencyKey, this.settings.createdProp);
-            const t = raw ? Date.parse(raw) : NaN;
-            dates[i] = Number.isFinite(t) ? t : NaN;
-        }
-        return selectTopNIndices(n, k, i => dates[i], i => !Number.isNaN(dates[i]));
+        return this.searchQuery.topByRecency(chunks, k, mask);
     }
 
     private async appendSearchTelemetry(entry: SearchEntry): Promise<void> {
-        seekPerf.recordSearch(entry);
-        await this.logger.append(entry);
+        return this.searchQuery.appendSearchTelemetry(entry);
     }
 
     private emptySearchEntry(
@@ -4723,83 +3794,20 @@ export class SearchOrchestrator {
         idbReadMs: number,
         totalMs: number,
     ): SearchEntry {
-        return {
-            type: 'search',
-            timestamp: new Date().toISOString(),
-            query, topK,
-            cleanedQuery, filters,
-            idbReadMs: parseFloat(idbReadMs.toFixed(2)),
-            binaryMs: 0,
-            selectFetchMs: 0,
-            alignMs: 0,
-            queryEmbedMs: 0, iframeEmbedMs: 0,
-            cosineMs: 0,
-            bm25Ms: 0, bm25CacheHit: false,
-            fusionMs: 0, snippetMs: 0,
-            totalMs: parseFloat(totalMs.toFixed(2)),
-            totalChunks: 0,
-            binaryTopN: POOL_FLOORS.binary,
-            bm25TopM: POOL_FLOORS.bm25,
-            recencyTopK: POOL_FLOORS.recency,
-            binaryCount: 0, bm25Count: 0, recencyCount: 0,
-            candidateUnionSize: 0,
-            binaryCacheHit: false,
-            rawDenseTop5: [], rawBm25Top5: [], fusedTop50: [],
-            nameMatchMs: 0, nameHitCount: 0, nameEarlyPainted: false, namePartialMs: 0,
-            lexPartialMs: 0, lexPartialFired: false,
-            alpha: this.settings.denseWeight,
-            recencyWeight: this.settings.recencyEpsilon,
-            recencyKey: this.settings.recencyKey,
-            searchId,
-        };
+        return this.searchQuery.emptySearchEntry(query, cleanedQuery, filters, topK, searchId, idbReadMs, totalMs);
     }
 
-    /**
-     * Lexical-only search (BM25 + recency + title boost, no embedder).
-     *
-     * Fires onPartial with `source: 'lexical'` and returns results immediately.
-     * Designed for the cold-start path when the embedding model is not yet
-     * loaded: the user sees useful BM25 results while the model loads in the
-     * background, then the full search() replaces them.
-     *
-     * Does NOT emit telemetry (the caller is expected to call full search()
-     * later when the model is ready, which records the definitive entry).
-     */
     async searchLexicalOnly(
         query: string,
         topK = 10,
         onPartial?: (partial: SearchPartial) => void | Promise<void>,
         signal?: AbortSignal,
     ): Promise<{ results: ScoredChunk[] }> {
-        const throwIfAborted = (): void => {
-            if (signal?.aborted) {
-                throw Object.assign(new Error('Query superseded'), { name: 'AbortError', code: 'ABORTED' });
-            }
-        };
-        throwIfAborted();
-        const t0 = performance.now();
-        const cleanedQuery = parseQuery(query, this.buildFilterContext()).cleanedQuery;
-        if (!cleanedQuery.trim()) return { results: [] };
-
-        // Always vault files during model-load. ensureFrame / hydrateBodies /
-        // ensureBm25 contend with boot hydrate and miss the 10s SLO.
-        const vault = await this.emitVaultLadder(cleanedQuery, topK, onPartial, signal, t0);
-        throwIfAborted();
-        return { results: vault.results };
+        return this.searchQuery.searchLexicalOnly(query, topK, onPartial, signal);
     }
 
-    // BM25 per-field boosts. Eval-tuned constants (bm25.ts DEFAULT_FIELD_BOOSTS)
-    // since the per-field sliders were removed 2026-06-08 (low marginal leverage
-    // once the coverage navigational boost is in). Passed to getScores per-query;
-    // the cached index is boost-agnostic so there's no reindex on change.
     private bm25FieldBoosts(): Record<string, number> {
-        if (!this.settings.boostedBm25) return DEFAULT_FIELD_BOOSTS;
-        // "Boosted BM25" preset: lift the name/structure fields (aliases→9,
-        // headings→4) and trim noisy tags (→2); title/content/properties keep
-        // their defaults. aliases/tags take effect here at
-        // score time; headings needs its field indexed, which ensureBm25()
-        // forces on whenever boostedBm25 is set.
-        return { ...DEFAULT_FIELD_BOOSTS, aliases: 9.0, tags: 2.0, headings: 4.0 };
+        return this.searchQuery.bm25FieldBoosts();
     }
 
     invalidateBm25Cache(): void {
@@ -4868,23 +3876,9 @@ export {
 } from './bm25-persist';
 
 
-// File-level dedup: walk the ranked pool, keep the first (highest-scoring)
-// chunk per note_path, stop at topK unique notes. Shared by the main search
-// path and the filter-only fast path.
-function dedupByPath(rankedPool: ScoredChunk[], topK: number): ScoredChunk[] {
-    const seenPaths = new Set<string>();
-    const out: ScoredChunk[] = [];
-    for (const r of rankedPool) {
-        if (seenPaths.has(r.note_path)) continue;
-        seenPaths.add(r.note_path);
-        out.push(r);
-        if (out.length >= topK) break;
-    }
-    return out;
-}
-
-function topKByScore(scores: Float64Array, chunks: ChunkMeta[], k: number): Array<{ chunk_id: string; score: number }> {
-    const indices = Array.from({ length: scores.length }, (_, i) => i);
-    indices.sort((a, b) => scores[b] - scores[a]);
-    return indices.slice(0, k).map(i => ({ chunk_id: chunks[i].chunk_id, score: scores[i] }));
-}
+export {
+    SearchQuery,
+    type RecencyOverride,
+    dedupByPath,
+    topKByScore,
+} from './search-query';
