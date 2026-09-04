@@ -11,7 +11,7 @@ This document describes how the codebase is organized, how major subsystems inte
 1. [System context](#1-system-context)
 2. [High-level architecture](#2-high-level-architecture)
 3. [Domain map (by folder / module group)](#3-domain-map-by-folder--module-group)
-4. [Plugin lifecycle](#4-plugin-lifecycle)
+4. [Plugin lifecycle & call orders](#4-plugin-lifecycle)
 5. [Indexing pipeline](#5-indexing-pipeline)
 6. [Search pipeline](#6-search-pipeline)
 7. [Persistence & cross-device sync](#7-persistence--cross-device-sync)
@@ -96,19 +96,26 @@ All production code lives in a **flat `src/` directory** (~55 modules). Tests ar
 
 | Files | Responsibility |
 |-------|----------------|
-| `main.ts` | Plugin lifecycle, commands, protocol/CLI handlers, indexing schedulers, model load gate |
+| `main.ts` | Plugin lifecycle, commands, protocol handlers, model load gate (`SeekPlugin`) |
 | `types.ts` | `SeekSettings`, `Chunk`, `ScoredChunk`, query filters, log schema, `DEFAULT_SETTINGS`, migrations |
 | `settings-tab.ts` | Settings UI (Index, Relevance, Display, Model, Diagnostics, Reset) |
+| `cli-handlers.ts` | Headless CLI command bridge (`seek:search`, `seek:open`, `seek:insert-link`) |
+| `plugin-schedulers.ts` | Background debounced flushes, periodic catch-up, folder exclusion watcher, mobile memory watchdog |
+| `confirm-modal.ts` | Mobile-safe asynchronous confirmation dialog |
+| `drift-recovery-coordinator.ts` | Embed-free drift recovery state machine |
+| `diagnostic-report.ts` | Generates vault-root `seek-report.md` summary and `.seek-artifacts/seek-report.json` telemetry |
 | `manifest.json` | Obsidian plugin metadata (`id: seek`) |
 
 ### 3.2 Search & ranking
 
 | Files | Responsibility |
 |-------|----------------|
-| `search.ts` | **`SearchOrchestrator`** — indexing, search, sidecar reconcile, frame cache (~5.3k lines; decomposition guide: [SEARCH-DECOMPOSITION.md](./SEARCH-DECOMPOSITION.md)) |
-| `frame-utils.ts` | Resident frame ops, candidate alignment, delta row helpers *(Phase 1 extraction — PR #25)* |
-| `coherence.ts` | Frame/BM25 drift detection and recovery decisions *(Phase 1 — PR #25)* |
-| `bm25-persist.ts` | Persisted BM25 index identity stamps *(Phase 1 — PR #25)* |
+| `search.ts` | **`SearchOrchestrator`** — indexing coordinator, store facade, write mutex, sidecar exports |
+| `cache-manager.ts` | Single authority owning resident query caches (`frameCache`, `bm25Cache`, `binaryIndex`, `synonymCache`) |
+| `search-query.ts` | Multi-stage retrieval pipeline (Stage 0 ladder, Stage 1 Hamming + BM25, Stage 2 cosine, TM2C2 fusion) |
+| `frame-utils.ts` | Resident frame ops, candidate alignment, delta row helpers |
+| `coherence.ts` | Frame/BM25 drift detection, circuit breaker, and recovery decisions |
+| `bm25-persist.ts` | Persisted BM25 index identity stamps and compatibility gating |
 | `query-parser.ts` | Inline filter syntax (`#tag`, `path:`, `[key:value]`, dates, negation) |
 | `fusion.ts` | Score normalization, hybrid fusion, recency ε-tiebreaker, title boost, browse order |
 | `ranker.ts` | `rank()` — combines dense + BM25 + recency + title on candidate set |
@@ -150,6 +157,7 @@ All production code lives in a **flat `src/` directory** (~55 modules). Tests ar
 
 | Files | Responsibility |
 |-------|----------------|
+| `sidecar-coordinator.ts` | High-level sidecar coordinator: hydration, shard compaction, orphan sweeping, live re-chunking |
 | `sidecar.ts` | Vault-file index format (JSONL + binary shards, tombstones, CRC) |
 | `sidecar-sync.ts` | Hydration from peer device sidecars without re-embedding |
 | `sidecar-meta.ts` | Producer metadata, version acceptance gates |
@@ -169,7 +177,8 @@ All production code lives in a **flat `src/` directory** (~55 modules). Tests ar
 
 | Files | Responsibility |
 |-------|----------------|
-| `logger.ts` | Per-device NDJSON logs, report generation (`seek-report.md`) |
+| `logger.ts` | Per-device NDJSON logs, logging configuration |
+| `diagnostic-report.ts` | Diagnostic report compiling, markdown summary and JSON snapshot generation |
 | `forensics.ts` | Synchronous localStorage crash breadcrumbs |
 
 ### 3.8 Test infrastructure
@@ -211,15 +220,125 @@ Model weights are **not** loaded at startup. First search or reindex calls `ensu
 
 Synchronous clean end: mark forensics session closed → teardown embedder iframe → dispose orchestrator → close IndexedDB → disconnect observers and timers.
 
-### 4.3 Indexing schedulers (`main.ts`)
+### 4.3 Indexing schedulers (`plugin-schedulers.ts`)
 
 | Mechanism | Role |
 |-----------|------|
-| Vault file events | Queue dirty files for incremental reindex |
-| `flushDirty()` | Debounced delta embed after edits |
-| `runCatchUp()` | Drain backlog when search modal is idle |
-| `reconcileOnLoad()` / `periodicReconcile()` | Sidecar sync, peer detection, drift recovery |
-| `indexingBlocked` | Pause embeds while active search is in flight |
+| Vault file events | Queue dirty files for incremental reindex (`queueDirty`) |
+| `flushDirty()` | Debounced delta embed after edits (5m idle window for edits, 1.5s for deletes/renames) |
+| `runCatchUp()` | Drains backlog when search modal is idle; scheduled every 5 minutes |
+| `reconcileFolderExclusions()` | Reconciles inclusion/exclusion folder list diffs |
+| `maybeUnloadEmbedder()` | Mobile idle memory watchdog (unloads iframe after 3 minutes quiescence) |
+| `indexingBlocked` | Pauses embeds while active search query is in flight |
+
+### 4.4 Lifecycle Workflows & Call Order Sequences
+
+The execution flow of Seek is governed by four primary asynchronous workflows with strict call order prerequisites and concurrency invariants:
+
+```mermaid
+flowchart TD
+    subgraph BootWorkflow [1. Boot & Initialization Workflow]
+        B1[1. SeekLogger init & session boot] --> B2[2. IndexedDB lock acquisition with backoff]
+        B2 --> B3[3. IndexStore.open & schema verify]
+        B3 --> B4[4. SearchOrchestrator instantiation]
+        B4 --> B5[5. SidecarCoordinator.hydrateFromSidecar - MUST precede catchup]
+        B5 --> B6[6. CacheManager.warmCaches]
+        B6 --> B7[7. PluginSchedulerManager wire-up - vault listeners]
+        B7 --> B8[8. Initial runCatchUp pass]
+        B8 --> B9[9. Register CLI handlers & UI commands]
+    end
+
+    subgraph QueryWorkflow [2. Search Query Pipeline]
+        Q1[1. SearchQuery.parseQuery] --> Q2{Empty or filter-only?}
+        Q2 -->|Yes| Q3[Stage 0: Instant emitVaultLadder <5ms]
+        Q2 -->|No| Q4[CacheManager.ensureFrame - verify generation freshness]
+        Q4 --> Q5[Parallel: Embedder iframe query vector + BM25 search]
+        Q5 --> Q6[BinaryScorerWorker - 1-bit Hamming distance]
+        Q6 --> Q7[Candidate pool union via poolCaps]
+        Q7 --> Q8[Stage 2: Dense cosine rerank on top candidates]
+        Q8 --> Q9[Stage 3: TM2C2 score fusion]
+        Q9 --> Q10[Snippet hydration & return ScoredChunk[]]
+    end
+
+    subgraph EditWorkflow [3. Incremental Edit & Flush Workflow]
+        E1[Vault modify / delete event] --> E2[PluginSchedulerManager.queueDirty]
+        E2 --> E3[Debounce: 5m idle for edits / 1.5s for deletes]
+        E3 --> E4{isQueryInFlight active?}
+        E4 -->|Yes| E5[Yield and retry on next tick]
+        E4 -->|No| E6[IndexCoordinator.runExclusive write mutex]
+        E6 --> E7[Compute file delta & embed new chunks]
+        E7 --> E8[Commit to IndexStore & append to sidecar]
+        E8 --> E9[Lockstep CacheManager mutation: appendFrameRows + bm25.add]
+        E9 --> E10[frameBm25Coherent spot check]
+    end
+
+    subgraph DriftWorkflow [4. Drift Recovery Workflow]
+        D1[Spot check fails beyond cooldown] --> D2[DriftRecoveryCoordinator.onPersistentDrift]
+        D2 --> D3{Already running OR lastRecoveryGen == currentGen?}
+        D3 -->|Yes| D4[Suppress redundant pass]
+        D3 -->|No| D5{document.hidden?}
+        D5 -->|Yes| D6[Defer until window focused]
+        D5 -->|No| D7[Embed-free sidecar hydration]
+        D7 --> D8[CacheManager.warmCaches & verifyCoherent]
+        D8 --> D9[Transition indexHealth: healthy or degraded]
+    end
+```
+
+#### Detailed Call Order Sequences
+
+1. **Boot & Initialization Sequence**:
+   - `initLogger()` initializes `SeekLogger` and verifies session generations.
+   - `createStoreOpenRetryScheduler()` acquires the IndexedDB lock with exponential backoff to handle multi-window contention.
+   - `IndexStore.open()` verifies `META_SCHEMA_VERSION` and identity.
+   - `SearchOrchestrator` constructs sub-coordinators (`IndexCoordinator`, `CacheManager`, `SearchQuery`, `SidecarCoordinator`).
+   - `sidecarCoordinator.hydrateFromSidecar()` runs **before** catch-up to load peer-embedded chunks into IndexedDB.
+   - `cacheManager.warmCaches()` loads the resident frame and BM25 index into RAM.
+   - `PluginSchedulerManager` registers Obsidian vault event listeners (`modify`, `delete`, `rename`).
+   - `runCatchUp()` indexes offline modifications.
+   - Registers UI commands, modal hotkeys, settings tab, and headless CLI handlers (`seek:search`, `seek:open`, `seek:insert-link`).
+
+2. **Search Query Pipeline**:
+   - `SearchQuery.parseQuery()` parses query terms, tags, and field filters.
+   - Fast path check: empty or filter-only queries immediately route to `emitVaultLadder()` (<5ms response, bypasses embedder and IDB).
+   - `cacheManager.ensureFrame()` retrieves the resident frame and checks generation freshness.
+   - Dispatches parallel execution:
+     - Embedding worker generates 384-d query vector via sandboxed iframe.
+     - In-memory `MultiFieldBM25` performs lexical scoring across all indexed fields.
+   - `BinaryScorerWorker` computes 1-bit Hamming distances over `activePacked` sign vectors.
+   - `poolCaps()` dynamically calculates candidate pool union size based on query length and confidence.
+   - Top candidates undergo int8 dot-product / cosine similarity reranking (Stage 2).
+   - TM2C2 ranker normalizes and fuses dense, BM25, recency, and title signals into `ScoredChunk[]`.
+
+3. **Incremental Edit & Flush Workflow**:
+   - Vault events trigger `PluginSchedulerManager.queueDirty()`.
+   - Debounce window: 5 minutes idle (`IDLE_FLUSH_MS`) for text edits; 1.5 seconds (`STRUCT_FLUSH_MS`) for structural changes (deletes/renames).
+   - `flushDirty()` verifies `!isQueryInFlight` before acquiring the write lock.
+   - `IndexCoordinator.runExclusive()` serializes the transaction.
+   - Calculates file diffs, embeds new chunks via rolling token-budget batches, and commits to `IndexStore`.
+   - Mutates `CacheManager` in lockstep (`appendFrameRows` + `bm25.add` or `tombstoneFrameRows` + `bm25.remove`).
+   - Verifies row alignment with `frameBm25Coherent()`.
+   - Appends delta shards to the disk sidecar (`.seek-artifacts/`).
+
+4. **Drift Recovery Workflow**:
+   - Triggered when row-alignment spot checks fail beyond `COHERENCE_DRIFT_COOLDOWN_MS` (30s).
+   - `DriftRecoveryCoordinator.onPersistentDrift()` checks single-flight status and ensures no prior pass ran for `currentGen`.
+   - Respects window backgrounding: if `document.hidden`, defers recovery until app gains focus.
+   - Executes embed-free sidecar hydration to restore chunk records from disk.
+   - Re-warms in-memory caches and re-runs coherence verification.
+   - Transitions `indexHealth` to `'healthy'` on success or `'degraded'` on failure.
+
+#### Key Order Dependencies & Concurrency Invariants
+
+- **Hydration MUST Run Before Catch-Up Indexing**:
+  `sidecarCoordinator.hydrateFromSidecar()` must complete before `runCatchUp()` computes vault note diffs. Ingesting peer chunks directly into IndexedDB first prevents thousands of peer-synced notes from being redundantly re-embedded locally.
+- **Write Mutex Requirement (`IndexCoordinator.runExclusive`)**:
+  All mutations to `IndexStore`, sidecar files, or memory frames must acquire the exclusive write lock to prevent race conditions between background flushes and user reindexing.
+- **Zero Dual-Cache Principle**:
+  All resident query memory structures (`frameCache`, `bm25Cache`, `binaryIndex`, `synonymCache`) are owned exclusively by `CacheManager`. `SearchOrchestrator` maintains no parallel caches.
+- **Generation Freshness Invariant (`shouldDiscardPartialFrame`)**:
+  `CacheManager.ensureFrame()` captures `coord.generation` before reading IndexedDB and validates it upon completion. If an indexing write occurred mid-read, the assembled frame is discarded immediately.
+- **UI & Query Priority over Background Flushes**:
+  `PluginSchedulerManager` flushes yield whenever `isQueryInFlight` is true (search modal active or CLI search running), ensuring typing responsiveness is protected from background indexing pauses.
 
 ---
 
