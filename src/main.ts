@@ -47,13 +47,7 @@ import {
 } from './folder-coverage';
 import { SeekSearchModal, type IndexBanner } from './search-modal';
 import { parsePaneType, openFileAtTarget, openBaseAtTarget, type OpenTarget } from './open-target';
-import {
-    buildNoteLink,
-    insertLinkInEditor,
-    isInsertableMarkdownFile,
-    resolveInsertLinkAlias,
-    resolveInsertLinkSubpath,
-} from './insert-link';
+import { registerSeekCliHandlers } from './cli-handlers';
 import { indexBannerSpec, resolveIndexLoadPhase, resolveCliSearchGate, CLI_SEARCH_WARMING, resolveIndexUiStatus, resolveSidecarWait, retainIndexInventory, INDEX_STALE_MSG, INDEX_SYNCING_MSG, INDEX_PEER_AHEAD_MSG, type DegradedReason, type IndexLoadState } from './index-notice';
 import { IndexStatusBar, extendIndexPassTotal, parseIndexedProgress } from './index-status-bar';
 import type { IndexJobKind, IndexStatusHealth, IndexStatusJob } from './index-status-card';
@@ -197,7 +191,7 @@ export default class SeekPlugin extends Plugin {
     private embedder = new LocalEmbedder();
     private store = new IndexStore();
     private logger!: SeekLogger;
-    private orchestrator!: SearchOrchestrator;
+    /* internal */ orchestrator!: SearchOrchestrator;
     // Mutated in place on settings change so the orchestrator (which holds the
     // same reference) always reads current values. See types.ts SeekSettings.
     settings: SeekSettings = { ...DEFAULT_SETTINGS };
@@ -492,7 +486,7 @@ export default class SeekPlugin extends Plugin {
     }
 
     /** Readiness gate for seek:search / seek:open / seek:insert-link — null when search may run. */
-    private async cliSearchGateMessage(): Promise<string | null> {
+    async cliSearchGateMessage(): Promise<string | null> {
         let chunks = this.orchestrator ? await this.orchestrator.indexedChunkCount() : null;
         if ((chunks ?? 0) === 0 && (this.indexInventoryChunks ?? 0) > 0) chunks = this.indexInventoryChunks;
         return resolveCliSearchGate({
@@ -890,261 +884,8 @@ export default class SeekPlugin extends Plugin {
         // the logging report is a Settings button (openLoggingReport). Sidecar
         // reconcile/rebuild are automatic. Search is the only command Seek adds.
 
-        // ---- Headless CLI query handler --------------------------------
-        // `obsidian seek:search query="..." [limit=N] [verbose]`.
-        //
-        // registerCliHandler is provided by the obsidian-cli companion, not the
-        // core Obsidian API typings — hence the cast and the runtime guard. On
-        // mobile (no CLI bridge) the method is absent and we simply skip it.
-        //
-        // The contract that makes results "read out" at all: the handler RETURNS
-        // a string, which the bridge pipes to stdout. addCommand callbacks return
-        // void (their job is to open the modal), so they can never feed the CLI —
-        // that is why `seek:seek-search` was unreachable. Output defaults to a
-        // readable text list (rank/score/path/excerpt); `format=json` emits the
-        // machine shape (path/title/score/excerpt), matching the predecessor
-        // plugin so the same parsing works.
-        const registerCliHandler = (this as unknown as {
-            registerCliHandler?: (
-                id: string,
-                description: string,
-                params: Record<string, { value?: string; description: string; required: boolean }>,
-                handler: (args: Record<string, string | boolean | undefined>) => Promise<string>,
-            ) => void;
-        }).registerCliHandler;
-
-        if (typeof registerCliHandler === 'function') {
-            registerCliHandler.call(
-                this,
-                'seek:search',
-                'Seek on-device semantic search (hybrid BM25 + dense embeddings + recency)',
-                {
-                    query: { value: '<text>', description: 'Search query (supports inline filters: #tag, tag:, path:, [k:v], dates)', required: true },
-                    limit: { value: '<n>', description: 'Max results (default: 10)', required: false },
-                    format: { value: 'text|json', description: 'Output format (default: text — readable list; json for programmatic use)', required: false },
-                    recencyWeight: { value: '<ε>', description: 'Override recency weight ε for THIS query only (additive; default 0.02). Not persisted — for scrobbling recency configs.', required: false },
-                    recencyHalflife: { value: '<days>', description: 'Override recency half-life in days for THIS query only (default 180). Not persisted.', required: false },
-                },
-                // Flag params arrive as the string "true"/"false", not booleans
-                // (the obsidian-cli/Templater convention), so widen the type and
-                // compare against both.
-                async (args: Record<string, string | boolean | undefined>): Promise<string> => {
-                    const query = typeof args.query === 'string' ? args.query : '';
-                    const asJson = args.format === 'json';
-                    // Error sink that honors the active format: JSON callers get a
-                    // parseable {error}, humans get a one-liner.
-                    const fail = (msg: string): string =>
-                        asJson ? JSON.stringify({ error: msg, results: [] }) : `Seek error: ${msg}`;
-
-                    if (!query) return fail('query is required');
-                    // Captured for the withQueryInFlight closure below (a `this.`
-                    // null-check doesn't narrow across the closure boundary).
-                    const orchestrator = this.orchestrator;
-                    if (!orchestrator) return fail('Seek not initialized — plugin still loading');
-
-                    const gate = await this.cliSearchGateMessage();
-                    // Populated store still booting/restoring: degrade to lexical
-                    // instead of refusing — the modal does the same. The gate
-                    // message rides the response so callers know why quality is
-                    // temporarily reduced (warming ≠ ready).
-                    const warming = gate === CLI_SEARCH_WARMING;
-                    if (gate && !warming) return asJson ? JSON.stringify({ error: gate, results: [], ready: false }) : gate;
-                    if (asJson && warming) return JSON.stringify({ error: gate, results: [], ready: false, warming: true });
-
-                    const parsedLimit = typeof args.limit === 'string' ? parseInt(args.limit, 10) : NaN;
-                    const topK = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : 10;
-
-                    // Query-time recency overrides (scrobbling). Resolved into a
-                    // RecencyOverride and passed straight through to
-                    // orchestrator.search() as a call-local argument — NEVER written
-                    // into this.settings. search() reads this.settings fresh per
-                    // query, and that settings object is shared by reference with
-                    // every concurrent caller (another seek:search CLI call, the
-                    // search modal, openTopResult); mutating it for the override's
-                    // duration used to let a concurrent plain search silently rank
-                    // against this call's override. Passing it as an argument
-                    // instead means overlapping calls simply can't observe each
-                    // other's overrides — nothing shared, nothing to leak. Not
-                    // persisted (no saveSettings) either way. Same validation as
-                    // the UI.
-                    const ovEps = typeof args.recencyWeight === 'string' ? parseFloat(args.recencyWeight) : NaN;
-                    const ovHl = typeof args.recencyHalflife === 'string' ? parseFloat(args.recencyHalflife) : NaN;
-                    const recencyOverride: RecencyOverride | undefined =
-                        (Number.isFinite(ovEps) && ovEps >= 0) || (Number.isFinite(ovHl) && ovHl > 0)
-                            ? {
-                                  ...(Number.isFinite(ovEps) && ovEps >= 0 ? { epsilon: ovEps } : {}),
-                                  ...(Number.isFinite(ovHl) && ovHl > 0 ? { halfLifeDays: ovHl } : {}),
-                              }
-                            : undefined;
-
-                    try {
-                        // Under the query-in-flight gate: a running catch-up drain
-                        // or bulk flush yields at its next batch boundary instead of
-                        // making this call wait out the whole indexing pass (the
-                        // modal gets the same preemption via its own edges).
-                        // Warming window: skip the model load and answer lexically
-                        // (BM25 + recency + name) — the same early-results trade
-                        // the search modal makes while the embedder cold-starts.
-                        const run = warming
-                            ? async (): Promise<{ results: ScoredChunk[]; entry: SearchEntry | null }> => ({
-                                results: (await orchestrator.searchLexicalOnly(query, topK)).results,
-                                entry: null,
-                            })
-                            : async (): Promise<{ results: ScoredChunk[]; entry: SearchEntry | null }> => {
-                                // No modal here to overlap the cold-start, so block on the
-                                // model load (3–10 s first call) before querying — otherwise
-                                // the orchestrator embeds against an unloaded model.
-                                return this.withQueryInFlight(async () => {
-                                    await this.ensureModelLoaded();
-                                    return orchestrator.search(query, topK, recencyOverride);
-                                });
-                            };
-
-                        const { results, entry } = await run();
-                        const mapped = results.map(r => ({
-                            path: r.note_path,
-                            // displayTitle carries the "(part N)" marker for
-                            // split chunks (absent otherwise); title itself is
-                            // now the clean, embedded/indexed form.
-                            title: r.displayTitle ?? r.title,
-                            score: r.score,
-                            excerpt: r.snippet ?? '',
-                        }));
-                        if (asJson) {
-                            const payload: Record<string, unknown> = { results: mapped, query, count: mapped.length };
-                            if (warming) {
-                                payload.warming = CLI_SEARCH_WARMING;
-                                payload.ready = false;
-                            } else if (entry) {
-                                payload.nameEarlyPainted = entry.nameEarlyPainted;
-                                payload.namePartialMs = entry.namePartialMs;
-                            }
-                            return JSON.stringify(payload);
-                        }
-
-                        // ---- default: human-readable text ----------------------
-                        // Minified single-line JSON wraps into an unreadable wall
-                        // in a terminal. The readable form emits real newlines —
-                        // one record per block: "rank  score  path", with the
-                        // excerpt indented to align beneath the path.
-                        if (results.length === 0) return `Seek · "${query}" · no results`;
-
-                        const INDENT = ' '.repeat(11); // width of "NN  0.000  "
-                        const lines: string[] = [
-                            `Seek · "${query}" · ${results.length} result${results.length === 1 ? '' : 's'}`,
-                            '',
-                        ];
-                        results.forEach((r, i) => {
-                            lines.push(`${String(i + 1).padStart(2, ' ')}  ${r.score.toFixed(3)}  ${r.note_path}`);
-                            const excerpt = (r.snippet ?? '').replace(/\s+/g, ' ').trim();
-                            if (excerpt) lines.push(`${INDENT}${excerpt.length > 160 ? excerpt.slice(0, 159) + '…' : excerpt}`);
-                            lines.push('');
-                        });
-                        return lines.join('\n').replace(/\n+$/, '');
-                    } catch (err) {
-                        return fail(err instanceof Error ? err.message : String(err));
-                    }
-                },
-            );
-
-            registerCliHandler.call(
-                this,
-                'seek:open',
-                'Seek search and open a result in the active tab, new tab, or split pane',
-                {
-                    query: { value: '<text>', description: 'Search query (supports inline filters: #tag, tag:, path:, [k:v], dates)', required: true },
-                    paneType: { value: 'tab|split|window', description: 'Pane to open in (default: active tab)', required: false },
-                    rank: { value: '<n>', description: '1-based result rank to open (default: 1)', required: false },
-                },
-                async (args: Record<string, string | boolean | undefined>): Promise<string> => {
-                    const query = typeof args.query === 'string' ? args.query : '';
-                    if (!query) return 'Seek error: query is required';
-                    const orchestrator = this.orchestrator;
-                    if (!orchestrator) return 'Seek error: Seek not initialized — plugin still loading';
-
-                    const gate = await this.cliSearchGateMessage();
-                    if (gate) return gate;
-
-                    const parsedRank = typeof args.rank === 'string' ? parseInt(args.rank, 10) : NaN;
-                    const rank = Number.isFinite(parsedRank) && parsedRank > 0 ? parsedRank : 1;
-                    const target = parsePaneType(typeof args.paneType === 'string' ? args.paneType : undefined);
-
-                    try {
-                        const { results } = await this.withQueryInFlight(async () => {
-                            await this.ensureModelLoaded();
-                            return orchestrator.search(query, rank);
-                        });
-                        const hit = results[rank - 1];
-                        if (!hit) return `Seek error: no result at rank ${rank} for "${query}"`;
-                        const file = this.app.vault.getAbstractFileByPath(hit.note_path);
-                        if (!(file instanceof TFile)) return `Seek error: result not on disk (${hit.note_path})`;
-                        await this.openIndexedFile(file, hit, target);
-                        return hit.note_path;
-                    } catch (err) {
-                        return `Seek error: ${err instanceof Error ? err.message : String(err)}`;
-                    }
-                },
-            );
-
-            registerCliHandler.call(
-                this,
-                'seek:insert-link',
-                'Seek search and insert a link to a result at the active editor cursor',
-                {
-                    query: { value: '<text>', description: 'Search query (supports inline filters: #tag, tag:, path:, [k:v], dates)', required: true },
-                    rank: { value: '<n>', description: '1-based result rank to link (default: 1)', required: false },
-                    alias: { value: '<text>', description: 'Optional link display text ([[note|alias]])', required: false },
-                    heading: { value: '<true|false>', description: 'Include #heading for section hits (default: setting)', required: false },
-                },
-                async (args: Record<string, string | boolean | undefined>): Promise<string> => {
-                    const query = typeof args.query === 'string' ? args.query : '';
-                    if (!query) return 'Seek error: query is required';
-                    // Captured for the withQueryInFlight closure (null-check narrowing).
-                    const orchestrator = this.orchestrator;
-                    if (!orchestrator) return 'Seek error: Seek not initialized — plugin still loading';
-
-                    const gate = await this.cliSearchGateMessage();
-                    if (gate) return gate;
-
-                    const parsedRank = typeof args.rank === 'string' ? parseInt(args.rank, 10) : NaN;
-                    const rank = Number.isFinite(parsedRank) && parsedRank > 0 ? parsedRank : 1;
-                    const explicitAlias = typeof args.alias === 'string' && args.alias.trim()
-                        ? args.alias.trim()
-                        : undefined;
-                    const alias = resolveInsertLinkAlias(explicitAlias);
-                    const headingArg = args.heading;
-                    const subpathSettings = headingArg === true || headingArg === 'true'
-                        ? { insertLinkIncludeHeading: true as const }
-                        : headingArg === false || headingArg === 'false'
-                            ? { insertLinkIncludeHeading: false as const }
-                            : this.settings;
-
-                    try {
-                        // Under the query-in-flight gate, same as seek:search: a
-                        // running drain/flush yields at its next batch boundary.
-                        const { results } = await this.withQueryInFlight(async () => {
-                            await this.ensureModelLoaded();
-                            return orchestrator.search(query, rank);
-                        });
-                        const hit = results[rank - 1];
-                        if (!hit) return `Seek error: no result at rank ${rank} for "${query}"`;
-                        const file = this.app.vault.getAbstractFileByPath(hit.note_path);
-                        if (!(file instanceof TFile) || !isInsertableMarkdownFile(file)) {
-                            return `Seek error: result is not a markdown note (${hit.note_path})`;
-                        }
-                        const link = buildNoteLink(this.app, file, {
-                            subpath: resolveInsertLinkSubpath(hit.heading_path, subpathSettings),
-                            alias,
-                        });
-                        const inserted = insertLinkInEditor(this.app, link);
-                        if (!inserted.ok) return `Seek error: ${inserted.reason}`;
-                        return link;
-                    } catch (err) {
-                        return `Seek error: ${err instanceof Error ? err.message : String(err)}`;
-                    }
-                },
-            );
-        }
+        // ---- Headless CLI query handlers --------------------------------
+        registerSeekCliHandlers(this);
     }
 
     // Set true the instant onunload starts so async callbacks (the WebGPU
@@ -1571,7 +1312,7 @@ export default class SeekPlugin extends Plugin {
         this.forensics?.beat(reason === 'idle' ? 'model-unload-idle' : 'model-unload-bg');
     }
 
-    private ensureModelLoaded(): Promise<void> {
+    ensureModelLoaded(): Promise<void> {
         // Every search/embed path funnels through here, so this is the single
         // chokepoint that marks the model "in use" — the idle-unload timer counts
         // from it. Stamped even on the already-loaded fast path so a burst of
@@ -2403,7 +2144,7 @@ export default class SeekPlugin extends Plugin {
     // isn't queued behind minutes of indexing — previously a CLI search on a
     // cold install waited out the entire initial drain. The finally edge
     // restarts whatever was preempted.
-    private async withQueryInFlight<T>(fn: () => Promise<T>): Promise<T> {
+    async withQueryInFlight<T>(fn: () => Promise<T>): Promise<T> {
         this.onQueryInFlight(true);
         try {
             // indexingBlocked → catch-up shouldContinue aborts at the next file
@@ -2768,7 +2509,7 @@ export default class SeekPlugin extends Plugin {
 
     // Open an indexed hit (markdown or .base) at the requested pane target.
     // Headless paths (protocol, seek:open CLI) always focus the opened pane.
-    private async openIndexedFile(file: TFile, hit: { heading_path?: string[] }, target: OpenTarget): Promise<void> {
+    async openIndexedFile(file: TFile, hit: { heading_path?: string[] }, target: OpenTarget): Promise<void> {
         if (file.extension === 'base') {
             const viewName = hit.heading_path?.[hit.heading_path.length - 1];
             const state: Record<string, unknown> = viewName
