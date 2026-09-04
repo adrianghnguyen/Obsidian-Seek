@@ -282,6 +282,7 @@ export class SeekSearchModal extends Modal {
     // Prevent the 750 ms index poll from retrying the same empty query repeatedly.
     // A new chunk count or a wait→searchable phase transition creates a new key.
     private lastAutoRetryKey: string | null = null;
+    private lastFrameReady = false;
     // Footer index-status cluster (always present, left of esc). Null until
     // buildFooter; cleared in onClose so a late poll can't paint detached DOM.
     private footStatusEl: HTMLElement | null = null;
@@ -805,7 +806,7 @@ export class SeekSearchModal extends Modal {
                 // footer already shows Indexing, and the modal's 750 ms poll
                 // re-runs the query when coverage arrives.
                 try {
-                    await this.orchestrator.searchLexicalOnly(
+                    const lexOut = await this.orchestrator.searchLexicalOnly(
                         query,
                         MAX_RESULTS,
                         (partial: SearchPartial) => {
@@ -820,6 +821,12 @@ export class SeekSearchModal extends Modal {
                         },
                         controller.signal,
                     );
+                    if (id !== this.currentSearch || this.closed) return;
+                    if (lexOut.results.length > 0 && this.currentResults.length === 0) {
+                        this.latestResultsShown = lexOut.results;
+                        this.renderResults(lexOut.results);
+                        this.paintWarmupHint();
+                    }
                 } catch (e) {
                     if (e instanceof Error && e.name === 'AbortError') return;
                     throw e;
@@ -1034,13 +1041,18 @@ export class SeekSearchModal extends Modal {
         const chunksGrew = chunks != null && chunks > 0
             && (previousChunkCount == null || chunks > previousChunkCount);
         const waitCleared = isIndexWaitKind(prevKind) && !isIndexWaitKind(spec.kind);
-        const retryKey = `${this.lastQuery}\u0000${chunks ?? 'unknown'}\u0000${spec.kind}`;
+        const frameReady = this.orchestrator.hasSearchableFrame();
+        const frameJustReady = frameReady && !this.lastFrameReady;
+        this.lastFrameReady = frameReady;
+        const retryKey = `${this.lastQuery}\u0000${chunks ?? 'unknown'}\u0000${spec.kind}\u0000${frameReady ? 'frame' : 'noframe'}`;
         if (
             this.lastQuery.trim()
-            && this.currentResults.length === 0
             && this.inFlight === 0
-            && (chunksGrew || waitCleared)
             && retryKey !== this.lastAutoRetryKey
+            && (
+                frameJustReady
+                || (this.currentResults.length === 0 && (chunksGrew || waitCleared))
+            )
         ) {
             this.lastAutoRetryKey = retryKey;
             this.scheduleSearch(this.lastQuery, true);
