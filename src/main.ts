@@ -35,6 +35,7 @@ import type { SeekSettings, IndexCompleteEntry, ModelDeliveryEntry, ScoredChunk,
 import { DEFAULT_SETTINGS, migrateSettings } from './types';
 import { IndexStore, indexDbPrefix, isTransientIdbUnavailable } from './index-store';
 import { SeekLogger, REPORT_ARTIFACTS_DIR } from './logger';
+import { openDiagnosticReport } from './diagnostic-report';
 import { Forensics } from './forensics';
 import { RecentSearches } from './recents';
 import { SearchOrchestrator, driftRecoveryDecision, shouldIndexPath, type RecencyOverride } from './search';
@@ -1761,15 +1762,11 @@ export default class SeekPlugin extends Plugin {
     // Settings button now that the command-palette entry is gone. Errors tee to
     // console + NDJSON as usual.
     async openLoggingReport(): Promise<void> {
-        try {
-            const path = await this.logger.writeReport(this.settings.redactReport);
-            const file = this.app.vault.getAbstractFileByPath(path);
-            if (file instanceof TFile) await this.app.workspace.getLeaf(false).openFile(file);
-            new Notice(`Seek: report written — ${path} (summary; full JSON in ${REPORT_ARTIFACTS_DIR}/)`, 6000);
-        } catch (e) {
-            await this.logger.appendError('generate-log', e);
-            new Notice('Seek: could not write the logging report — see the developer console.', 6000);
-        }
+        await openDiagnosticReport({
+            app: this.app,
+            logger: this.logger,
+            redactReport: this.settings.redactReport,
+        });
     }
 
     // T8 spike — dedicated-worker capability probe (CLI eval target). Spawns a
