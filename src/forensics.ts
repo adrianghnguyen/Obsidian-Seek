@@ -139,6 +139,10 @@ export class Forensics {
         this.persist();
     }
 
+    closeSession(): void {
+        this.markCleanEnd();
+    }
+
     private persist(): void {
         if (!this.usable) return;
         try {

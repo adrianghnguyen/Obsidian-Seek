@@ -475,6 +475,10 @@ export class PluginSchedulerManager {
         this.pollExclusionChanges();
     }
 
+    runCatchUp(): void {
+        this.host.runCatchUp();
+    }
+
     hasDeferredWork(): boolean {
         return (
             this.dirtyQueue.size > 0 ||

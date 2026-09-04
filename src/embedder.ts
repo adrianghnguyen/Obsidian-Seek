@@ -671,4 +671,8 @@ export class LocalEmbedder {
         this._loadPromise = null;
         void oldRunner.dispose();
     }
+
+    dispose(): void {
+        this.teardown();
+    }
 }

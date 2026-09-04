@@ -183,6 +183,18 @@ export class SeekLogger {
         this.sessionId = randId();
     }
 
+    info(msg: string, ...args: unknown[]): void {
+        console.info(`[seek] ${msg}`, ...args);
+    }
+
+    warn(msg: string, ...args: unknown[]): void {
+        console.warn(`[seek] ${msg}`, ...args);
+    }
+
+    error(msg: string, ...args: unknown[]): void {
+        console.error(`[seek] ${msg}`, ...args);
+    }
+
     private logPath(): string { return `${this.logDir}/${LOG_PREFIX}${this.deviceId}.ndjson`; }
     private initPath(): string { return `${this.logDir}/${INIT_PREFIX}${this.deviceId}.json`; }
     // Namespaced by pluginId — see DEVICE_GEN_KEY's doc comment for why a bare,

@@ -792,6 +792,10 @@ export class IndexStore {
         return preCount;
     }
 
+    async clear(): Promise<void> {
+        await this.clearAllStores();
+    }
+
     private requireDb(): IDBDatabase {
         if (!this.db) throw new Error(STORE_NOT_OPENED);
         return this.db;

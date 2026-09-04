@@ -74,6 +74,7 @@ import { isMobilePlatform, residentInt8Enabled } from './platform';
 import { CacheManager } from './cache-manager';
 import { SearchQuery, type RecencyOverride, dedupByPath, topKByScore } from './search-query';
 import { SidecarCoordinator } from './sidecar-coordinator';
+import { WorkflowCoordinator } from './workflow-coordinator';
 import {
     alignCandidate,
     buildResidentRerankBlock,
@@ -277,6 +278,7 @@ export class SearchOrchestrator {
     private cacheManager: CacheManager;
     private searchQuery: SearchQuery;
     private sidecarCoordinator: SidecarCoordinator;
+    private readonly workflowCoordinator: WorkflowCoordinator;
 
     // Set once, in dispose() (plugin unload / disable). A reindex that is still
     // embedding when the plugin unloads keeps running on the microtask queue AFTER
@@ -379,6 +381,23 @@ export class SearchOrchestrator {
             shouldIndex: (path) => this.shouldIndex(path),
             onGoodEnough: () => this.onGoodEnough?.(),
         });
+        this.workflowCoordinator = new WorkflowCoordinator({
+            app: this.app,
+            store: this.store,
+            embedder: this.embedder,
+            coord: this.coord,
+            cacheManager: this.cacheManager,
+            searchQuery: this.searchQuery,
+            sidecarCoordinator: this.sidecarCoordinator,
+            logger: this.logger,
+            settings: this.settings,
+            forensics: this.forensics ?? undefined,
+            orchestrator: this,
+        });
+    }
+
+    getWorkflowCoordinator(): WorkflowCoordinator {
+        return this.workflowCoordinator;
     }
 
     // Release the off-thread scorer's Worker. Called from the plugin's onunload
@@ -2847,7 +2866,11 @@ export class SearchOrchestrator {
         onPartial?: (partial: SearchPartial) => void | Promise<void>,
         signal?: AbortSignal,
     ): Promise<{ results: ScoredChunk[]; entry: SearchEntry }> {
-        return this.searchQuery.search(query, topK, recencyOverride, onPartial, signal);
+        return this.workflowCoordinator.executeSearch(query, topK, {
+            recencyOverride,
+            onPartial,
+            signal,
+        });
     }
 
     // ── Single Cache Authority (CacheManager) ──
@@ -3061,4 +3084,14 @@ export {
     SidecarCoordinator,
     type SidecarCoordinatorDeps,
 } from './sidecar-coordinator';
+export {
+    WorkflowCoordinator,
+    type WorkflowCoordinatorDeps,
+    type WorkflowCoordinatorHooks,
+    type BootWorkflowResult,
+    type ReindexWorkflowResult,
+    type FlushWorkflowResult,
+    type DriftWorkflowResult,
+    type SearchQueryOptions,
+} from './workflow-coordinator';
 
