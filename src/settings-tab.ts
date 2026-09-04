@@ -485,16 +485,22 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
 
     private startCoveragePoll(): void {
         if (this.coveragePoll != null) return;
-        this.coveragePoll = window.setInterval(() => {
+        const tick = () => {
             if (!this.containerEl.isConnected) { this.stopCoveragePoll(); return; }
             void this.paintCoverage();
             this.paintExclusionBanner();
-        }, 2000);
+            const job = this.plugin.getIndexJob();
+            const active = job != null && job.done < job.total;
+            this.coveragePoll = window.setTimeout(tick, active ? 1000 : 2000);
+        };
+        const job = this.plugin.getIndexJob();
+        const active = job != null && job.done < job.total;
+        this.coveragePoll = window.setTimeout(tick, active ? 1000 : 2000);
     }
 
     private stopCoveragePoll(): void {
         if (this.coveragePoll == null) return;
-        window.clearInterval(this.coveragePoll);
+        window.clearTimeout(this.coveragePoll);
         this.coveragePoll = null;
     }
 
@@ -536,9 +542,11 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             cls: 'seek-coverage-pct is-' + coverageTone(o),
             text: `${o.percent}%`,
         });
+        const remainingText = o.remaining > 0 ? ` · ${o.remaining.toLocaleString()} remaining` : '';
         overall.createSpan({
             cls: 'seek-coverage-overall-meta',
             text: `covered ${o.covered.toLocaleString()} of ${o.total.toLocaleString()} notes` +
+                remainingText +
                 (o.excluded > 0 ? ` · ${o.excluded.toLocaleString()} excluded` : ''),
         });
 
@@ -612,12 +620,12 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         fill.style.width = `${node.percent}%`;
 
         row.createSpan({ cls: 'seek-coverage-pct is-' + coverageTone(node), text: `${node.percent}%` });
-        row.createSpan({
-            cls: 'seek-coverage-meta',
-            text: fullyExcluded
-                ? `${node.excluded.toLocaleString()} excluded`
-                : `${node.covered.toLocaleString()} / ${node.total.toLocaleString()}`,
-        });
+        const metaText = fullyExcluded
+            ? `${node.excluded.toLocaleString()} excluded`
+            : node.remaining > 0
+                ? `${node.covered.toLocaleString()} / ${node.total.toLocaleString()} · ${node.remaining.toLocaleString()} pending`
+                : `${node.covered.toLocaleString()} / ${node.total.toLocaleString()}`;
+        row.createSpan({ cls: 'seek-coverage-meta', text: metaText });
 
         if (!expanded) return;
         for (const child of node.children) this.renderCoverageNode(container, child, depth + 1);

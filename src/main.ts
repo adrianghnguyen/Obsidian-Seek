@@ -63,8 +63,10 @@ import {
     diffExcludedPaths,
     exclusionDiffIsEmpty,
     emptyFolderCoverage,
+    createLiveCoverageSnapshot,
     type ExclusionDiff,
     type FolderCoverageSummary,
+    type LiveCoverageSnapshot,
 } from './folder-coverage';
 import { SeekSearchModal, type IndexBanner } from './search-modal';
 import { parsePaneType, openFileAtTarget, openBaseAtTarget, type OpenTarget } from './open-target';
@@ -2602,6 +2604,16 @@ export default class SeekPlugin extends Plugin {
         } catch {
             return emptyFolderCoverage();
         }
+    }
+
+    /** Live snapshot of indexed notes, pending notes, and folder breakdown for UI / polling. */
+    async getLiveCoverageSnapshot(): Promise<LiveCoverageSnapshot> {
+        const summary = await this.getFolderCoverage();
+        return createLiveCoverageSnapshot({
+            summary,
+            health: this.indexUiHealth,
+            job: this.getIndexJob(),
+        });
     }
 
     // Force an exclusion re-check now (used when the user flips "Honor excluded

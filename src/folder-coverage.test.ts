@@ -12,6 +12,8 @@ import {
     resolveCoveragePanelView,
     diffExcludedPaths,
     exclusionDiffIsEmpty,
+    flattenCoverageTree,
+    createLiveCoverageSnapshot,
     type FolderCoverageNode,
 } from './folder-coverage';
 
@@ -202,6 +204,29 @@ describe('resolveCoveragePanelView', () => {
         expect(view.placeholder?.title).toBe('Still starting up');
     });
 
+    it('shows a status banner above a partial tree while starting up when notes exist', () => {
+        const view = resolveCoveragePanelView({
+            summary: readySummary,
+            health: 'starting',
+            job: { kind: 'full', done: 1, total: 2 },
+            orchestratorReady: true,
+        });
+        expect(view.showTree).toBe(true);
+        expect(view.statusLine?.title).toBe('Still starting up');
+        expect(view.statusLine?.detail).toContain('1 of 2 notes so far');
+    });
+
+    it('shows a status banner above a partial tree while restoring when notes exist', () => {
+        const view = resolveCoveragePanelView({
+            summary: readySummary,
+            health: 'restoring',
+            job: null,
+            orchestratorReady: true,
+        });
+        expect(view.showTree).toBe(true);
+        expect(view.statusLine?.title).toBe('Restoring index…');
+    });
+
     it('shows a status banner above a partial tree while indexing', () => {
         const view = resolveCoveragePanelView({
             summary: readySummary,
@@ -227,6 +252,88 @@ describe('resolveCoveragePanelView', () => {
         });
         expect(view.showTree).toBe(false);
         expect(view.placeholder?.title).toBe('Nothing to cover');
+    });
+});
+
+describe('FolderCoverageNode remaining and status', () => {
+    it('computes complete, in-progress, pending, and excluded folder states', () => {
+        const summary = computeFolderCoverage({
+            allPaths: [
+                'done/1.md',
+                'done/2.md',
+                'partial/1.md',
+                'partial/2.md',
+                'waiting/1.md',
+                'ignored/1.md',
+            ],
+            coveredPaths: [
+                'done/1.md',
+                'done/2.md',
+                'partial/1.md',
+            ],
+            excludedPaths: [
+                'ignored/1.md',
+            ],
+        });
+
+        const byPath = new Map(summary.root.children.map(c => [c.path, c]));
+
+        const done = byPath.get('done')!;
+        expect(done.total).toBe(2);
+        expect(done.covered).toBe(2);
+        expect(done.remaining).toBe(0);
+        expect(done.status).toBe('complete');
+
+        const partial = byPath.get('partial')!;
+        expect(partial.total).toBe(2);
+        expect(partial.covered).toBe(1);
+        expect(partial.remaining).toBe(1);
+        expect(partial.status).toBe('in-progress');
+
+        const waiting = byPath.get('waiting')!;
+        expect(waiting.total).toBe(1);
+        expect(waiting.covered).toBe(0);
+        expect(waiting.remaining).toBe(1);
+        expect(waiting.status).toBe('pending');
+
+        const ignored = byPath.get('ignored')!;
+        expect(ignored.total).toBe(0);
+        expect(ignored.excluded).toBe(1);
+        expect(ignored.status).toBe('excluded');
+    });
+});
+
+describe('createLiveCoverageSnapshot and flattenCoverageTree', () => {
+    it('creates flat list of folders and overall stats for live polling', () => {
+        const summary = computeFolderCoverage({
+            allPaths: ['work/project/spec.md', 'work/tasks.md', 'notes/today.md'],
+            coveredPaths: ['work/tasks.md'],
+            excludedPaths: [],
+        });
+
+        const snapshot = createLiveCoverageSnapshot({
+            summary,
+            health: 'indexing',
+            job: { kind: 'full', done: 1, total: 3 },
+        });
+
+        expect(snapshot.health).toBe('indexing');
+        expect(snapshot.job?.total).toBe(3);
+        expect(snapshot.overall.total).toBe(3);
+        expect(snapshot.overall.covered).toBe(1);
+        expect(snapshot.overall.remaining).toBe(2);
+        expect(snapshot.overall.percent).toBe(33);
+
+        const paths = snapshot.folders.map(f => f.path);
+        expect(paths).toContain('work');
+        expect(paths).toContain('work/project');
+        expect(paths).toContain('notes');
+
+        const work = snapshot.folders.find(f => f.path === 'work')!;
+        expect(work.total).toBe(2);
+        expect(work.covered).toBe(1);
+        expect(work.remaining).toBe(1);
+        expect(work.status).toBe('in-progress');
     });
 });
 

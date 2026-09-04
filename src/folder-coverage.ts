@@ -33,6 +33,8 @@ export function displayFolderName(folder: string): string {
     return folder === '' ? 'vault root' : segmentOf(folder);
 }
 
+export type FolderCoverageStatus = 'complete' | 'in-progress' | 'pending' | 'excluded';
+
 // One directory in the hierarchy. `total` is the count of RELEVANT (non-excluded)
 // files in this folder's own subtree (recursively) — the denominator the user cares
 // about. `covered` is the subset of those that have a FileRecord. `excluded` is the
@@ -44,14 +46,42 @@ export interface FolderCoverageNode {
     name: string;          // single-segment display name
     total: number;         // relevant (non-excluded) files in the subtree
     covered: number;       // relevant files in the subtree with a FileRecord
+    remaining: number;     // total - covered (files needing processing)
     excluded: number;      // files in the subtree hidden by ignore rules
     percent: number;       // covered / total, 0-100
+    status: FolderCoverageStatus;
     children: FolderCoverageNode[]; // nested subfolders (recursive hierarchy)
 }
 
 export interface FolderCoverageSummary {
     root: FolderCoverageNode;   // the vault node: the whole hierarchy
     overall: FolderCoverageNode; // alias for root (the grand total)
+}
+
+export interface FlatFolderCoverageItem {
+    path: string;
+    name: string;
+    total: number;
+    covered: number;
+    remaining: number;
+    excluded: number;
+    percent: number;
+    status: FolderCoverageStatus;
+    depth: number;
+}
+
+export interface LiveCoverageSnapshot {
+    health: IndexStatusHealth;
+    job: IndexStatusJob | null;
+    overall: {
+        total: number;
+        covered: number;
+        remaining: number;
+        excluded: number;
+        percent: number;
+    };
+    folders: FlatFolderCoverageItem[];
+    summary: FolderCoverageSummary;
 }
 
 export interface FolderCoverageInput {
@@ -84,6 +114,14 @@ export function folderOf(path: string): string {
 function pct(covered: number, denom: number): number {
     if (denom <= 0) return 0;
     return Math.round((covered / denom) * 100);
+}
+
+function folderStatus(total: number, covered: number, excluded: number): FolderCoverageStatus {
+    if (total === 0 && excluded > 0) return 'excluded';
+    if (total === 0) return 'pending';
+    if (covered >= total) return 'complete';
+    if (covered > 0) return 'in-progress';
+    return 'pending';
 }
 
 // A well-formed empty summary, used by callers (e.g. the plugin) before the
@@ -140,16 +178,14 @@ export function resolveCoveragePanelView(input: {
         };
     }
 
-    if (!orchestratorReady || health === 'starting' || health === 'restoring') {
+    if (!orchestratorReady) {
         return {
             showTree: false,
             summary,
             placeholder: {
                 tone: 'pending',
-                title: health === 'restoring' ? 'Restoring index…' : 'Still starting up',
-                detail: health === 'restoring'
-                    ? 'Seek is restoring your index. Folder coverage will appear once the vault layout is ready.'
-                    : 'Seek is loading the search index. Folder coverage will appear once your vault is ready.',
+                title: 'Still starting up',
+                detail: 'Seek is loading the search index. Folder coverage will appear once your vault is ready.',
             },
         };
     }
@@ -178,9 +214,24 @@ export function resolveCoveragePanelView(input: {
         };
     }
 
+    // If indexable files exist, show the live tree with an informative status banner!
     if (total > 0) {
         const view: CoveragePanelView = { showTree: true, summary };
-        if (isIndexingActive(health, job) && covered < total) {
+        if (health === 'starting') {
+            view.statusLine = {
+                tone: 'pending',
+                title: 'Still starting up',
+                detail: job && job.total > 0
+                    ? `Indexed ${job.done.toLocaleString()} of ${job.total.toLocaleString()} notes so far. Folder coverage is updating live.`
+                    : 'Seek is loading the search index. Folder coverage updates as notes are indexed.',
+            };
+        } else if (health === 'restoring') {
+            view.statusLine = {
+                tone: 'pending',
+                title: 'Restoring index…',
+                detail: 'Seek is restoring your index. Folder coverage is updating live as notes are restored.',
+            };
+        } else if (isIndexingActive(health, job) && covered < total) {
             view.statusLine = {
                 tone: 'pending',
                 title: 'Still indexing',
@@ -198,6 +249,20 @@ export function resolveCoveragePanelView(input: {
                 tone: 'muted',
                 title: 'Nothing to cover',
                 detail: `Every indexable note is excluded (${excluded.toLocaleString()} excluded). Adjust Obsidian's Excluded files or turn off Honor excluded folders to include them.`,
+            },
+        };
+    }
+
+    if (health === 'starting' || health === 'restoring') {
+        return {
+            showTree: false,
+            summary,
+            placeholder: {
+                tone: 'pending',
+                title: health === 'restoring' ? 'Restoring index…' : 'Still starting up',
+                detail: health === 'restoring'
+                    ? 'Seek is restoring your index. Folder coverage will appear once the vault layout is ready.'
+                    : 'Seek is loading the search index. Folder coverage will appear once your vault is ready.',
             },
         };
     }
@@ -231,8 +296,10 @@ export function emptyFolderCoverage(): FolderCoverageSummary {
         name: 'vault root',
         total: 0,
         covered: 0,
+        remaining: 0,
         excluded: 0,
         percent: 0,
+        status: 'pending',
         children: [],
     };
     return { root, overall: root };
@@ -275,13 +342,16 @@ export function computeFolderCoverage(input: FolderCoverageInput): FolderCoverag
     const finalize = (acc: Acc, depth: number): FolderCoverageNode => {
         const kids = [...acc.children.values()]
             .sort((a, b) => b.total - a.total || segmentOf(a.path).localeCompare(segmentOf(b.path)));
+        const remaining = Math.max(0, acc.total - acc.covered);
         const node: FolderCoverageNode = {
             path: acc.path,
             name: displayFolderName(acc.path),
             total: acc.total,
             covered: acc.covered,
+            remaining,
             excluded: acc.excluded,
             percent: pct(acc.covered, acc.total),
+            status: folderStatus(acc.total, acc.covered, acc.excluded),
             children: kids.map(c => finalize(c, depth + 1)),
         };
         return node;
@@ -289,6 +359,49 @@ export function computeFolderCoverage(input: FolderCoverageInput): FolderCoverag
 
     const root = finalize(rootAcc, 0);
     return { root, overall: root };
+}
+
+export function flattenCoverageTree(node: FolderCoverageNode, depth = 0): FlatFolderCoverageItem[] {
+    const list: FlatFolderCoverageItem[] = [];
+    if (node.path !== '') {
+        list.push({
+            path: node.path,
+            name: node.name,
+            total: node.total,
+            covered: node.covered,
+            remaining: node.remaining,
+            excluded: node.excluded,
+            percent: node.percent,
+            status: node.status,
+            depth,
+        });
+    }
+    for (const child of node.children) {
+        list.push(...flattenCoverageTree(child, node.path === '' ? 0 : depth + 1));
+    }
+    return list;
+}
+
+export function createLiveCoverageSnapshot(input: {
+    summary: FolderCoverageSummary;
+    health: IndexStatusHealth;
+    job: IndexStatusJob | null;
+}): LiveCoverageSnapshot {
+    const { summary, health, job } = input;
+    const { total, covered, remaining, excluded, percent } = summary.overall;
+    return {
+        health,
+        job,
+        overall: {
+            total,
+            covered,
+            remaining,
+            excluded,
+            percent,
+        },
+        folders: flattenCoverageTree(summary.root),
+        summary,
+    };
 }
 
 // ── Exclusion-list change detection ─────────────────────────────────────────────
