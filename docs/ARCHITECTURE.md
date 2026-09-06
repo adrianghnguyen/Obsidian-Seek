@@ -527,8 +527,8 @@ Crash demotion can sticky-force WASM after mobile GPU jetsam.
 | Default | Action |
 |---------|--------|
 | Enter | Open in active pane; close modal |
-| ⌘/Ctrl+Enter | Open in new tab (modal stays open) |
-| ⌘/Ctrl+Alt+Enter | Open in split pane |
+| ⌘/Ctrl+Enter | Open in new tab; close modal (default). Opt-in Display setting **Keep search open when opening in new tab or split** restores fan-out (modal stays open, leaf inactive). |
+| ⌘/Ctrl+Alt+Enter | Open in split pane; same dismiss / fan-out rule as new tab |
 | Alt+Enter | Insert plain wikilink at editor cursor (desktop) |
 | Alt+Shift+Enter | Insert wikilink with search free text as alias (desktop) |
 | ↑/↓ | Navigate results (or recent searches when resting) |

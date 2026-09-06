@@ -19,7 +19,7 @@ import { buildPassageTerms, markPattern } from './passage';
 import { matchStrength } from './dense-stats';
 import { SuggestEngine } from './suggest';
 import { PillQueryField } from './query-field';
-import { openBaseAtTarget, openFileAtTarget, resolveOpenTarget, isBackgroundOpen, type OpenTarget } from './open-target';
+import { openBaseAtTarget, openFileAtTarget, resolveOpenTarget, shouldKeepModalOpen, type OpenTarget } from './open-target';
 import {
     buildNoteLink,
     insertLinkInEditor,
@@ -1793,21 +1793,22 @@ export class SeekSearchModal extends Modal {
         const file = this.app.vault.getAbstractFileByPath(r.note_path);
         if (!(file instanceof TFile)) return;
 
-        const background = isBackgroundOpen(target);
+        // Default: dismiss after any open (Quick Switcher-like). Opt-in Display
+        // setting keepSearchOpenOnTabSplit restores fan-out (background leaf +
+        // refocus query). Plain Enter/click always dismisses.
+        const keepOpen = shouldKeepModalOpen(target, this.settings.keepSearchOpenOnTabSplit);
 
         // A .base is a saved query/view, not editable text. Skip the markdown
         // highlight + scroll path (buildMatchHighlight/scrollLeafToChunk assume a
         // text editor) and drive the Bases view directly: the matched view name
         // rides in heading_path (chunkBase puts it there), so we land on that exact
         // view. A base-level chunk (empty heading_path) has no viewName, so the
-        // Bases view opens its default/last-used view. Mirrors the markdown path's
-        // modal semantics: a background open keeps the modal open + focused; a
-        // plain open takes the active tab and dismisses.
+        // Bases view opens its default/last-used view.
         if (file.extension === 'base') {
             const viewName = r.heading_path?.[r.heading_path.length - 1];
             const state: Record<string, unknown> = viewName ? { file: file.path, viewName } : { file: file.path };
-            await openBaseAtTarget(this.app, file, target, state, { background });
-            if (background) this.field?.focus();
+            await openBaseAtTarget(this.app, file, target, state, { background: keepOpen });
+            if (keepOpen) this.field?.focus();
             else this.close();
             return;
         }
@@ -1817,10 +1818,10 @@ export class SeekSearchModal extends Modal {
         // Title-nav hits open at the top — skip chunk highlight/scroll.
         const eState = titleNav ? undefined : await this.buildMatchHighlight(file, r);
 
-        const leaf = await openFileAtTarget(this.app, file, target, { eState, background });
+        const leaf = await openFileAtTarget(this.app, file, target, { eState, background: keepOpen });
         if (titleNav) this.scrollLeafToTop(leaf);
         else this.scrollLeafToChunk(leaf, r);
-        if (background) this.field?.focus();
+        if (keepOpen) this.field?.focus();
         else this.close();
     }
 

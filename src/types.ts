@@ -497,6 +497,13 @@ export interface SeekSettings {
     // modal footer bar. OFF (default): hide the stage indicator.
     showSearchStages: boolean;
 
+    // Keep the search modal open after opening a result in a new tab, split, or
+    // window (fan-out). OFF (default): dismiss after any open, like Quick Switcher.
+    // ON: open the leaf with active:false and refocus the query field so more
+    // results can be opened. Plain Enter/click always dismisses. See
+    // shouldKeepModalOpen in open-target.ts / openResult in search-modal.ts.
+    keepSearchOpenOnTabSplit: boolean;
+
     // Insert-link subpath from section hits (Alt+Enter / Alt+Shift+Enter / seek:insert-link).
     // ON: include #heading for section results ([[Note#Section|…]]). OFF (default): link to the
     // note only ([[Note|…]]). See insert-link.ts resolveInsertLinkSubpath.
@@ -634,6 +641,7 @@ export const DEFAULT_SETTINGS: SeekSettings = {
     redactReport: true,        // ON: salted tokens for paths/titles/queries in the generated report — the share-safe default for a file made to be pasted into a public issue; see field comment
     showHotkeyHints: true,     // ON: show the modal footer keyboard-hint bar + result counter; OFF = full-results-only modal
     showSearchStages: false,   // OFF by default: show the 3-stage progression (Name match → Lexical BM25 → Hybrid semantic) in the modal footer bar; opt-in via Display settings
+    keepSearchOpenOnTabSplit: false, // OFF: dismiss after tab/split/window open (Quick Switcher-like); ON: fan-out keep modal focused
     insertLinkIncludeHeading: false, // OFF (default): note-only links; ON adds #heading for section hits
     showResultAliases: true,   // ON: show frontmatter aliases on result rows (truncated per resultAliasLimit)
     resultAliasLimit: 3,       // max aliases before "+N more"; 0 = show all

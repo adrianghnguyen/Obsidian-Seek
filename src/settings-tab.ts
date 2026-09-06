@@ -940,6 +940,11 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             .setDesc('Displays the 3-stage search pipeline (Name match → Lexical BM25 → Hybrid semantic) in the modal footer bar.')
             .addToggle(t => t.setValue(this.s.showSearchStages).onChange(async v => { this.s.showSearchStages = v; await this.save(); }));
 
+        new Setting(containerEl)
+            .setName('Keep search open when opening in new tab or split')
+            .setDesc('When ON, opening a result in a new tab, split, or window leaves the search modal open so you can open more results. When OFF (default), the modal closes after any open, like Quick Switcher.')
+            .addToggle(t => t.setValue(this.s.keepSearchOpenOnTabSplit).onChange(async v => { this.s.keepSearchOpenOnTabSplit = v; await this.save(); }));
+
         const widthLabels: Record<SearchModalWidth, string> = {
             default: 'Default (640px)',
             wide: 'Wide (800px)',

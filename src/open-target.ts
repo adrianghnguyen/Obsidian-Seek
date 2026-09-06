@@ -70,7 +70,16 @@ export async function openBaseAtTarget(
     return leaf;
 }
 
-// Background open keeps the search modal focused (tab or split fan-out).
+// True when the open target is tab/split/window (not the active pane).
 export function isBackgroundOpen(target: OpenTarget): boolean {
     return target !== false;
+}
+
+// Whether the search modal should stay open after this open. Fan-out only when
+// the Display setting is ON and the target is tab/split/window.
+export function shouldKeepModalOpen(
+    target: OpenTarget,
+    keepSearchOpenOnTabSplit: boolean,
+): boolean {
+    return keepSearchOpenOnTabSplit && isBackgroundOpen(target);
 }

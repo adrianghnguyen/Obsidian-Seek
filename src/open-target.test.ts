@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import { Platform } from 'obsidian';
-import { normalizeTarget, parsePaneType } from './open-target';
+import { normalizeTarget, parsePaneType, shouldKeepModalOpen } from './open-target';
 
 describe('parsePaneType', () => {
     it('maps known paneType strings', () => {
@@ -32,5 +32,24 @@ describe('normalizeTarget', () => {
         Platform.isMobile = true;
         expect(normalizeTarget('split')).toBe('tab');
         expect(normalizeTarget('tab')).toBe('tab');
+    });
+});
+
+describe('shouldKeepModalOpen', () => {
+    it('never keeps the modal open for plain open', () => {
+        expect(shouldKeepModalOpen(false, false)).toBe(false);
+        expect(shouldKeepModalOpen(false, true)).toBe(false);
+    });
+
+    it('dismisses tab/split/window when the setting is off', () => {
+        expect(shouldKeepModalOpen('tab', false)).toBe(false);
+        expect(shouldKeepModalOpen('split', false)).toBe(false);
+        expect(shouldKeepModalOpen('window', false)).toBe(false);
+    });
+
+    it('keeps the modal open for tab/split/window when the setting is on', () => {
+        expect(shouldKeepModalOpen('tab', true)).toBe(true);
+        expect(shouldKeepModalOpen('split', true)).toBe(true);
+        expect(shouldKeepModalOpen('window', true)).toBe(true);
     });
 });
