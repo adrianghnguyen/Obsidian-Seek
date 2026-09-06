@@ -70,6 +70,7 @@ import {
 } from './folder-coverage';
 import { SeekSearchModal, type IndexBanner } from './search-modal';
 import { parsePaneType, openFileAtTarget, openBaseAtTarget, type OpenTarget } from './open-target';
+import { SEARCH_MODAL_COMMANDS } from './search-modal-hotkeys';
 import { registerSeekCliHandlers } from './cli-handlers';
 import { DriftRecoveryCoordinator } from './drift-recovery-coordinator';
 import { WorkflowCoordinator } from './workflow-coordinator';
@@ -308,6 +309,8 @@ export default class SeekPlugin extends Plugin {
     private inventoryGen = 0;
     private nextIndexJobId = 1;
     private readonly indexProgress = new IndexStatusBar();
+    // Live Seek search modal, if open — remappable Search:* commands target it.
+    private activeSearchModal: SeekSearchModal | null = null;
     // Drift auto-recovery (sibling of catch-up). The orchestrator detects persistent
     // frame/BM25 row-space drift and fires onPersistentDrift; we run a bounded,
     // embed-free recovery ladder (warm → sidecar hydrate → verify). Re-escalation is
@@ -857,6 +860,24 @@ export default class SeekPlugin extends Plugin {
             callback: () => this.openSearchModal(),
         });
 
+        // Search-modal result actions — remappable in Settings → Hotkeys. Defaults
+        // match the historical modal chords; the query field matches the live
+        // hotkey map so remaps work while the contenteditable is focused.
+        for (const spec of SEARCH_MODAL_COMMANDS) {
+            this.addCommand({
+                id: spec.id,
+                name: spec.name,
+                hotkeys: spec.hotkeys.map(h => ({ ...h, modifiers: [...h.modifiers] })),
+                checkCallback: (checking) => {
+                    const modal = this.activeSearchModal;
+                    if (!modal || modal.isClosed) return false;
+                    if (spec.desktopOnly && isMobilePlatform()) return false;
+                    if (!checking) modal.runAction(spec.action);
+                    return true;
+                },
+            });
+        }
+
         this.addCommand({
             id: 'retry-index-store',
             name: 'Retry opening the search index',
@@ -906,7 +927,8 @@ export default class SeekPlugin extends Plugin {
         // reindex nukes and re-embeds the whole vault (too destructive for a fuzzy
         // palette match), so it lives in Settings → Seek → Index behind a confirm;
         // the logging report is a Settings button (openLoggingReport). Sidecar
-        // reconcile/rebuild are automatic. Search is the only command Seek adds.
+        // reconcile/rebuild are automatic. Search (+ modal action hotkeys) are the
+        // palette/hotkey surface Seek adds.
 
         // ---- Headless CLI query handlers --------------------------------
         registerSeekCliHandlers(this);
@@ -2280,7 +2302,7 @@ export default class SeekPlugin extends Plugin {
             const wasLoaded = this.embedder.loaded;
             const loadPromise = this.ensureModelLoaded();
             loadPromise.catch(() => { /* logged in ensureModelLoaded */ });
-            new SeekSearchModal(
+            const modal = new SeekSearchModal(
                 this.app,
                 this.orchestrator,
                 this.logger,
@@ -2293,7 +2315,12 @@ export default class SeekPlugin extends Plugin {
                 initialQuery,
                 this.recents,
                 (query, ms) => this.recordModalSearchLatency(query, ms),
-            ).open();
+                this.manifest.id,
+                (active) => {
+                    this.activeSearchModal = active ? modal : (this.activeSearchModal === modal ? null : this.activeSearchModal);
+                },
+            );
+            modal.open();
         } catch (e) {
             // Synchronous failure path (rare — only if the Modal ctor or
             // ensureModelLoaded throws before returning a promise).

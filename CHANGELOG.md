@@ -4,6 +4,12 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Changed
+- **Search modal keyboard actions are remappable in Settings → Hotkeys.** Navigate, open, open in new tab / split, insert link (plain and with alias), expand snippet, fill autosuggest, and close are Seek commands with the previous default chords. The modal footer shows the live bindings. Mouse Mod-click / Mod+Alt-click for new tab / split is unchanged.
+
+### Fixed
+- **↑/↓ navigate recent searches** when the modal is resting (empty query). Enter reapplies the highlighted recent query, same as clicking a history row.
+
 ## 1.5.0
 
 Search modal and Settings Index surfaces show live pipeline and indexing progress more clearly. No reindex is needed, since the index format is unchanged.

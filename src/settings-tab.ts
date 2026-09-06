@@ -980,7 +980,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
 
         new Setting(containerEl)
             .setName('Result snippet preview')
-            .setDesc('How much surrounding text to show per result (200 / 400 / 800 characters). Ctrl/Cmd+Shift+E toggles the expanded preset while search is open.')
+            .setDesc('How much surrounding text to show per result (200 / 400 / 800 characters). Remap “Search: Expand snippet” under Settings → Hotkeys (default Ctrl/Cmd+Shift+E) to toggle the expanded preset while search is open.')
             .addDropdown(dd => dd
                 .addOptions(snippetLineLabels)
                 .setValue(this.s.snippetPreview)
@@ -1018,7 +1018,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
 
         new Setting(containerEl)
             .setName('Insert link includes section heading')
-            .setDesc('When ON, Alt+Enter and Alt+Shift+Enter link to the matched heading ([[Note#Section]]). When OFF (default), links to the note only ([[Note]]).')
+            .setDesc('When ON, insert-link actions (Settings → Hotkeys; defaults Alt+Enter / Alt+Shift+Enter) link to the matched heading ([[Note#Section]]). When OFF (default), links to the note only ([[Note]]).')
             .addToggle(t => t.setValue(this.s.insertLinkIncludeHeading).onChange(async v => { this.s.insertLinkIncludeHeading = v; await this.save(); }));
     }
 

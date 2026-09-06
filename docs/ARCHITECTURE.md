@@ -522,16 +522,18 @@ Crash demotion can sticky-force WASM after mobile GPU jetsam.
 | Index banner | Stale/syncing notices |
 | Footer | Keyboard hints (toggleable) |
 
-**Keyboard model:**
+**Keyboard model** (defaults; remappable in Settings → Hotkeys under Seek: Search:*):
 
-| Key | Action |
-|-----|--------|
+| Default | Action |
+|---------|--------|
 | Enter | Open in active pane; close modal |
 | ⌘/Ctrl+Enter | Open in new tab (modal stays open) |
 | ⌘/Ctrl+Alt+Enter | Open in split pane |
 | Alt+Enter | Insert plain wikilink at editor cursor (desktop) |
 | Alt+Shift+Enter | Insert wikilink with search free text as alias (desktop) |
-| ↑/↓ | Navigate results |
+| ↑/↓ | Navigate results (or recent searches when resting) |
+| Tab | Fill autosuggest |
+| ⌘/Ctrl+Shift+E | Expand snippet |
 | Esc | Close |
 
 Debounce: 200 ms desktop / 400 ms mobile. Catch-up indexing pauses while search is active.

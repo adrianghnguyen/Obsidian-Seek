@@ -789,6 +789,10 @@
     background: var(--background-modifier-hover);
     color: var(--text-normal);
 }
+.seek-recent.is-selected {
+    background: var(--background-modifier-hover);
+    color: var(--text-normal);
+}
 .seek-recent-icon {
     display: flex;
     align-items: center;

@@ -23,8 +23,7 @@ import { Platform, setIcon } from 'obsidian';
 import type { SuggestEngine } from './suggest';
 import { parseDateMs } from './fusion';
 import { parseNum } from './query-parser';
-import { resolveOpenTarget, type OpenTarget } from './open-target';
-import type { InsertLinkMode } from './insert-link';
+import type { SearchModalAction } from './search-modal-hotkeys';
 
 export type PillOp = 'tag' | 'path' | 'after' | 'before' | 'prop';
 
@@ -57,17 +56,10 @@ export interface PillQueryFieldCallbacks {
     // Fired on every change (keystroke, pill commit/remove) with the full,
     // serialized query string. The modal debounces + searches on this.
     onQueryChange: (query: string) => void;
-    // Move result selection by ±1 (arrow keys, when the dropdown is closed).
-    onNavigate: (dir: 1 | -1) => void;
-    // Open the selected result (Enter); OpenTarget from modifier keys (tab/split).
-    onSubmit: (target: OpenTarget) => void;
-    // Insert a link at the active editor cursor: plain wiki link (Alt+Enter) or
-    // search-field free text as alias (Alt+Shift+Enter).
-    onInsertLink: (mode: InsertLinkMode) => void;
-    // Ctrl/Cmd+Shift+E → toggle expanded snippet lines on result rows.
-    onToggleSnippetExpand: () => void;
-    // Esc with no dropdown open → close the modal.
-    onDismiss: () => void;
+    // Remappable search-modal actions (Settings → Hotkeys). The field matches
+    // the event against the live hotkey map and forwards the action here.
+    onAction: (action: SearchModalAction) => void;
+    matchAction: (e: KeyboardEvent) => SearchModalAction | null;
     // Does this tag bind to a real vault tag (exact or hierarchical parent)?
     // Drives the warn-pill state for a `tag:` that matches nothing.
     validateTag: (tag: string) => boolean;
@@ -347,6 +339,24 @@ export class PillQueryField {
     // future insert-link alias candidate — excludes committed pills.
     getFreeText(): string {
         return this.readText().trim();
+    }
+
+    // Tab / remappable "fill autosuggest": accept the active suggestion, or the
+    // ghost completion. Returns true when something was filled.
+    fillAutosuggest(): boolean {
+        const text = this.readText();
+        const openSugg = this.sugg.open && this.sugg.items.length > 0;
+        if (openSugg) {
+            this.accept(this.sugg.items[this.sugg.active]);
+            return true;
+        }
+        if (this.ghost) {
+            this.editEl.textContent = text + this.ghost;
+            caretToEnd(this.editEl);
+            this.refresh();
+            return true;
+        }
+        return false;
     }
 
     // Seed the field from a raw query string (an obsidian://seek?query= deep
@@ -731,8 +741,6 @@ export class PillQueryField {
         const text = this.readText();
         const last = (text.match(/(\S*)$/)?.[1]) ?? '';
         const openSugg = this.sugg.open && this.sugg.items.length > 0;
-        const target = resolveOpenTarget(e);
-        const accel = target !== false;
 
         // While a pill is keyboard-selected, only ←/→ (move) and Backspace/Delete
         // (remove) act on it; the handlers for those live below. ANY other
@@ -740,9 +748,11 @@ export class PillQueryField {
         // normal behaviour (the char types into the still-focused editable, ↑/↓
         // navigate results, Enter submits…). Bare modifiers are left alone so a
         // chord-in-progress doesn't drop the selection.
-        // Escape is excluded here so its own handler can deselect-without-dismiss.
+        // Close is excluded so its handler can deselect-without-dismiss.
+        const actionPeekEarly = this.cb.matchAction(e);
         const pillNavKey = e.key === 'ArrowLeft' || e.key === 'ArrowRight'
-            || e.key === 'Backspace' || e.key === 'Delete' || e.key === 'Escape';
+            || e.key === 'Backspace' || e.key === 'Delete'
+            || e.key === 'Escape' || actionPeekEarly === 'close';
         if (this.selectedPill != null && !pillNavKey && !isModifierKey(e.key)) {
             this.clearPillSelection();
             // fall through — the key does its usual job
@@ -754,16 +764,18 @@ export class PillQueryField {
         // — an unengaged op menu is a passive hint over a plain word being
         // typed, and ↑/↓ keep navigating results.
         const menuOwnsArrows = openSugg && (this.sugg.kind === 'value' || this.menuEngaged);
-        if (e.key === 'ArrowDown') {
+        if (e.key === 'ArrowDown' && menuOwnsArrows) {
             e.preventDefault();
-            if (menuOwnsArrows) { this.menuEngaged = true; this.sugg.active = Math.min(this.sugg.active + 1, this.sugg.items.length - 1); this.updateActive(); }
-            else this.cb.onNavigate(1);
+            this.menuEngaged = true;
+            this.sugg.active = Math.min(this.sugg.active + 1, this.sugg.items.length - 1);
+            this.updateActive();
             return;
         }
-        if (e.key === 'ArrowUp') {
+        if (e.key === 'ArrowUp' && menuOwnsArrows) {
             e.preventDefault();
-            if (menuOwnsArrows) { this.menuEngaged = true; this.sugg.active = Math.max(this.sugg.active - 1, 0); this.updateActive(); }
-            else this.cb.onNavigate(-1);
+            this.menuEngaged = true;
+            this.sugg.active = Math.max(this.sugg.active - 1, 0);
+            this.updateActive();
             return;
         }
         // ←/→ step the keyboard selection across the committed pills. We only
@@ -782,7 +794,7 @@ export class PillQueryField {
                 this.selectPill(this.tokens.length - 1);
                 return;
             }
-            return;
+            // fall through — may still match remappable navigate if remapped onto ←
         }
         if (e.key === 'ArrowRight') {
             if (this.selectedPill != null) {
@@ -797,82 +809,10 @@ export class PillQueryField {
                 }
                 return;
             }
-            return;
         }
-        if (e.key === 'E' && e.shiftKey && (e.ctrlKey || e.metaKey)) {
-            e.preventDefault();
-            this.cb.onToggleSnippetExpand();
-            return;
-        }
-        if (e.key === 'Tab') {
-            if (openSugg) { e.preventDefault(); this.accept(this.sugg.items[this.sugg.active]); return; }
-            if (this.ghost) {
-                e.preventDefault();
-                this.editEl.textContent = text + this.ghost;
-                caretToEnd(this.editEl);
-                this.refresh();
-                return;
-            }
-            return;
-        }
-        if (e.key === 'Enter' && e.altKey && !e.ctrlKey && !e.metaKey) {
-            if (Platform.isMobile) return;
-            e.preventDefault();
-            this.cb.onInsertLink(e.shiftKey ? 'searchAlias' : 'plain');
-            return;
-        }
-        if (e.key === 'Enter') {
-            // Mobile follows the iOS search-as-you-type convention: the "Search"
-            // key (enterkeyhint above) DISMISSES the keyboard so the live results
-            // get the full screen to browse/tap — it never opens the top hit (you
-            // tap a result for that). Tear down the suggestion affordance like
-            // Escape does, then drop focus. Desktop keeps the accept/commit/open
-            // behavior below, where a pointer-free workflow needs Enter to act.
-            if (Platform.isMobile) {
-                e.preventDefault();
-                this.sugg = { open: false, kind: 'op', items: [], active: 0 };
-                this.ghost = '';
-                this.menuEngaged = false;
-                this.renderGhost();
-                this.renderSugg();
-                this.blur();
-                return;
-            }
-            // Accept a highlighted suggestion — but ⌘/Ctrl+Enter (or ⌘/Ctrl+Alt)
-            // always means open, so for a value row it skips straight to submit.
-            // Op-kind menus additionally require engagement (menuEngaged):
-            // otherwise Enter mid-sentence ("what would be↵") would rewrite the
-            // field to "what would before:" instead of opening the selection.
-            if (openSugg && (this.sugg.kind === 'op' ? this.menuEngaged : !accel)) {
-                e.preventDefault();
-                this.accept(this.sugg.items[this.sugg.active]);
-                return;
-            }
-            const pc = this.pendingCommit(last);
-            if (pc && !accel && this.canCommit(pc.op, pc.value)) {
-                e.preventDefault();
-                this.commit(pc.op, pc.value, pc.key);
-                return;
-            }
-            e.preventDefault();
-            this.cb.onSubmit(target);
-            return;
-        }
-        if (e.key === ' ') {
-            // An uncommittable token (e.g. after:lastweek, or an unclosed
-            // `[key:value`) lets the space type through normally — no pill, text
-            // stays editable as-is.
-            const pc = this.pendingCommit(last);
-            if (pc && this.canCommit(pc.op, pc.value)) {
-                e.preventDefault();
-                this.commit(pc.op, pc.value, pc.key);
-                return;
-            }
-            return;
-        }
+
+        // Field-internal Escape layers before the remappable close action.
         if (e.key === 'Escape') {
-            // A selected pill swallows the first Escape (deselect only) so it
-            // doesn't also close the modal — step back to the editable instead.
             if (this.selectedPill != null) {
                 e.preventDefault();
                 this.clearPillSelection();
@@ -887,9 +827,94 @@ export class PillQueryField {
                 this.renderSugg();
                 return;
             }
-            this.cb.onDismiss();
+        }
+
+        // Enter while a suggestion should be accepted / a pill committed —
+        // field UX, before remappable open/insert-link chords.
+        if (e.key === 'Enter') {
+            if (Platform.isMobile) {
+                // Mobile: Search key dismisses the keyboard (see enterkeyhint).
+                e.preventDefault();
+                this.sugg = { open: false, kind: 'op', items: [], active: 0 };
+                this.ghost = '';
+                this.menuEngaged = false;
+                this.renderGhost();
+                this.renderSugg();
+                this.blur();
+                return;
+            }
+            const actionPeek = actionPeekEarly;
+            // Mod+Enter / Mod+Alt+Enter / Alt(+Shift)+Enter skip accept/commit
+            // and fall through to the remappable action below.
+            const skipAccept = actionPeek === 'open-tab' || actionPeek === 'open-split'
+                || actionPeek === 'insert-link' || actionPeek === 'insert-link-alias';
+            if (openSugg && (this.sugg.kind === 'op' ? this.menuEngaged : !skipAccept)) {
+                e.preventDefault();
+                this.accept(this.sugg.items[this.sugg.active]);
+                return;
+            }
+            const pc = this.pendingCommit(last);
+            if (pc && !skipAccept && this.canCommit(pc.op, pc.value)) {
+                e.preventDefault();
+                this.commit(pc.op, pc.value, pc.key);
+                return;
+            }
+        }
+
+        // Remappable actions (Settings → Hotkeys). stopPropagation so Obsidian's
+        // command hotkey path does not double-fire the same chord.
+        const action = actionPeekEarly;
+        if (action) {
+            if (action === 'fill-autosuggest') {
+                e.preventDefault();
+                e.stopPropagation();
+                this.fillAutosuggest();
+                return;
+            }
+            // Remapped close (not Escape) still clears pill/sugg before dismiss.
+            if (action === 'close') {
+                if (this.selectedPill != null) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    this.clearPillSelection();
+                    return;
+                }
+                if (this.sugg.open) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    this.sugg = { open: false, kind: 'op', items: [], active: 0 };
+                    this.ghost = '';
+                    this.menuEngaged = false;
+                    this.renderGhost();
+                    this.renderSugg();
+                    return;
+                }
+            }
+            e.preventDefault();
+            e.stopPropagation();
+            this.cb.onAction(action);
             return;
         }
+
+        if (e.key === ' ') {
+            // An uncommittable token (e.g. after:lastweek, or an unclosed
+            // `[key:value`) lets the space type through normally — no pill, text
+            // stays editable as-is.
+            const pc = this.pendingCommit(last);
+            if (pc && this.canCommit(pc.op, pc.value)) {
+                e.preventDefault();
+                this.commit(pc.op, pc.value, pc.key);
+                return;
+            }
+            return;
+        }
+
+        // Prevent contenteditable from inserting a newline if Enter is unbound.
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            return;
+        }
+
         // A keyboard-selected pill is removed by Backspace OR Delete, and the
         // selection hops to a neighbour so repeated presses chew through filters.
         if ((e.key === 'Backspace' || e.key === 'Delete') && this.selectedPill != null) {

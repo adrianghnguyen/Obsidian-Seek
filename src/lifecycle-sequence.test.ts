@@ -243,9 +243,13 @@ describe('Lifecycle Sequence & Ordering Verification', () => {
 
             await h.plugin.onload();
 
-            // Command palette: seek:search (internal id: 'search')
+            // Command palette: seek:search (internal id: 'search') + remappable modal actions
             const commandIds = addCommandSpy.mock.calls.map(c => (c[0] as { id: string }).id);
             expect(commandIds).toContain('search');
+            expect(commandIds).toContain('search-open');
+            expect(commandIds).toContain('search-navigate-up');
+            expect(commandIds).toContain('search-insert-link-alias');
+            expect(commandIds).toContain('search-close');
 
             // Protocol handler: obsidian://seek
             expect(registerProtocolSpy).toHaveBeenCalledWith('seek', expect.any(Function));

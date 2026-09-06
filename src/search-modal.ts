@@ -1,8 +1,9 @@
 // Seek search modal. A plain Modal (not SuggestModal) with a debounced query,
-// manual result rendering, and a keyboard model layered on top: arrow keys move
-// a selectedIndex, Enter opens it, ⌘/Ctrl+Enter (or ⌘/Ctrl+click) opens in a
-// new tab, ⌘/Ctrl+Alt+Enter (or ⌘/Ctrl+Alt+click) opens in a split pane,
-// Alt+Enter inserts a plain wiki link; Alt+Shift+Enter uses search free text as alias.
+// manual result rendering, and a keyboard model layered on top. Result actions
+// (navigate / open / new tab / split / insert link / expand snippet / close /
+// fill autosuggest) are Obsidian commands — defaults match the historical
+// chords, and users remap them in Settings → Hotkeys. The query field matches
+// the live hotkey map so remaps work while the contenteditable is focused.
 // serializes committed operator pills + free text back to the inline-filter
 // query string the search pipeline already parses.
 
@@ -47,6 +48,12 @@ import {
     type PipelineStageId,
 } from './pipeline-stage';
 import type { PipelineStages, PipelineStageEvent } from './pipeline-stage';
+import {
+    matchSearchModalAction,
+    searchModalFooterHints,
+    searchModalCloseHintKeys,
+    type SearchModalAction,
+} from './search-modal-hotkeys';
 
 // Search debounce. Mobile gets a longer window: the query embed runs on the
 // render thread (iframe = same event loop) and on iOS the stage-1 binary scan is
@@ -242,13 +249,18 @@ export class SeekSearchModal extends Modal {
     // The highlighted row the keyboard model acts on. Driven by ↑/↓ (from the
     // field) and by mouse hover; clamped to the result count on every render.
     private selectedIndex = 0;
+    // When the modal is resting on recent searches (no results), ↑/↓ move this
+    // index instead. -1 = none selected.
+    private selectedRecentIndex = -1;
+    private recentRows: HTMLElement[] = [];
+    private recentQueries: string[] = [];
     // Infinite-scroll window: `currentResults` holds up to MAX_RESULTS fetched
     // rows, but only the first `shownCount` are materialized as DOM rows. A
     // sentinel at the list's tail, watched by `revealObserver`, grows the window
     // a page at a time as it scrolls into view. selectedIndex never exceeds
     // shownCount-1 (moveSelection reveals before crossing the edge).
     private shownCount = 0;
-    // Ctrl/Cmd+Shift+E toggles expanded snippet lines (6) for the open session.
+    // Expanded snippet lines for the open session (remappable; default Mod+Shift+E).
     private snippetExpanded = false;
     // Cached mark matcher for the current query (see snippetMarkRe).
     private snippetMarkCache: { query: string; re: RegExp | null } | null = null;
@@ -263,6 +275,9 @@ export class SeekSearchModal extends Modal {
     // updateSentinel) constructing a fresh IntersectionObserver that nothing
     // will ever disconnect.
     private closed = false;
+
+    /** True after onClose — remappable commands' checkCallbacks consult this. */
+    get isClosed(): boolean { return this.closed; }
     // The latest SearchEntry returned by the orchestrator. Click events
     // reference its searchId so offline analysis can correlate the click back
     // to the originating query and the alternatives the user passed over.
@@ -345,6 +360,11 @@ export class SeekSearchModal extends Modal {
         private recents: RecentSearches | null = null,
         // Modal search latency for Settings → Diagnostics console (optional).
         private onSearchLatency?: (query: string, ms: number) => void,
+        // Plugin id for command/hotkey lookup (defaults to 'seek').
+        private pluginId = 'seek',
+        // Notifies the plugin when this modal becomes the active search surface
+        // (so remappable commands' checkCallbacks can target it).
+        private onActiveChange?: (active: boolean) => void,
     ) {
         super(app);
         this.orchestrator = orchestrator;
@@ -408,14 +428,12 @@ export class SeekSearchModal extends Modal {
         const dateFieldLabel = this.settings.recencyKey === 'modified' ? 'modified' : this.settings.createdProp;
         this.field = new PillQueryField(contentEl, this.suggester, {
             onQueryChange: q => this.scheduleSearch(q),
-            onNavigate: dir => this.moveSelection(dir),
-            onSubmit: target => this.openSelected(target),
-            onInsertLink: mode => this.insertSelectedLink(mode),
-            onToggleSnippetExpand: () => this.toggleSnippetExpand(),
-            onDismiss: () => this.close(),
+            onAction: action => this.runAction(action),
+            matchAction: e => matchSearchModalAction(this.app, this.pluginId, e),
             validateTag: tag => this.tagBinds(tag),
         }, this.settings.recencyEpsilon > 0, dateFieldLabel);
         this.field.focus();
+        this.onActiveChange?.(true);
 
         // Seed from a deep link (obsidian://seek?query=…). setQuery emits the
         // field's onQueryChange, which routes through scheduleSearch — the exact
@@ -508,6 +526,7 @@ export class SeekSearchModal extends Modal {
         // guard this flag feeds) assumes "closed" is already visible to any
         // async completion that races this call.
         this.closed = true;
+        this.onActiveChange?.(false);
         this.advancePipeline({ type: 'clear' });
         if (this.loadPoll != null) { window.clearInterval(this.loadPoll); this.loadPoll = null; }
         // Closing with results showing counts as a committed search (see captureRecent).
@@ -587,9 +606,9 @@ export class SeekSearchModal extends Modal {
     }
 
     // The footer legend: keyboard hints on the left (gated on showHotkeyHints),
-    // index status + esc on the right. Each glyph is a <kbd> cap styled from
-    // theme variables. Status is always built so a hints-off modal still shows
-    // whether the index is ready.
+    // index status + close on the right. Hint glyphs come from the live Hotkeys
+    // map (Settings → Hotkeys), not hard-coded chords. Status is always built
+    // so a hints-off modal still shows whether the index is ready.
     private buildFooter(parent: HTMLElement): void {
         const foot = parent.createDiv({ cls: 'seek-foot' });
         const kbd = (g: HTMLElement, key: string) => g.createEl('kbd', { text: key });
@@ -604,24 +623,11 @@ export class SeekSearchModal extends Modal {
                 const g = hints.createSpan({ cls: 'seek-foot-grp' });
                 build(g);
             };
-            grp(g => { kbd(g, '↑'); kbd(g, '↓'); g.createSpan({ text: ' navigate' }); });
-            grp(g => { kbd(g, '↵'); g.createSpan({ text: ' open' }); });
-            if (Platform.isMacOS) {
-                grp(g => { kbd(g, '⌘'); kbd(g, '↵'); g.createSpan({ text: ' new tab' }); });
-                grp(g => { kbd(g, '⌘'); kbd(g, '⌥'); kbd(g, '↵'); g.createSpan({ text: ' split' }); });
-            } else {
-                grp(g => { kbd(g, 'Ctrl'); kbd(g, '↵'); g.createSpan({ text: ' new tab' }); });
-                grp(g => { kbd(g, 'Ctrl'); kbd(g, 'Alt'); kbd(g, '↵'); g.createSpan({ text: ' split' }); });
-            }
-            grp(g => { kbd(g, 'tab'); g.createSpan({ text: ' fill autosuggest' }); });
-            if (Platform.isMacOS) {
-                grp(g => { kbd(g, '⌘'); kbd(g, '⇧'); kbd(g, 'E'); g.createSpan({ text: ' expand snippet' }); });
-                grp(g => { kbd(g, '⌥'); kbd(g, '↵'); g.createSpan({ text: ' insert link' }); });
-                grp(g => { kbd(g, '⌥'); kbd(g, '⇧'); kbd(g, '↵'); g.createSpan({ text: ' link with alias' }); });
-            } else {
-                grp(g => { kbd(g, 'Ctrl'); kbd(g, 'Shift'); kbd(g, 'E'); g.createSpan({ text: ' expand snippet' }); });
-                grp(g => { kbd(g, 'Alt'); kbd(g, '↵'); g.createSpan({ text: ' insert link' }); });
-                grp(g => { kbd(g, 'Alt'); kbd(g, 'Shift'); kbd(g, '↵'); g.createSpan({ text: ' link with alias' }); });
+            for (const hint of searchModalFooterHints(this.app, this.pluginId)) {
+                grp(g => {
+                    for (const key of hint.keys) kbd(g, key);
+                    g.createSpan({ text: ` ${hint.label}` });
+                });
             }
             grp(g => {
                 const link = g.createEl('a', { cls: 'seek-foot-link', text: '⧉ copy link' });
@@ -634,7 +640,7 @@ export class SeekSearchModal extends Modal {
         this.footStatusEl.setAttr('role', 'status');
         this.footStatusIconEl = this.footStatusEl.createSpan({ cls: 'seek-foot-status-icon' });
         this.footStatusLabelEl = this.footStatusEl.createSpan({ cls: 'seek-foot-status-label' });
-        kbd(closeGrp, 'esc');
+        for (const key of searchModalCloseHintKeys(this.app, this.pluginId)) kbd(closeGrp, key);
         closeGrp.createSpan({ text: ' close' });
     }
 
@@ -787,6 +793,7 @@ export class SeekSearchModal extends Modal {
         // shrunken result count).
         if (query !== this.lastQuery) {
             this.selectedIndex = 0;
+            this.selectedRecentIndex = -1;
             this.lastAutoRetryKey = null;
             this.activeSearchAbort?.abort();
         }
@@ -1023,10 +1030,17 @@ export class SeekSearchModal extends Modal {
     // clearRows/renderSkeleton wipes them, so they never sit under results).
     private renderRecents(): void {
         const items = this.recents?.list() ?? [];
+        this.recentRows = [];
+        this.recentQueries = items;
+        if (this.selectedRecentIndex >= items.length) {
+            this.selectedRecentIndex = items.length > 0 ? items.length - 1 : -1;
+        }
         if (!this.resultsEl || items.length === 0) return;
         const box = this.resultsEl.createDiv({ cls: 'seek-recents' });
-        for (const q of items) {
+        for (let i = 0; i < items.length; i++) {
+            const q = items[i];
             const row = box.createDiv({ cls: 'seek-recent' });
+            if (i === this.selectedRecentIndex) row.addClass('is-selected');
             setIcon(row.createSpan({ cls: 'seek-recent-icon' }), 'history');
             row.createSpan({ cls: 'seek-recent-text', text: q });
             const remove = row.createSpan({ cls: 'seek-recent-remove' });
@@ -1035,13 +1049,16 @@ export class SeekSearchModal extends Modal {
             remove.addEventListener('click', e => {
                 e.stopPropagation();
                 this.recents?.remove(q);
+                this.selectedRecentIndex = -1;
                 this.renderResting();
                 this.field?.focus();
             });
             row.addEventListener('click', () => {
+                this.selectedRecentIndex = -1;
                 this.field?.focus();
                 this.field?.setQuery(q);
             });
+            this.recentRows.push(row);
         }
     }
 
@@ -1655,8 +1672,28 @@ export class SeekSearchModal extends Modal {
 
     // ---- keyboard selection model ----
 
-    private moveSelection(dir: 1 | -1): void {
-        if (this.currentResults.length === 0) return;
+    /** Dispatch a remappable search-modal action (commands + query-field chords). */
+    runAction(action: SearchModalAction): void {
+        switch (action) {
+            case 'navigate-up': this.moveSelection(-1); break;
+            case 'navigate-down': this.moveSelection(1); break;
+            case 'open': this.openSelected(false); break;
+            case 'open-tab': this.openSelected('tab'); break;
+            case 'open-split': this.openSelected('split'); break;
+            case 'insert-link': this.insertSelectedLink('plain'); break;
+            case 'insert-link-alias': this.insertSelectedLink('searchAlias'); break;
+            case 'expand-snippet': this.toggleSnippetExpand(); break;
+            case 'fill-autosuggest': this.field?.fillAutosuggest(); break;
+            case 'close': this.close(); break;
+        }
+    }
+
+    moveSelection(dir: 1 | -1): void {
+        if (this.currentResults.length === 0) {
+            this.moveRecentSelection(dir);
+            return;
+        }
+        this.selectedRecentIndex = -1;
         const next = Math.min(Math.max(0, this.selectedIndex + dir), this.currentResults.length - 1);
         if (next === this.selectedIndex) return;
         // Arrowing into the not-yet-rendered window pulls the next page in first,
@@ -1664,6 +1701,23 @@ export class SeekSearchModal extends Modal {
         if (next >= this.shownCount) this.revealMore(next + 1);
         this.selectedIndex = next;
         this.applySelection();
+    }
+
+    private moveRecentSelection(dir: 1 | -1): void {
+        const n = this.recentQueries.length;
+        if (n === 0) return;
+        if (this.selectedRecentIndex < 0) {
+            this.selectedRecentIndex = dir > 0 ? 0 : n - 1;
+        } else {
+            this.selectedRecentIndex = Math.min(Math.max(0, this.selectedRecentIndex + dir), n - 1);
+        }
+        this.applyRecentSelection();
+    }
+
+    private applyRecentSelection(): void {
+        this.recentRows.forEach((row, i) => {
+            row.toggleClass('is-selected', i === this.selectedRecentIndex);
+        });
     }
 
     // Paint the selected row (class + ↵ keycap) and, when `scroll`, keep it in
@@ -1688,6 +1742,17 @@ export class SeekSearchModal extends Modal {
     }
 
     private openSelected(target: OpenTarget): void {
+        // Resting recent-search highlight: plain open reapplies the query (same
+        // as click). Tab/split/insert-link are no-ops with no result selected.
+        if (this.currentResults.length === 0 && this.selectedRecentIndex >= 0) {
+            if (target !== false) return;
+            const q = this.recentQueries[this.selectedRecentIndex];
+            if (!q) return;
+            this.selectedRecentIndex = -1;
+            this.field?.focus();
+            this.field?.setQuery(q);
+            return;
+        }
         const r = this.currentResults[this.selectedIndex];
         if (r) void this.openResult(r, this.selectedIndex + 1, target);
     }
