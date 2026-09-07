@@ -143,30 +143,32 @@ describe('IndexStatusBar', () => {
         onOpenSettings: () => {},
     };
 
-    it('paints file counts on the label, chunk rate in smaller text, and progress bar', () => {
+    it('paints file counts and progress bar without chunk rate on the label', () => {
         const root = stubEl();
         const bar = new IndexStatusBar();
         bar.mount(root as unknown as HTMLElement, hooks);
         bar.show(5, 'Seek: indexing…');
         bar.updateFromProgress('Indexed 1 files · 10 chunks');
         expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe('1/5');
-        expect(root.querySelector('.seek-status-bar-chunks')?.textContent).toMatch(/^10 ch/);
+        expect(root.querySelector('.seek-status-bar-chunks')?.className).toContain('is-hidden');
         expect(root.querySelector('progress')?.value).toBe(20);
         bar.updateFromProgress('Indexed 2 files · 25 chunks');
         expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe('2/5');
-        expect(root.querySelector('.seek-status-bar-chunks')?.textContent).toMatch(/^25 ch/);
+        expect(root.querySelector('.seek-status-bar-chunks')?.className).toContain('is-hidden');
         expect(root.querySelector('progress')?.value).toBe(40);
+        expect(bar.jobSpeedView()?.chunksDone).toBe(25);
     });
 
-    it('uses detailed tooltip while a pass is in flight', () => {
+    it('uses detailed tooltip while a pass is in flight without chunk rate', () => {
         const labels: string[] = [];
         const root = stubEl();
         root.setAttr = (key, value) => { if (key === 'aria-label') labels.push(value); };
         const bar = new IndexStatusBar();
         bar.mount(root as unknown as HTMLElement, hooks);
         bar.show(15, 'Seek: indexing 15 notes…');
-        bar.update(3, 15);
+        bar.updateFromProgress('Indexed 3 files · 12 chunks');
         expect(labels.at(-1)).toMatch(/Seek: Indexing 3 \/ 15 files · 20%/);
+        expect(labels.at(-1)).not.toMatch(/ch\/s|chunks/);
     });
 
     it('returns to idle Seek on hide', () => {
