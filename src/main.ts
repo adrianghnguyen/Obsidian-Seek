@@ -70,7 +70,7 @@ import {
 } from './folder-coverage';
 import { SeekSearchModal, type IndexBanner } from './search-modal';
 import { parsePaneType, openFileAtTarget, openBaseAtTarget, type OpenTarget } from './open-target';
-import { SEARCH_MODAL_COMMANDS } from './search-modal-hotkeys';
+import { SEARCH_MODAL_COMMANDS, searchModalCommandRegisterHotkeys } from './search-modal-hotkeys';
 import { registerSeekCliHandlers } from './cli-handlers';
 import { DriftRecoveryCoordinator } from './drift-recovery-coordinator';
 import { WorkflowCoordinator } from './workflow-coordinator';
@@ -860,14 +860,18 @@ export default class SeekPlugin extends Plugin {
             callback: () => this.openSearchModal(),
         });
 
-        // Search-modal result actions — remappable in Settings → Hotkeys. Defaults
-        // match the historical modal chords; the query field matches the live
-        // hotkey map so remaps work while the contenteditable is focused.
+        // Search-modal result actions — remappable in Settings → Hotkeys. Bare
+        // editor keys (↑/↓/Enter/Tab/Escape) are in-modal fallbacks only; chorded
+        // defaults (Mod+Enter, Alt+Enter, …) register globally without hijacking
+        // the editor when the modal is closed.
         for (const spec of SEARCH_MODAL_COMMANDS) {
+            const registerHotkeys = searchModalCommandRegisterHotkeys(spec.hotkeys);
             this.addCommand({
                 id: spec.id,
                 name: spec.name,
-                hotkeys: spec.hotkeys.map(h => ({ ...h, modifiers: [...h.modifiers] })),
+                ...(registerHotkeys
+                    ? { hotkeys: registerHotkeys.map(h => ({ ...h, modifiers: [...h.modifiers] })) }
+                    : {}),
                 checkCallback: (checking) => {
                     const modal = this.activeSearchModal;
                     if (!modal || modal.isClosed) return false;

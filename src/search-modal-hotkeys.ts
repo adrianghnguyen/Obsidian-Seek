@@ -22,9 +22,31 @@ export interface SearchModalCommandSpec {
     id: string;
     name: string;
     action: SearchModalAction;
+    /** In-modal fallback + footer hints; also used when the user remaps in Hotkeys. */
     hotkeys: Hotkey[];
     /** Desktop-only actions (insert-link chords); still listed but checkCallback gates them. */
     desktopOnly?: boolean;
+}
+
+/**
+ * Bare keys the editor owns globally. Registering them as addCommand defaults
+ * hijacks the keymap even when checkCallback returns false — omit from addCommand
+ * and rely on in-modal fallbacks (query field) instead.
+ */
+export const EDITOR_CONFLICTING_BARE_KEYS = new Set([
+    'ArrowUp',
+    'ArrowDown',
+    'Enter',
+    'Tab',
+    'Escape',
+]);
+
+/** Hotkeys safe to pass to addCommand — chorded bindings only for editor-native keys. */
+export function searchModalCommandRegisterHotkeys(fallback: Hotkey[]): Hotkey[] | undefined {
+    const safe = fallback.filter(
+        h => h.modifiers.length > 0 || !EDITOR_CONFLICTING_BARE_KEYS.has(h.key),
+    );
+    return safe.length > 0 ? safe : undefined;
 }
 
 /** Suffixes only — full command id is `${pluginId}:${id}`. */

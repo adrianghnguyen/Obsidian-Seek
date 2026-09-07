@@ -6,6 +6,7 @@ import {
     effectiveHotkeys,
     matchSearchModalAction,
     searchModalCommandId,
+    searchModalCommandRegisterHotkeys,
     SEARCH_MODAL_COMMANDS,
 } from './search-modal-hotkeys';
 
@@ -29,6 +30,14 @@ function appWithHotkeys(custom: Record<string, Hotkey[]>, defaults: Record<strin
 }
 
 describe('search-modal-hotkeys', () => {
+    it('omits bare editor keys from addCommand defaults', () => {
+        expect(searchModalCommandRegisterHotkeys([{ modifiers: [], key: 'ArrowUp' }])).toBeUndefined();
+        expect(searchModalCommandRegisterHotkeys([{ modifiers: [], key: 'Enter' }])).toBeUndefined();
+        expect(searchModalCommandRegisterHotkeys([{ modifiers: ['Mod'], key: 'Enter' }])).toEqual([
+            { modifiers: ['Mod'], key: 'Enter' },
+        ]);
+    });
+
     it('lists a command for every remappable footer action', () => {
         const actions = new Set(SEARCH_MODAL_COMMANDS.map(c => c.action));
         for (const a of [

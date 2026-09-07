@@ -251,6 +251,16 @@ describe('Lifecycle Sequence & Ordering Verification', () => {
             expect(commandIds).toContain('search-insert-link-alias');
             expect(commandIds).toContain('search-close');
 
+            const navigateUpCall = addCommandSpy.mock.calls.find(
+                c => (c[0] as { id: string }).id === 'search-navigate-up',
+            )?.[0] as { hotkeys?: unknown[] } | undefined;
+            expect(navigateUpCall?.hotkeys).toBeUndefined();
+
+            const openTabCall = addCommandSpy.mock.calls.find(
+                c => (c[0] as { id: string }).id === 'search-open-tab',
+            )?.[0] as { hotkeys?: { key: string }[] } | undefined;
+            expect(openTabCall?.hotkeys?.[0]?.key).toBe('Enter');
+
             // Protocol handler: obsidian://seek
             expect(registerProtocolSpy).toHaveBeenCalledWith('seek', expect.any(Function));
 

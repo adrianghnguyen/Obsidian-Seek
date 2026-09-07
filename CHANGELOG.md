@@ -10,6 +10,7 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ### Fixed
 - **↑/↓ navigate recent searches** when the modal is resting (empty query). Enter reapplies the highlighted recent query, same as clicking a history row.
+- **Editor arrow keys no longer hijacked when the search modal is closed.** Bare ↑/↓, Enter, Tab, and Escape are in-modal fallbacks only — they are not registered as global command defaults (which Obsidian still claims in the editor even when `checkCallback` returns false). Chorded defaults (Mod+Enter, Alt+Enter, …) unchanged; remaps in Settings → Hotkeys still apply while the modal is open.
 
 ## 1.5.0
 
