@@ -5,6 +5,7 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 ## [Unreleased]
 
 ### Changed
+- **Indexing flushes longer embed batches on the 256–512 token buckets** (rolling budget 512 → 1536). Long chunks share a GPU forward of 3–6 instead of 1–2; short buckets stay capped at 8. Same vectors and warmup shapes; worst-case stall on a 512-token batch is a few hundred milliseconds instead of one solo forward. No reindex of an existing index is required.
 - **Search modal closes after opening a result in a new tab, split, or window** (default). Matches Quick Switcher. Opt in to the old fan-out behavior under Settings → Display → **Keep search open when opening in new tab or split**.
 - **Search modal keyboard actions are remappable in Settings → Hotkeys.** Navigate, open, open in new tab / split, insert link (plain and with alias), expand snippet, fill autosuggest, and close are Seek commands with the previous default chords. The modal footer shows the live bindings. Mouse Mod-click / Mod+Alt-click for new tab / split is unchanged.
 - **Search modal footer keyboard hints use fuller labels** (`navigate results`, `open in new tab`, `open in split pane`, `insert link with alias`) so they match the Settings → Hotkeys command names. Narrow modals still shed lower-priority hints instead of clipping.

@@ -135,11 +135,11 @@ import {
 // dispatches in the rare long buckets for shorter individual stalls. pace()
 // still runs between every flush, so duty cycle stays idle-gated.
 //
-// ROLLING_BUDGET ≈ target batch×seq per dispatch. 1536 → {512:3, 384:4, 256:6,
+// ROLLING_BUDGET ≈ target batch×seq per dispatch. Live 1536 → {512:3, 384:4, 256:6,
 // ≤192:8}. Every resulting size is in WARMUP_BATCH_SIZES [1..8]. ROLLING_MAX is
 // the warmed ceiling (also mobile's thermal-friendly flush size). Lower the
 // budget to cut the p95 further (more dispatches); raise it for throughput.
-const ROLLING_BUDGET = 512;
+const ROLLING_BUDGET = 1536;
 const ROLLING_MAX = 8;
 // WASM batch experiment CLOSED (2026-06-11): a flat batch of 4 on the CPU EP
 // measured a WASH against this token-budget sizing (3.60 vs 3.83 files/s on
