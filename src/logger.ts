@@ -179,6 +179,7 @@ export class SeekLogger {
     // Updated on append; hydrated from disk via hydrateDiagnostics().
     private _lastIndexComplete: IndexCompleteEntry | null = null;
     private _lastLoad: LoadEntry | null = null;
+    private diagnosticListener: ((entry: { type: string }) => void) | null = null;
     constructor(app: App, pluginId: string) {
         this.app = app;
         this.logDir = logDirFor(pluginId);
@@ -190,6 +191,11 @@ export class SeekLogger {
     get lastIndexComplete(): IndexCompleteEntry | null { return this._lastIndexComplete; }
     get lastLoad(): LoadEntry | null { return this._lastLoad; }
 
+    /** Fired synchronously when index-complete / load entries are appended or hydrated. */
+    setDiagnosticListener(listener: ((entry: { type: string }) => void) | null): void {
+        this.diagnosticListener = listener;
+    }
+
     /** Scan this device's log so Settings can show last-pass / model after reload. */
     async hydrateDiagnostics(): Promise<void> {
         const entries = await this.readAll();
@@ -199,6 +205,9 @@ export class SeekLogger {
     private noteDiagnostic(entry: { type: string }): void {
         if (entry.type === 'index-complete') this._lastIndexComplete = entry as IndexCompleteEntry;
         else if (entry.type === 'load') this._lastLoad = entry as LoadEntry;
+        if (entry.type === 'index-complete' || entry.type === 'load') {
+            this.diagnosticListener?.(entry);
+        }
     }
 
     info(msg: string, ...args: unknown[]): void {

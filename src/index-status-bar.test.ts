@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
     IndexStatusBar,
     extendIndexPassTotal,
+    formatIndexedProgress,
     indexChunksPerSec,
     parseIndexedProgress,
     quantizePercent,
@@ -100,6 +101,11 @@ describe('parseIndexedProgress', () => {
     it('returns null for garbage', () => {
         expect(parseIndexedProgress('still working')).toBeNull();
     });
+
+    it('round-trips formatIndexedProgress', () => {
+        const msg = formatIndexedProgress(12, 340);
+        expect(parseIndexedProgress(msg)).toEqual({ files: 12, chunks: 340 });
+    });
 });
 
 describe('indexChunksPerSec', () => {
@@ -157,6 +163,15 @@ describe('IndexStatusBar', () => {
         expect(root.querySelector('.seek-status-bar-chunks')?.className).toContain('is-hidden');
         expect(root.querySelector('progress')?.value).toBe(40);
         expect(bar.jobSpeedView()?.chunksDone).toBe(25);
+    });
+
+    it('accepts explicit chunk counts without an Indexed progress line', () => {
+        const root = stubEl();
+        const bar = new IndexStatusBar();
+        bar.mount(root as unknown as HTMLElement, hooks);
+        bar.show(10, 'Seek: indexing 10 notes…');
+        bar.update(4, 10, 'Seek: indexing 4 / 10 notes…', undefined, 88);
+        expect(bar.jobSpeedView()?.chunksDone).toBe(88);
     });
 
     it('uses detailed tooltip while a pass is in flight without chunk rate', () => {

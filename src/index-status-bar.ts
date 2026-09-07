@@ -25,6 +25,11 @@ export function parseIndexedProgress(msg: string): { files: number; chunks: numb
     return { files, chunks };
 }
 
+/** Canonical progress line from embedAndCommitFiles — keep in sync with search.ts onProgress. */
+export function formatIndexedProgress(files: number, chunks: number): string {
+    return `Indexed ${files} files · ${chunks} chunks`;
+}
+
 /** Rolling chunks/s for the current pass — zero until chunks and elapsed time are known. */
 export function indexChunksPerSec(chunks: number, elapsedMs: number): number {
     if (chunks <= 0 || elapsedMs <= 0) return 0;
@@ -149,7 +154,7 @@ export class IndexStatusBar {
         } else this.update(this.done, this.total, msg, id);
     }
 
-    update(done: number, total: number, label?: string, id?: number): void {
+    update(done: number, total: number, label?: string, id?: number, chunksDone?: number): void {
         if (id != null && this.jobId !== id) return;
         const nextTotal = Math.max(0, total);
         this.total = nextTotal;
@@ -158,6 +163,10 @@ export class IndexStatusBar {
             this.label = label;
             this.jobPaused = /paused/i.test(label);
             if (/aligning with exclusions/i.test(label)) this.aligningExclusions = true;
+        }
+        if (chunksDone != null) {
+            this.chunksDone = Math.max(0, chunksDone);
+        } else if (label) {
             const parsed = parseIndexedProgress(label);
             if (parsed?.chunks != null) this.chunksDone = parsed.chunks;
         }

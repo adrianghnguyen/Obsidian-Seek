@@ -4,6 +4,9 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Fixed
+- **Settings → Index → Embedding pass** live `ch/s`, `files/s`, and this-pass file/chunk counts now refresh during catch-up or full indexing (poll starts when a job begins; catch-up chunk totals accumulate across bursts; last-pass phases/batch/health update when a pass completes). Status bar unchanged.
+
 ## 1.8.0
 
 ### Changed

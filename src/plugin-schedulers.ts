@@ -108,6 +108,7 @@ export interface PluginSchedulerHost {
     beginIndexJob(kind: 'full' | 'catchup' | 'cold', total: number, label: string): number;
     refreshIndexStatusBar(): void;
     touchIndexInventory(): Promise<void>;
+    notifyIndexActivityChanged(): void;
     maybeUnloadEmbedder(reason: 'idle' | 'background'): void;
     appendErrorIfCurrent(context: string, error: unknown, gen?: number): void;
     runCatchUp(): void;
@@ -389,6 +390,7 @@ export class PluginSchedulerManager {
             this.flushing = false;
             if (bulkJobId != null) this.host.indexProgress.hide(bulkJobId);
             else if (!bulkProgress) this.host.refreshIndexStatusBar();
+            if (bulkJobId != null) this.host.notifyIndexActivityChanged();
             if (this.host.isSessionWorkCurrent(workGen)) void this.host.touchIndexInventory();
         }
     }

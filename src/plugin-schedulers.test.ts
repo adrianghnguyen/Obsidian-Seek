@@ -94,6 +94,7 @@ describe('PluginSchedulerManager', () => {
             beginIndexJob: vi.fn(() => 42),
             refreshIndexStatusBar: vi.fn(),
             touchIndexInventory: vi.fn(async () => {}),
+            notifyIndexActivityChanged: vi.fn(),
             maybeUnloadEmbedder: vi.fn(),
             appendErrorIfCurrent: vi.fn(),
             runCatchUp: vi.fn(),
