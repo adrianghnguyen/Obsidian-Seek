@@ -512,6 +512,21 @@ Crash demotion can sticky-force WASM after mobile GPU jetsam.
 - **Warmup:** shader/grid warmup in the embed iframe; fingerprint can skip a repeat warmup when config is unchanged
 - **Query route (optional):** per-device localStorage toggle can send single-query embeds to a nested dedicated worker; iframe remains automatic fallback. Index `embedBatch` does not use that route.
 
+### Model compatibility
+
+Not every Hugging Face “embedding” checkpoint works with Seek. The load path assumes a **dense bi-encoder** that transformers.js can run as `feature-extraction` inside the srcdoc iframe. The registry (`model-registry.ts`) and iframe (`iframe-runner.ts`) encode the invariants below. Output dimension and preferred dtype come from the **compiled** active spec (`ACTIVE_MODEL_SPEC`); transformers.js derives ONNX filenames from dtype. `ModelSpec.files` is metadata for documentation and cache probing, not the runtime filename source.
+
+| Filter | Requirement |
+|--------|-------------|
+| **Task** | One forward → one fixed vector per text (bi-encoder). Not a cross-encoder/reranker, generative LLM embed API, sparse-only model, or static token embedding — those need a different pipeline. |
+| **Runtime** | Hugging Face repo with `config.json`, a tokenizer transformers.js understands, and ONNX under `onnx/`. The q4 / WASM path needs `model_q4.onnx`; WebGPU may retry fp32 `model.onnx`. Ops must run on the pinned transformers.js / ORT-Web WebGPU or WASM path. |
+| **Pooling / prefixes** | The iframe always calls `pooling: 'cls', normalize: true` and does **not** prepend `query:` / `passage:` (or similar). Cards that require mean pooling or asymmetric prefixes can still *load* and produce wrong rankings. |
+| **Geometry** | Output width is the compiled `ACTIVE_MODEL_SPEC.dim` (injected as `OUTPUT_DIM`). Native width must be ≥ that dim (narrower fails loud). Wider outputs are first-N sliced and renormalized — the model must support that prefix/Matryoshka semantics, or declare dim equal to native width. Model ID, **revision**, dim, and chunker version invalidate the local dense index (`identity.ts`); compatible sidecar hydration may avoid re-embedding. Sidecar producers that mismatch model ID, revision, chunker, or dim are refused. |
+| **Sequence** | Seek drives the warmed seq-bucket grid through a 512-token dense cap and does **not** adapt to a lower native model maximum — a sub-512 max may fail the forward rather than truncate gracefully. BM25 still sees the full chunk text. (WebGPU pads to the bucket; WASM pads to the batch’s longest input.) |
+| **Debug override** | `modelRepoOverride` / `modelRevisionOverride` keep the shipped q4 / dimension / CLS / no-prefix contract. They are not a general model picker. The optional query-worker route is compiled to the active shipped spec (q4, fixed dim, 128-token cap) and does not follow overrides — disable that route when testing an override. |
+
+**How to hunt candidates:** prefer `feature-extraction` (or equivalent) with an ONNX / transformers.js export; then check the card for CLS vs mean pooling, required prefixes, embedding dim, max sequence length (≥ 512), and transformer layer count (the main speed axis). Any accepted swap still needs a vault bake-off and a dense reindex (or compatible-sidecar hydrate).
+
 ### Vector storage
 
 - Full vectors stored as **int8 + per-vector scale**
