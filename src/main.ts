@@ -51,7 +51,7 @@ import {
     type StoreOpenRetryScheduler,
 } from './index-store-lock';
 import { sweepOrphanTmpFiles } from './sidecar';
-import type { SeekSettings, IndexCompleteEntry, ModelDeliveryEntry, ScoredChunk, SearchEntry } from './types';
+import type { SeekSettings, IndexCompleteEntry, LoadEntry, ModelDeliveryEntry, ScoredChunk, SearchEntry } from './types';
 import { DEFAULT_SETTINGS, migrateSettings } from './types';
 import { IndexStore, indexDbPrefix, isTransientIdbUnavailable } from './index-store';
 import { SeekLogger, REPORT_ARTIFACTS_DIR } from './logger';
@@ -85,7 +85,7 @@ import {
     BULK_DELTA_THRESHOLD,
 } from './plugin-schedulers';
 import { indexBannerSpec, resolveIndexLoadPhase, resolveCliSearchGate, CLI_SEARCH_WARMING, resolveIndexUiStatus, resolveSidecarWait, retainIndexInventory, INDEX_STALE_MSG, INDEX_SYNCING_MSG, INDEX_PEER_AHEAD_MSG, type DegradedReason, type IndexLoadState } from './index-notice';
-import { IndexStatusBar, extendIndexPassTotal, parseIndexedProgress } from './index-status-bar';
+import { IndexStatusBar, extendIndexPassTotal, parseIndexedProgress, type IndexJobSpeedView } from './index-status-bar';
 import type { IndexJobKind, IndexStatusHealth, IndexStatusJob } from './index-status-card';
 import {
     RecentSearchRing,
@@ -433,6 +433,21 @@ export default class SeekPlugin extends Plugin {
         return this.indexProgress.job();
     }
 
+    /** Live encode-speed inputs for Settings embed diagnostics. */
+    getIndexJobSpeedView(): IndexJobSpeedView | null {
+        return this.indexProgress.jobSpeedView();
+    }
+
+    /** Newest index-complete of any mode (logger cache). */
+    getLastIndexComplete(): IndexCompleteEntry | null {
+        return this.logger.lastIndexComplete;
+    }
+
+    /** Newest model load entry (logger cache). */
+    getLastLoadEntry(): LoadEntry | null {
+        return this.logger.lastLoad;
+    }
+
     private statusBarHealth(): IndexStatusHealth {
         return resolveIndexUiStatus({
             storeLocked: this.indexStoreLocked,
@@ -597,6 +612,10 @@ export default class SeekPlugin extends Plugin {
         void this.logger.migrateRootFiles()
             .then(() => this.logger.rotateIfOversize())
             .then(() => this.logger.pruneOrphanLogs())
+            .then(() => this.logger.hydrateDiagnostics())
+            .then(() => {
+                if (this.isSessionWorkCurrent(bootGen)) this.notifySessionTelemetryChanged();
+            })
             .catch(e => this.appendErrorIfCurrent('logger-onload-maintenance', e, bootGen));
         // Load persisted settings (merge over defaults so new keys appear).
         // Mutate the existing object in place — the orchestrator holds this

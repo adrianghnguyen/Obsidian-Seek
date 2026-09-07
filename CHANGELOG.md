@@ -4,7 +4,11 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Added
+- **Settings → Index embedding diagnostic** under startup / recent boots. Folded by default; the header always shows live or last-pass `ch/s` and `files/s`. Expand for this-pass counts, phase timings, batch latency, health, and model load. Hover any muted label for a short glossary tip.
+
 ### Changed
+- **Status bar indexing drops chunk count and `ch/s`.** The remaining-files badge, `done/total`, and percent bar stay. Encode speed lives on the Settings embedding disclosure instead.
 - **Search modal closes after opening a result in a new tab, split, or window** (default). Matches Quick Switcher. Opt in to the old fan-out behavior under Settings → Display → **Keep search open when opening in new tab or split**.
 - **Search modal keyboard actions are remappable in Settings → Hotkeys.** Navigate, open, open in new tab / split, insert link (plain and with alias), expand snippet, fill autosuggest, and close are Seek commands with the previous default chords. The modal footer shows the live bindings. Mouse Mod-click / Mod+Alt-click for new tab / split is unchanged.
 - **Search modal footer keyboard hints use fuller labels** (`navigate results`, `open in new tab`, `open in split pane`, `insert link with alias`) so they match the Settings → Hotkeys command names. Narrow modals still shed lower-priority hints instead of clipping.

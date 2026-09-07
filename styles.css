@@ -1378,6 +1378,132 @@
     }
 }
 
+/* ---- Embedding diagnostics (Settings Index status card) ---- */
+.seek-settings .seek-status-embed {
+    flex-basis: 100%;
+    margin-top: 4px;
+    padding-top: 10px;
+    border-top: 1px solid var(--background-modifier-border);
+}
+.seek-settings .seek-status-embed-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    cursor: pointer;
+    user-select: none;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+.seek-settings .seek-status-embed-chev {
+    width: 12px;
+    color: var(--text-muted);
+    flex: 0 0 auto;
+}
+.seek-settings .seek-status-embed-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: lowercase;
+    flex: 0 0 auto;
+}
+.seek-settings .seek-status-embed-info {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-faint);
+    cursor: help;
+    line-height: 1;
+}
+.seek-settings .seek-status-embed-info:hover {
+    color: var(--text-muted);
+}
+.seek-settings .seek-status-embed-info svg {
+    width: 12px;
+    height: 12px;
+}
+.seek-settings .seek-status-embed-rates {
+    flex: 1 1 auto;
+    min-width: 0;
+    color: var(--text-normal);
+    font-weight: 600;
+}
+.seek-settings .seek-status-embed-rate-val {
+    font-weight: 600;
+    color: var(--text-normal);
+}
+.seek-settings .seek-status-embed-pill {
+    flex: 0 0 auto;
+    margin-left: auto;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-muted);
+    text-transform: lowercase;
+}
+.seek-settings .seek-status-embed-pill.is-empty {
+    color: var(--text-faint);
+    font-weight: 400;
+}
+.seek-settings .seek-status-embed-body {
+    margin-top: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-left: 20px;
+}
+.seek-settings .seek-status-embed-section {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+.seek-settings .seek-status-embed-sec-head {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: lowercase;
+}
+.seek-settings .seek-status-embed-line {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-normal);
+    line-height: 1.4;
+}
+.seek-settings .seek-status-embed-phases {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+}
+.seek-settings .seek-status-embed-phase {
+    white-space: nowrap;
+}
+.seek-settings .seek-status-embed-stale {
+    font-size: 11px;
+    color: var(--text-faint);
+    text-transform: lowercase;
+}
+.seek-settings .seek-status-embed-empty {
+    color: var(--text-faint);
+    font-weight: 400;
+}
+.seek-settings .seek-embed-sep {
+    color: var(--text-faint);
+}
+.seek-settings .seek-embed-help {
+    color: var(--text-muted);
+    cursor: help;
+    text-decoration: underline dotted;
+    text-underline-offset: 2px;
+    text-decoration-color: var(--text-faint);
+}
+.seek-settings .seek-status-embed-title .seek-embed-help {
+    font-size: 11px;
+    text-transform: lowercase;
+}
+.seek-settings .seek-status-embed-pill.seek-embed-help {
+    text-decoration: underline dotted;
+}
+
 /* ---- Exclusion-change backfill banner (Settings → Index) ---- */
 .seek-exclusion-banner-host { min-height: 0; }
 .seek-exclusion-banner {
