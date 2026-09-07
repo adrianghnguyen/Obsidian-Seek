@@ -9,7 +9,7 @@ Runtime proof for **what the user sees** in Obsidian. `eval` and unit tests are 
 
 **Prerequisites:** Obsidian desktop, `obsidian` on PATH, serial CLI only (one command at a time). Shared helpers: [`.cursor/skills/seek-cli-startup-debug/scripts/lib/ObsidianCliSerial.ps1`](../seek-cli-startup-debug/scripts/lib/ObsidianCliSerial.ps1).
 
-**Related:** Low-level DOM/screenshot notes — [`obsidian-plugin-debug`](file:///C:/Users/tilou/.cursor/skills/obsidian-plugin-debug/SKILL.md). Deploy/reload first — [`.cursor/rules/deploy-and-verify.mdc`](../../rules/deploy-and-verify.mdc).
+**Related:** Low-level DOM/screenshot notes — plugin skill `obsidian-plugin-debug` (Obsidian Plugin Development). Deploy/reload first — [`.cursor/rules/deploy-and-verify.mdc`](../../rules/deploy-and-verify.mdc).
 
 **Default vault:** `plugin-sandbox-Obsidian`. Use `Obsidian` only for production promotion verification when the user explicitly requests it.
 

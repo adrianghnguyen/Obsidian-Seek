@@ -52,7 +52,7 @@ The CLI is a single IPC queue. Running `obsidian` commands in parallel (across s
 
 ### Wedge anatomy and recovery (evidence from the 2026-09-01 worker verification)
 
-> Canonical home: the global skill `~/.cursor/skills/obsidian-plugin-dev/SKILL.md` § "CLI IPC queue discipline" now carries the general rule (one command per invocation, wedge-vs-slow, exit-code signature, recovery). The notes below are the Seek-specific evidence record.
+> Canonical home: plugin skills `obsidian-plugin-dev` and `obsidian-multi-vault-cli` (Obsidian Plugin Development) carry the general rule (one command per invocation, wedge-vs-slow, exit-code signature, recovery). For IndexedDB lifecycle see `obsidian-indexeddb-storage`. The notes below are the Seek-specific evidence record.
 
 Two wedges occurred during the dedicated-worker reload stress session, both from **chained commands in one shell line** (`plugin:reload ; eval`, then `seek:search ; eval`) — the first command stalled the app's main thread (once, an Obsidian "Error" dialog window was up, which alone stops the queue being serviced) and the second queued behind it forever.
 

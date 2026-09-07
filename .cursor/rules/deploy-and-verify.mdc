@@ -27,7 +27,7 @@ obsidian vault=plugin-sandbox-Obsidian eval code="app.vault.getName()"
 ## Required finish steps (Seek)
 
 1. `npm run typecheck` and `npm test` (or the relevant subset)
-2. User-facing change ready? Add bullet to `CHANGELOG.md` `[Unreleased]` (no manifest bump). Release gate on `main`: `~/.cursor/skills/obsidian-plugin-dev/SKILL.md#release-gate-main-branch-only`
+2. User-facing change ready? Add bullet to `CHANGELOG.md` `[Unreleased]` (no manifest bump). Release gate on `main`: plugin skill `obsidian-plugin-dev` (Obsidian Plugin Development) — Release notes and semantic versioning.
 3. `npm run build`
 4. Copy `main.js`, `manifest.json`, and `styles.css` to `C:\plugin-sandbox-Obsidian\.obsidian\plugins\seek\`
 5. `obsidian plugin:reload id=seek vault=plugin-sandbox-Obsidian`
@@ -35,7 +35,7 @@ obsidian vault=plugin-sandbox-Obsidian eval code="app.vault.getName()"
    - Repo and vault `main.js` match (size/timestamp or grep for a new symbol/string)
    - `obsidian eval vault=plugin-sandbox-Obsidian …` confirms new settings or runtime behavior
    - **UI/CSS/layout changes:** screenshots per `.cursor/skills/seek-visual-verify/SKILL.md` (Settings surface only when Settings changed)
-7. Tell the user to **close and reopen** affected modals. If CSS/layout looks stale, see the global skill `obsidian-multi-vault-cli` for the escalation ladder.
+7. Tell the user to **close and reopen** affected modals. If CSS/layout looks stale, see plugin skill `obsidian-multi-vault-cli` (Obsidian Plugin Development) for the escalation ladder.
 
 ## Large features: CLI verify cycle
 
@@ -48,7 +48,7 @@ For large multi-file changes (startup/index/search UI, catch-up/hydrate, embed/i
    - UI/CSS/status-bar/modal/settings proof → `.cursor/skills/seek-visual-verify/SKILL.md`
    - Other runtime: `obsidian eval`, `obsidian seek:search`, `obsidian plugin:reload` as the change requires
 3. Confirm the new behavior from CLI output, not from build success.
-4. If CSS/layout/iframe looks stale, run `obsidian command id=app:reload vault=<name>` (per-vault, no-save). On sandbox, do this automatically. On production (`Obsidian`), see the global skill for escalation.
+4. If CSS/layout/iframe looks stale, run `obsidian command id=app:reload vault=<name>` (per-vault, no-save). On sandbox, do this automatically. On production (`Obsidian`), see plugin skill `obsidian-multi-vault-cli` (Obsidian Plugin Development) for escalation.
 
 Do not skip the verify cycle because `npm test` passed.
 
