@@ -7,6 +7,7 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 ### Changed
 - **Search modal closes after opening a result in a new tab, split, or window** (default). Matches Quick Switcher. Opt in to the old fan-out behavior under Settings → Display → **Keep search open when opening in new tab or split**.
 - **Search modal keyboard actions are remappable in Settings → Hotkeys.** Navigate, open, open in new tab / split, insert link (plain and with alias), expand snippet, fill autosuggest, and close are Seek commands with the previous default chords. The modal footer shows the live bindings. Mouse Mod-click / Mod+Alt-click for new tab / split is unchanged.
+- **Search modal footer keyboard hints use fuller labels** (`navigate results`, `open in new tab`, `open in split pane`, `insert link with alias`) so they match the Settings → Hotkeys command names. Narrow modals still shed lower-priority hints instead of clipping.
 
 ### Fixed
 - **↑/↓ navigate recent searches** when the modal is resting (empty query). Enter reapplies the highlighted recent query, same as clicking a history row.

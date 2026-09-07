@@ -26,6 +26,10 @@ export interface SearchModalCommandSpec {
     hotkeys: Hotkey[];
     /** Desktop-only actions (insert-link chords); still listed but checkCallback gates them. */
     desktopOnly?: boolean;
+    /** Override footer hint label when stripping "Search: " from name is not enough. */
+    footerLabel?: string;
+    /** Optional CSS class for narrow-modal hint shedding (seek-foot-grp-*). */
+    shedClass?: string;
 }
 
 /**
@@ -80,6 +84,7 @@ export const SEARCH_MODAL_COMMANDS: readonly SearchModalCommandSpec[] = [
         name: 'Search: Open in split',
         action: 'open-split',
         hotkeys: [{ modifiers: ['Mod', 'Alt'], key: 'Enter' }],
+        footerLabel: 'open in split pane',
     },
     {
         id: 'search-insert-link',
@@ -87,6 +92,7 @@ export const SEARCH_MODAL_COMMANDS: readonly SearchModalCommandSpec[] = [
         action: 'insert-link',
         hotkeys: [{ modifiers: ['Alt'], key: 'Enter' }],
         desktopOnly: true,
+        shedClass: 'seek-foot-grp-insertlink',
     },
     {
         id: 'search-insert-link-alias',
@@ -94,6 +100,7 @@ export const SEARCH_MODAL_COMMANDS: readonly SearchModalCommandSpec[] = [
         action: 'insert-link-alias',
         hotkeys: [{ modifiers: ['Alt', 'Shift'], key: 'Enter' }],
         desktopOnly: true,
+        shedClass: 'seek-foot-grp-alt',
     },
     {
         id: 'search-expand-snippet',
@@ -106,6 +113,7 @@ export const SEARCH_MODAL_COMMANDS: readonly SearchModalCommandSpec[] = [
         name: 'Search: Fill autosuggest',
         action: 'fill-autosuggest',
         hotkeys: [{ modifiers: [], key: 'Tab' }],
+        shedClass: 'seek-foot-grp-autosuggest',
     },
     {
         id: 'search-close',
@@ -277,6 +285,14 @@ function displayKey(key: string): string {
 export interface FooterHotkeyHint {
     keys: string[];
     label: string;
+    /** Optional CSS class for narrow-modal hint shedding (seek-foot-grp-*). */
+    shedClass?: string;
+}
+
+/** Footer label: explicit override, else lowercase name without the "Search: " prefix. */
+export function searchModalFooterLabel(spec: SearchModalCommandSpec): string {
+    if (spec.footerLabel) return spec.footerLabel;
+    return spec.name.replace(/^Search:\s*/i, '').toLowerCase();
 }
 
 function capsForAction(app: App, pluginId: string, action: SearchModalAction): string[] {
@@ -292,22 +308,40 @@ function capsForAction(app: App, pluginId: string, action: SearchModalAction): s
     return hotkeyToCaps(keys[0]);
 }
 
+function hintForAction(app: App, pluginId: string, action: SearchModalAction): FooterHotkeyHint | null {
+    const spec = SEARCH_MODAL_COMMANDS.find(c => c.action === action);
+    if (!spec) return null;
+    const keys = capsForAction(app, pluginId, action);
+    if (keys.length === 0) return null;
+    return {
+        keys,
+        label: searchModalFooterLabel(spec),
+        ...(spec.shedClass ? { shedClass: spec.shedClass } : {}),
+    };
+}
+
 export function searchModalFooterHints(app: App, pluginId: string): FooterHotkeyHint[] {
-    const hints: FooterHotkeyHint[] = [
-        { keys: [...capsForAction(app, pluginId, 'navigate-up'), ...capsForAction(app, pluginId, 'navigate-down')], label: 'navigate' },
-        { keys: capsForAction(app, pluginId, 'open'), label: 'open' },
-        { keys: capsForAction(app, pluginId, 'open-tab'), label: 'new tab' },
-        { keys: capsForAction(app, pluginId, 'open-split'), label: 'split' },
-        { keys: capsForAction(app, pluginId, 'fill-autosuggest'), label: 'fill autosuggest' },
-        { keys: capsForAction(app, pluginId, 'expand-snippet'), label: 'expand snippet' },
+    const navigateKeys = [
+        ...capsForAction(app, pluginId, 'navigate-up'),
+        ...capsForAction(app, pluginId, 'navigate-down'),
     ];
-    if (!Platform.isMobile) {
-        hints.push(
-            { keys: capsForAction(app, pluginId, 'insert-link'), label: 'insert link' },
-            { keys: capsForAction(app, pluginId, 'insert-link-alias'), label: 'link with alias' },
-        );
+    const hints: FooterHotkeyHint[] = [];
+    if (navigateKeys.length > 0) {
+        hints.push({ keys: navigateKeys, label: 'navigate results' });
     }
-    return hints.filter(h => h.keys.length > 0);
+    for (const action of [
+        'open', 'open-tab', 'open-split', 'fill-autosuggest', 'expand-snippet',
+    ] as const) {
+        const h = hintForAction(app, pluginId, action);
+        if (h) hints.push(h);
+    }
+    if (!Platform.isMobile) {
+        for (const action of ['insert-link', 'insert-link-alias'] as const) {
+            const h = hintForAction(app, pluginId, action);
+            if (h) hints.push(h);
+        }
+    }
+    return hints;
 }
 
 export function searchModalCloseHintKeys(app: App, pluginId: string): string[] {

@@ -485,11 +485,11 @@ export interface SeekSettings {
     redactReport: boolean;
 
     // Search-modal footer affordance. ON (default) shows the keyboard-hint bar
-    // along the bottom of the modal (↑↓ navigate · ↵ open · ⌘↵ new tab ·
-    // ⌘⌥↵ split · ⌥↵ insert link · tab fill autosuggest · esc close). OFF removes
-    // the whole footer for a minimal "full results only" modal — just the query
-    // field and results. Pure presentation; applies to the next time the search
-    // modal opens.
+    // along the bottom of the modal (↑↓ navigate results · ↵ open · ⌘↵ open in
+    // new tab · ⌘⌥↵ open in split pane · ⌥↵ insert link · tab fill autosuggest ·
+    // esc close). OFF removes the whole footer for a minimal "full results only"
+    // modal — just the query field and results. Pure presentation; applies to the
+    // next time the search modal opens.
     showHotkeyHints: boolean;
 
     // Search progression stages indicator in modal footer. ON: show the 3-stage

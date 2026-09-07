@@ -1041,18 +1041,18 @@
 
    Thresholds are measured, not guessed: @container compares the bar's
    CONTENT-box width (modal width − 28px padding) and each tier fires just
-   before the bar with that hint still present would overflow. Measured groups
-   (macOS labels) sum to 646px content incl. gaps; the widest label variants
-   ("Shift" for ⇧, "new window" for the alt-open hint) add ~45px, so tiers sit
-   at the worst-case sum + margin — at most one hint sheds a few px early on
-   the narrow variants, which beats clipping. Re-measure if hints change. */
-@container (max-width: 700px) {
+   before the bar with that hint still present would overflow. Longer descriptive
+   labels ("open in new tab", "open in split pane", "insert link with alias")
+   push ~100px past the prior compact wording; tiers sit below the old
+   700 / 565 / 435 so narrow modals shed instead of clipping. Re-measure if
+   hints change again. */
+@container (max-width: 820px) {
     .seek-foot-grp-autosuggest { display: none; }
 }
-@container (max-width: 565px) {
+@container (max-width: 680px) {
     .seek-foot-grp-insertlink { display: none; }
 }
-@container (max-width: 435px) {
+@container (max-width: 540px) {
     .seek-foot-grp-alt { display: none; }
 }
 

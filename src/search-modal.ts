@@ -1,9 +1,10 @@
 // Seek search modal. A plain Modal (not SuggestModal) with a debounced query,
 // manual result rendering, and a keyboard model layered on top. Result actions
-// (navigate / open / new tab / split / insert link / expand snippet / close /
-// fill autosuggest) are Obsidian commands — defaults match the historical
-// chords, and users remap them in Settings → Hotkeys. The query field matches
-// the live hotkey map so remaps work while the contenteditable is focused.
+// (navigate results / open / open in new tab / open in split pane / insert link /
+// expand snippet / close / fill autosuggest) are Obsidian commands — defaults
+// match the historical chords, and users remap them in Settings → Hotkeys. The
+// query field matches the live hotkey map so remaps work while the contenteditable
+// is focused.
 // serializes committed operator pills + free text back to the inline-filter
 // query string the search pipeline already parses.
 
@@ -625,6 +626,7 @@ export class SeekSearchModal extends Modal {
             };
             for (const hint of searchModalFooterHints(this.app, this.pluginId)) {
                 grp(g => {
+                    if (hint.shedClass) g.addClass(hint.shedClass);
                     for (const key of hint.keys) kbd(g, key);
                     g.createSpan({ text: ` ${hint.label}` });
                 });

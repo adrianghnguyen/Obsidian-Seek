@@ -7,6 +7,7 @@ import {
     matchSearchModalAction,
     searchModalCommandId,
     searchModalCommandRegisterHotkeys,
+    searchModalFooterHints,
     SEARCH_MODAL_COMMANDS,
 } from './search-modal-hotkeys';
 
@@ -94,6 +95,28 @@ describe('search-modal-hotkeys', () => {
             )).toBe(false);
         } finally {
             (Platform as { isMacOS: boolean }).isMacOS = wasMac;
+        }
+    });
+
+    it('uses descriptive footer hint labels', () => {
+        const wasMobile = Platform.isMobile;
+        (Platform as { isMobile: boolean }).isMobile = false;
+        try {
+            const byLabel = new Map(
+                searchModalFooterHints(appWithHotkeys({}), 'seek').map(h => [h.label, h]),
+            );
+            expect(byLabel.get('navigate results')).toBeTruthy();
+            expect(byLabel.get('open')?.keys.length).toBeGreaterThan(0);
+            expect(byLabel.get('open in new tab')).toBeTruthy();
+            expect(byLabel.get('open in split pane')).toBeTruthy();
+            expect(byLabel.get('insert link with alias')?.shedClass).toBe('seek-foot-grp-alt');
+            expect(byLabel.get('fill autosuggest')?.shedClass).toBe('seek-foot-grp-autosuggest');
+            expect(byLabel.get('insert link')?.shedClass).toBe('seek-foot-grp-insertlink');
+            expect(byLabel.has('new tab')).toBe(false);
+            expect(byLabel.has('split')).toBe(false);
+            expect(byLabel.has('link with alias')).toBe(false);
+        } finally {
+            (Platform as { isMobile: boolean }).isMobile = wasMobile;
         }
     });
 });
