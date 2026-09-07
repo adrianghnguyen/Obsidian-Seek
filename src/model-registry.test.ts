@@ -14,6 +14,7 @@ import {
     evictStaleModelCaches,
     isCacheUrlForRepo,
     deleteModelCaches,
+    probeModelDownloaded,
 } from './model-registry';
 
 const ACTIVE_REPO = ML97_GBQ4.repo;
@@ -153,5 +154,35 @@ describe('deleteModelCaches', () => {
     it('no-ops cleanly when the transformers cache is absent', async () => {
         const f = fakeCaches([], /* present */ false);
         expect(await deleteModelCaches(f.cs, ACTIVE_REPO)).toEqual({ seen: 0, deleted: 0 });
+    });
+});
+
+describe('probeModelDownloaded', () => {
+    it('detects the ONNX weight file by repo + path fragment', async () => {
+        const f = fakeCaches([
+            hfUrl(ACTIVE_REPO, 'config.json'),
+            hfUrl(ACTIVE_REPO),
+        ]);
+        expect(await probeModelDownloaded(f.cs, ML97_GBQ4)).toEqual({ downloaded: true, persisted: null });
+    });
+
+    it('accepts URL-encoded weight paths in cache keys', async () => {
+        const f = fakeCaches([
+            `https://huggingface.co/${ACTIVE_REPO}/resolve/main/onnx%2Fmodel_q4.onnx`,
+        ]);
+        expect((await probeModelDownloaded(f.cs, ML97_GBQ4)).downloaded).toBe(true);
+    });
+
+    it('returns false when only small config files are cached', async () => {
+        const f = fakeCaches([
+            hfUrl(ACTIVE_REPO, 'config.json'),
+            hfUrl(ACTIVE_REPO, 'tokenizer.json'),
+        ]);
+        expect((await probeModelDownloaded(f.cs, ML97_GBQ4)).downloaded).toBe(false);
+    });
+
+    it('no-ops cleanly when the transformers cache is absent', async () => {
+        const f = fakeCaches([], false);
+        expect(await probeModelDownloaded(f.cs, ML97_GBQ4)).toEqual({ downloaded: false, persisted: null });
     });
 });

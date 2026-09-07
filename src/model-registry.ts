@@ -214,8 +214,15 @@ export async function probeModelDownloaded(
         // (the small JSON configs alone = a partial/aborted fetch). Fall back to the
         // last declared file if a spec ever ships without an .onnx entry.
         const weightFile = spec.files.find(f => f.endsWith('.onnx')) ?? spec.files[spec.files.length - 1];
-        const downloaded = reqs.some(r =>
-            r.url.includes(`/${spec.repo}/resolve/`) && r.url.includes(weightFile));
+        const weightName = weightFile.split('/').pop() ?? weightFile;
+        const downloaded = reqs.some(r => {
+            if (!r.url.includes(`/${spec.repo}/resolve/`)) return false;
+            if (r.url.includes(weightFile)) return true;
+            try {
+                if (decodeURIComponent(r.url).includes(weightFile)) return true;
+            } catch { /* malformed cache key */ }
+            return r.url.includes(weightName);
+        });
         return { downloaded, persisted };
     } catch {
         return { downloaded: false, persisted };
