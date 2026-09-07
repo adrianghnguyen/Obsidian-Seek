@@ -79,8 +79,8 @@ obsidian dev:screenshot vault=plugin-sandbox-Obsidian path=C:\Coding_projects\Ob
 Production promotion only:
 
 ```powershell
-Start-Process "obsidian://open?vault=Obsidian"
-obsidian dev:screenshot vault=Obsidian path=C:\Coding_projects\Obsidian-Seek\.seek-artifacts\visual-Obsidian\search-modal.png
+Set-Location C:\Obsidian
+obsidian dev:screenshot path=C:\Coding_projects\Obsidian-Seek\.seek-artifacts\visual-Obsidian\search-modal.png
 ```
 
 Close stacked modals before capturing a different surface (Escape / close Settings). See obsidian-plugin-debug “UI capture” section.

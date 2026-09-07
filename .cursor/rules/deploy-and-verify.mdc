@@ -16,15 +16,13 @@ A feature task is **not done** until the plugin is deployed to the **sandbox vau
 
 **Do not** copy `main.js`, `manifest.json`, or `styles.css` to production during feature branches, PR review, or sandbox testing.
 
-Deploy, reload, and verify actions always use `vault=plugin-sandbox-Obsidian`. Use `vault=Obsidian` only for explicit production promotion.
+Deploy, reload, and verify: `obsidian vault=plugin-sandbox-Obsidian …` (`vault=` first). Production only on explicit promotion: run the CLI from cwd `C:\Obsidian` and omit `vault=`. **Never** `vault=Obsidian` — it substring-matches `plugin-sandbox-Obsidian` and can focus the wrong window.
 
-**Do not** use `obsidian command id=app:open-vault` when the goal is the sandbox vault — that opens the vault-picker modal. Instead:
+**Do not** use `obsidian command id=app:open-vault`, `obsidian vault`, or `obsidian://open` to “select” an already-open vault — those raise/focus a window. Confirm with:
 
 ```powershell
-Start-Process "obsidian://open?vault=plugin-sandbox-Obsidian"
+obsidian vault=plugin-sandbox-Obsidian eval code="app.vault.getName()"
 ```
-
-Confirm the active vault with `obsidian vault vault=plugin-sandbox-Obsidian` or eval `app.vault.getName()`.
 
 ## Required finish steps (Seek)
 
@@ -63,7 +61,7 @@ Promote to `Obsidian` **only** when:
 
 Agents must not auto-promote to Obsidian when a sandbox-verified task completes.
 
-When promoting: copy the three artifacts to `C:\Obsidian\.obsidian\plugins\seek\`, then `obsidian plugin:reload id=seek vault=Obsidian`. `manifest.json` changes take effect on `plugin:reload` or `app:reload` — no restart needed.
+When promoting: copy the three artifacts to `C:\Obsidian\.obsidian\plugins\seek\`, then from cwd `C:\Obsidian` run `obsidian plugin:reload id=seek`. Never `vault=Obsidian`. `manifest.json` changes take effect on `plugin:reload` or `app:reload` — no restart needed.
 
 Production vault (`Obsidian`) CLI verify is **not** part of routine task completion.
 

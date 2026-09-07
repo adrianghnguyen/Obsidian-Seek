@@ -93,9 +93,10 @@ Promote to `Obsidian` (`C:\Obsidian\.obsidian\plugins\seek\`) **only** when:
 
 ```powershell
 Copy-Item -Force main.js, manifest.json, styles.css C:\Obsidian\.obsidian\plugins\seek\
-obsidian plugin:reload id=seek vault=Obsidian
+Set-Location C:\Obsidian
+obsidian plugin:reload id=seek
 ```
 
-If `manifest.json` changed: `obsidian restart vault=Obsidian` (warn: closes every vault).
+If `manifest.json` changed: global `obsidian restart` only after the user accepts closing every vault. Never `vault=Obsidian` (substring of the sandbox name).
 
 Optional: `C:\plugin-sandbox-Obsidian\Administrative\scripts\promote-plugin-to-main.ps1 -PluginId seek` when that script exists and the user prefers it.

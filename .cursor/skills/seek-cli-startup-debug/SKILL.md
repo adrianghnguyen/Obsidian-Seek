@@ -9,7 +9,7 @@ Runtime probe of Seek **first-load / cold-start** behavior through the Obsidian 
 
 Defaults: vault `plugin-sandbox-Obsidian`, plugin id `seek`, vault plugin path `C:\plugin-sandbox-Obsidian\.obsidian\plugins\seek\`.
 
-Use `vault=Obsidian` only when the user explicitly requests production repro or promotion (see `.cursor/rules/sandbox-vault-cli.mdc`).
+Production repro only when the user asks: run CLI from cwd `C:\Obsidian` and omit `vault=`. Never `vault=Obsidian` (substring of the sandbox name; can steal focus). See global `obsidian-multi-vault-cli`.
 
 **Related:** Multi-scenario baselines and functional probes — [seek-playbook-catalog](../seek-playbook-catalog/SKILL.md) (`run-scenario.ps1 -Id S1|F3`). This skill covers first-load forensics; the catalog dispatches repeatable S*/F* drivers.
 
