@@ -4,8 +4,15 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.6.0
+
+BM25 field weights are tunable in Settings under Relevance → Advanced. No reindex is needed, since the index format is unchanged.
+
 ### Added
 - **Settings → Relevance → Advanced → BM25 field weights.** Score-time sliders for title, aliases, tags, body, properties, and headings (plus Restore recommended defaults), folded by default under a disclosure. Affects keyword / lexical BM25 — including Name match → Lexical stages and Keyword-focused strategy — on the next search with no embedding rebuild. Defaults remain the eval-tuned constants; most users should leave them alone.
+
+### Changed
+- **BM25 field weights disclosure is folded by default** under Advanced relevance so the Advanced section stays compact until you expand it.
 
 ## 1.5.1
 
