@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.5.1
+
+Search modal hotkeys are remappable, indexing throughput lives in Settings, and several keyboard and modal UX fixes ship together. No reindex is needed, since the index format is unchanged.
+
 ### Added
 - **Settings → Index embedding diagnostic** under startup / recent boots. Folded by default; the header always shows live or last-pass `ch/s` and `files/s`. Expand for this-pass counts, phase timings, batch latency, health, and model load. Hover any muted label for a short glossary tip.
 
