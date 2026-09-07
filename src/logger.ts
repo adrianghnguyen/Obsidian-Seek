@@ -175,12 +175,30 @@ export class SeekLogger {
     private appendQueue: Promise<void> = Promise.resolve();
     // Opportunistic-rotation counter — see ROTATE_CHECK_INTERVAL_APPENDS.
     private appendsSinceRotateCheck = 0;
+    // Newest index-complete / load on this device — Settings embed diagnostics.
+    // Updated on append; hydrated from disk via hydrateDiagnostics().
+    private _lastIndexComplete: IndexCompleteEntry | null = null;
+    private _lastLoad: LoadEntry | null = null;
     constructor(app: App, pluginId: string) {
         this.app = app;
         this.logDir = logDirFor(pluginId);
         this.pluginId = pluginId;
         this.deviceId = resolveDeviceId();
         this.sessionId = randId();
+    }
+
+    get lastIndexComplete(): IndexCompleteEntry | null { return this._lastIndexComplete; }
+    get lastLoad(): LoadEntry | null { return this._lastLoad; }
+
+    /** Scan this device's log so Settings can show last-pass / model after reload. */
+    async hydrateDiagnostics(): Promise<void> {
+        const entries = await this.readAll();
+        for (const e of entries) this.noteDiagnostic(e);
+    }
+
+    private noteDiagnostic(entry: { type: string }): void {
+        if (entry.type === 'index-complete') this._lastIndexComplete = entry as IndexCompleteEntry;
+        else if (entry.type === 'load') this._lastLoad = entry as LoadEntry;
     }
 
     info(msg: string, ...args: unknown[]): void {
@@ -222,6 +240,7 @@ export class SeekLogger {
     // appendLine never rejects (every I/O path below is self-caught), so chaining
     // never poisons later callers.
     async append(entry: LogEntry): Promise<void> {
+        this.noteDiagnostic(entry);
         const stamped = this.stamp(entry);
         const line = JSON.stringify(stamped) + '\n';
         const run = this.appendQueue.then(() => this.appendLine(line));

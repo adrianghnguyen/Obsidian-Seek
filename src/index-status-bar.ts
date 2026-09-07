@@ -32,6 +32,22 @@ export function indexChunksPerSec(chunks: number, elapsedMs: number): number {
     return sec > 0 ? chunks / sec : 0;
 }
 
+/** Live pass throughput inputs for Settings embed diagnostics (not status-bar chrome). */
+export interface IndexJobSpeedView {
+    chunksDone: number;
+    done: number;
+    total: number;
+    elapsedMs: number;
+    paused: boolean;
+    kind?: IndexJobKind;
+}
+
+export function indexFilesPerSec(done: number, elapsedMs: number): number {
+    if (done <= 0 || elapsedMs <= 0) return 0;
+    const sec = elapsedMs / 1000;
+    return sec > 0 ? done / sec : 0;
+}
+
 export function quantizePercent(done: number, total: number, step = 5): number {
     if (total <= 0) return 0;
     if (done >= total) return 100;
@@ -200,12 +216,21 @@ export class IndexStatusBar {
         const elapsedMs = performance.now() - this.jobStartedAt;
         const eta = formatRoughEta(this.done, this.total, elapsedMs);
         const files = `${this.done.toLocaleString()} / ${this.total.toLocaleString()} files · ${pct}%`;
-        const chRate = indexChunksPerSec(this.chunksDone, elapsedMs);
-        const chunks = this.chunksDone > 0
-            ? ` · ${this.chunksDone.toLocaleString()} chunks${chRate > 0 ? ` · ${chRate.toFixed(1)} ch/s` : ''}`
-            : '';
         const tail = eta ? ` · ${eta} left` : '';
-        return `Seek: Indexing ${files}${chunks}${tail}`;
+        return `Seek: Indexing ${files}${tail}`;
+    }
+
+    /** Live encode-speed inputs for Settings — status bar no longer shows ch/s. */
+    jobSpeedView(): IndexJobSpeedView | null {
+        if (!this.jobActive || this.total <= 0) return null;
+        return {
+            chunksDone: this.chunksDone,
+            done: this.done,
+            total: this.total,
+            elapsedMs: Math.max(0, performance.now() - this.jobStartedAt),
+            paused: this.jobPaused,
+            kind: this.jobKind ?? undefined,
+        };
     }
 
     private paintJob(force: boolean): void {
@@ -235,15 +260,7 @@ export class IndexStatusBar {
         this.paintChrome('indexing', remaining);
         this.labelEl?.removeClass('is-hidden');
         this.filesEl?.setText(`${this.done.toLocaleString()}/${this.total.toLocaleString()}`);
-        const elapsedMs = performance.now() - this.jobStartedAt;
-        const chRate = indexChunksPerSec(this.chunksDone, elapsedMs);
-        if (this.chunksDone > 0 && this.chunksEl) {
-            this.chunksEl.removeClass('is-hidden');
-            const rate = chRate > 0 ? ` · ${chRate.toFixed(1)}/s` : '';
-            this.chunksEl.setText(`${this.chunksDone.toLocaleString()} ch${rate}`);
-        } else {
-            this.chunksEl?.addClass('is-hidden');
-        }
+        this.chunksEl?.addClass('is-hidden');
         if (this.progressEl) {
             this.progressEl.removeClass('is-hidden');
             this.progressEl.max = 100;

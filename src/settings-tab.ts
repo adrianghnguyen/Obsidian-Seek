@@ -163,6 +163,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
     private advancedOpen = false;
     // Independent of advancedOpen (Relevance) so the Index disclosure toggles on its own.
     private indexAdvancedOpen = false;
+    private embedDiagOpen = false;
     private reindexPhase: 'idle' | 'confirm' = 'idle';
     private reindexStarting = false;
     private progressPoll: number | null = null;
@@ -320,7 +321,10 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
     private shouldPollStartup(): boolean {
         const health = this.statusState();
         if (health === 'starting' || health === 'restoring') return true;
-        return !this.plugin.getStartupTimingView().bootComplete;
+        if (!this.plugin.getStartupTimingView().bootComplete) return true;
+        // Live embed rates on the status card while any index job is active.
+        const job = this.plugin.getIndexJob();
+        return job != null && job.done < job.total;
     }
 
     private startStartupPoll(): void {
@@ -480,6 +484,16 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             liveElapsedMs: startup.bootComplete ? null : this.plugin.getStartupLiveElapsedMs(),
             prevBoot: this.plugin.getPreviousStartupBoot(),
             recentBoots: this.plugin.getStartupBootHistory(),
+            embedDiag: {
+                open: this.embedDiagOpen,
+                onToggle: () => {
+                    this.embedDiagOpen = !this.embedDiagOpen;
+                    this.paintStatusCard();
+                },
+                live: this.plugin.getIndexJobSpeedView(),
+                lastComplete: this.plugin.getLastIndexComplete(),
+                lastLoad: this.plugin.getLastLoadEntry(),
+            },
         });
     }
 
