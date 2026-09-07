@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.7.0
+
+Seek can exclude extra vault folders from indexing on top of Obsidian’s Excluded files. No reindex is needed for an existing index beyond the automatic backfill / soft-delete when folders are added or removed.
+
 ### Added
 - **Settings → Index → Advanced → Additional excluded folders.** Pick vault folders (directory suggest) for Seek to exclude from indexing on top of Obsidian’s Excluded files. Additive with Honor excluded folders; add/remove triggers the same automatic backfill / soft-delete as changing Obsidian’s list.
 
