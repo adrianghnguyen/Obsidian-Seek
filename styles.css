@@ -1950,11 +1950,27 @@
     color: var(--text-muted);
 }
 
-/* BM25 field-weight sliders under Advanced relevance */
+/* BM25 field-weight sliders under Advanced relevance (folded by default) */
 .seek-settings .seek-bm25-weights {
-    margin-top: 12px;
-    padding-top: 8px;
+    margin-top: 4px;
+    padding-top: 4px;
     border-top: 1px solid var(--background-modifier-border);
+}
+.seek-settings .seek-bm25-weights .seek-disclosure {
+    margin-top: 0;
+    padding: 8px 0;
+}
+.seek-settings .seek-bm25-weights .seek-disclosure-hint {
+    color: var(--text-muted);
+    font-weight: 400;
+    font-size: 12px;
+}
+.seek-settings .seek-bm25-weights-desc {
+    margin: 0 0 8px 0;
+    padding: 0 0 0 18px;
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--text-muted);
 }
 .seek-settings .seek-bm25-weights .setting-item {
     padding: 8px 0;

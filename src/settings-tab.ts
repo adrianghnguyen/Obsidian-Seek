@@ -176,6 +176,8 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
     // Independent of advancedOpen (Relevance) so the Index disclosure toggles on its own.
     private indexAdvancedOpen = false;
     private embedDiagOpen = false;
+    // Nested under Advanced relevance — BM25 field-weight sliders stay folded by default.
+    private bm25WeightsOpen = false;
     private reindexPhase: 'idle' | 'confirm' = 'idle';
     private reindexStarting = false;
     private progressPoll: number | null = null;
@@ -947,11 +949,24 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             headings: 'Headings',
         };
         const effective = resolveBm25FieldBoosts(this.s);
+        const hasCustom = !!this.s.bm25FieldBoostOverrides
+            && Object.keys(this.s.bm25FieldBoostOverrides).length > 0;
 
         const block = adv.createDiv({ cls: 'seek-bm25-weights' });
-        new Setting(block)
-            .setName('BM25 field weights')
-            .setDesc('Power-user lexical tuning for keyword matching (Name match → Lexical BM25 stages, and Keyword-focused strategy). Defaults are eval-tuned for Balanced hybrid search — most users should leave them alone. Changes apply on the next search; no embedding rebuild.');
+        const disc = block.createDiv({ cls: 'seek-disclosure' });
+        disc.createSpan({ cls: 'seek-disclosure-chev', text: this.bm25WeightsOpen ? '▾' : '▸' });
+        disc.createSpan({ text: 'BM25 field weights' });
+        if (hasCustom && !this.bm25WeightsOpen) {
+            disc.createSpan({ cls: 'seek-disclosure-hint', text: ' (custom)' });
+        }
+        disc.onclick = () => { this.bm25WeightsOpen = !this.bm25WeightsOpen; this.rerender(); };
+
+        if (!this.bm25WeightsOpen) return;
+
+        block.createDiv({
+            cls: 'setting-item-description seek-bm25-weights-desc',
+            text: 'Power-user lexical tuning for keyword matching (Name match → Lexical BM25 stages, and Keyword-focused strategy). Defaults are eval-tuned for Balanced hybrid search — most users should leave them alone. Changes apply on the next search; no embedding rebuild.',
+        });
 
         for (const key of BM25_FIELD_KEYS) {
             const recommended = DEFAULT_FIELD_BOOSTS[key];

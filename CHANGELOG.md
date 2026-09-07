@@ -5,7 +5,7 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 ## [Unreleased]
 
 ### Added
-- **Settings → Relevance → Advanced → BM25 field weights.** Score-time sliders for title, aliases, tags, body, properties, and headings (plus Restore recommended defaults). Affects keyword / lexical BM25 — including Name match → Lexical stages and Keyword-focused strategy — on the next search with no embedding rebuild. Defaults remain the eval-tuned constants; most users should leave them alone.
+- **Settings → Relevance → Advanced → BM25 field weights.** Score-time sliders for title, aliases, tags, body, properties, and headings (plus Restore recommended defaults), folded by default under a disclosure. Affects keyword / lexical BM25 — including Name match → Lexical stages and Keyword-focused strategy — on the next search with no embedding rebuild. Defaults remain the eval-tuned constants; most users should leave them alone.
 
 ## 1.5.1
 
