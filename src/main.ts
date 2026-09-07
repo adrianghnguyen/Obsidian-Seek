@@ -296,7 +296,7 @@ export default class SeekPlugin extends Plugin {
     private coldBuildScheduled = false;          // scheduleColdBuild single-flight
     private persistCacheRestoredThisBoot = false; // restorePersistedCachesBeforeReconcile once
     /** Live catch-up pass shown on the status bar — survives burst pauses and self-chains. */
-    private catchUpJob: { id: number; passTotal: number; committed: number } | null = null;
+    private catchUpJob: { id: number; passTotal: number; committed: number; chunksCommitted: number } | null = null;
     // True from construct until the onload sidecar/reconcile IIFE finishes, so the
     // search modal cannot latch "isn't indexed yet" on an empty store mid-hydrate.
     private indexBootPending = true;
@@ -501,6 +501,7 @@ export default class SeekPlugin extends Plugin {
             kind,
             aligningExclusions: this.schedulers.isExclusionAligning(),
         });
+        this.notifyIndexActivityChanged();
         return id;
     }
 
@@ -516,7 +517,7 @@ export default class SeekPlugin extends Plugin {
         if (dirtyCount <= 0) return;
         if (this.catchUpJob == null) {
             const id = this.beginIndexJob('catchup', dirtyCount, this.catchUpJobLabel(dirtyCount));
-            this.catchUpJob = { id, passTotal: dirtyCount, committed: 0 };
+            this.catchUpJob = { id, passTotal: dirtyCount, committed: 0, chunksCommitted: 0 };
             return;
         }
         const passTotal = extendIndexPassTotal(this.catchUpJob.committed, this.catchUpJob.passTotal, dirtyCount);
@@ -535,6 +536,7 @@ export default class SeekPlugin extends Plugin {
         if (this.catchUpJob == null) return;
         this.indexProgress.hide(this.catchUpJob.id);
         this.catchUpJob = null;
+        this.notifyIndexActivityChanged();
     }
 
     /** Readiness gate for seek:search / seek:open / seek:insert-link — null when search may run. */
@@ -604,6 +606,11 @@ export default class SeekPlugin extends Plugin {
         this.loadGeneration++;
         const bootGen = this.loadGeneration;
         this.logger = new SeekLogger(this.app, this.manifest.id);
+        this.logger.setDiagnosticListener((entry) => {
+            if (entry.type === 'index-complete' || entry.type === 'load') {
+                this.notifyIndexActivityChanged();
+            }
+        });
         const pluginDir = this.manifest.dir ?? `.obsidian/plugins/${this.manifest.id}`;
         this.startupHistory = StartupBootHistory.forPlugin(this.app.vault.adapter, pluginDir);
         void this.startupHistory.load()
@@ -2201,6 +2208,12 @@ export default class SeekPlugin extends Plugin {
         this.settingsTelemetrySink?.onSessionTelemetryChanged();
     }
 
+    /** Settings embed diagnostics + coverage poll while an index job is active. */
+    notifyIndexActivityChanged(): void {
+        this.notifySessionTelemetryChanged();
+        this.notifyFolderCoverageChanged();
+    }
+
     /** Tell the orchestrator to defer background warm while catch-up holds IDB. */
     private syncWarmDeferred(): void {
         this.orchestrator?.setWarmDeferred(this.catchUpPending || this.catchUpRunning);
@@ -2495,17 +2508,18 @@ export default class SeekPlugin extends Plugin {
                                 const job = this.catchUpJob;
                                 if (!job) return;
                                 const p = parseIndexedProgress(msg);
-                                this.indexProgress.update(
-                                    job.committed + (p?.files ?? 0),
-                                    job.passTotal,
-                                    msg,
-                                    job.id,
-                                );
+                                const filesDone = job.committed + (p?.files ?? 0);
+                                const chunksDone = job.chunksCommitted + (p?.chunks ?? 0);
+                                // Files/total drive status-bar chrome; chunksDone is Settings-only (embed pass).
+                                this.indexProgress.update(filesDone, job.passTotal, undefined, job.id, chunksDone);
                             },
                         });
                         if (this.catchUpJob) {
                             this.catchUpJob.committed += r.committedPaths.length;
-                            const { committed, passTotal, id } = this.catchUpJob;
+                            if (r.embedded) {
+                                this.catchUpJob.chunksCommitted += r.embedded.chunksIndexed;
+                            }
+                            const { committed, passTotal, id, chunksCommitted } = this.catchUpJob;
                             const aligning = this.schedulers.isExclusionAligning();
                             const label = this.indexingBlocked
                                 ? (aligning
@@ -2514,7 +2528,7 @@ export default class SeekPlugin extends Plugin {
                                 : (aligning
                                     ? `Seek: aligning with exclusions · ${committed} / ${passTotal}`
                                     : `Seek: indexing ${committed} / ${passTotal} notes…`);
-                            this.indexProgress.update(committed, passTotal, label, id);
+                            this.indexProgress.update(committed, passTotal, label, id, chunksCommitted);
                         }
                         return r;
                     },
@@ -2796,6 +2810,7 @@ export default class SeekPlugin extends Plugin {
         } finally {
             this.popTaskContext('indexing');
             this.indexProgress.hide(jobId);
+            this.notifyIndexActivityChanged();
             void this.touchIndexInventory();
         }
     }

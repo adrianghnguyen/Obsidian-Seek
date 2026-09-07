@@ -211,7 +211,8 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         if (!this.containerEl.isConnected) return;
         this.paintStatusCard();
         this.paintSearchConsole();
-        if (!this.shouldPollStartup()) this.stopStartupPoll();
+        if (this.shouldPollStartup()) this.startStartupPoll();
+        else this.stopStartupPoll();
     }
 
     onFolderCoverageChanged(): void {
@@ -605,6 +606,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             this.paintExclusionBanner();
             const job = this.plugin.getIndexJob();
             const active = job != null && job.done < job.total;
+            if (active) this.paintStatusCard();
             this.coveragePoll = window.setTimeout(tick, active ? 1000 : 2000);
         };
         const job = this.plugin.getIndexJob();
