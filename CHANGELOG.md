@@ -4,6 +4,8 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.8.0
+
 ### Changed
 - **Settings → Index: Warm caches on startup** moved under Advanced settings.
 - **Settings → Index → Advanced: Honor excluded folders and Additional excluded folders** share one card, with the Add folder field in the same block as the list.
