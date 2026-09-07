@@ -248,7 +248,7 @@ export function resolveCoveragePanelView(input: {
             placeholder: {
                 tone: 'muted',
                 title: 'Nothing to cover',
-                detail: `Every indexable note is excluded (${excluded.toLocaleString()} excluded). Adjust Obsidian's Excluded files or turn off Honor excluded folders to include them.`,
+                detail: `Every indexable note is excluded (${excluded.toLocaleString()} excluded). Adjust Obsidian's Excluded files, Seek's additional excluded folders, or turn off Honor excluded folders to include them.`,
             },
         };
     }
@@ -407,11 +407,11 @@ export function createLiveCoverageSnapshot(input: {
 // ── Exclusion-list change detection ─────────────────────────────────────────────
 // The plugin polls the set of live indexable paths that Obsidian's "Excluded files"
 // (via metadataCache.isUserIgnored, honoring the "Honor excluded folders" toggle)
-// currently excludes, and diffs it against the previous snapshot. Diffing the actual
-// matched PATHS — not the raw filter strings — is what makes it robust: it fires
-// exactly when a file's index membership changes, and stays silent when the filter
-// list is edited in a way that matches the same files (whitespace, order, or a regex
-// that resolves identically).
+// and Seek's customExcludedFolders currently exclude, and diffs it against the
+// previous snapshot. Diffing the actual matched PATHS — not the raw filter strings —
+// is what makes it robust: it fires exactly when a file's index membership changes,
+// and stays silent when the filter list is edited in a way that matches the same
+// files (whitespace, order, or a regex that resolves identically).
 
 export interface ExclusionDiff {
     newlyIncludedPaths: string[]; // were excluded, now indexable → backfill

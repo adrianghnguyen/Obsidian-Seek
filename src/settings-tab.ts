@@ -15,7 +15,7 @@
 // score-time sliders (bm25-boosts.ts). See DEFAULT_SETTINGS + the rev-5 migration
 // in types.ts/main.ts.
 
-import { App, PluginSettingTab, Setting, Notice, setIcon } from 'obsidian';
+import { App, PluginSettingTab, Setting, Notice, setIcon, TFolder } from 'obsidian';
 import type SeekPlugin from './main';
 import type { IndexStats, ModelStatus } from './main';
 import type { SidecarIndexLocation, SearchModalHeight, SearchModalWidth, SnippetPreview } from './types';
@@ -48,6 +48,8 @@ import {
     type BackendChoice,
 } from './platform';
 import { enumerateDatePropertyNames } from './prop-types';
+import { FolderSuggest } from './folder-suggest';
+import { isUnderExcludedFolder, normalizeExcludedFolderPath } from './search';
 import {
     clampCatchUpBurstMaxFiles,
 } from './startup-drain';
@@ -416,6 +418,8 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                 void this.paintCoverage();
             }));
 
+        this.renderCustomExcludedFolders(adv);
+
         if (!isMobilePlatform()) {
             new Setting(adv)
                 .setName('Catch-up batch size')
@@ -478,6 +482,75 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                 new Notice('Seek: index location changed — reload Seek (or restart Obsidian) for it to take effect.', 8000);
             }));
         if (!this.s.sidecarEnabled) indexLoc.setDisabled(true);
+    }
+
+    private renderCustomExcludedFolders(adv: HTMLElement): void {
+        const intro = new Setting(adv)
+            .setName('Additional excluded folders')
+            .setDesc("Folders Seek excludes from indexing, in addition to Obsidian's Excluded files (when Honor excluded folders is on). Add or remove a folder and Seek backfills or soft-deletes the affected notes automatically.");
+
+        const list = intro.settingEl.createDiv({ cls: 'seek-excluded-folders' });
+        const folders = [...(this.s.customExcludedFolders ?? [])].sort((a, b) => a.localeCompare(b));
+        if (folders.length === 0) {
+            list.createDiv({ cls: 'seek-excluded-folders-empty', text: 'No additional folders excluded.' });
+        } else {
+            for (const folder of folders) {
+                const row = list.createDiv({ cls: 'seek-excluded-folder-row' });
+                row.createSpan({ cls: 'seek-excluded-folder-path', text: folder });
+                const remove = row.createEl('button', { cls: 'seek-excluded-folder-remove', text: 'Remove' });
+                remove.onclick = () => void this.removeCustomExcludedFolder(folder);
+            }
+        }
+
+        let pendingPath = '';
+        const addRow = new Setting(adv)
+            .setClass('seek-excluded-folder-add')
+            .setName('')
+            .setDesc('Pick a vault folder to exclude from Seek’s index.');
+        addRow.addText(text => {
+            text.setPlaceholder('e.g. Archive/old');
+            new FolderSuggest(this.app, text.inputEl);
+            text.onChange(v => { pendingPath = v; });
+        });
+        addRow.addButton(b => b
+            .setButtonText('Add')
+            .setCta()
+            .onClick(() => void this.addCustomExcludedFolder(pendingPath)));
+    }
+
+    private async addCustomExcludedFolder(raw: string): Promise<void> {
+        const path = normalizeExcludedFolderPath(raw);
+        if (!path) {
+            new Notice('Seek: choose a folder path first.', 4000);
+            return;
+        }
+        const abs = this.app.vault.getAbstractFileByPath(path);
+        if (!(abs instanceof TFolder)) {
+            new Notice(`Seek: "${path}" is not a folder in this vault.`, 5000);
+            return;
+        }
+        const list = this.s.customExcludedFolders ?? [];
+        if (list.some(f => f === path || isUnderExcludedFolder(f, path))) {
+            new Notice(`Seek: "${path}" is already covered by an excluded folder.`, 5000);
+            return;
+        }
+        // Drop children of the new parent so the list stays minimal.
+        this.s.customExcludedFolders = [
+            ...list.filter(f => !isUnderExcludedFolder(path, f)),
+            path,
+        ].sort((a, b) => a.localeCompare(b));
+        await this.save();
+        this.plugin.forcePollExclusions();
+        void this.paintCoverage();
+        this.rerender();
+    }
+
+    private async removeCustomExcludedFolder(folder: string): Promise<void> {
+        this.s.customExcludedFolders = (this.s.customExcludedFolders ?? []).filter(f => f !== folder);
+        await this.save();
+        this.plugin.forcePollExclusions();
+        void this.paintCoverage();
+        this.rerender();
     }
 
     private renderStatusCard(containerEl: HTMLElement): void {
@@ -675,7 +748,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         if (diff.newlyIncludedPaths.length > 0) {
             banner.createDiv({
                 cls: 'seek-exclusion-banner-title',
-                text: backfilling ? 'Backfilling after your Excluded files changed' : 'Backfill ready after your Excluded files changed',
+                text: backfilling ? 'Backfilling after your exclusion settings changed' : 'Backfill ready after your exclusion settings changed',
             });
             banner.createDiv({
                 cls: 'seek-exclusion-banner-detail',

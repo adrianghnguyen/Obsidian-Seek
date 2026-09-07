@@ -632,6 +632,11 @@ export default class SeekPlugin extends Plugin {
         // migrated values win over the persisted ones rather than being overridden.
         migrateSettings(raw);
         Object.assign(this.settings, DEFAULT_SETTINGS, raw);
+        // New array settings may be absent from older data.json; keep a real array
+        // so Settings UI and shouldIndexPath never see undefined.
+        if (!Array.isArray(this.settings.customExcludedFolders)) {
+            this.settings.customExcludedFolders = [];
+        }
         // Persist migrated settings off the blocking onload path — await saveData
         // here can deadlock Obsidian on "Loading plugins" while the vault adapter
         // is still busy with other plugins' onload work (see vault plugin-dev gotchas).

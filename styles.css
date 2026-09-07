@@ -1649,6 +1649,46 @@
     text-transform: uppercase;
     letter-spacing: 0.03em;
 }
+
+/* Additional excluded folders list (Index → Advanced) */
+.seek-settings .seek-excluded-folders {
+    width: 100%;
+    margin-top: 8px;
+}
+.seek-settings .seek-excluded-folders-empty {
+    color: var(--text-faint);
+    font-size: var(--font-ui-smaller);
+}
+.seek-settings .seek-excluded-folder-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+}
+.seek-settings .seek-excluded-folder-path {
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: var(--font-monospace);
+    font-size: var(--font-ui-small);
+}
+.seek-settings .seek-excluded-folder-remove {
+    flex: 0 0 auto;
+    font-size: var(--font-ui-smaller);
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--button-radius);
+    padding: 2px 8px;
+    cursor: pointer;
+}
+.seek-settings .seek-excluded-folder-remove:hover {
+    color: var(--text-error);
+    border-color: var(--text-error);
+}
+.seek-settings .seek-excluded-folder-add .setting-item-info {
+    display: none;
+}
 .seek-coverage-track {
     height: 6px;
     border-radius: 4px;

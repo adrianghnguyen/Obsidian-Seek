@@ -448,6 +448,13 @@ export interface SeekSettings {
     // actively).
     honorIgnoredFolders: boolean;
 
+    // Folder paths (vault-relative) Seek always excludes from indexing, in
+    // addition to Obsidian's Excluded files when honorIgnoredFolders is on.
+    // Always applied when non-empty (independent of honorIgnoredFolders).
+    // Prefix match: the folder itself and anything under it. Add/remove triggers
+    // the same exclusion-change backfill / soft-delete as Obsidian's list.
+    customExcludedFolders: string[];
+
     // Whether `.base` files (Obsidian Bases — saved query/view definitions) are
     // indexed alongside markdown notes. ON (default) collects every `.base` file
     // and feeds it through extractBaseDocs → chunkBase → a base-level chunk plus
@@ -639,6 +646,7 @@ export const DEFAULT_SETTINGS: SeekSettings = {
     // bm25FieldBoostOverrides omitted — absent ⇒ DEFAULT_FIELD_BOOSTS (bm25-boosts.ts)
     bm25Coverage: true,        // soft-AND: scale BM25 by matched-query-term fraction (multi-term only); see field comment
     honorIgnoredFolders: true, // Archive et al. are soft-deletes by default
+    customExcludedFolders: [], // additional Seek-only folder excludes (additive with Obsidian's list)
     indexBases: true,          // ON: index .base files (Obsidian Bases) as synthetic docs; preserves the feature's unconditional pre-toggle behavior
     catchUpBurstMaxFiles: 30,  // desktop catch-up burst cap; clamped 1–40 in startup-drain.ts
     showScores: false,         // OFF by default: per-result score line (Matching % · recency · title); opt-in via Display settings. (Also auto-hidden until the corpus is calibrated — ≥200 notes + full pass.) Default-only flip, no migration: installs that already persisted showScores keep their choice.

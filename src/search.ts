@@ -221,6 +221,25 @@ function isUserIgnored(app: App, path: string): boolean {
     });
 }
 
+/** Normalize a vault-relative folder path for customExcludedFolders storage/matching. */
+export function normalizeExcludedFolderPath(path: string): string {
+    return path.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').replace(/\/+/g, '/');
+}
+
+/** True when filePath is the folder itself or a descendant (Obsidian prefix convention). */
+export function isUnderExcludedFolder(folder: string, filePath: string): boolean {
+    const f = normalizeExcludedFolderPath(folder);
+    if (!f) return false;
+    return filePath === f || filePath.startsWith(f + '/');
+}
+
+/** True when path is under any entry in settings.customExcludedFolders. */
+export function isSeekExcludedPath(settings: SeekSettings, path: string): boolean {
+    const folders = settings.customExcludedFolders;
+    if (!folders || folders.length === 0) return false;
+    return folders.some(f => isUnderExcludedFolder(f, path));
+}
+
 // The single index-membership predicate, exported so any code that offers a
 // value SOURCED from the note (a filter pill, an autocomplete suggestion, …)
 // can check whether the note it came from actually reaches the index — a
@@ -231,6 +250,7 @@ function isUserIgnored(app: App, path: string): boolean {
 export function shouldIndexPath(app: App, settings: SeekSettings, path: string): boolean {
     if (EXCLUDED_PATHS.has(path)) return false;
     if (EXCLUDED_PREFIXES.some(p => path.startsWith(p))) return false;
+    if (isSeekExcludedPath(settings, path)) return false;
     if (settings.honorIgnoredFolders && isUserIgnored(app, path)) return false;
     return true;
 }
@@ -1752,9 +1772,9 @@ export class SearchOrchestrator {
     }
 
     // Live paths that are indexable-by-extension but currently OUT of the index because
-    // of Obsidian's "Excluded files" (+ the honor toggle). The exclusion-change detector
-    // diffs the top-level folders of this set across polls to tell "a folder came back"
-    // from "a folder was hidden".
+    // of Obsidian's "Excluded files" (+ the honor toggle) and/or Seek's
+    // customExcludedFolders. The exclusion-change detector diffs this set across
+    // polls to tell "a folder came back" from "a folder was hidden".
     getExcludedLivePaths(): string[] {
         return this.indexableFiles().filter(f => !this.shouldIndex(f.path)).map(f => f.path);
     }

@@ -35,6 +35,26 @@ export class TFile {
     extension = '';
 }
 
+export class TFolder {
+    path = '';
+    children: unknown[] = [];
+}
+
+// Minimal stub so folder-suggest.ts can import AbstractInputSuggest under Vitest.
+export abstract class AbstractInputSuggest<T> {
+    app: App;
+    constructor(app: App, _inputEl: HTMLInputElement | HTMLDivElement) {
+        this.app = app;
+    }
+    limit = 100;
+    close(): void {}
+    open(): void {}
+    setValue(_value: string): void {}
+    getValue(): string { return ''; }
+    protected abstract getSuggestions(query: string): T[] | Promise<T[]>;
+    abstract renderSuggestion(value: T, el: HTMLElement): void;
+}
+
 // Minimal DOM node so IndexStatusBar / status-card tests can build UI without jsdom.
 interface StubEl {
     tagName: string;
