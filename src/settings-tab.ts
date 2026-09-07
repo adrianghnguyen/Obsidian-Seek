@@ -268,6 +268,8 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         this.stats = null;
         this.modelStatus = null;
         this.modelDeleteConfirm = false;
+        this.modelDeleting = false;
+        this.modelDownloading = false;
         this.resetConfirm = false;
         this.reindexStarting = false;
     }
@@ -1127,7 +1129,12 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
     private downloadModel(): void {
         this.modelDownloading = true;
         this.rerender();
-        void this.plugin.prewarmModel().finally(() => {
+        void this.plugin.prewarmModel()
+            .then(() => { new Notice('Seek: embedding model downloaded.', 4000); })
+            .catch((e) => {
+                new Notice(`Seek: model download failed — ${e instanceof Error ? e.message : String(e)}`, 8000);
+            })
+            .finally(() => {
             this.modelDownloading = false;
             this.modelStatus = null;
             this.rerender();

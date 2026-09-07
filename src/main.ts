@@ -204,6 +204,10 @@ export default class SeekPlugin extends Plugin {
     // want to spend 250 MB of RAM on plugin startup if the user never opens
     // the search modal. The first search/reindex invocation triggers it.
     private modelLoadPromise: Promise<void> | null = null;
+    // Bumped on every releaseEmbedder() so ensureModelLoaded() can tell a stale
+    // settled memo (teardown without clearing the promise) from an in-flight load.
+    private modelLoadEpoch = 0;
+    private modelLoadPromiseEpoch = -1;
 
     // Async observer handles + global handlers we register on load and
     // explicitly tear down on unload. Without cleanup these leak into the
@@ -1329,12 +1333,15 @@ export default class SeekPlugin extends Plugin {
     // Proactively release the embedder when it's provably safe — the only way to
     // shrink the iframe's WASM heap (WebAssembly.Memory never contracts within a
     // page, so a long mobile session ratchets toward the OOM that kills the next
-    // model load). The next search/embed reloads transparently: ensureModelLoaded
-    // sees `loaded` false and `modelLoadPromise` null and rebuilds (loadImpl calls
-    // init() first). Nulling modelLoadPromise is load-bearing — without it,
-    // ensureModelLoaded would hand back a resolved promise for a model that's gone
-    // (it checks modelLoadPromise before loaded). Mirrors the manual
-    // seek-unload-model command, gated by the pure shouldUnloadEmbedder predicate.
+    // model load). The next search/embed reloads transparently via releaseEmbedder().
+    // Drop the in-memory embedder and invalidate the memoized load promise so the
+    // next ensureModelLoaded() / prewarmModel() / search actually rebuilds the iframe.
+    private releaseEmbedder(): void {
+        this.embedder.teardown();
+        this.modelLoadPromise = null;
+        this.modelLoadEpoch++;
+    }
+
     private maybeUnloadEmbedder(reason: 'idle' | 'background'): void {
         const gate: UnloadGateState = {
             loaded: this.embedder.loaded,
@@ -1346,8 +1353,7 @@ export default class SeekPlugin extends Plugin {
                 || this.idleTimer != null || this.structTimer != null,
         };
         if (!shouldUnloadEmbedder(reason, gate)) return;
-        this.embedder.teardown();
-        this.modelLoadPromise = null;
+        this.releaseEmbedder();
         const heap = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
         void this.logger.append({
             type: 'model-lifecycle',
@@ -1368,12 +1374,17 @@ export default class SeekPlugin extends Plugin {
         // searches keeps the model resident.
         this.lastModelUseAt = Date.now();
         if (this.embedder.loaded) return Promise.resolve();
-        if (this.modelLoadPromise) return this.modelLoadPromise;
+        if (this.modelLoadPromise && this.modelLoadPromiseEpoch === this.modelLoadEpoch) {
+            return this.modelLoadPromise;
+        }
+        this.modelLoadPromise = null;
 
         // Device selection. Desktop: WebGPU first with WASM fallback (design
         // doc: WebGPU ~4× faster on iPhone single-query historically, and
         // competitive on desktop). iOS: skip WebGPU entirely — see the iOS
         // skip rationale at the load() call below.
+        const epoch = this.modelLoadEpoch;
+        this.modelLoadPromiseEpoch = epoch;
         this.modelLoadPromise = (async () => {
             // Span the load: wasm compile + session init + shader warmup are
             // main-thread-heavy and used to log as 'idle' long tasks.
@@ -2869,9 +2880,9 @@ export default class SeekPlugin extends Plugin {
             // Drop the runtime copy on ANY delete attempt — even a partial one. The iframe
             // holds the model in memory and getModelStatus() counts a loaded embedder as
             // "downloaded"; keeping it resident over a (possibly half-) deleted on-disk cache
-            // would misreport state. teardown() also forces the next search to rebuild the
-            // iframe and re-fetch cleanly — the intended consequence of a delete.
-            this.embedder.teardown();
+            // would misreport state. releaseEmbedder() also clears modelLoadPromise so
+            // "Download now" / the next search cannot short-circuit on a stale resolved memo.
+            this.releaseEmbedder();
         }
         // Keep the log fallback honest: after a delete our cache holds 0 entries, so record
         // that — else the previous load's cacheSeen>0 would still read back as "downloaded".
