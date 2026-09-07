@@ -53,11 +53,11 @@ import type {
 } from './types';
 import {
     MultiFieldBM25,
-    DEFAULT_FIELD_BOOSTS,
     PREFIX_LAST_TOKEN,
     FUZZY_BY_LENGTH,
     BM25_COVERAGE_POW,
 } from './bm25';
+import { resolveBm25FieldBoosts } from './bm25-boosts';
 import { SYNONYM_WEIGHT } from './synonyms';
 import { rank, cosineScores, DEFAULT_RANKING_CONFIG } from './ranker';
 import { browseOrder, recencyDate } from './fusion';
@@ -511,8 +511,7 @@ export class SearchQuery {
     }
 
     bm25FieldBoosts(): Record<string, number> {
-        if (!this.settings.boostedBm25) return DEFAULT_FIELD_BOOSTS;
-        return { ...DEFAULT_FIELD_BOOSTS, aliases: 9.0, tags: 2.0, headings: 4.0 };
+        return resolveBm25FieldBoosts(this.settings);
     }
 
     async searchLexicalOnly(

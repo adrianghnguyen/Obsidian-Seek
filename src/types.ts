@@ -325,10 +325,15 @@ export interface SeekSettings {
     // (no reindex). Default 180.
     recencyHalfLifeDays: number;
 
-    // (BM25 per-field boosts removed from settings 2026-06-08 — they're now
-    // eval-tuned constants in bm25.ts DEFAULT_FIELD_BOOSTS. Once the coverage
-    // navigational boost is in, their marginal leverage is ~+0.004 nDCG@10:
-    // not worth a user knob. See [[Seek Rel]].)
+    // Optional per-field BM25 boost overrides (Settings → Relevance → Advanced).
+    // Score-time only — merged over DEFAULT_FIELD_BOOSTS via resolveBm25FieldBoosts
+    // (bm25-boosts.ts) and passed to getScoresWithCoverage({ boosts }). Absent /
+    // empty ⇒ shipped defaults. Does NOT trigger embedding reindex or BM25
+    // index-shape refit. Re-exposed after the 2026-06-08 removal (aggregate hybrid
+    // nDCG ~+0.004) because lexical-first paths (vault-lex, Keyword-focused) are
+    // not diluted by dense fusion — e.g. headings 3→5 meaningfully lifts
+    // section-title-only matches. See bm25-boosts.ts.
+    bm25FieldBoostOverrides?: Partial<Record<'title' | 'aliases' | 'tags' | 'content' | 'properties' | 'headings', number>>;
 
     // Fuzzy lexical matching toggle. ON by default (2026-06-09): MiniSearch
     // fuzzy with an absolute max edit distance of 1 (one insertion/deletion/
@@ -407,13 +412,12 @@ export interface SeekSettings {
     // NO embedding reindex.
     headingsField: boolean;
 
-    // "Boosted BM25" preset — one switch that overrides three field boosts to
-    // the values explored vs Omnisearch: aliases 6→9 (Omnisearch weights an
-    // alias like the title; we close most of that gap), tags 3→2 (trim noisy-
-    // tag vaults), headings →4. aliases/tags are score-time (no reindex);
-    // headings is index-shape, so flipping this ALSO forces the heading field
-    // on in ensureBm25() — otherwise the headings boost is inert (no postings).
-    // Refit-on-toggle, no embedding reindex; same contract as headingsField.
+    // "Boosted BM25" preset — legacy hidden switch (aliases 6→9, tags 3→2,
+    // headings →4). Still applied by resolveBm25FieldBoosts when there are NO
+    // bm25FieldBoostOverrides; any custom override supersedes this preset.
+    // Flipping this ALSO forces the heading field on in ensureBm25() (index-
+    // shape) so the headings boost is not inert. Prefer the Advanced sliders
+    // for new tuning; this key is kept for persisted installs.
     boostedBm25: boolean;
 
     // BM25 coverage weighting — the SOFT-AND fix for OR's looseness. MiniSearch
@@ -631,7 +635,8 @@ export const DEFAULT_SETTINGS: SeekSettings = {
     synonymExpansion: true,    // ON (hidden) per the 2026-06-19 ratification; alias-dictionary query expansion (Lr↔Lightroom); BM25-dict refit, no reindex — see field comment
     searchableProperties: true, // frontmatter values as a BM25 field; ON as of 2026-06-25 — My-Vault channel eval measured +0.05 nDCG@10 (place-note recall: austin 22→3, zurich 33→7; combo_eval). Migrated on via rev 7; see field comment
     headingsField: true,       // ON (hidden) per the 2026-06-19 ratification; heading path as a BM25 field; BM25 refit, no reindex — see field comment
-    boostedBm25: false,        // "Boosted BM25" preset (aliases 9 / tags 2 / headings 4); OFF — opt-in field-weight lever, implies heading indexing; see field comment
+    boostedBm25: false,        // "Boosted BM25" preset (aliases 9 / tags 2 / headings 4); OFF — superseded by bm25FieldBoostOverrides when set; see field comment
+    // bm25FieldBoostOverrides omitted — absent ⇒ DEFAULT_FIELD_BOOSTS (bm25-boosts.ts)
     bm25Coverage: true,        // soft-AND: scale BM25 by matched-query-term fraction (multi-term only); see field comment
     honorIgnoredFolders: true, // Archive et al. are soft-deletes by default
     indexBases: true,          // ON: index .base files (Obsidian Bases) as synthetic docs; preserves the feature's unconditional pre-toggle behavior

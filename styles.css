@@ -1950,6 +1950,16 @@
     color: var(--text-muted);
 }
 
+/* BM25 field-weight sliders under Advanced relevance */
+.seek-settings .seek-bm25-weights {
+    margin-top: 12px;
+    padding-top: 8px;
+    border-top: 1px solid var(--background-modifier-border);
+}
+.seek-settings .seek-bm25-weights .setting-item {
+    padding: 8px 0;
+}
+
 /* ---- segmented (pill) control ---- */
 .seek-settings .seek-seg {
     display: inline-flex;

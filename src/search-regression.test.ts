@@ -299,6 +299,56 @@ describe('search progressive pipeline', () => {
         expect(spy).not.toHaveBeenCalled();
     });
 
+    // ---- P3b: settings BM25 field overrides reach scoring and change ranking ----
+    it('P3b: bm25FieldBoostOverrides flow into scoring and can flip field winners', async () => {
+        const s = await boot();
+        await indexAll(s);
+
+        const orch = s.orch as unknown as {
+            settings: import('./types').SeekSettings;
+            searchQuery: { bm25FieldBoosts: () => Record<string, number> };
+        };
+        orch.settings.bm25FieldBoostOverrides = { headings: 5, content: 1 };
+        expect(orch.searchQuery.bm25FieldBoosts().headings).toBe(5);
+        expect(orch.searchQuery.bm25FieldBoosts().content).toBe(1);
+        expect(orch.searchQuery.bm25FieldBoosts().title).toBe(10); // untouched default
+
+        // Ranking flip via the same resolve → getScores path search uses (per-call boosts).
+        const { MultiFieldBM25, DEFAULT_FIELD_BOOSTS } = await import('./bm25');
+        const { resolveBm25FieldBoosts } = await import('./bm25-boosts');
+        const make = (id: string, title: string, body: string, headingPath: string[] = []) => {
+            const c = {
+                chunk_id: id,
+                title: headingPath.length ? `${title} > ${headingPath.join(' > ')}` : title,
+                content: body,
+                note_path: `${id}.md`,
+                heading_path: headingPath,
+                metadata: { tags: [], aliases: [], created: null, modified: null, properties: {} },
+                start_line: 1,
+                end_line: 1,
+            };
+            return c;
+        };
+        const headingOnly = make('h', 'NoteA', 'plain discussion without the rare token', ['UniqueLexTerm']);
+        const bodyOnly = make('b', 'NoteB', 'UniqueLexTerm appears in the body text here', []);
+        const bodies = new Map([['h', headingOnly.content], ['b', bodyOnly.content]]);
+        const idx = new MultiFieldBM25().fit([headingOnly, bodyOnly], bodies, { headingsField: true });
+
+        const contentHeavy = resolveBm25FieldBoosts({
+            boostedBm25: false,
+            bm25FieldBoostOverrides: { headings: 1, content: 20 },
+        });
+        const contentScores = idx.getScores('UniqueLexTerm', { boosts: { ...DEFAULT_FIELD_BOOSTS, ...contentHeavy } });
+        expect(contentScores[1]).toBeGreaterThan(contentScores[0]); // body beats heading
+
+        const headingHeavy = resolveBm25FieldBoosts({
+            boostedBm25: false,
+            bm25FieldBoostOverrides: { headings: 20, content: 1 },
+        });
+        const headingScores = idx.getScores('UniqueLexTerm', { boosts: { ...DEFAULT_FIELD_BOOSTS, ...headingHeavy } });
+        expect(headingScores[0]).toBeGreaterThan(headingScores[1]); // heading beats body
+    });
+
     // ---- P4: searchLexicalOnly() fires name partial then lexical ----
     it('P4: searchLexicalOnly() fires name partial before lexical for known-item queries', async () => {
         const s = await boot();

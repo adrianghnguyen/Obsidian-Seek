@@ -11,14 +11,26 @@
 // status card, pipeline diagram, progress row), all styled from theme CSS variables in
 // styles.css so the tab absorbs the user's theme + dark mode. The validated debug knobs
 // (prefix / synonym / headings / coverage / properties / boosted-BM25 / sidecar toggle)
-// are now silent defaults and deliberately NOT surfaced — see DEFAULT_SETTINGS + the
-// rev-5 migration in types.ts/main.ts.
+// are mostly silent defaults — BM25 field weights are re-exposed under Advanced as
+// score-time sliders (bm25-boosts.ts). See DEFAULT_SETTINGS + the rev-5 migration
+// in types.ts/main.ts.
 
 import { App, PluginSettingTab, Setting, Notice, setIcon } from 'obsidian';
 import type SeekPlugin from './main';
 import type { IndexStats, ModelStatus } from './main';
 import type { SidecarIndexLocation, SearchModalHeight, SearchModalWidth, SnippetPreview } from './types';
 import { DEFAULT_SETTINGS, MATCH_STRENGTH_MIN_NOTES } from './types';
+import {
+    BM25_FIELD_KEYS,
+    BM25_FIELD_BOOST_MIN,
+    BM25_FIELD_BOOST_MAX,
+    BM25_FIELD_BOOST_STEP,
+    clearBm25FieldBoostOverrides,
+    resolveBm25FieldBoosts,
+    setBm25FieldBoostOverride,
+    type Bm25FieldKey,
+} from './bm25-boosts';
+import { DEFAULT_FIELD_BOOSTS } from './bm25';
 import type { IndexStatusHealth } from './index-status-card';
 import {
     renderRecentSearchConsole,
@@ -853,7 +865,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         }
         block.createDiv({
             cls: 'seek-progressive-desc',
-            text: 'Seek streams results through these stages as they become available. When "Search progression stages" is enabled under Display settings, all three stages are shown in the search modal footer and highlight progressively as each step completes. Each stage replaces the previous one in-place, so you always see the best results so far. On a fresh start, name match and lexical BM25 read your notes on disk — they do not wait for the search-index cache — and semantic ranking joins once the model and caches are ready.',
+            text: 'Seek streams results through these stages as they become available. When "Search progression stages" is enabled under Display settings, all three stages are shown in the search modal footer and highlight progressively as each step completes. Each stage replaces the previous one in-place, so you always see the best results so far. On a fresh start, name match and lexical BM25 read your notes on disk — they do not wait for the search-index cache — and semantic ranking joins once the model and caches are ready. BM25 field weights (Advanced) tune which parts of a note keyword matching prefers — title, aliases, tags, body, properties, and headings.',
         });
     }
 
@@ -921,6 +933,51 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                 this.rerender(); // re-bold the pipeline "title" sub-label
             })();
         });
+
+        this.renderBm25FieldWeights(adv);
+    }
+
+    private renderBm25FieldWeights(adv: HTMLElement): void {
+        const labels: Record<Bm25FieldKey, string> = {
+            title: 'Note title',
+            aliases: 'Aliases',
+            tags: 'Tags',
+            content: 'Body',
+            properties: 'Properties',
+            headings: 'Headings',
+        };
+        const effective = resolveBm25FieldBoosts(this.s);
+
+        const block = adv.createDiv({ cls: 'seek-bm25-weights' });
+        new Setting(block)
+            .setName('BM25 field weights')
+            .setDesc('Power-user lexical tuning for keyword matching (Name match → Lexical BM25 stages, and Keyword-focused strategy). Defaults are eval-tuned for Balanced hybrid search — most users should leave them alone. Changes apply on the next search; no embedding rebuild.');
+
+        for (const key of BM25_FIELD_KEYS) {
+            const recommended = DEFAULT_FIELD_BOOSTS[key];
+            new Setting(block)
+                .setName(labels[key])
+                .setDesc(`Recommended ${recommended}×`)
+                .addSlider(slider => slider
+                    .setLimits(BM25_FIELD_BOOST_MIN, BM25_FIELD_BOOST_MAX, BM25_FIELD_BOOST_STEP)
+                    .setValue(effective[key])
+                    .setDynamicTooltip()
+                    .onChange(async (v: number) => {
+                        setBm25FieldBoostOverride(this.s, key, v);
+                        await this.save();
+                    }));
+        }
+
+        new Setting(block)
+            .setName('Restore recommended defaults')
+            .setDesc('Clear custom field weights and return to the shipped BM25 boosts.')
+            .addButton(btn => btn
+                .setButtonText('Restore defaults')
+                .onClick(async () => {
+                    clearBm25FieldBoostOverrides(this.s);
+                    await this.save();
+                    this.rerender();
+                }));
     }
 
     // ---- Display -------------------------------------------------------------------
