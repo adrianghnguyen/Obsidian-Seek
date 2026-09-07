@@ -372,6 +372,19 @@ describe('renderIndexStatusCard', () => {
         expect(textOf(restore)).not.toContain('No index');
         expect(textOf(restore)).not.toMatch(/\b5\b/);
     });
+
+    it('labels an exclusion-aligning catch-up distinctly from a generic pass', () => {
+        const root = stubEl();
+        renderIndexStatusCard(root as unknown as HTMLElement, {
+            health: 'indexing',
+            stats: { files: 5, chunks: 18, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null },
+            job: { kind: 'catchup', done: 2, total: 10, aligningExclusions: true },
+        });
+        const blob = textOf(root);
+        expect(blob).toContain('Aligning with exclusions');
+        expect(blob).toContain('exclusion pass');
+        expect(blob).not.toContain('Indexing…');
+    });
 });
 
 describe('INDEX_STATUS_HEALTH locked', () => {

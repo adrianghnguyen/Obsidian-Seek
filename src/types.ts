@@ -443,9 +443,10 @@ export interface SeekSettings {
     // ignored folder — e.g. Archive — is treated as out-of-index: moving a note
     // INTO it is a soft-delete (its chunks are dropped), moving OUT re-indexes it.
     // Off indexes ignored folders too. Independent of EXCLUDED_PREFIXES, which
-    // always excludes Seek's own machine output regardless of this flag. Applied
-    // at index time (a change takes effect on the next reindex/delta, not retro-
-    // actively).
+    // always excludes Seek's own machine output regardless of this flag. A change
+    // (toggle, Obsidian's Excluded files, or additional folders) arms catch-up
+    // immediately so newly included notes are backfilled and newly excluded notes
+    // are soft-deleted — no manual reindex.
     honorIgnoredFolders: boolean;
 
     // Folder paths (vault-relative) Seek always excludes from indexing, in
@@ -1607,6 +1608,16 @@ export interface StoreForceResetEntry {
     nuked?: boolean;
 }
 
+/** Catch-up armed because Honor / excluded folders changed. */
+export interface ExclusionAlignEntry {
+    type: 'exclusion-align';
+    timestamp: string;
+    newlyIncluded: number;
+    newlyExcluded: number;
+    newlyIncludedFolders: string[];
+    newlyExcludedFolders: string[];
+}
+
 // Stamped onto every entry by logger.append(). Optional so pre-v9 logs (which
 // predate device/session attribution) still parse — the report treats a missing
 // deviceId as 'legacy' and a missing sessionId as un-scopable.
@@ -1649,4 +1660,5 @@ export type LogEntry = (
     | StoreLockRetryEntry
     | StoreLockExhaustedEntry
     | StoreForceResetEntry
+    | ExclusionAlignEntry
 ) & LogMeta;

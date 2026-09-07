@@ -1404,9 +1404,9 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    font-size: 11px;
+    font-size: 12px;
+    font-weight: 600;
     color: var(--text-muted);
-    text-transform: lowercase;
     flex: 0 0 auto;
 }
 .seek-settings .seek-status-embed-info {
@@ -1440,28 +1440,46 @@
     font-size: 11px;
     font-weight: 500;
     color: var(--text-muted);
-    text-transform: lowercase;
 }
 .seek-settings .seek-status-embed-pill.is-empty {
     color: var(--text-faint);
     font-weight: 400;
 }
 .seek-settings .seek-status-embed-body {
-    margin-top: 8px;
+    margin-top: 10px;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 12px;
     padding-left: 20px;
 }
 .seek-settings .seek-status-embed-section {
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 4px;
 }
 .seek-settings .seek-status-embed-sec-head {
     font-size: 11px;
+    font-weight: 600;
     color: var(--text-muted);
-    text-transform: lowercase;
+    letter-spacing: 0.01em;
+}
+.seek-settings .seek-status-embed-grid {
+    display: grid;
+    grid-template-columns: minmax(6.5rem, max-content) minmax(0, 1fr);
+    column-gap: 14px;
+    row-gap: 4px;
+    align-items: baseline;
+}
+.seek-settings .seek-status-embed-k {
+    color: var(--text-muted);
+    font-size: 12px;
+    cursor: help;
+}
+.seek-settings .seek-status-embed-v {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-normal);
+    font-weight: 600;
 }
 .seek-settings .seek-status-embed-line {
     font-size: 12px;
@@ -1469,18 +1487,9 @@
     color: var(--text-normal);
     line-height: 1.4;
 }
-.seek-settings .seek-status-embed-phases {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px 14px;
-}
-.seek-settings .seek-status-embed-phase {
-    white-space: nowrap;
-}
 .seek-settings .seek-status-embed-stale {
     font-size: 11px;
     color: var(--text-faint);
-    text-transform: lowercase;
 }
 .seek-settings .seek-status-embed-empty {
     color: var(--text-faint);
@@ -1497,11 +1506,18 @@
     text-decoration-color: var(--text-faint);
 }
 .seek-settings .seek-status-embed-title .seek-embed-help {
-    font-size: 11px;
-    text-transform: lowercase;
+    font-size: 12px;
+    font-weight: 600;
+    text-decoration: none;
+    color: var(--text-muted);
 }
 .seek-settings .seek-status-embed-pill.seek-embed-help {
-    text-decoration: underline dotted;
+    text-decoration: none;
+}
+.seek-settings .seek-status-embed-sec-head .seek-embed-help {
+    text-decoration: none;
+    font-weight: 600;
+    color: var(--text-muted);
 }
 
 /* ---- Exclusion-change backfill banner (Settings → Index) ---- */
@@ -1650,7 +1666,21 @@
     letter-spacing: 0.03em;
 }
 
-/* Additional excluded folders list (Index → Advanced) */
+/* Honor + additional excluded folders (Index → Advanced), one card */
+.seek-settings .seek-excluded-block {
+    margin: 8px 0 12px;
+    padding: 2px 12px 10px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    background: var(--background-primary);
+}
+.seek-settings .seek-excluded-block > .setting-item {
+    border-top: none;
+    padding: 10px 0;
+}
+.seek-settings .seek-excluded-block > .setting-item:last-of-type {
+    padding-bottom: 6px;
+}
 .seek-settings .seek-excluded-folders {
     width: 100%;
     margin-top: 8px;
@@ -1686,8 +1716,18 @@
     color: var(--text-error);
     border-color: var(--text-error);
 }
-.seek-settings .seek-excluded-folder-add .setting-item-info {
-    display: none;
+.seek-settings .seek-excluded-folder-add-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+}
+.seek-settings .seek-excluded-folder-input {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.seek-settings .seek-excluded-folder-add-btn {
+    flex: 0 0 auto;
 }
 .seek-coverage-track {
     height: 6px;

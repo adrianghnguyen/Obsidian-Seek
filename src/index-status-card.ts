@@ -22,7 +22,12 @@ export interface IndexStatusJob {
     done: number;
     total: number;
     paused?: boolean;
+    /** Catch-up is aligning the index with Honor / excluded-folder changes. */
+    aligningExclusions?: boolean;
 }
+
+export const INDEX_ALIGNING_EXCLUSIONS_LABEL = 'Aligning with exclusions…';
+export const INDEX_ALIGNING_EXCLUSIONS_PASS = 'exclusion pass';
 
 export const INDEX_STATUS_HEALTH: Record<IndexStatusHealth, { tone: string; label: string; compact: string }> = {
     none: { tone: 'mid', label: 'No index', compact: 'None' },
@@ -103,9 +108,13 @@ export function renderIndexStatusCard(
     const card = parent.createDiv({ cls: 'seek-status-card' });
     const st = INDEX_STATUS_HEALTH[model.health];
 
+    const aligning = !!model.job?.aligningExclusions && model.health === 'indexing';
     const health = card.createDiv({ cls: 'seek-status-health' });
     renderIndexStatusBadge(health, { health: model.health, remaining: jobRemaining(model.job) });
-    health.createSpan({ cls: 'seek-status-label', text: st.label });
+    health.createSpan({
+        cls: 'seek-status-label',
+        text: aligning ? INDEX_ALIGNING_EXCLUSIONS_LABEL : st.label,
+    });
 
     card.createDiv({ cls: 'seek-status-sep' });
 
@@ -124,7 +133,11 @@ export function renderIndexStatusCard(
         job.createDiv({ cls: 'seek-status-value', text: opts.eta ? `${progressLine} · ${opts.eta} left` : progressLine });
         job.createDiv({
             cls: 'seek-status-mlabel',
-            text: model.job.paused ? 'paused this pass' : 'this pass',
+            text: model.job.paused
+                ? 'paused this pass'
+                : aligning
+                    ? INDEX_ALIGNING_EXCLUSIONS_PASS
+                    : 'this pass',
         });
         if (model.stats?.lastUpdatedAt) {
             const last = card.createDiv({ cls: 'seek-status-metric seek-status-last' });

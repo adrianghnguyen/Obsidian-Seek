@@ -84,6 +84,7 @@ export class IndexStatusBar {
     private done = 0;
     private chunksDone = 0;
     private label = '';
+    private aligningExclusions = false;
     private jobStartedAt = 0;
     private paintedDone = -1;
     private paintedTotal = -1;
@@ -121,12 +122,13 @@ export class IndexStatusBar {
         this.paintIdle();
     }
 
-    show(total: number, label: string, opts?: { id?: number; kind?: IndexJobKind }): void {
+    show(total: number, label: string, opts?: { id?: number; kind?: IndexJobKind; aligningExclusions?: boolean }): void {
         this.jobActive = true;
         this.jobPaused = /paused/i.test(label);
         this.jobGen += 1;
         this.jobId = opts?.id ?? this.jobGen;
         this.jobKind = opts?.kind ?? null;
+        this.aligningExclusions = !!opts?.aligningExclusions || /aligning with exclusions/i.test(label);
         this.total = Math.max(0, total);
         this.done = 0;
         this.chunksDone = 0;
@@ -155,6 +157,7 @@ export class IndexStatusBar {
         if (label) {
             this.label = label;
             this.jobPaused = /paused/i.test(label);
+            if (/aligning with exclusions/i.test(label)) this.aligningExclusions = true;
             const parsed = parseIndexedProgress(label);
             if (parsed?.chunks != null) this.chunksDone = parsed.chunks;
         }
@@ -169,6 +172,7 @@ export class IndexStatusBar {
         this.jobActive = false;
         this.jobPaused = false;
         this.jobKind = null;
+        this.aligningExclusions = false;
         this.done = 0;
         this.chunksDone = 0;
         this.total = 0;
@@ -193,7 +197,14 @@ export class IndexStatusBar {
 
     job(): IndexStatusJob | null {
         if (!this.jobActive || this.total <= 0) return null;
-        return { id: this.jobId, kind: this.jobKind ?? undefined, done: this.done, total: this.total, paused: this.jobPaused };
+        return {
+            id: this.jobId,
+            kind: this.jobKind ?? undefined,
+            done: this.done,
+            total: this.total,
+            paused: this.jobPaused,
+            aligningExclusions: this.aligningExclusions || undefined,
+        };
     }
 
     private schedulePaintJob(force: boolean): void {
@@ -217,7 +228,8 @@ export class IndexStatusBar {
         const eta = formatRoughEta(this.done, this.total, elapsedMs);
         const files = `${this.done.toLocaleString()} / ${this.total.toLocaleString()} files · ${pct}%`;
         const tail = eta ? ` · ${eta} left` : '';
-        return `Seek: Indexing ${files}${tail}`;
+        const verb = this.aligningExclusions ? 'Aligning with exclusions' : 'Indexing';
+        return `Seek: ${verb} ${files}${tail}`;
     }
 
     /** Live encode-speed inputs for Settings — status bar no longer shows ch/s. */

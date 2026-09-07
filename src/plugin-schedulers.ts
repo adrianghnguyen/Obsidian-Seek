@@ -40,6 +40,7 @@ import { isMobilePlatform } from './platform';
 import { CompositorPacer } from './pacer';
 import {
     diffExcludedPaths,
+    emptyExclusionDiff,
     exclusionDiffIsEmpty,
     type ExclusionDiff,
 } from './folder-coverage';
@@ -129,6 +130,8 @@ export class PluginSchedulerManager {
     exclusionWatcherArmed = false;
     exclusionChange: ExclusionDiff | null = null;
     exclusionChangeDetectedAt = 0;
+    /** True while catch-up is aligning the index with Honor / excluded-folder changes. */
+    exclusionAligning = false;
 
     constructor(host: PluginSchedulerHost) {
         this.host = host;
@@ -394,12 +397,13 @@ export class PluginSchedulerManager {
     // poll its effective excluded live-path set every 5s. Cheap (in-memory filter
     // over the TFile list, no IDB, no reads) and self-gating — it no-ops while a
     // write/boot pass is running, and only fires on a real path-set change.
-    pollExclusionChanges(): void {
+    pollExclusionChanges(force = false): void {
         if (!this.host.vaultIndexEventsReady || !this.host.orchestrator || this.host.unloading) return;
         // Don't snapshot while a write is in flight OR while boot reconciliation is
         // still running — a mid-reconcile/mid-reindex enumeration could read a
-        // partially-updated live set and manufacture a spurious diff.
-        if (this.flushing || this.host.catchUpRunning || this.host.indexBootPending || this.host.sidecarHydrating) {
+        // partially-updated live set and manufacture a spurious diff. User-initiated
+        // Settings edits pass force=true: the live set is the source of truth.
+        if (!force && (this.flushing || this.host.catchUpRunning || this.host.indexBootPending || this.host.sidecarHydrating)) {
             return;
         }
         let next: string[];
@@ -413,6 +417,7 @@ export class PluginSchedulerManager {
         if (exclusionDiffIsEmpty(diff)) return;
         this.exclusionChange = diff;
         this.exclusionChangeDetectedAt = Date.now();
+        this.exclusionAligning = true;
         this.notifyFolderCoverageChanged();
         this.driveExclusionBackfill(diff);
     }
@@ -423,11 +428,26 @@ export class PluginSchedulerManager {
     // soft-deletes them. This just arms + surfaces the pass.
     driveExclusionBackfill(diff: ExclusionDiff): void {
         if (!this.host.orchestrator || this.host.unloading) return;
+        this.exclusionAligning = true;
         this.host.catchUpPending = true;
         this.host.syncWarmDeferred();
         const count = Math.max(diff.newlyIncludedPaths.length, diff.newlyExcludedPaths.length, 1);
-        // Surface the pass on the status bar immediately so it reads "indexing—".
+        // Surface the pass on the status bar immediately so it reads aligning/indexing.
         this.host.syncCatchUpJob(count);
+        void this.host.logger.append({
+            type: 'exclusion-align',
+            timestamp: new Date().toISOString(),
+            newlyIncluded: diff.newlyIncludedPaths.length,
+            newlyExcluded: diff.newlyExcludedPaths.length,
+            newlyIncludedFolders: diff.newlyIncludedFolders,
+            newlyExcludedFolders: diff.newlyExcludedFolders,
+        }).catch(() => {});
+        console.info('[seek] exclusion-align', {
+            newlyIncluded: diff.newlyIncludedPaths.length,
+            newlyExcluded: diff.newlyExcludedPaths.length,
+            newlyIncludedFolders: diff.newlyIncludedFolders,
+            newlyExcludedFolders: diff.newlyExcludedFolders,
+        });
         if (isMobilePlatform()) {
             this.host.scheduleStartupCatchUp();
             return;
@@ -449,19 +469,24 @@ export class PluginSchedulerManager {
 
     /** The last exclusion-list change, or null. `backfilling` = a pass is in flight. */
     getExclusionChange(): { diff: ExclusionDiff; detectedAt: number; backfilling: boolean } | null {
-        if (!this.exclusionChange || exclusionDiffIsEmpty(this.exclusionChange)) return null;
+        if (!this.exclusionAligning && (!this.exclusionChange || exclusionDiffIsEmpty(this.exclusionChange))) return null;
         return {
-            diff: this.exclusionChange,
-            detectedAt: this.exclusionChangeDetectedAt,
-            backfilling: this.host.catchUpPending || this.host.catchUpRunning,
+            diff: this.exclusionChange ?? emptyExclusionDiff(),
+            detectedAt: this.exclusionChangeDetectedAt || Date.now(),
+            backfilling: this.host.catchUpPending || this.host.catchUpRunning || this.exclusionAligning,
         };
+    }
+
+    isExclusionAligning(): boolean {
+        return this.exclusionAligning;
     }
 
     /** Called when the backfill for a detected change finishes (catch-up drained). */
     clearExclusionChange(): void {
-        if (this.exclusionChange === null) return;
+        if (this.exclusionChange === null && !this.exclusionAligning) return;
         this.exclusionChange = null;
         this.exclusionChangeDetectedAt = 0;
+        this.exclusionAligning = false;
         this.notifyFolderCoverageChanged();
     }
 
@@ -472,7 +497,22 @@ export class PluginSchedulerManager {
     // Force an exclusion re-check now (used when the user flips "Honor excluded
     // folders" in Settings, rather than waiting for the 5s poll).
     forcePollExclusions(): void {
-        this.pollExclusionChanges();
+        this.pollExclusionChanges(true);
+    }
+
+    /**
+     * User changed Honor / additional excluded folders in Settings. Always arm
+     * catch-up (computeDelta is the membership source of truth) and surface the
+     * aligning status even if the 5s watcher had not seeded a baseline yet.
+     */
+    requestExclusionAlign(): void {
+        this.pollExclusionChanges(true);
+        this.notifyFolderCoverageChanged();
+        // Poll already armed catch-up when it found a real diff.
+        if (this.exclusionAligning && (this.host.catchUpPending || this.host.catchUpRunning)) return;
+        this.exclusionAligning = true;
+        if (this.exclusionChangeDetectedAt === 0) this.exclusionChangeDetectedAt = Date.now();
+        this.driveExclusionBackfill(this.exclusionChange ?? emptyExclusionDiff());
     }
 
     runCatchUp(): void {

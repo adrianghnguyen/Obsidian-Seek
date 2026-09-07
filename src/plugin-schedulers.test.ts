@@ -288,11 +288,49 @@ describe('PluginSchedulerManager', () => {
                 newlyExcludedFolders: [],
             };
             schedulers.exclusionChangeDetectedAt = 12345;
+            schedulers.exclusionAligning = true;
 
             schedulers.clearExclusionChange();
             expect(schedulers.getExclusionChange()).toBeNull();
             expect(schedulers.exclusionChangeDetectedAt).toBe(0);
+            expect(schedulers.exclusionAligning).toBe(false);
             expect(host.settingsTelemetrySink?.onFolderCoverageChanged).toHaveBeenCalled();
+        });
+
+        it('skips an unforced poll while catch-up is running', () => {
+            host.catchUpRunning = true;
+            schedulers.lastExcludedPaths = ['old-excluded.md'];
+            (host.orchestrator?.getExcludedLivePaths as any).mockReturnValue(['new-excluded.md']);
+
+            schedulers.pollExclusionChanges();
+
+            expect(schedulers.getExclusionChange()).toBeNull();
+            expect(host.syncCatchUpJob).not.toHaveBeenCalled();
+        });
+
+        it('force-polls even while catch-up is running', () => {
+            host.catchUpRunning = true;
+            schedulers.lastExcludedPaths = ['old-excluded.md'];
+            (host.orchestrator?.getExcludedLivePaths as any).mockReturnValue(['new-excluded.md']);
+
+            schedulers.forcePollExclusions();
+
+            expect(schedulers.exclusionAligning).toBe(true);
+            expect(schedulers.getExclusionChange()?.diff.newlyExcludedPaths).toContain('new-excluded.md');
+            expect(host.syncCatchUpJob).toHaveBeenCalled();
+        });
+
+        it('requestExclusionAlign arms catch-up after the first baseline seed', () => {
+            schedulers.pollExclusionChanges();
+            expect(schedulers.getExclusionChange()).toBeNull();
+
+            schedulers.requestExclusionAlign();
+
+            expect(schedulers.exclusionAligning).toBe(true);
+            expect(schedulers.getExclusionChange()).not.toBeNull();
+            expect(host.catchUpPending).toBe(true);
+            expect(host.syncCatchUpJob).toHaveBeenCalled();
+            expect(host.logger.append).toHaveBeenCalledWith(expect.objectContaining({ type: 'exclusion-align' }));
         });
     });
 

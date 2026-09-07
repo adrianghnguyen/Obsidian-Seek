@@ -238,6 +238,19 @@ describe('resolveCoveragePanelView', () => {
         expect(view.statusLine?.title).toBe('Still indexing');
     });
 
+    it('prefers aligning-with-exclusions copy over still-indexing', () => {
+        const view = resolveCoveragePanelView({
+            summary: readySummary,
+            health: 'indexing',
+            job: { kind: 'catchup', done: 1, total: 2 },
+            orchestratorReady: true,
+            aligningExclusions: true,
+        });
+        expect(view.showTree).toBe(true);
+        expect(view.statusLine?.title).toBe('Aligning with exclusions');
+        expect(view.statusLine?.detail).toContain('1 of 2');
+    });
+
     it('explains when every note is excluded', () => {
         const summary = computeFolderCoverage({
             allPaths: ['arch/1.md'],

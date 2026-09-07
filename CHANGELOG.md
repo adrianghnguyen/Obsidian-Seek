@@ -4,6 +4,12 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Changed
+- **Settings → Index: Warm caches on startup** moved under Advanced settings.
+- **Settings → Index → Advanced: Honor excluded folders and Additional excluded folders** share one card, with the Add folder field in the same block as the list.
+- **Adding or removing excluded folders** (Seek’s list or Obsidian’s Excluded files) immediately refreshes embedder coverage, arms catch-up, and shows **Aligning with exclusions…** on the Index status card, coverage panel, and status-bar tooltip until the index matches.
+- **Settings → Index embedding pass** expanded view uses labeled rows (kind, files, phases, batch, health, model) instead of a dense dotted-underline line.
+
 ## 1.7.0
 
 Seek can exclude extra vault folders from indexing on top of Obsidian’s Excluded files. No reindex is needed for an existing index beyond the automatic backfill / soft-delete when folders are added or removed.

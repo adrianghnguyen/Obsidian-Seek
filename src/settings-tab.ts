@@ -217,6 +217,9 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
     onFolderCoverageChanged(): void {
         if (!this.containerEl.isConnected) return;
         void this.paintCoverage();
+        this.paintExclusionBanner();
+        this.paintStatusCard();
+        if (this.shouldPollStartup()) this.startStartupPoll();
     }
 
     constructor(app: App, private plugin: SeekPlugin) {
@@ -384,14 +387,9 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         // primary action and must be visible regardless of the advanced toggle.
         this.renderReindexRow(containerEl);
 
-        new Setting(containerEl)
-            .setName('Warm caches on startup')
-            .setDesc('On this device only (not synced). After Obsidian opens, Seek loads the search index into memory so the first query is faster. Turn off for a lighter app start. Takes effect the next time Obsidian opens.')
-            .addToggle(t => t.setValue(getStartupWarm()).onChange(v => setStartupWarm(v)));
-
-        // Advanced disclosure — what to index (Bases / excluded folders) and where the
-        // index lives are set-once knobs, so tuck them away like Relevance's advanced
-        // section. Mirrors renderRelevance's disclosure, with its own open-state flag.
+        // Advanced disclosure — what to index (Bases / excluded folders), startup warm,
+        // and where the index lives are set-once knobs, so tuck them away like Relevance's
+        // advanced section. Mirrors renderRelevance's disclosure, with its own open-state flag.
         const disc = containerEl.createDiv({ cls: 'seek-disclosure' });
         disc.createSpan({ cls: 'seek-disclosure-chev', text: this.indexAdvancedOpen ? '▾' : '▸' });
         disc.createSpan({ text: 'Advanced settings' });
@@ -404,21 +402,16 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         const adv = containerEl.createDiv({ cls: 'seek-adv' });
 
         new Setting(adv)
+            .setName('Warm caches on startup')
+            .setDesc('On this device only (not synced). After Obsidian opens, Seek loads the search index into memory so the first query is faster. Turn off for a lighter app start. Takes effect the next time Obsidian opens.')
+            .addToggle(t => t.setValue(getStartupWarm()).onChange(v => setStartupWarm(v)));
+
+        new Setting(adv)
             .setName('Index Base files')
             .setDesc('Include your Obsidian Bases (.base files) in the search index, so a Base shows up by its name and filters. Takes effect on the next full reindex.')
             .addToggle(t => t.setValue(this.s.indexBases).onChange(async v => { this.s.indexBases = v; await this.save(); }));
 
-        new Setting(adv)
-            .setName('Honor excluded folders')
-            .setDesc("Skip files in Obsidian's Settings → Files & Links → Excluded files (e.g. Archive). When you add or remove an exclusion there, Seek detects the change and backfills / soft-deletes the affected folders automatically.")
-            .addToggle(t => t.setValue(this.s.honorIgnoredFolders).onChange(async v => {
-                this.s.honorIgnoredFolders = v;
-                await this.save();
-                this.plugin.forcePollExclusions();
-                void this.paintCoverage();
-            }));
-
-        this.renderCustomExcludedFolders(adv);
+        this.renderExcludedFoldersBlock(adv);
 
         if (!isMobilePlatform()) {
             new Setting(adv)
@@ -484,8 +477,19 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         if (!this.s.sidecarEnabled) indexLoc.setDisabled(true);
     }
 
-    private renderCustomExcludedFolders(adv: HTMLElement): void {
-        const intro = new Setting(adv)
+    private renderExcludedFoldersBlock(adv: HTMLElement): void {
+        const wrap = adv.createDiv({ cls: 'seek-excluded-block' });
+
+        new Setting(wrap)
+            .setName('Honor excluded folders')
+            .setDesc("Skip files in Obsidian's Settings → Files & Links → Excluded files (e.g. Archive). When you add or remove an exclusion there, Seek detects the change and backfills / soft-deletes the affected folders automatically.")
+            .addToggle(t => t.setValue(this.s.honorIgnoredFolders).onChange(async v => {
+                this.s.honorIgnoredFolders = v;
+                await this.save();
+                this.afterExclusionSettingsChanged();
+            }));
+
+        const intro = new Setting(wrap)
             .setName('Additional excluded folders')
             .setDesc("Folders Seek excludes from indexing, in addition to Obsidian's Excluded files (when Honor excluded folders is on). Add or remove a folder and Seek backfills or soft-deletes the affected notes automatically.");
 
@@ -503,19 +507,28 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         }
 
         let pendingPath = '';
-        const addRow = new Setting(adv)
-            .setClass('seek-excluded-folder-add')
-            .setName('')
-            .setDesc('Pick a vault folder to exclude from Seek’s index.');
-        addRow.addText(text => {
-            text.setPlaceholder('e.g. Archive/old');
-            new FolderSuggest(this.app, text.inputEl);
-            text.onChange(v => { pendingPath = v; });
+        const add = list.createDiv({ cls: 'seek-excluded-folder-add-row' });
+        const input = add.createEl('input', {
+            cls: 'seek-excluded-folder-input',
+            attr: { type: 'text', placeholder: 'e.g. Archive/old' },
         });
-        addRow.addButton(b => b
-            .setButtonText('Add')
-            .setCta()
-            .onClick(() => void this.addCustomExcludedFolder(pendingPath)));
+        new FolderSuggest(this.app, input);
+        input.addEventListener('input', () => { pendingPath = input.value; });
+        input.addEventListener('keydown', (e: KeyboardEvent) => {
+            if (e.key !== 'Enter') return;
+            e.preventDefault();
+            void this.addCustomExcludedFolder(pendingPath || input.value);
+        });
+        const addBtn = add.createEl('button', { cls: 'mod-cta seek-excluded-folder-add-btn', text: 'Add' });
+        addBtn.onclick = () => void this.addCustomExcludedFolder(pendingPath || input.value);
+    }
+
+    private afterExclusionSettingsChanged(): void {
+        this.plugin.requestExclusionAlign();
+        this.paintExclusionBanner();
+        this.paintStatusCard();
+        void this.paintCoverage();
+        if (this.shouldPollStartup()) this.startStartupPoll();
     }
 
     private async addCustomExcludedFolder(raw: string): Promise<void> {
@@ -540,16 +553,14 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             path,
         ].sort((a, b) => a.localeCompare(b));
         await this.save();
-        this.plugin.forcePollExclusions();
-        void this.paintCoverage();
+        this.afterExclusionSettingsChanged();
         this.rerender();
     }
 
     private async removeCustomExcludedFolder(folder: string): Promise<void> {
         this.s.customExcludedFolders = (this.s.customExcludedFolders ?? []).filter(f => f !== folder);
         await this.save();
-        this.plugin.forcePollExclusions();
-        void this.paintCoverage();
+        this.afterExclusionSettingsChanged();
         this.rerender();
     }
 
@@ -627,6 +638,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             job: this.plugin.getIndexJob(),
             orchestratorReady: this.plugin.isCoverageSourceReady,
             loadFailed,
+            aligningExclusions: !!this.plugin.getExclusionChange(),
         });
 
         const wrap = host.createDiv({ cls: 'seek-coverage-panel' });
@@ -745,10 +757,20 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             cls: 'seek-exclusion-banner' + (backfilling ? ' is-backfilling' : ''),
         });
         const when = new Date(detectedAt).toLocaleTimeString();
+        if (diff.newlyIncludedPaths.length === 0 && diff.newlyExcludedPaths.length === 0) {
+            banner.createDiv({
+                cls: 'seek-exclusion-banner-title',
+                text: backfilling ? 'Aligning with exclusions' : 'Exclusion settings changed',
+            });
+            banner.createDiv({
+                cls: 'seek-exclusion-banner-detail',
+                text: `Reindexing to align the index with your excluded folders (${when}).`,
+            });
+        }
         if (diff.newlyIncludedPaths.length > 0) {
             banner.createDiv({
                 cls: 'seek-exclusion-banner-title',
-                text: backfilling ? 'Backfilling after your exclusion settings changed' : 'Backfill ready after your exclusion settings changed',
+                text: backfilling ? 'Aligning with exclusions' : 'Backfill ready after your exclusion settings changed',
             });
             banner.createDiv({
                 cls: 'seek-exclusion-banner-detail',
@@ -756,6 +778,12 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             });
         }
         if (diff.newlyExcludedPaths.length > 0) {
+            if (diff.newlyIncludedPaths.length === 0) {
+                banner.createDiv({
+                    cls: 'seek-exclusion-banner-title',
+                    text: backfilling ? 'Aligning with exclusions' : 'Exclusion settings changed',
+                });
+            }
             banner.createDiv({
                 cls: 'seek-exclusion-banner-detail',
                 text: `Removing ${diff.newlyExcludedPaths.length.toLocaleString()} note${diff.newlyExcludedPaths.length === 1 ? '' : 's'} from the index${diff.newlyExcludedFolders.length ? ' in ' + diff.newlyExcludedFolders.join(', ') : ''}.`,

@@ -430,7 +430,10 @@ export default class SeekPlugin extends Plugin {
 
     /** Coordinator pass currently shown on the status-bar badge, or null. */
     getIndexJob(): IndexStatusJob | null {
-        return this.indexProgress.job();
+        const job = this.indexProgress.job();
+        if (!job) return null;
+        if (this.schedulers.isExclusionAligning()) return { ...job, aligningExclusions: true };
+        return job;
     }
 
     /** Live encode-speed inputs for Settings embed diagnostics. */
@@ -493,11 +496,18 @@ export default class SeekPlugin extends Plugin {
 
     private beginIndexJob(kind: IndexJobKind, total: number, label: string): number {
         const id = this.nextIndexJobId++;
-        this.indexProgress.show(total, label, { id, kind });
+        this.indexProgress.show(total, label, {
+            id,
+            kind,
+            aligningExclusions: this.schedulers.isExclusionAligning(),
+        });
         return id;
     }
 
     private catchUpJobLabel(total: number): string {
+        if (this.schedulers.isExclusionAligning()) {
+            return `Seek: aligning with exclusions · ${total.toLocaleString()} notes…`;
+        }
         return `Seek: indexing ${total.toLocaleString()} notes…`;
     }
 
@@ -2496,9 +2506,14 @@ export default class SeekPlugin extends Plugin {
                         if (this.catchUpJob) {
                             this.catchUpJob.committed += r.committedPaths.length;
                             const { committed, passTotal, id } = this.catchUpJob;
+                            const aligning = this.schedulers.isExclusionAligning();
                             const label = this.indexingBlocked
-                                ? `Seek: indexing paused · ${committed} / ${passTotal}`
-                                : `Seek: indexing ${committed} / ${passTotal} notes…`;
+                                ? (aligning
+                                    ? `Seek: aligning with exclusions paused · ${committed} / ${passTotal}`
+                                    : `Seek: indexing paused · ${committed} / ${passTotal}`)
+                                : (aligning
+                                    ? `Seek: aligning with exclusions · ${committed} / ${passTotal}`
+                                    : `Seek: indexing ${committed} / ${passTotal} notes…`);
                             this.indexProgress.update(committed, passTotal, label, id);
                         }
                         return r;
@@ -2686,6 +2701,11 @@ export default class SeekPlugin extends Plugin {
     // folders" in Settings, rather than waiting for the 5s poll).
     forcePollExclusions(): void {
         this.schedulers.forcePollExclusions();
+    }
+
+    /** Settings add/remove Honor or additional excluded folders — catch-up + aligning status. */
+    requestExclusionAlign(): void {
+        this.schedulers.requestExclusionAlign();
     }
     private onPersistentDrift(): void {
         this.driftRecoveryCoordinator.onPersistentDrift();

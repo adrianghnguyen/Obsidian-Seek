@@ -150,6 +150,13 @@ function indexingDetail(job: IndexStatusJob | null): string {
     return 'Seek is still scanning and embedding your vault. Folder coverage will appear once notes are indexed.';
 }
 
+function aligningDetail(job: IndexStatusJob | null): string {
+    if (job && job.total > 0) {
+        return `Reindexing ${job.done.toLocaleString()} of ${job.total.toLocaleString()} notes so the index matches your excluded folders.`;
+    }
+    return 'Reindexing notes that moved in or out of your excluded folders.';
+}
+
 function isIndexingActive(health: IndexStatusHealth, job: IndexStatusJob | null): boolean {
     if (health === 'indexing') return true;
     return job != null && job.total > 0 && job.done < job.total;
@@ -162,8 +169,9 @@ export function resolveCoveragePanelView(input: {
     job: IndexStatusJob | null;
     orchestratorReady: boolean;
     loadFailed?: boolean;
+    aligningExclusions?: boolean;
 }): CoveragePanelView {
-    const { summary, health, job, orchestratorReady, loadFailed } = input;
+    const { summary, health, job, orchestratorReady, loadFailed, aligningExclusions } = input;
     const { total, covered, excluded } = summary.overall;
 
     if (loadFailed) {
@@ -231,6 +239,12 @@ export function resolveCoveragePanelView(input: {
                 title: 'Restoring index…',
                 detail: 'Seek is restoring your index. Folder coverage is updating live as notes are restored.',
             };
+        } else if (aligningExclusions) {
+            view.statusLine = {
+                tone: 'pending',
+                title: 'Aligning with exclusions',
+                detail: aligningDetail(job),
+            };
         } else if (isIndexingActive(health, job) && covered < total) {
             view.statusLine = {
                 tone: 'pending',
@@ -263,6 +277,18 @@ export function resolveCoveragePanelView(input: {
                 detail: health === 'restoring'
                     ? 'Seek is restoring your index. Folder coverage will appear once the vault layout is ready.'
                     : 'Seek is loading the search index. Folder coverage will appear once your vault is ready.',
+            },
+        };
+    }
+
+    if (aligningExclusions) {
+        return {
+            showTree: false,
+            summary,
+            placeholder: {
+                tone: 'pending',
+                title: 'Aligning with exclusions',
+                detail: aligningDetail(job),
             },
         };
     }
@@ -447,4 +473,13 @@ export function diffExcludedPaths(prev: readonly string[], next: readonly string
 
 export function exclusionDiffIsEmpty(diff: ExclusionDiff): boolean {
     return diff.newlyIncludedPaths.length === 0 && diff.newlyExcludedPaths.length === 0;
+}
+
+export function emptyExclusionDiff(): ExclusionDiff {
+    return {
+        newlyIncludedPaths: [],
+        newlyExcludedPaths: [],
+        newlyIncludedFolders: [],
+        newlyExcludedFolders: [],
+    };
 }

@@ -114,6 +114,27 @@ function sep(parent: HTMLElement): void {
     parent.createSpan({ cls: 'seek-embed-sep', text: ' · ' });
 }
 
+function sectionHead(parent: HTMLElement, key: string, text: string): void {
+    helpLabel(parent.createDiv({ cls: 'seek-status-embed-sec-head' }), key, text);
+}
+
+function kvGrid(parent: HTMLElement, rows: Array<{ key: string; value: string; label?: string }>): void {
+    const grid = parent.createDiv({ cls: 'seek-status-embed-grid' });
+    for (const row of rows) {
+        const k = grid.createSpan({ cls: 'seek-status-embed-k', text: row.label ?? row.key });
+        const tip = EMBED_METRIC_HELP[row.key] ?? row.key;
+        k.setAttr('aria-label', tip);
+        setTooltip(k, tip, { delay: 400 });
+        grid.createSpan({ cls: 'seek-status-embed-v', text: row.value });
+    }
+}
+
+const EMBED_PILL_LABEL: Record<'live' | 'paused' | 'last pass', string> = {
+    live: 'Live',
+    paused: 'Paused',
+    'last pass': 'Last pass',
+};
+
 export interface EmbedDiagView {
     open: boolean;
     onToggle: () => void;
@@ -157,7 +178,7 @@ export function renderEmbedDiagnostic(card: HTMLElement, view: EmbedDiagView): v
 
     head.createSpan({ cls: 'seek-status-embed-chev', text: view.open ? '▾' : '▸' });
     const title = head.createSpan({ cls: 'seek-status-embed-title' });
-    helpLabel(title, 'embedding');
+    helpLabel(title, 'embedding', 'Embedding pass');
     const info = title.createSpan({ cls: 'seek-status-embed-info' });
     setIcon(info, 'info');
     info.setAttr('aria-label', EMBED_VS_PASS_HELP);
@@ -179,7 +200,7 @@ export function renderEmbedDiagnostic(card: HTMLElement, view: EmbedDiagView): v
 
     const pill = head.createSpan({
         cls: `seek-status-embed-pill${pillKey ? '' : ' is-empty'}`,
-        text: pillKey ?? 'no pass yet',
+        text: pillKey ? EMBED_PILL_LABEL[pillKey] : 'No pass yet',
     });
     if (pillKey) markHelp(pill, pillKey);
 
@@ -187,113 +208,85 @@ export function renderEmbedDiagnostic(card: HTMLElement, view: EmbedDiagView): v
 
     const body = block.createDiv({ cls: 'seek-status-embed-body' });
 
-    // —— this pass ——
     const passSec = body.createDiv({ cls: 'seek-status-embed-section' });
-    helpLabel(passSec.createDiv({ cls: 'seek-status-embed-sec-head' }), 'this pass');
-    const passLine = passSec.createDiv({ cls: 'seek-status-embed-line' });
+    sectionHead(passSec, 'this pass', 'This pass');
     if (jobActive) {
         const kind = jobKindLabel(live.kind);
-        helpLabel(passLine, kind);
-        sep(passLine);
-        passLine.createSpan({ text: `${live.done.toLocaleString()} ` });
-        helpLabel(passLine, 'files');
-        sep(passLine);
-        passLine.createSpan({ text: `${live.chunksDone.toLocaleString()} ` });
-        helpLabel(passLine, 'chunks');
+        kvGrid(passSec, [
+            { key: kind, value: kind === 'full' ? 'Full rebuild' : 'Catch-up', label: 'Kind' },
+            { key: 'files', value: live.done.toLocaleString(), label: 'Files' },
+            { key: 'chunks', value: live.chunksDone.toLocaleString(), label: 'Chunks' },
+        ]);
     } else if (complete) {
         const kind = jobKindLabel(undefined, complete.mode);
-        helpLabel(passLine, kind);
-        sep(passLine);
-        passLine.createSpan({ text: `${complete.filesIndexed.toLocaleString()} ` });
-        helpLabel(passLine, 'files');
-        sep(passLine);
-        passLine.createSpan({ text: `${complete.chunksIndexed.toLocaleString()} ` });
-        helpLabel(passLine, 'chunks');
+        kvGrid(passSec, [
+            { key: kind, value: kind === 'full' ? 'Full rebuild' : 'Catch-up', label: 'Kind' },
+            { key: 'files', value: complete.filesIndexed.toLocaleString(), label: 'Files' },
+            { key: 'chunks', value: complete.chunksIndexed.toLocaleString(), label: 'Chunks' },
+        ]);
     } else {
-        passLine.createSpan({ cls: 'seek-status-embed-empty', text: '—' });
+        passSec.createDiv({ cls: 'seek-status-embed-line seek-status-embed-empty', text: '—' });
     }
 
-    const staleLabel = jobActive && complete ? 'last completed' : null;
-
-    // —— phases / batch / health from last completed ——
     if (complete) {
-        if (staleLabel) {
+        if (jobActive) {
             const note = body.createDiv({ cls: 'seek-status-embed-stale' });
-            helpLabel(note, 'last completed');
+            helpLabel(note, 'last completed', 'From last completed pass');
         }
 
         const phases = body.createDiv({ cls: 'seek-status-embed-section' });
-        helpLabel(phases.createDiv({ cls: 'seek-status-embed-sec-head' }), 'phases');
-        const phaseRow = phases.createDiv({ cls: 'seek-status-embed-line seek-status-embed-phases' });
-        for (const [key, ms] of [
-            ['chunk', complete.chunkDurationMs],
-            ['embed', complete.embedDurationMs],
-            ['commit', complete.commitDurationMs],
-            ['pace', complete.paceWaitMs ?? 0],
-        ] as const) {
-            const cell = phaseRow.createSpan({ cls: 'seek-status-embed-phase' });
-            helpLabel(cell, key);
-            cell.createSpan({ text: ` ${fmtPhaseDuration(ms)}` });
-        }
-        const totalRow = phases.createDiv({ cls: 'seek-status-embed-line' });
-        helpLabel(totalRow, 'total');
-        totalRow.createSpan({ text: ` ${fmtPhaseDuration(complete.totalDurationMs)}` });
+        sectionHead(phases, 'phases', 'Phases');
+        kvGrid(phases, [
+            { key: 'chunk', value: fmtPhaseDuration(complete.chunkDurationMs), label: 'Chunk' },
+            { key: 'embed', value: fmtPhaseDuration(complete.embedDurationMs), label: 'Embed' },
+            { key: 'commit', value: fmtPhaseDuration(complete.commitDurationMs), label: 'Commit' },
+            { key: 'pace', value: fmtPhaseDuration(complete.paceWaitMs ?? 0), label: 'Pace' },
+            { key: 'total', value: fmtPhaseDuration(complete.totalDurationMs), label: 'Total' },
+        ]);
 
         const batch = body.createDiv({ cls: 'seek-status-embed-section' });
-        helpLabel(batch.createDiv({ cls: 'seek-status-embed-sec-head' }), 'batch');
-        const batchLine = batch.createDiv({ cls: 'seek-status-embed-line' });
+        sectionHead(batch, 'batch', 'Batch');
         const dist = complete.embedBatchLatencyMs;
         const dispatches = dist?.n ?? 0;
         const effectiveBatch = dispatches > 0 ? complete.vectorsWritten / dispatches : 0;
-        batchLine.createSpan({ text: `${dispatches.toLocaleString()} ` });
-        helpLabel(batchLine, 'dispatches');
-        sep(batchLine);
-        helpLabel(batchLine, 'batch size', 'batch');
-        batchLine.createSpan({ text: ` ${effectiveBatch > 0 ? effectiveBatch.toFixed(1) : '—'}` });
+        const batchRows: Array<{ key: string; value: string; label?: string }> = [
+            { key: 'dispatches', value: dispatches.toLocaleString(), label: 'Dispatches' },
+            { key: 'batch size', value: effectiveBatch > 0 ? effectiveBatch.toFixed(1) : '—', label: 'Avg batch' },
+        ];
         if (dist) {
-            sep(batchLine);
-            helpLabel(batchLine, 'p50');
-            batchLine.createSpan({ text: ` ${fmtLatency(dist.p50)}` });
-            sep(batchLine);
-            helpLabel(batchLine, 'p95');
-            batchLine.createSpan({ text: ` ${fmtLatency(dist.p95)}` });
+            batchRows.push(
+                { key: 'p50', value: fmtLatency(dist.p50), label: 'Typical (p50)' },
+                { key: 'p95', value: fmtLatency(dist.p95), label: 'Slow (p95)' },
+            );
         }
+        kvGrid(batch, batchRows);
 
         const health = body.createDiv({ cls: 'seek-status-embed-section' });
-        helpLabel(health.createDiv({ cls: 'seek-status-embed-sec-head' }), 'health');
-        const healthLine = health.createDiv({ cls: 'seek-status-embed-line' });
-        helpLabel(healthLine, 'pass', complete.pass ? 'pass' : 'fail');
-        sep(healthLine);
-        healthLine.createSpan({ text: `${complete.filesSkippedError} ` });
-        helpLabel(healthLine, 'skipped');
-        sep(healthLine);
-        healthLine.createSpan({ text: `${complete.filesQuarantined ?? 0} ` });
-        helpLabel(healthLine, 'quarantined');
-        sep(healthLine);
-        healthLine.createSpan({ text: `${complete.embedRecycles} ` });
-        helpLabel(healthLine, 'recycles');
+        sectionHead(health, 'health', 'Health');
+        kvGrid(health, [
+            { key: 'pass', value: complete.pass ? 'Pass' : 'Fail', label: 'Result' },
+            { key: 'skipped', value: String(complete.filesSkippedError), label: 'Skipped' },
+            { key: 'quarantined', value: String(complete.filesQuarantined ?? 0), label: 'Quarantined' },
+            { key: 'recycles', value: String(complete.embedRecycles), label: 'Recycles' },
+        ]);
     } else {
         const empty = body.createDiv({ cls: 'seek-status-embed-section' });
         empty.createDiv({ cls: 'seek-status-embed-line seek-status-embed-empty', text: 'No completed pass yet' });
     }
 
-    // —— model (last load) ——
     const model = body.createDiv({ cls: 'seek-status-embed-section' });
-    helpLabel(model.createDiv({ cls: 'seek-status-embed-sec-head' }), 'model');
-    const modelLine = model.createDiv({ cls: 'seek-status-embed-line' });
+    sectionHead(model, 'model', 'Model');
     if (load) {
         const deviceKey = load.actualDevice === 'webgpu' ? 'webgpu' : 'wasm';
-        helpLabel(modelLine, deviceKey, load.actualDevice);
-        sep(modelLine);
-        helpLabel(modelLine, load.dtype, load.dtype);
-        sep(modelLine);
         const dimKey = `${load.embeddingDim}d`;
-        helpLabel(modelLine, dimKey in EMBED_METRIC_HELP ? dimKey : '768d', dimKey);
-        sep(modelLine);
-        helpLabel(modelLine, 'cold');
-        modelLine.createSpan({ text: ` ${fmtPhaseDuration(load.coldStartMs)}` });
+        kvGrid(model, [
+            { key: deviceKey, value: load.actualDevice, label: 'Engine' },
+            { key: load.dtype, value: load.dtype, label: 'Weights' },
+            { key: dimKey in EMBED_METRIC_HELP ? dimKey : '768d', value: dimKey, label: 'Vectors' },
+            { key: 'cold', value: fmtPhaseDuration(load.coldStartMs), label: 'Cold load' },
+        ]);
     } else {
-        modelLine.createSpan({ cls: 'seek-status-embed-empty', text: '—' });
+        model.createDiv({ cls: 'seek-status-embed-line seek-status-embed-empty', text: '—' });
     }
 }
 

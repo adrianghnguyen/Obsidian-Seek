@@ -67,6 +67,7 @@ export const REPORT_CAPS: Record<string, number> = {
     'rechunk-live': 20,
     'startup-span': 50,
     'startup-gate': 20,
+    'exclusion-align': 50,
     'memory-pressure': 100,
     'long-task': 100,
     'storage-snapshot': 50,

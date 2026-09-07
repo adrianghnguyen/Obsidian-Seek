@@ -170,11 +170,11 @@ describe('renderEmbedDiagnostic', () => {
             lastLoad: sampleLoad(),
         });
         const blob = textOf(card);
-        expect(blob).toContain('embedding');
+        expect(blob).toContain('Embedding pass');
         expect(blob).toContain('6.1');
         expect(blob).toContain('1.2');
-        expect(blob).toContain('last pass');
-        expect(blob).not.toContain('phases');
+        expect(blob).toContain('Last pass');
+        expect(blob).not.toContain('Phases');
         expect(card.querySelector('.seek-status-embed-body')).toBeNull();
     });
 
@@ -195,14 +195,15 @@ describe('renderEmbedDiagnostic', () => {
             lastLoad: sampleLoad(),
         });
         const blob = textOf(card);
-        expect(blob).toContain('live');
-        expect(blob).toContain('catch-up');
-        expect(blob).toContain('last completed');
-        expect(blob).toContain('phases');
+        expect(blob).toContain('Live');
+        expect(blob).toContain('Catch-up');
+        expect(blob).toContain('From last completed pass');
+        expect(blob).toContain('Phases');
         expect(blob).toContain('3m 12s');
         expect(blob).toContain('412');
         expect(blob).toContain('webgpu');
         expect(blob).toContain('1.8s');
+        expect(card.querySelector('.seek-status-embed-grid')).not.toBeNull();
         expect(card.querySelector('.seek-status-embed-body')).not.toBeNull();
     });
 
