@@ -14,21 +14,26 @@ tag: catch-up
 tag: unload
 tag: cli
 tag: startup
+tag: sidecar
+tag: lock
 file: src/main.ts
 file: src/search.ts
 file: src/logger.ts
 file: src/index-store.ts
+file: src/cache-manager.ts
 sym: runCatchUp
 sym: onunload
-sym: appendError
-sym: isStoreClosedError
-sym: computeDelta
-sym: indexableLiveFilesWhenStored
+sym: startPostLayoutBoot
+sym: detectCloneCollision
 sym: vaultIndexEventsReady
+sym: ensureFrame
 found: vault console flooded by zombie runCatchUp after plugin:reload
 found: computeDelta mass-delete warn is boot race live=0 not a real wipe
+found: production boot-ifi hangs after vault hide; search totalChunks 0
+found: 16 sidecar deviceIds from clone regen; this device jsonl is 3 rows
 open: stop catch-up self-chain on unloading or STORE_NOT_OPENED
 open: re-enable Seek in vault and confirm no mass-delete warn on cold restart
+open: production 600s not-ready lock after hide/evict + sidecar identity churn
 exclude: idb-cross-device
 exclude: sidecar-protocol
 exclude: webgpu-device-lost-mobile
@@ -424,3 +429,46 @@ did: wait onLayoutReady before reconcileOnLoad
 did: poll while shouldDeferMassDelete still true including live=0
 did: ignore vault create delete rename until vaultIndexEventsReady
 open: re-enable Seek and confirm no mass-delete warn and no 4k bulk flush on cold restart
+
+---
+
+## 2026-09-06 production-boot-lock
+
+id: 2026-09-06-production-boot-lock
+date: 2026-09-06
+status: open
+tag: startup
+tag: lock
+tag: sidecar
+tag: cli
+file: src/main.ts
+file: src/logger.ts
+file: src/index-store.ts
+file: src/cache-manager.ts
+sym: startPostLayoutBoot
+sym: detectCloneCollision
+sym: regenerateDeviceId
+sym: ensureFrame
+sym: vaultIndexEventsReady
+cmd: obsidian eval
+cmd: obsidian vault
+found: production Seek 1.5.0 session 48f91aab boot-ifi start 00:06:23 never ended
+found: searches cns hi waffles job-level all totalChunks 0 idbReadMs 0
+found: long-task context indexing for 12 plus min; getIndexStats hung 60s
+found: no store-lock-retry no sidecar-hydrate span no startup-gate after 17:41
+found: 6 boot-ifi starts after 18:07 never completed; 667b3cb3 hidden 18:12-23:44
+found: crash-detected evicted-while-hidden on every vault hide
+found: device-clone-detected gen 10 vs expected 8 at 00:20:38
+found: 16 sidecar desktop deviceIds; 21fd0a00 jsonl 299 B lastFullReindex null
+found: only 39211112 has a real sidecar 1.76 MB lastFullReindex 2026-08-30
+found: earlier same day hydrate scanned 18614 rows 15 producers in 373575 ms
+found: vault=Obsidian CLI substring-matches plugin-sandbox-Obsidian
+rca: hide/switch vault evicts Seek mid-boot; new instance overlaps old writer
+rca: clone collision mints a new deviceId each overlap; sidecar dir fills with orphans
+rca: boot-ifi first open and count have no timeout so a contended IDB never reaches lock-retry
+rca: vaultIndexEventsReady flips true before hydrate so flushDirty can take indexing lock
+rca: ensureFrame waits 30s then serves empty; search looks locked forever
+did: disk NDJSON RCA on C:\Obsidian\.obsidian\plugins\seek\logs\seek-log-desktop-21fd0a00.ndjson
+did: killed hung production getIndexStats eval
+open: single-window tray-quit recovery or IDB reset if boot-ifi still never ends
+open: timeout first store.open and do not set vaultIndexEventsReady until hydrate ends
