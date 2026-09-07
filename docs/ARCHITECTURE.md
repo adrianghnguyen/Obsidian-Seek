@@ -34,7 +34,7 @@ This document describes how the codebase is organized, how major subsystems inte
 | **Entry point** | `src/main.ts` — `SeekPlugin` extends Obsidian `Plugin` |
 | **Shipped artifacts** | `main.js` (esbuild bundle), `manifest.json`, `styles.css` |
 | **Primary dependency** | [MiniSearch](https://github.com/lucaong/minisearch) for BM25 |
-| **Embedding model** | IBM Granite multilingual (`granite-embedding-97m`), 384-d, via transformers.js in a sandboxed iframe |
+| **Embedding model** | Small on-device Granite multilingual embedder (fixed output dim), via transformers.js in a sandboxed iframe |
 | **Storage** | Per-vault IndexedDB + optional vault-file sidecar for sync |
 
 Seek's responsibility is end-to-end: chunk notes → embed → index → parse queries → retrieve → rank → present results → open notes or insert links.
@@ -85,13 +85,13 @@ flowchart TB
     LOG --> LOGS
 ```
 
-**Central orchestrator:** `SearchOrchestrator` (`src/search.ts`) owns chunking, embedding coordination, BM25 cache, in-memory search frame, sidecar hydration, and the `search()` / `reindexAll()` / `reindexDelta()` APIs. Everything else plugs into it or into `SeekPlugin` wiring in `main.ts`.
+**Central orchestrator:** `SearchOrchestrator` coordinates indexing and search APIs (`search` / `reindexAll` / `reindexDelta`). Resident query caches (frame, BM25, binary, synonyms) are owned by `CacheManager`; write locking lives on `IndexCoordinator`; sidecar hydrate/compaction on `SidecarCoordinator`. Plugin shell wiring lives on `SeekPlugin`.
 
 ---
 
 ## 3. Domain map (by folder / module group)
 
-All production code lives in a **flat `src/` directory** (~55 modules). Tests are colocated as `*.test.ts`. There is no nested `src/search/` package — domains are expressed by file naming and imports.
+Production code is mostly a **flat `src/` directory** (plus small nested harness/stub/fixture dirs for tests). Domains are expressed by file naming and imports; the tables below are a map of *roles*, not an exhaustive inventory — prefer grepping `src/` when hunting a specific symbol.
 
 ### 3.1 Plugin shell & types
 
@@ -186,7 +186,7 @@ All production code lives in a **flat `src/` directory** (~55 modules). Tests ar
 
 | Path | Responsibility |
 |------|----------------|
-| `src/*.test.ts` | ~59 colocated unit/integration tests |
+| `src/*.test.ts` | Colocated unit/integration tests |
 | `src/test-harness/scenario.ts` | Tier-2 composed scenarios (real orchestrator + fake IndexedDB) |
 | `src/test-stubs/` | Vitest stubs for `obsidian` API and `window` |
 | `src/fixtures/` | Realistic markdown fixtures for chunker/token tests |
@@ -225,12 +225,12 @@ Synchronous clean end: mark forensics session closed → teardown embedder ifram
 
 | Mechanism | Role |
 |-----------|------|
-| Vault file events | Queue dirty files for incremental reindex (`queueDirty`) |
-| `flushDirty()` | Debounced delta embed after edits (5m idle window for edits, 1.5s for deletes/renames) |
-| `runCatchUp()` | Drains backlog when search modal is idle; scheduled every 5 minutes |
+| Vault file events | Queue dirty files for incremental reindex |
+| `flushDirty()` | Debounced delta embed after edits (longer idle for text; faster for deletes/renames) |
+| `runCatchUp()` | Drains backlog when search is idle; periodic scheduler |
 | `reconcileFolderExclusions()` | Reconciles inclusion/exclusion folder list diffs |
-| `maybeUnloadEmbedder()` | Mobile idle memory watchdog (unloads iframe after 3 minutes quiescence) |
-| `indexingBlocked` | Pauses embeds while active search query is in flight |
+| `maybeUnloadEmbedder()` | Mobile idle memory watchdog (unloads embed iframe after quiescence) |
+| `indexingBlocked` | Pauses embeds while an active search query is in flight |
 
 ### 4.4 Lifecycle Workflows & Call Order Sequences
 
@@ -251,9 +251,9 @@ flowchart TD
 
     subgraph QueryWorkflow [2. Search Query Pipeline]
         Q1[1. SearchQuery.parseQuery] --> Q2{Empty or filter-only?}
-        Q2 -->|Yes| Q3[Stage 0: Instant emitVaultLadder <5ms]
+        Q2 -->|Yes| Q3[Stage 0: Instant browse or vault ladder]
         Q2 -->|No| Q4[CacheManager.ensureFrame - verify generation freshness]
-        Q4 --> Q5[Parallel: Embedder iframe query vector + BM25 search]
+        Q4 --> Q5[Parallel: query embed plus BM25 search]
         Q5 --> Q6[BinaryScorerWorker - 1-bit Hamming distance]
         Q6 --> Q7[Candidate pool union via poolCaps]
         Q7 --> Q8[Stage 2: Dense cosine rerank on top candidates]
@@ -299,47 +299,31 @@ flowchart TD
    - Registers UI commands, modal hotkeys, settings tab, and headless CLI handlers (`seek:search`, `seek:open`, `seek:insert-link`).
 
 2. **Search Query Pipeline**:
-   - `SearchQuery.parseQuery()` parses query terms, tags, and field filters.
-   - Fast path check: empty or filter-only queries immediately route to `emitVaultLadder()` (<5ms response, bypasses embedder and IDB).
-   - `cacheManager.ensureFrame()` retrieves the resident frame and checks generation freshness.
-   - Dispatches parallel execution:
-     - Embedding worker generates 384-d query vector via sandboxed iframe.
-     - In-memory `MultiFieldBM25` performs lexical scoring across all indexed fields.
-   - `BinaryScorerWorker` computes 1-bit Hamming distances over `activePacked` sign vectors.
-   - `poolCaps()` dynamically calculates candidate pool union size based on query length and confidence.
-   - Top candidates undergo int8 dot-product / cosine similarity reranking (Stage 2).
-   - TM2C2 ranker normalizes and fuses dense, BM25, recency, and title signals into `ScoredChunk[]`.
+   - Parse query terms, tags, and field filters.
+   - Fast path: empty or filter-only queries can skip the dense path (vault ladder, filter browse, or frame browse-order depending on frame warmth).
+   - Ensure the resident frame and check generation freshness.
+   - Parallel work: query embedding (iframe by default; optional nested worker when enabled) and in-memory multi-field BM25.
+   - Binary stage-1 Hamming over packed sign vectors (desktop may offload to a DedicatedWorker).
+   - Candidate pool union sized from corpus scale (√N-style caps).
+   - Top candidates undergo int8 cosine rerank, then TM2C2 fusion into scored results.
 
 3. **Incremental Edit & Flush Workflow**:
-   - Vault events trigger `PluginSchedulerManager.queueDirty()`.
-   - Debounce window: 5 minutes idle (`IDLE_FLUSH_MS`) for text edits; 1.5 seconds (`STRUCT_FLUSH_MS`) for structural changes (deletes/renames).
-   - `flushDirty()` verifies `!isQueryInFlight` before acquiring the write lock.
-   - `IndexCoordinator.runExclusive()` serializes the transaction.
-   - Calculates file diffs, embeds new chunks via rolling token-budget batches, and commits to `IndexStore`.
-   - Mutates `CacheManager` in lockstep (`appendFrameRows` + `bm25.add` or `tombstoneFrameRows` + `bm25.remove`).
-   - Verifies row alignment with `frameBm25Coherent()`.
-   - Appends delta shards to the disk sidecar (`.seek-artifacts/`).
+   - Vault events queue dirty paths; structural changes flush sooner than idle text edits.
+   - Background flush yields while a query is in flight, then takes the write mutex.
+   - Compute file diffs, embed via rolling token-budget batches, commit to IndexedDB / sidecar.
+   - Mutate resident caches in lockstep with the store write; spot-check frame/BM25 coherence.
 
 4. **Drift Recovery Workflow**:
-   - Triggered when row-alignment spot checks fail beyond `COHERENCE_DRIFT_COOLDOWN_MS` (30s).
-   - `DriftRecoveryCoordinator.onPersistentDrift()` checks single-flight status and ensures no prior pass ran for `currentGen`.
-   - Respects window backgrounding: if `document.hidden`, defers recovery until app gains focus.
-   - Executes embed-free sidecar hydration to restore chunk records from disk.
-   - Re-warms in-memory caches and re-runs coherence verification.
-   - Transitions `indexHealth` to `'healthy'` on success or `'degraded'` on failure.
+   - Persistent coherence failures trigger embed-free sidecar hydration (single-flight per generation; deferred while the window is hidden).
+   - Re-warm caches, re-verify coherence, then mark index health healthy or degraded.
 
 #### Key Order Dependencies & Concurrency Invariants
 
-- **Hydration MUST Run Before Catch-Up Indexing**:
-  `sidecarCoordinator.hydrateFromSidecar()` must complete before `runCatchUp()` computes vault note diffs. Ingesting peer chunks directly into IndexedDB first prevents thousands of peer-synced notes from being redundantly re-embedded locally.
-- **Write Mutex Requirement (`IndexCoordinator.runExclusive`)**:
-  All mutations to `IndexStore`, sidecar files, or memory frames must acquire the exclusive write lock to prevent race conditions between background flushes and user reindexing.
-- **Zero Dual-Cache Principle**:
-  All resident query memory structures (`frameCache`, `bm25Cache`, `binaryIndex`, `synonymCache`) are owned exclusively by `CacheManager`. `SearchOrchestrator` maintains no parallel caches.
-- **Generation Freshness Invariant (`shouldDiscardPartialFrame`)**:
-  `CacheManager.ensureFrame()` captures `coord.generation` before reading IndexedDB and validates it upon completion. If an indexing write occurred mid-read, the assembled frame is discarded immediately.
-- **UI & Query Priority over Background Flushes**:
-  `PluginSchedulerManager` flushes yield whenever `isQueryInFlight` is true (search modal active or CLI search running), ensuring typing responsiveness is protected from background indexing pauses.
+- **Hydration before catch-up indexing** — peer sidecar ingest must finish before catch-up diffs the vault, or synced notes get redundantly re-embedded.
+- **Write mutex** — all mutations to IndexedDB, sidecar files, or memory frames serialize through the index write lock.
+- **Zero dual-cache** — resident query structures are owned exclusively by `CacheManager`; the orchestrator must not keep a parallel copy.
+- **Generation freshness** — frame builds capture the write generation before IDB reads and discard the assembly if a write landed mid-read.
+- **UI & query priority** — background flushes yield whenever a search query is in flight.
 
 ---
 
@@ -382,6 +366,33 @@ flowchart LR
 | **Incremental delta** | File save/create/delete | Delete stale chunks, embed only changed chunks, `applyDelta()` on BM25 frame |
 
 Writes are serialized through `IndexCoordinator.runExclusive()`. In-flight deltas block `ensureFrame()` so searches never read a half-updated corpus.
+
+### Rolling embed batches
+
+Embedding is the slow part of indexing: each chunk goes through the on-device model in a **batch** to produce dense vectors. One call per chunk wastes setup; mixing very different lengths in one call wastes compute on padding. Seek therefore uses **per-bucket rolling buffers** on the index path.
+
+**Plain idea.** Notes are split into chunks. Each chunk’s exact token count maps to a sequence-length **bucket**. Chunks land in a buffer for that bucket. When the buffer is full enough, Seek flushes one `embedBatch`. Leftovers carry across the next files — that is the “rolling” part. Same-bucket flushes pad to one warmed shape instead of to the longest stranger in a mixed batch.
+
+| Knob | Role |
+|------|------|
+| **Max batch size** (`ROLLING_MAX`) | Hard ceiling on how many chunks may share one forward |
+| **Token budget** (`ROLLING_BUDGET`) | Target `batch × seq` work per dispatch — long buckets flush smaller so one GPU/CPU forward does not stall the UI as hard |
+| **Warmup grid** | Batch sizes and seq rungs the embed runtime warms at model load; live flush sizes must stay inside that set |
+| **Device ceiling helper** | Platform helper documenting a higher desktop cap — not what the rolling flush uses today |
+
+Flush size is derived, not a flat constant:
+
+```text
+flushCount(bucket) ≈ clamp(round(ROLLING_BUDGET / bucket), 1, ROLLING_MAX)
+```
+
+Read the live constants next to that helper on the index path — do not copy historical yield tables from comments or older docs; they drift when the budget changes.
+
+**Why two knobs.** Max batch size is “how full is the dishwasher rack.” Token budget is “how much work is allowed in one wash.” Raising only the max helps short buckets; long buckets stay small until the budget rises too. Raising either without extending the warmup grid risks cold shader compiles mid-reindex and historically triggered ORT-Web WebGPU **SafeInt** overflows on arbitrary `(batch × seq)` shapes.
+
+**Throughput context.** On desktop WebGPU, indexing is largely GPU-bound. Moving inference to a background worker does not by itself raise chunks/s; larger batches can, at the cost of longer non-preemptible stalls, thermal load, and SafeInt risk. After a reindex, trust `index-complete` embed throughput / batch latency / pace-wait / recycle fields before treating a higher cap as a win. A compositor pacer still yields between flushes so Obsidian can paint.
+
+**Query vs index.** Optional per-device “query in background worker” routing (when enabled) applies to single-query embeds only. Index batches stay on the iframe pipeline so token-exact bucket padding matches the warmup grid.
 
 ### IndexedDB stores (`index-store.ts`)
 
@@ -437,7 +448,7 @@ flowchart TD
 ### Fusion (`fusion.ts` + `ranker.ts`)
 
 - TM2C2-style normalization: cosine mapped to [0,1], BM25 divided by theoretical query bound
-- `hybrid = α·dense + (1-α)·bm25` where `α` = `settings.denseWeight` (default 0.85)
+- `hybrid = α·dense + (1-α)·bm25` where `α` is the dense-weight setting
 - Recency is an additive ε-tiebreaker, not a multiplicative boost
 - Title boost rewards query terms that are a subset of the note title
 
@@ -458,7 +469,7 @@ Written to `.obsidian/plugins/seek/index/` (default) or vault-root `Seek Index/`
 | Artifact | Purpose |
 |----------|---------|
 | `index.<deviceId>.jsonl` | Chunk id → shard offset map |
-| `embeddings.<deviceId>.<seq>.bin` | Packed int8 vectors (4 MB shards) |
+| `embeddings.<deviceId>.<seq>.bin` | Packed int8 vectors (sized shards) |
 | `meta.<deviceId>.json` | Format version, model, chunker, dim |
 
 **Hydration** (`sidecar-sync.ts`): re-chunk live vault files, intersect chunk ids with sidecar records, decode vectors into IndexedDB — no re-embed if identity matches.
@@ -497,15 +508,15 @@ Crash demotion can sticky-force WASM after mobile GPU jetsam.
 
 ### Model
 
-- **Spec:** `granite-embedding-97m-multilingual-r2`, 384-d, q4 quantized
-- **Registry:** `model-registry.ts` — `activeModelSpec(settings)`; debug repo override for eval
-- **Warmup:** shader/grid warmup in iframe; fingerprint skips ~1s on reload
+- **Spec:** Active entry in the model registry (Granite multilingual, fixed dim, q4-class weights) — the registry is the identity stamp source of truth
+- **Warmup:** shader/grid warmup in the embed iframe; fingerprint can skip a repeat warmup when config is unchanged
+- **Query route (optional):** per-device localStorage toggle can send single-query embeds to a nested dedicated worker; iframe remains automatic fallback. Index `embedBatch` does not use that route.
 
 ### Vector storage
 
-- Full vectors stored as **int8 + per-vector scale** (`quant.ts`)
-- **Sign bits** packed for binary stage-1 scan (`binary.ts`)
-- Stage-2 rerank dequantizes only the ~200–800 candidate union
+- Full vectors stored as **int8 + per-vector scale**
+- **Sign bits** packed for binary stage-1 scan
+- Stage-2 rerank dequantizes only the candidate union (not the full corpus)
 
 ---
 
@@ -518,7 +529,7 @@ Crash demotion can sticky-force WASM after mobile GPU jetsam.
 | Component | Role |
 |-----------|------|
 | `PillQueryField` | Query input with inline filter pills |
-| Results list | Reconciled row pool, infinite scroll (10 visible / 50 fetched) |
+| Results list | Reconciled row pool, infinite scroll (page of visible rows / larger fetch window) |
 | Index banner | Stale/syncing notices |
 | Footer | Keyboard hints (toggleable) |
 
@@ -536,7 +547,7 @@ Crash demotion can sticky-force WASM after mobile GPU jetsam.
 | ⌘/Ctrl+Shift+E | Expand snippet |
 | Esc | Close |
 
-Debounce: 200 ms desktop / 400 ms mobile. Catch-up indexing pauses while search is active.
+Debounced input (longer on mobile). Catch-up indexing pauses while search is active.
 
 ### Query field / pills (`query-field.ts`)
 
@@ -564,14 +575,14 @@ Shared by modal, `obsidian://seek?mode=open`, and `seek:open` CLI. `resolveOpenT
 
 ### Persisted (`data.json`, synced across devices)
 
-`SeekSettings` in `types.ts` — ~30 fields including:
+`SeekSettings` (see defaults + migrations in types) — ranking, indexing, display, and schema-revision fields. Examples:
 
 | Group | Examples |
 |-------|----------|
-| **Ranking** | `denseWeight`, `navTitleBoost`, `recencyEpsilon`, `recencyHalfLifeDays`, `fuzzyEnabled` |
-| **Indexing** | `honorIgnoredFolders`, `indexBases`, `searchableProperties`, `sidecarEnabled`, `sidecarIndexLocation` |
-| **Display** | `showScores`, `showHotkeyHints`, `insertLinkIncludeHeading`, snippet preview, modal size, aliases |
-| **Schema** | `settingsRev` (currently 8) — `migrateSettings()` runs on load |
+| **Ranking** | Dense weight, title boost, recency ε / half-life, fuzzy |
+| **Indexing** | Honor ignored folders, index Bases, searchable properties, sidecar on/location |
+| **Display** | Scores, hotkey hints, insert-link heading, snippet preview, modal size, aliases |
+| **Schema** | `settingsRev` + `migrateSettings()` on load — current rev lives in defaults, not this overview |
 
 `this.settings` is a live object shared with `SearchOrchestrator` — ranking changes apply on the next search without reindex.
 
@@ -579,7 +590,8 @@ Shared by modal, `obsidian://seek?mode=open`, and `seek:open` CLI. `resolveOpenT
 
 | Setting | Storage |
 |---------|---------|
-| Compute backend (`auto` / `wasm` / `webgpu`) | `localStorage` via `platform.ts` |
+| Compute backend (`auto` / `wasm` / `webgpu`) | `localStorage` (per device) |
+| Optional query embed worker route | `localStorage` (desktop experiment) |
 | WebGPU crash demotion flag | `localStorage` |
 | Device id for logs | `localStorage` |
 
@@ -596,10 +608,7 @@ Per-device NDJSON append log:
 .obsidian/plugins/seek/logs/seek-init-<deviceId>.json
 ```
 
-Generates human-readable reports at vault root:
-
-- `seek-report.md` — summary for users
-- `seek-report.json` — structured dump for offline analysis
+Generates a human-readable summary at vault root (`seek-report.md`) and a structured JSON dump under `.seek-artifacts/` for offline analysis.
 
 Logs search queries, ranking signals, indexing events, errors. **No telemetry leaves the device.**
 
@@ -626,7 +635,7 @@ Single `main.js` bundle (CommonJS, ES2022):
 npm run dev      # watch + inline sourcemaps
 npm run build    # production minify
 npm run typecheck
-npm test         # vitest run (~59 test files)
+npm test         # vitest run
 ```
 
 ### Test strategy
@@ -685,7 +694,7 @@ CLI handlers register only when `registerCliHandler` exists on the plugin instan
 
 ## 15. Monolith decomposition & modularization learnings
 
-During the refactoring of Seek's primary God Objects (`search.ts` and `main.ts`), critical architectural lessons, phase order requirements, and anti-patterns were established to maintain stability across a ~100k-LOC codebase running inside Obsidian's single-threaded JavaScript environment.
+During decomposition of Seek’s large host and orchestrator modules, critical architectural lessons, phase order requirements, and anti-patterns were established to keep a large single-threaded Obsidian plugin stable.
 
 ### 15.1 The Zero-Dual-Cache Principle & Anti-Patterns
 In an earlier refactor attempt, `CacheManager` and `SearchQuery` were copied out of `SearchOrchestrator`, but original cache fields and implementations were left in place:
@@ -698,24 +707,24 @@ In an earlier refactor attempt, `CacheManager` and `SearchQuery` were copied out
 | **Copy class out, leave orchestrator copy** | Dual cache drift, non-deterministic bugs; tests pass on dead instance while live path fails. | Never leave duplicate implementations. Code must be moved and original fields deleted or delegated in the exact same change. |
 | **Instantiate extracted class without delegating** | Dead code and misleading "contract tests" that don't execute the extracted class. | Delegate immediately on extraction; verify callers hit the extracted instance. |
 | **Split cache ownership across multiple objects** | Subtly desynchronized states between readers and writers (e.g. `wantRemovalBodies` vs `applyDelta`). | Single-authority state ownership is non-negotiable (`CacheManager` is sole cache owner). |
-| **Extract before composing integration tests** | No safety net for subtle delta application and search interactions. | Run Tier-2 full-pipeline tests (`search-integration.test.ts`, `scenario.ts`) on every extraction step. |
+| **Extract before composing integration tests** | No safety net for subtle delta application and search interactions. | Gate every extraction on Tier-2 composed pipeline tests (orchestrator + fake IndexedDB / embedder). |
 
 ### 15.2 Decomposition Phase Order (Leaf-First to Coordinator)
 To decompose large interconnected monoliths safely without introducing regressions:
-1. **Phase 1: Pure Stateless Helpers First**: Extract leaf utilities that touch no instance state (`frame-utils.ts`, `coherence.ts`, `bm25-persist.ts`). Re-export at tail for backwards compatibility.
-2. **Phase 2: Extract State Authorities Next**: Establish the single source of truth for in-memory structures (`cache-manager.ts`) before extracting consumers. Delete orchestrator cache fields in the same commit.
-3. **Phase 3: Extract Retrieval / Consumer Pipelines**: Extract query execution engines (`search-query.ts`) and delegate from the orchestrator.
-4. **Phase 4: Extract Durability & Sync**: Isolate high-conflict file/sidecar hydration and compaction (`sidecar-coordinator.ts`).
-5. **Phase 5: Extract Host Lifecycle & Schedulers**: Isolate background debounce timers, watchers, and CLI handlers (`plugin-schedulers.ts`, `cli-handlers.ts`, `drift-recovery-coordinator.ts`, `confirm-modal.ts`, `diagnostic-report.ts`).
+1. **Phase 1: Pure Stateless Helpers First**: Extract leaf utilities that touch no instance state (frame helpers, coherence, BM25 persist stamps). Re-export at tail for backwards compatibility.
+2. **Phase 2: Extract State Authorities Next**: Establish the single source of truth for in-memory structures (`CacheManager`) before extracting consumers. Delete orchestrator cache fields in the same commit.
+3. **Phase 3: Extract Retrieval / Consumer Pipelines**: Extract the query execution engine and delegate from the orchestrator.
+4. **Phase 4: Extract Durability & Sync**: Isolate high-conflict sidecar hydration and compaction.
+5. **Phase 5: Extract Host Lifecycle & Schedulers**: Isolate background debounce timers, watchers, CLI handlers, drift recovery, and diagnostic reporting.
 
 ### 15.3 Contract Testing & Integration Safety Net
-Unit tests on isolated functions cannot detect regressions caused by cross-module lifecycle interactions (e.g. delta application + search query interleaving, progressive partial ordering, or cache invalidation). 
-- Always gate extractions against Tier-2 composed integration tests (`src/search-integration.test.ts` and `src/test-harness/scenario.ts`), which boot a real `SearchOrchestrator` + `IndexStore` against a deterministic fake embedder.
+Unit tests on isolated functions cannot detect regressions caused by cross-module lifecycle interactions (e.g. delta application + search query interleaving, progressive partial ordering, or cache invalidation).
+- Always gate extractions against Tier-2 composed integration tests that boot a real `SearchOrchestrator` + `IndexStore` against a deterministic fake embedder (see `test-harness/` and colocated pipeline tests).
 
 ### 15.4 Remaining Seams (Candidate Write Slices)
-The following candidate slices remain in `src/search.ts` if future work requires further decomposition of the write pipeline:
-- `reindexDelta` / `applyDelta` (~800 lines): Removal-body capture, incremental BM25 patching.
-- Full reindex embed loop (`reindexAllInner`, ~600 lines): Pacer, token-budget rolling buffers, quota gating.
+If further write-pipeline decomposition is needed, the large remaining seams are:
+- Incremental delta apply (removal-body capture, BM25/frame patch).
+- Shared embed-and-commit loop (pacer, token-budget rolling buffers, quota gating) used by full and incremental indexing.
 
 ---
 
