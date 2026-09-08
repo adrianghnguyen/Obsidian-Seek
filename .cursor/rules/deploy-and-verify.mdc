@@ -16,13 +16,26 @@ A feature task is **not done** until the plugin is deployed to the **sandbox vau
 
 **Do not** copy `main.js`, `manifest.json`, or `styles.css` to production during feature branches, PR review, or sandbox testing.
 
-Deploy, reload, and verify: `obsidian vault=plugin-sandbox-Obsidian …` (`vault=` first). Production only on explicit promotion: run the CLI from cwd `C:\Obsidian` and omit `vault=`. **Never** `vault=Obsidian` — it substring-matches `plugin-sandbox-Obsidian` and can focus the wrong window.
+## Vault CLI hard rules (identity gate)
 
-**Do not** use `obsidian command id=app:open-vault`, `obsidian vault`, or `obsidian://open` to “select” an already-open vault — those raise/focus a window. Confirm with:
+Every `obsidian` invoke that targets a vault MUST:
+
+1. Put **`vault=<name>` first** (before the subcommand):  
+   `obsidian vault=plugin-sandbox-Obsidian eval …`  
+   **Wrong:** `obsidian eval vault=plugin-sandbox-Obsidian …` — when `vault=` is not first, the CLI often hits the **focused** window instead (commonly production `Obsidian`).
+2. **Never** `vault=Obsidian` — it substring-matches `plugin-sandbox-Obsidian` and can steal focus. Production: run CLI from cwd `C:\Obsidian` and **omit** `vault=`.
+3. **Before any reload/eval/screenshot/verify**, confirm identity. Abort and fix targeting if either field mismatches:
 
 ```powershell
-obsidian vault=plugin-sandbox-Obsidian eval code="app.vault.getName()"
+obsidian vault=plugin-sandbox-Obsidian eval code="JSON.stringify({name:app.vault.getName(),base:app.vault.adapter.basePath})"
 ```
+
+Expected for sandbox: `name` = `plugin-sandbox-Obsidian` **and** `base` = `C:\plugin-sandbox-Obsidian`.  
+Expected for production (cwd `C:\Obsidian`, no `vault=`): `name` = `Obsidian` **and** `base` = `C:\Obsidian`.
+
+4. Do **not** treat “Seek is loaded” or missing/present APIs alone as proof of vault. Do **not** use `obsidian command id=app:open-vault`, bare `obsidian vault`, or `obsidian://open` merely to “select” an already-open vault — those raise/focus a window; use them only when the vault is not open, then re-run the identity gate.
+
+Deploy, reload, and verify: always `obsidian vault=plugin-sandbox-Obsidian …` for sandbox. Production only on explicit promotion.
 
 ## Required finish steps (Seek)
 
@@ -30,10 +43,10 @@ obsidian vault=plugin-sandbox-Obsidian eval code="app.vault.getName()"
 2. User-facing change ready? Add bullet to `CHANGELOG.md` `[Unreleased]` (no manifest bump). Release gate on `main`: plugin skill `obsidian-plugin-dev` (Obsidian Plugin Development) — Release notes and semantic versioning.
 3. `npm run build`
 4. Copy `main.js`, `manifest.json`, and `styles.css` to `C:\plugin-sandbox-Obsidian\.obsidian\plugins\seek\`
-5. `obsidian plugin:reload id=seek vault=plugin-sandbox-Obsidian`
+5. Identity gate (name + basePath), then `obsidian vault=plugin-sandbox-Obsidian plugin:reload id=seek`
 6. **Verify** — at least one of:
    - Repo and vault `main.js` match (size/timestamp or grep for a new symbol/string)
-   - `obsidian eval vault=plugin-sandbox-Obsidian …` confirms new settings or runtime behavior
+   - After identity gate: `obsidian vault=plugin-sandbox-Obsidian eval …` confirms new settings or runtime behavior
    - **UI/CSS/layout changes:** screenshots per `.cursor/skills/seek-visual-verify/SKILL.md` (Settings surface only when Settings changed)
 7. Tell the user to **close and reopen** affected modals. If CSS/layout looks stale, see plugin skill `obsidian-multi-vault-cli` (Obsidian Plugin Development) for the escalation ladder.
 
@@ -42,13 +55,13 @@ obsidian vault=plugin-sandbox-Obsidian eval code="app.vault.getName()"
 For large multi-file changes (startup/index/search UI, catch-up/hydrate, embed/iframe/WebGPU) — skip for typo/comment/test-only/docs-only:
 
 1. Follow the finish steps above (typecheck, tests, build, copy, reload).
-2. **Runtime CLI verify** against `vault=plugin-sandbox-Obsidian`:
+2. **Runtime CLI verify** against sandbox only after the identity gate passes:
    - First-load / hydrate / catch-up / empty search / status labels → `.cursor/skills/seek-cli-startup-debug/SKILL.md`
    - Deploying a branch into the vault → `.cursor/skills/deploy-branch-to-vault/SKILL.md`
    - UI/CSS/status-bar/modal/settings proof → `.cursor/skills/seek-visual-verify/SKILL.md`
-   - Other runtime: `obsidian eval`, `obsidian seek:search`, `obsidian plugin:reload` as the change requires
+   - Other runtime: `obsidian vault=plugin-sandbox-Obsidian eval|seek:search|plugin:reload` as the change requires
 3. Confirm the new behavior from CLI output, not from build success.
-4. If CSS/layout/iframe looks stale, run `obsidian command id=app:reload vault=<name>` (per-vault, no-save). On sandbox, do this automatically. On production (`Obsidian`), see plugin skill `obsidian-multi-vault-cli` (Obsidian Plugin Development) for escalation.
+4. If CSS/layout/iframe looks stale, run `obsidian vault=<name> command id=app:reload` (per-vault, no-save). On sandbox, do this automatically. On production (`Obsidian`), see plugin skill `obsidian-multi-vault-cli` (Obsidian Plugin Development) for escalation.
 
 Do not skip the verify cycle because `npm test` passed.
 
@@ -61,15 +74,15 @@ Promote to `Obsidian` **only** when:
 
 Agents must not auto-promote to Obsidian when a sandbox-verified task completes.
 
-When promoting: copy the three artifacts to `C:\Obsidian\.obsidian\plugins\seek\`, then from cwd `C:\Obsidian` run `obsidian plugin:reload id=seek`. Never `vault=Obsidian`. `manifest.json` changes take effect on `plugin:reload` or `app:reload` — no restart needed.
+When promoting: copy the three artifacts to `C:\Obsidian\.obsidian\plugins\seek\`, then from cwd `C:\Obsidian` run `obsidian plugin:reload id=seek` (omit `vault=`). Never `vault=Obsidian`. Confirm production with `name` + `basePath` before treating results as production. `manifest.json` changes take effect on `plugin:reload` or `app:reload` — no restart needed.
 
 Production vault (`Obsidian`) CLI verify is **not** part of routine task completion.
 
 ## Cold IDB reset
 
-1. `obsidian plugin:disable id=seek vault=plugin-sandbox-Obsidian`
+1. Identity gate, then `obsidian vault=plugin-sandbox-Obsidian plugin:disable id=seek`
 2. Delete IDB + disk cache (`index/`, `logs/`, `.seek-applocal-probe`)
-3. `obsidian plugin:enable id=seek vault=plugin-sandbox-Obsidian` — **do not reload** mid full reindex
+3. `obsidian vault=plugin-sandbox-Obsidian plugin:enable id=seek` — **do not reload** mid full reindex
 4. Global restart only if IDB delete is `blocked` **and** user accepts closing all vaults
 
 ## Do not skip
@@ -77,5 +90,6 @@ Production vault (`Obsidian`) CLI verify is **not** part of routine task complet
 - Never assume deploy succeeded from build output alone
 - Out-of-vault workflow: the vault does not see repo changes until copy + reload
 - Never auto-promote to Obsidian as part of finishing a sandbox-verified task
-- Do not assume the active window is sandbox — confirm with `obsidian vault vault=plugin-sandbox-Obsidian` or eval
-- Run playbook drivers with `vault=plugin-sandbox-Obsidian` (or `-Vault plugin-sandbox-Obsidian` in `run-scenario.ps1`)
+- Never assume the focused Obsidian window is sandbox — **identity gate** (`getName()` + `basePath`) before every verify sequence
+- If identity mismatches, stop; open the correct vault only if needed, then re-gate — do not continue verifying
+- Run playbook drivers with `vault=plugin-sandbox-Obsidian` first (or `-Vault plugin-sandbox-Obsidian` in `run-scenario.ps1`)
