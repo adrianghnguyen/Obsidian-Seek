@@ -1763,12 +1763,17 @@ export class SearchOrchestrator {
     // = the subset currently out of index because of Obsidian's "Excluded files" (and
     // the honor toggle). All three are live vault reads, so this reflects the current
     // exclusion state without waiting for a delta pass.
-    async getFolderCoverage(): Promise<FolderCoverageSummary> {
+    async getFolderCoverage(pendingPaths?: readonly string[]): Promise<FolderCoverageSummary> {
         const all = this.indexableFiles();
         const allPaths = all.map(f => f.path);
         const excludedPaths = all.filter(f => !this.shouldIndex(f.path)).map(f => f.path);
         const coveredPaths = await this.store.listFilePaths();
-        return computeFolderCoverage({ allPaths, coveredPaths, excludedPaths });
+        return computeFolderCoverage({
+            allPaths,
+            coveredPaths,
+            excludedPaths,
+            pendingPaths: pendingPaths ? [...pendingPaths] : undefined,
+        });
     }
 
     // Live paths that are indexable-by-extension but currently OUT of the index because
