@@ -378,7 +378,6 @@ Embedding is the slow part of indexing: each chunk goes through the on-device mo
 | **Max batch size** (`ROLLING_MAX`) | Hard ceiling on how many chunks may share one forward |
 | **Token budget** (`ROLLING_BUDGET`) | Target `batch × seq` work per dispatch — long buckets flush smaller so one GPU/CPU forward does not stall the UI as hard |
 | **Warmup grid** | Batch sizes and seq rungs the embed runtime warms at model load; live flush sizes must stay inside that set |
-| **Device ceiling helper** | Platform helper documenting a higher desktop cap — not what the rolling flush uses today |
 
 Flush size is derived, not a flat constant:
 
