@@ -6,6 +6,7 @@
 // tree, a placeholder ("still indexing"), or both (tree + status banner).
 //
 import type { IndexStatusHealth, IndexStatusJob } from './index-status-card';
+import { indexPercent } from './index-eta';
 
 // Pure and dependency-injected (no Obsidian / model coupling) so the math and the
 // change detection are unit-testable. The plugin supplies the three live path sets
@@ -50,7 +51,7 @@ export interface FolderCoverageNode {
     excluded: number;      // files in the subtree hidden by ignore rules
     /** Paths in this subtree currently queued / in the active delta (catch-up). */
     catchingUp: number;
-    percent: number;       // covered / total, 0-100
+    percent: number;       // display % of covered/total; 100 only when remaining=0 and not catching up
     status: FolderCoverageStatus;
     children: FolderCoverageNode[]; // nested subfolders (recursive hierarchy)
 }
@@ -116,11 +117,6 @@ export function folderOf(path: string): string {
     return i < 0 ? '' : path.slice(0, i);
 }
 
-function pct(covered: number, denom: number): number {
-    if (denom <= 0) return 0;
-    return Math.round((covered / denom) * 100);
-}
-
 function folderStatus(
     total: number,
     covered: number,
@@ -134,6 +130,70 @@ function folderStatus(
     if (covered >= total) return 'complete';
     if (covered > 0) return 'in-progress';
     return 'pending';
+}
+
+export type CoverageBarTone = 'good' | 'warn' | 'low';
+
+export interface CoverageDisplayNode {
+    total: number;
+    covered: number;
+    remaining: number;
+    excluded?: number;
+    catchingUp?: number;
+    percent: number;
+}
+
+/** Bar / % tone: green only when settled complete; yellow while remaining or catching up. */
+export function coverageBarTone(node: CoverageDisplayNode): CoverageBarTone {
+    if ((node.catchingUp ?? 0) > 0) return 'warn';
+    if (node.remaining > 0) return node.percent >= 50 ? 'warn' : 'low';
+    if (node.percent >= 100) return 'good';
+    if (node.percent >= 50) return 'warn';
+    return 'low';
+}
+
+/** Integer % for labels — 100 only when every relevant file is covered and none are in-flight. */
+export function coverageDisplayPercent(covered: number, total: number, catchingUp = 0): number {
+    if (total <= 0) return 0;
+    let percent = indexPercent(covered, total);
+    if (catchingUp > 0 && percent >= 100) percent = 99;
+    return percent;
+}
+
+/** CSS bar width 0–100; never full while files remain or a delta is in-flight. */
+export function coverageBarWidth(node: CoverageDisplayNode): number {
+    if (node.total <= 0) return 0;
+    if (node.remaining === 0 && (node.catchingUp ?? 0) === 0 && node.covered >= node.total) return 100;
+    const raw = (node.covered / node.total) * 100;
+    if (raw >= 100) return 99;
+    return Math.max(0, raw);
+}
+
+export function formatCoveragePercent(node: CoverageDisplayNode): string {
+    if (node.total <= 0) return '—';
+    return `${node.percent}%`;
+}
+
+/** Incomplete → remaining files; complete → covered / total; empty or excluded → em dash. */
+export function formatCoverageMeta(node: CoverageDisplayNode): string {
+    if (node.total <= 0) return '—';
+    if (node.remaining > 0) {
+        return `${node.remaining.toLocaleString()} remaining`;
+    }
+    return `${node.covered.toLocaleString()} / ${node.total.toLocaleString()}`;
+}
+
+/** Hover detail that always includes the fraction, even when the row shows remaining. */
+export function formatCoverageCountTip(node: CoverageDisplayNode): string {
+    if (node.total <= 0) {
+        return (node.excluded ?? 0) > 0
+            ? `${node.excluded!.toLocaleString()} notes excluded from the index.`
+            : 'No indexable notes in this folder.';
+    }
+    const fraction = `${node.covered.toLocaleString()} of ${node.total.toLocaleString()} notes embedded`;
+    if (node.remaining > 0) return `${fraction} · ${node.remaining.toLocaleString()} remaining.`;
+    if ((node.catchingUp ?? 0) > 0) return `${fraction} · some notes are still updating.`;
+    return `${fraction}.`;
 }
 
 // A well-formed empty summary, used by callers (e.g. the plugin) before the
@@ -155,16 +215,21 @@ export interface CoveragePanelView {
     statusLine?: CoveragePanelMessage;
 }
 
-function indexingDetail(job: IndexStatusJob | null, pendingCount?: number): string {
-    const pendingBit = pendingCount != null && pendingCount > 0
-        ? ` · ${pendingCount.toLocaleString()} catching up`
-        : '';
+function indexingDetail(job: IndexStatusJob | null, pendingCount?: number, remainingCount?: number): string {
+    const remainingBit = remainingCount != null && remainingCount > 0
+        ? `${remainingCount.toLocaleString()} remaining`
+        : null;
     if (job && job.total > 0) {
-        return `Indexed ${job.done.toLocaleString()} of ${job.total.toLocaleString()} notes so far${pendingBit}. The per-folder breakdown updates as embedding catches up.`;
+        const pass = `Indexed ${job.done.toLocaleString()} of ${job.total.toLocaleString()} this pass`;
+        return remainingBit ? `${pass} · ${remainingBit}.` : `${pass}. Folder bars update as files finish.`;
     }
-    return pendingCount != null && pendingCount > 0
-        ? `Seek is catching up on ${pendingCount.toLocaleString()} notes. Folder coverage updates as they embed.`
-        : 'Seek is still scanning and embedding your vault. Folder coverage will appear once notes are indexed.';
+    if (remainingBit) {
+        return `${remainingCount!.toLocaleString()} notes still need embeddings. Folder bars update as files finish.`;
+    }
+    if (pendingCount != null && pendingCount > 0) {
+        return `Seek is embedding ${pendingCount.toLocaleString()} notes. Folder bars turn yellow until they settle.`;
+    }
+    return 'Seek is still embedding notes. Folder bars update as files finish.';
 }
 
 function aligningDetail(job: IndexStatusJob | null): string {
@@ -264,18 +329,18 @@ export function resolveCoveragePanelView(input: {
                 title: 'Aligning with exclusions',
                 detail: aligningDetail(job),
             };
-        } else if (isIndexingActive(health, job) && covered < total) {
+        }         else if (isIndexingActive(health, job) && covered < total) {
             view.statusLine = {
                 tone: 'pending',
                 title: 'Still indexing',
-                detail: indexingDetail(job, pendingCount),
+                detail: indexingDetail(job, pendingCount, total - covered),
             };
         } else if ((isIndexingActive(health, job) || (pendingCount ?? 0) > 0) && covered >= total) {
             // Re-embeds of already-covered notes (edits) — tree is full but catch-up is live.
             view.statusLine = {
                 tone: 'pending',
                 title: 'Still indexing',
-                detail: indexingDetail(job, pendingCount),
+                detail: indexingDetail(job, pendingCount, 0),
             };
         }
         return view;
@@ -326,7 +391,9 @@ export function resolveCoveragePanelView(input: {
             placeholder: {
                 tone: 'pending',
                 title: 'Still indexing',
-                detail: indexingDetail(job, pendingCount),
+                detail: job && job.total > 0
+                    ? indexingDetail(job, pendingCount)
+                    : 'Seek is still scanning and embedding your vault. Folder coverage will appear once notes are indexed.',
             },
         };
     }
@@ -405,6 +472,7 @@ export function computeFolderCoverage(input: FolderCoverageInput): FolderCoverag
         const kids = [...acc.children.values()]
             .sort((a, b) => b.total - a.total || segmentOf(a.path).localeCompare(segmentOf(b.path)));
         const remaining = Math.max(0, acc.total - acc.covered);
+        const percent = coverageDisplayPercent(acc.covered, acc.total, acc.catchingUp);
         const node: FolderCoverageNode = {
             path: acc.path,
             name: displayFolderName(acc.path),
@@ -413,7 +481,7 @@ export function computeFolderCoverage(input: FolderCoverageInput): FolderCoverag
             remaining,
             excluded: acc.excluded,
             catchingUp: acc.catchingUp,
-            percent: pct(acc.covered, acc.total),
+            percent,
             status: folderStatus(acc.total, acc.covered, acc.excluded, acc.catchingUp),
             children: kids.map(c => finalize(c, depth + 1)),
         };

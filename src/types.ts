@@ -1034,6 +1034,10 @@ export interface IndexCompleteEntry {
     // Throughput rollups computed from totalDurationMs.
     chunksPerSec: number;
     filesPerSec: number;
+    /** Cumulative padded embed tokens this pass (batch × seq length the GPU saw). Optional on older logs. */
+    paddedTokens?: number;
+    /** paddedTokens / (totalDurationMs/1000). Optional on older logs. */
+    tokensPerSec?: number;
     // Per-file wall-clock distribution (chunk+embed+commit summed per file).
     perFileWallMs: DistributionStats | null;
     chunksPerFile: DistributionStats | null;

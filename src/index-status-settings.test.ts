@@ -95,6 +95,8 @@ function sampleComplete(over: Partial<IndexCompleteEntry> = {}): IndexCompleteEn
         storageDeltaMB: null,
         chunksPerSec: 6.1,
         filesPerSec: 1.2,
+        paddedTokens: 1_172_000,
+        tokensPerSec: 4520,
         perFileWallMs: null,
         chunksPerFile: null,
         embedBatchLatencyMs: { n: 412, min: 10, max: 200, mean: 50, p50: 48, p95: 91 },
@@ -155,6 +157,7 @@ describe('fmtRate', () => {
 describe('EMBED_METRIC_HELP', () => {
     it('covers core labels', () => {
         expect(EMBED_METRIC_HELP['ch/s']).toMatch(/Chunks finished/);
+        expect(EMBED_METRIC_HELP['tok/s']).toMatch(/tokens/i);
         expect(EMBED_METRIC_HELP.pace).toMatch(/waited/);
     });
 });
@@ -173,6 +176,8 @@ describe('renderEmbedDiagnostic', () => {
         expect(blob).toContain('Embedding pass');
         expect(blob).toContain('6.1');
         expect(blob).toContain('1.2');
+        expect(blob).toContain('4520');
+        expect(blob).toContain('tok/s');
         expect(blob).toContain('Last pass');
         expect(blob).not.toContain('Phases');
         expect(card.querySelector('.seek-status-embed-body')).toBeNull();
@@ -185,6 +190,7 @@ describe('renderEmbedDiagnostic', () => {
             onToggle: () => {},
             live: {
                 chunksDone: 18402,
+                tokensDone: 920_100,
                 done: 2856,
                 total: 2998,
                 elapsedMs: 60_000,
@@ -205,6 +211,38 @@ describe('renderEmbedDiagnostic', () => {
         expect(blob).toContain('1.8s');
         expect(card.querySelector('.seek-status-embed-grid')).not.toBeNull();
         expect(card.querySelector('.seek-status-embed-body')).not.toBeNull();
+    });
+
+    it('folded header always includes tok/s slot (dash when unknown)', () => {
+        const card = stubEl();
+        renderEmbedDiagnostic(card as unknown as HTMLElement, {
+            open: false,
+            onToggle: () => {},
+            live: null,
+            lastComplete: sampleComplete({ tokensPerSec: undefined, paddedTokens: undefined }),
+            lastLoad: null,
+        });
+        const blob = textOf(card);
+        expect(blob).toContain('tok/s');
+        expect(blob).toContain('ch/s');
+        expect(blob).toContain('files/s');
+    });
+
+    it('derives last-pass tok/s from paddedTokens when tokensPerSec missing', () => {
+        const card = stubEl();
+        renderEmbedDiagnostic(card as unknown as HTMLElement, {
+            open: false,
+            onToggle: () => {},
+            live: null,
+            lastComplete: sampleComplete({
+                tokensPerSec: undefined,
+                paddedTokens: 258_000,
+                totalDurationMs: 258_000,
+            }),
+            lastLoad: null,
+        });
+        expect(textOf(card)).toContain('1000');
+        expect(textOf(card)).toContain('tok/s');
     });
 
     it('renderSettingsIndexStatusCard appends embed block after startup', () => {

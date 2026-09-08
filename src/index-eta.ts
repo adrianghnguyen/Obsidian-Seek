@@ -13,8 +13,11 @@ export function formatRoughEta(done: number, total: number, elapsedMs: number): 
     return `~${Math.round(remainingSec / 3600)} hr`;
 }
 
+/** Integer 0–100 that never claims 100% before done, or 0% after work has started. */
 export function indexPercent(done: number, total: number): number {
     if (total <= 0) return 0;
     if (done >= total) return 100;
-    return Math.min(100, Math.round((Math.max(0, done) / total) * 100));
+    if (done <= 0) return 0;
+    const rounded = Math.round((done / total) * 100);
+    return Math.min(99, Math.max(1, rounded));
 }

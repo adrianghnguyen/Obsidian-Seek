@@ -1554,10 +1554,23 @@
     background: var(--background-primary);
 }
 .seek-coverage-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     font-size: 11px;
     color: var(--text-muted);
     text-transform: lowercase;
     margin-bottom: 8px;
+}
+.seek-coverage-stale {
+    display: inline-flex;
+    color: var(--text-warning);
+    opacity: 0.9;
+    cursor: help;
+}
+.seek-coverage-stale svg {
+    width: 13px;
+    height: 13px;
 }
 .seek-coverage-status,
 .seek-coverage-placeholder {
@@ -1588,9 +1601,10 @@
     line-height: 1.45;
 }
 .seek-coverage-overall {
-    display: flex;
-    align-items: baseline;
+    display: grid;
+    grid-template-columns: 3.5em 1fr minmax(6.5em, 9em);
     gap: 8px;
+    align-items: center;
     margin-bottom: 10px;
 }
 .seek-coverage-pct {
@@ -1598,13 +1612,16 @@
     font-variant-numeric: tabular-nums;
     font-size: 13px;
 }
-.seek-coverage-overall .seek-coverage-pct { font-size: 15px; }
+.seek-coverage-overall .seek-coverage-pct { font-size: 15px; text-align: right; }
 .seek-coverage-pct.is-good { color: var(--text-success, var(--text-accent)); }
 .seek-coverage-pct.is-warn { color: var(--text-warning, var(--text-normal)); }
 .seek-coverage-pct.is-low { color: var(--text-normal); }
 .seek-coverage-overall-meta {
     font-size: 11px;
     color: var(--text-muted);
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
 }
 .seek-coverage-rows {
     display: flex;
@@ -1613,7 +1630,7 @@
 }
 .seek-coverage-row {
     display: grid;
-    grid-template-columns: minmax(8em, 18em) 1fr 3.5em 6em;
+    grid-template-columns: minmax(8em, 18em) 1fr 3.5em minmax(6.5em, 9em);
     gap: 8px;
     align-items: center;
     font-size: 12px;
@@ -2217,11 +2234,14 @@
 }
 /* coverage rows: drop to a stacked layout on a narrow screen */
 .is-phone .seek-settings .seek-coverage-row {
-    grid-template-columns: 1fr 3.5em 6em;
+    grid-template-columns: 1fr 3.5em minmax(6.5em, 9em);
     grid-template-areas:
         "name pct meta"
         "track track track";
     row-gap: 3px;
+}
+.is-phone .seek-settings .seek-coverage-overall {
+    grid-template-columns: 3.5em 1fr minmax(6.5em, 9em);
 }
 .is-phone .seek-settings .seek-coverage-name { grid-area: name; }
 .is-phone .seek-settings .seek-coverage-track { grid-area: track; }
