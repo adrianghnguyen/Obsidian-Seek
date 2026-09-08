@@ -297,7 +297,7 @@ export default class SeekPlugin extends Plugin {
     private coldBuildScheduled = false;          // scheduleColdBuild single-flight
     private persistCacheRestoredThisBoot = false; // restorePersistedCachesBeforeReconcile once
     /** Live catch-up pass shown on the status bar — survives burst pauses and self-chains. */
-    private catchUpJob: { id: number; passTotal: number; committed: number; chunksCommitted: number } | null = null;
+    private catchUpJob: { id: number; passTotal: number; committed: number; chunksCommitted: number; tokensCommitted: number } | null = null;
     // True from construct until the onload sidecar/reconcile IIFE finishes, so the
     // search modal cannot latch "isn't indexed yet" on an empty store mid-hydrate.
     private indexBootPending = true;
@@ -559,7 +559,7 @@ export default class SeekPlugin extends Plugin {
         if (dirtyCount <= 0) return;
         if (this.catchUpJob == null) {
             const id = this.beginIndexJob('catchup', dirtyCount, this.catchUpJobLabel(dirtyCount));
-            this.catchUpJob = { id, passTotal: dirtyCount, committed: 0, chunksCommitted: 0 };
+            this.catchUpJob = { id, passTotal: dirtyCount, committed: 0, chunksCommitted: 0, tokensCommitted: 0 };
             return;
         }
         const passTotal = extendIndexPassTotal(this.catchUpJob.committed, this.catchUpJob.passTotal, dirtyCount);
@@ -2571,8 +2571,9 @@ export default class SeekPlugin extends Plugin {
                                 const p = parseIndexedProgress(msg);
                                 const filesDone = job.committed + (p?.files ?? 0);
                                 const chunksDone = job.chunksCommitted + (p?.chunks ?? 0);
-                                // Files/total drive status-bar chrome; chunksDone is Settings-only (embed pass).
-                                this.indexProgress.update(filesDone, job.passTotal, undefined, job.id, chunksDone);
+                                const tokensDone = job.tokensCommitted + (p?.tokens ?? 0);
+                                // Files/total drive status-bar chrome; chunks/tokens are Settings-only.
+                                this.indexProgress.update(filesDone, job.passTotal, undefined, job.id, chunksDone, tokensDone);
                                 this.notifyIndexActivityChanged();
                             },
                         });
@@ -2581,8 +2582,9 @@ export default class SeekPlugin extends Plugin {
                             this.catchUpJob.committed += r.committedPaths.length;
                             if (r.embedded) {
                                 this.catchUpJob.chunksCommitted += r.embedded.chunksIndexed;
+                                this.catchUpJob.tokensCommitted += r.embedded.paddedTokens ?? 0;
                             }
-                            const { committed, passTotal, id, chunksCommitted } = this.catchUpJob;
+                            const { committed, passTotal, id, chunksCommitted, tokensCommitted } = this.catchUpJob;
                             const aligning = this.schedulers.isExclusionAligning();
                             const label = this.indexingBlocked
                                 ? (aligning
@@ -2591,7 +2593,7 @@ export default class SeekPlugin extends Plugin {
                                 : (aligning
                                     ? `Seek: aligning with exclusions · ${committed} / ${passTotal}`
                                     : `Seek: indexing ${committed} / ${passTotal} notes…`);
-                            this.indexProgress.update(committed, passTotal, label, id, chunksCommitted);
+                            this.indexProgress.update(committed, passTotal, label, id, chunksCommitted, tokensCommitted);
                         }
                         return r;
                     },

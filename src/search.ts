@@ -1344,7 +1344,7 @@ export class SearchOrchestrator {
             // UI progress: every newly committed file (status bar + Settings).
             // NDJSON index-progress stays on the file-or-time cadence below.
             if (filesCommitted > lastProgress) {
-                onProgress?.(`Indexed ${filesCommitted} files · ${totalChunks} chunks`);
+                onProgress?.(`Indexed ${filesCommitted} files · ${totalChunks} chunks · ${fPaddedTokens} tokens`);
             }
             const progressOverdue = performance.now() - lastProgressAt >= PROGRESS_MAX_SILENCE_MS;
             if (filesCommitted > lastProgress && (filesCommitted - lastProgress >= PROGRESS_EVERY || progressOverdue)) {
@@ -1413,7 +1413,7 @@ export class SearchOrchestrator {
             this.forensics?.beat('index-quota-exhausted', { files: filesSkippedQuota, mode });
             this.quotaToast();
         }
-        onProgress?.(`Indexed ${filesCommitted} files · ${totalChunks} chunks`);
+        onProgress?.(`Indexed ${filesCommitted} files · ${totalChunks} chunks · ${fPaddedTokens} tokens`);
         await this.emitProgress('embed', files.length, files.length, totalChunks, performance.now() - overallStart);
 
         // Corpus dense-cosine background (dense-stats.ts). A FULL pass saw every
@@ -1493,12 +1493,13 @@ export class SearchOrchestrator {
         const seconds = totalMs / 1000;
         const chunksPerSec = seconds > 0 ? totalChunks / seconds : 0;
         const filesPerSec = seconds > 0 ? files.length / seconds : 0;
+        const tokensPerSec = seconds > 0 ? fPaddedTokens / seconds : 0;
 
         const checks: string[] = [
             `✅ indexed ${files.length} files → ${totalChunks} chunks → ${totalVectors} vectors`,
             `ℹ️ embed: ${embedMs.toFixed(0)} ms, chunk: ${chunkMs.toFixed(0)} ms, commit: ${commitMs.toFixed(0)} ms`,
             `ℹ️ total wall time: ${totalMs.toFixed(0)} ms`,
-            `ℹ️ throughput: ${chunksPerSec.toFixed(1)} chunks/s, ${filesPerSec.toFixed(1)} files/s`,
+            `ℹ️ throughput: ${chunksPerSec.toFixed(1)} chunks/s, ${filesPerSec.toFixed(1)} files/s, ${tokensPerSec.toFixed(0)} tok/s`,
         ];
         // Rolling-buffer effectiveness: dispatches = number of embedBatch
         // forward passes; effective batch = vectors / dispatches. Within-file it
@@ -1596,6 +1597,8 @@ export class SearchOrchestrator {
             storageDeltaMB: memD.storageDeltaMB,
             chunksPerSec: parseFloat(chunksPerSec.toFixed(2)),
             filesPerSec: parseFloat(filesPerSec.toFixed(2)),
+            paddedTokens: fPaddedTokens,
+            tokensPerSec: parseFloat(tokensPerSec.toFixed(2)),
             perFileWallMs: distributionStats(perFileWallMs),
             chunksPerFile: distributionStats(chunksPerFile),
             embedBatchLatencyMs: distributionStats(embedBatchLatencyMs),

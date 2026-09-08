@@ -25,6 +25,7 @@ import {
 import {
     indexChunksPerSec,
     indexFilesPerSec,
+    indexTokensPerSec,
     type IndexJobSpeedView,
 } from './index-status-bar';
 import type { IndexCompleteEntry, LoadEntry } from './types';
@@ -34,6 +35,7 @@ export const EMBED_METRIC_HELP: Record<string, string> = {
     embedding: 'How fast Seek is turning notes into search vectors.',
     'ch/s': 'Chunks finished per second. A chunk is a slice of a note. Higher means the encoder is moving faster.',
     'files/s': 'Notes finished per second. Usually lower than chunks/s because one note can be many slices.',
+    'tok/s': 'Padded tokens the encoder processed per second. Closer to model capacity means the GPU/CPU is well fed.',
     live: 'This run is happening now. The number updates as files finish.',
     'last pass': 'From the last finished run, not this moment.',
     paused: 'Indexing is paused. Speed is frozen.',
@@ -42,6 +44,7 @@ export const EMBED_METRIC_HELP: Record<string, string> = {
     'catch-up': 'Catch-up only updates notes that changed.',
     files: 'Notes Seek has finished in this run.',
     chunks: 'Slices of notes turned into vectors so search can find them.',
+    tokens: 'Padded tokens sent to the encoder this pass (batch size × sequence length).',
     phases: 'Where time went in the last finished run. These freeze until a run completes.',
     chunk: 'Reading notes and splitting them into slices. Usually the cheap part.',
     embed: 'The model turning those slices into vectors. Usually most of the time.',
@@ -152,14 +155,20 @@ export function renderEmbedDiagnostic(card: HTMLElement, view: EmbedDiagView): v
 
     let chRate = 0;
     let filesRate = 0;
+    let tokRate = 0;
     let pillKey: 'live' | 'paused' | 'last pass' | null = null;
     if (jobActive) {
         chRate = indexChunksPerSec(live.chunksDone, live.elapsedMs);
         filesRate = indexFilesPerSec(live.done, live.elapsedMs);
+        tokRate = indexTokensPerSec(live.tokensDone, live.elapsedMs);
         pillKey = live.paused ? 'paused' : 'live';
     } else if (complete) {
         chRate = complete.chunksPerSec;
         filesRate = complete.filesPerSec;
+        tokRate = complete.tokensPerSec
+            ?? ((complete.paddedTokens ?? 0) > 0 && complete.totalDurationMs > 0
+                ? (complete.paddedTokens! / (complete.totalDurationMs / 1000))
+                : 0);
         pillKey = 'last pass';
     }
 
@@ -186,7 +195,7 @@ export function renderEmbedDiagnostic(card: HTMLElement, view: EmbedDiagView): v
     info.onclick = (e) => e.stopPropagation();
 
     const rates = head.createSpan({ cls: 'seek-status-embed-rates' });
-    if (pillKey == null && chRate <= 0 && filesRate <= 0) {
+    if (pillKey == null && chRate <= 0 && filesRate <= 0 && tokRate <= 0) {
         rates.createSpan({ cls: 'seek-status-embed-empty', text: '—' });
     } else {
         rates.createSpan({ cls: 'seek-status-embed-rate-val', text: fmtRate(chRate) });
@@ -196,6 +205,10 @@ export function renderEmbedDiagnostic(card: HTMLElement, view: EmbedDiagView): v
         rates.createSpan({ cls: 'seek-status-embed-rate-val', text: fmtRate(filesRate) });
         rates.createSpan({ text: ' ' });
         helpLabel(rates, 'files/s');
+        sep(rates);
+        rates.createSpan({ cls: 'seek-status-embed-rate-val', text: fmtRate(tokRate) });
+        rates.createSpan({ text: ' ' });
+        helpLabel(rates, 'tok/s');
     }
 
     const pill = head.createSpan({
@@ -212,18 +225,26 @@ export function renderEmbedDiagnostic(card: HTMLElement, view: EmbedDiagView): v
     sectionHead(passSec, 'this pass', 'This pass');
     if (jobActive) {
         const kind = jobKindLabel(live.kind);
-        kvGrid(passSec, [
+        const rows: Array<{ key: string; value: string; label?: string }> = [
             { key: kind, value: kind === 'full' ? 'Full rebuild' : 'Catch-up', label: 'Kind' },
             { key: 'files', value: live.done.toLocaleString(), label: 'Files' },
             { key: 'chunks', value: live.chunksDone.toLocaleString(), label: 'Chunks' },
-        ]);
+        ];
+        if (live.tokensDone > 0) {
+            rows.push({ key: 'tokens', value: live.tokensDone.toLocaleString(), label: 'Tokens' });
+        }
+        kvGrid(passSec, rows);
     } else if (complete) {
         const kind = jobKindLabel(undefined, complete.mode);
-        kvGrid(passSec, [
+        const rows: Array<{ key: string; value: string; label?: string }> = [
             { key: kind, value: kind === 'full' ? 'Full rebuild' : 'Catch-up', label: 'Kind' },
             { key: 'files', value: complete.filesIndexed.toLocaleString(), label: 'Files' },
             { key: 'chunks', value: complete.chunksIndexed.toLocaleString(), label: 'Chunks' },
-        ]);
+        ];
+        if ((complete.paddedTokens ?? 0) > 0) {
+            rows.push({ key: 'tokens', value: complete.paddedTokens!.toLocaleString(), label: 'Tokens' });
+        }
+        kvGrid(passSec, rows);
     } else {
         passSec.createDiv({ cls: 'seek-status-embed-line seek-status-embed-empty', text: '—' });
     }

@@ -4,9 +4,13 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Added
+- **Settings → Index → Embedding pass** shows live and last-pass **tok/s** (padded embed tokens per second) next to `ch/s` · `files/s`.
+
 ### Fixed
 - **Settings → Index → Embedding pass** live `ch/s`, `files/s`, and this-pass file/chunk counts now refresh during catch-up or full indexing (poll starts when a job begins; catch-up chunk totals accumulate across bursts; last-pass phases/batch/health update when a pass completes). Status bar unchanged.
-- **Settings → Index → Embedder coverage by folder** refreshes from the same indexing events (dirty queue, computeDelta, committed bursts) as Embedding pass, shows per-folder **catching up** counts for the active delta, and uses a 5s Settings backstop poll instead of 1–2s.
+- **Settings → Index → Embedder coverage by folder** percent, bar fill, overall headline, and row meta now use the same rule: **100% and green only when nothing remains**. Incomplete work shows remaining files (e.g. `13 remaining`) instead of a rounded-up 100% beside `3,024 / 3,037`; excluded folders show an em dash instead of `0%` / `0 / 0`. Hover the % or count for the exact fraction.
+- **Settings → Index → Embedder coverage by folder** refreshes from the same indexing events (dirty queue, computeDelta, committed bursts) as Embedding pass; active delta turns folder bars yellow and keeps % below 100 until embeds settle. Fully excluded folders still show an **excluded** tag beside the name. Uses a 5s Settings backstop poll instead of 1–2s. Expanding a folder re-renders the last cached tree (no IDB wait); a warning icon notes the cache until the next poll or index update.
 - **Settings → Index → Advanced → Additional excluded folders** list and add row now span the full card width (no longer squeezed into the setting control column); folder paths use normal text color and remove uses a standard icon button.
 
 ## 1.8.0

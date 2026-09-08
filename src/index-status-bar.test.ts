@@ -4,6 +4,7 @@ import {
     extendIndexPassTotal,
     formatIndexedProgress,
     indexChunksPerSec,
+    indexTokensPerSec,
     parseIndexedProgress,
     quantizePercent,
 } from './index-status-bar';
@@ -86,16 +87,23 @@ function textOf(el: StubEl): string {
 
 describe('parseIndexedProgress', () => {
     it('reads file and chunk counts', () => {
-        expect(parseIndexedProgress('Indexed 12 files · 40 chunks')).toEqual({ files: 12, chunks: 40 });
+        expect(parseIndexedProgress('Indexed 12 files · 40 chunks')).toEqual({
+            files: 12, chunks: 40, tokens: null,
+        });
     });
 
     it('reads comma-grouped counts and a pause suffix', () => {
         expect(parseIndexedProgress('Indexed 1,234 files · 5,678 chunks — paused while you search…'))
-            .toEqual({ files: 1234, chunks: 5678 });
+            .toEqual({ files: 1234, chunks: 5678, tokens: null });
     });
 
     it('allows files without a chunk suffix', () => {
-        expect(parseIndexedProgress('Indexed 3 files')).toEqual({ files: 3, chunks: null });
+        expect(parseIndexedProgress('Indexed 3 files')).toEqual({ files: 3, chunks: null, tokens: null });
+    });
+
+    it('reads padded token counts', () => {
+        expect(parseIndexedProgress('Indexed 12 files · 40 chunks · 12,800 tokens'))
+            .toEqual({ files: 12, chunks: 40, tokens: 12800 });
     });
 
     it('returns null for garbage', () => {
@@ -104,7 +112,9 @@ describe('parseIndexedProgress', () => {
 
     it('round-trips formatIndexedProgress', () => {
         const msg = formatIndexedProgress(12, 340);
-        expect(parseIndexedProgress(msg)).toEqual({ files: 12, chunks: 340 });
+        expect(parseIndexedProgress(msg)).toEqual({ files: 12, chunks: 340, tokens: null });
+        const withTok = formatIndexedProgress(12, 340, 12800);
+        expect(parseIndexedProgress(withTok)).toEqual({ files: 12, chunks: 340, tokens: 12800 });
     });
 });
 
@@ -116,6 +126,13 @@ describe('indexChunksPerSec', () => {
 
     it('computes rolling throughput', () => {
         expect(indexChunksPerSec(100, 10_000)).toBe(10);
+    });
+});
+
+describe('indexTokensPerSec', () => {
+    it('computes padded-token throughput', () => {
+        expect(indexTokensPerSec(0, 1000)).toBe(0);
+        expect(indexTokensPerSec(12_800, 10_000)).toBe(1280);
     });
 });
 

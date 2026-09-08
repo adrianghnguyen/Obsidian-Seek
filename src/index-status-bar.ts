@@ -15,19 +15,24 @@ import {
 } from './index-status-card';
 import { formatRoughEta, indexPercent } from './index-eta';
 
-export function parseIndexedProgress(msg: string): { files: number; chunks: number | null } | null {
-    const m = msg.match(/Indexed\s+([\d,]+)\s+files(?:\s*·\s*([\d,]+)\s+chunks)?/i);
+export function parseIndexedProgress(msg: string): { files: number; chunks: number | null; tokens: number | null } | null {
+    const m = msg.match(
+        /Indexed\s+([\d,]+)\s+files(?:\s*·\s*([\d,]+)\s+chunks)?(?:\s*·\s*([\d,]+)\s+tokens)?/i,
+    );
     if (!m) return null;
     const files = parseInt(m[1].replace(/,/g, ''), 10);
     if (!Number.isFinite(files)) return null;
     const chunks = m[2] != null ? parseInt(m[2].replace(/,/g, ''), 10) : null;
-    if (chunks != null && !Number.isFinite(chunks)) return { files, chunks: null };
-    return { files, chunks };
+    const tokens = m[3] != null ? parseInt(m[3].replace(/,/g, ''), 10) : null;
+    if (chunks != null && !Number.isFinite(chunks)) return { files, chunks: null, tokens: null };
+    if (tokens != null && !Number.isFinite(tokens)) return { files, chunks, tokens: null };
+    return { files, chunks, tokens };
 }
 
 /** Canonical progress line from embedAndCommitFiles — keep in sync with search.ts onProgress. */
-export function formatIndexedProgress(files: number, chunks: number): string {
-    return `Indexed ${files} files · ${chunks} chunks`;
+export function formatIndexedProgress(files: number, chunks: number, tokens?: number): string {
+    const base = `Indexed ${files} files · ${chunks} chunks`;
+    return tokens != null && tokens >= 0 ? `${base} · ${tokens} tokens` : base;
 }
 
 /** Rolling chunks/s for the current pass — zero until chunks and elapsed time are known. */
@@ -40,6 +45,7 @@ export function indexChunksPerSec(chunks: number, elapsedMs: number): number {
 /** Live pass throughput inputs for Settings embed diagnostics (not status-bar chrome). */
 export interface IndexJobSpeedView {
     chunksDone: number;
+    tokensDone: number;
     done: number;
     total: number;
     elapsedMs: number;
@@ -51,6 +57,13 @@ export function indexFilesPerSec(done: number, elapsedMs: number): number {
     if (done <= 0 || elapsedMs <= 0) return 0;
     const sec = elapsedMs / 1000;
     return sec > 0 ? done / sec : 0;
+}
+
+/** Rolling padded-token throughput for the current pass. */
+export function indexTokensPerSec(tokens: number, elapsedMs: number): number {
+    if (tokens <= 0 || elapsedMs <= 0) return 0;
+    const sec = elapsedMs / 1000;
+    return sec > 0 ? tokens / sec : 0;
 }
 
 export function quantizePercent(done: number, total: number, step = 5): number {
@@ -88,6 +101,7 @@ export class IndexStatusBar {
     private total = 0;
     private done = 0;
     private chunksDone = 0;
+    private tokensDone = 0;
     private label = '';
     private aligningExclusions = false;
     private jobStartedAt = 0;
@@ -137,6 +151,7 @@ export class IndexStatusBar {
         this.total = Math.max(0, total);
         this.done = 0;
         this.chunksDone = 0;
+        this.tokensDone = 0;
         this.label = label;
         this.jobStartedAt = performance.now();
         this.paintedDone = -1;
@@ -150,11 +165,12 @@ export class IndexStatusBar {
         const parsed = parseIndexedProgress(msg);
         if (parsed) {
             if (parsed.chunks != null) this.chunksDone = parsed.chunks;
+            if (parsed.tokens != null) this.tokensDone = parsed.tokens;
             this.update(parsed.files, this.total, msg, id);
         } else this.update(this.done, this.total, msg, id);
     }
 
-    update(done: number, total: number, label?: string, id?: number, chunksDone?: number): void {
+    update(done: number, total: number, label?: string, id?: number, chunksDone?: number, tokensDone?: number): void {
         if (id != null && this.jobId !== id) return;
         const nextTotal = Math.max(0, total);
         this.total = nextTotal;
@@ -169,7 +185,9 @@ export class IndexStatusBar {
         } else if (label) {
             const parsed = parseIndexedProgress(label);
             if (parsed?.chunks != null) this.chunksDone = parsed.chunks;
+            if (parsed?.tokens != null) this.tokensDone = parsed.tokens;
         }
+        if (tokensDone != null) this.tokensDone = Math.max(0, tokensDone);
         this.schedulePaintJob(false);
     }
 
@@ -184,6 +202,7 @@ export class IndexStatusBar {
         this.aligningExclusions = false;
         this.done = 0;
         this.chunksDone = 0;
+        this.tokensDone = 0;
         this.total = 0;
         this.label = '';
         this.jobStartedAt = 0;
@@ -246,6 +265,7 @@ export class IndexStatusBar {
         if (!this.jobActive || this.total <= 0) return null;
         return {
             chunksDone: this.chunksDone,
+            tokensDone: this.tokensDone,
             done: this.done,
             total: this.total,
             elapsedMs: Math.max(0, performance.now() - this.jobStartedAt),

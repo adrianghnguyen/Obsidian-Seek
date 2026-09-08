@@ -15,7 +15,7 @@
 // score-time sliders (bm25-boosts.ts). See DEFAULT_SETTINGS + the rev-5 migration
 // in types.ts/main.ts.
 
-import { App, PluginSettingTab, Setting, Notice, setIcon, TFolder } from 'obsidian';
+import { App, PluginSettingTab, Setting, Notice, setIcon, setTooltip, TFolder } from 'obsidian';
 import type SeekPlugin from './main';
 import type { IndexStats, ModelStatus } from './main';
 import type { SidecarIndexLocation, SearchModalHeight, SearchModalWidth, SnippetPreview } from './types';
@@ -40,7 +40,15 @@ import { formatRecentSearchLine } from './session-telemetry';
 import type { SettingsTelemetrySink } from './main';
 import { formatRoughEta, indexPercent } from './index-eta';
 import type { FolderCoverageNode, FolderCoverageSummary, CoveragePanelMessage } from './folder-coverage';
-import { emptyFolderCoverage, resolveCoveragePanelView } from './folder-coverage';
+import {
+    emptyFolderCoverage,
+    resolveCoveragePanelView,
+    coverageBarTone,
+    coverageBarWidth,
+    formatCoverageMeta,
+    formatCoveragePercent,
+    formatCoverageCountTip,
+} from './folder-coverage';
 import {
     getBackendOverride, setBackendOverride, isWebgpuDemoted, clearWebgpuDemoted,
     getStartupWarm, setStartupWarm, isMobilePlatform,
@@ -163,13 +171,6 @@ function strategyOf(denseWeight: number): Strategy {
 /** Settings coverage panel backstop poll while the tab is open (indexing events drive live updates). */
 export const COVERAGE_POLL_MS = 5000;
 
-// Coverage color bucket: full → good, ≥50% → warn (partially covered), below → low.
-function coverageTone(r: { percent: number }): 'good' | 'warn' | 'low' {
-    if (r.percent >= 100) return 'good';
-    if (r.percent >= 50) return 'warn';
-    return 'low';
-}
-
 export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetrySink {
     // Async index/model snapshots, loaded once per tab open (guarded null→fetch→re-render).
     private stats: IndexStats | null = null;
@@ -209,6 +210,9 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
     // Session-scoped expand state for the coverage tree (survives poll repaints; resets
     // when Settings closes). Empty = all folders collapsed to top-level only.
     private coverageExpandedPaths = new Set<string>();
+    // Last successful coverage tree. Expand/collapse re-renders this without IDB.
+    private coverageCache: FolderCoverageSummary | null = null;
+    private coverageCacheFailed = false;
 
     onSessionTelemetryChanged(): void {
         if (!this.containerEl.isConnected) return;
@@ -220,7 +224,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
 
     onFolderCoverageChanged(): void {
         if (!this.containerEl.isConnected) return;
-        void this.paintCoverage();
+        void this.paintCoverage({ refresh: true });
         this.paintExclusionBanner();
         this.paintStatusCard();
         if (this.shouldPollStartup()) this.startStartupPoll();
@@ -380,7 +384,8 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         // Per-folder embedder-pipeline coverage (which folders have been run through
         // the embedder, and how completely). Repaints live during a backfill.
         this.coverageHost = containerEl.createDiv({ cls: 'seek-coverage-host' });
-        void this.paintCoverage();
+        if (this.coverageCache) this.paintCoverage({ refresh: false });
+        void this.paintCoverage({ refresh: true });
 
         if (this.plugin.indexHealthState === 'degraded') {
             const warn = containerEl.createDiv({ cls: 'seek-inline-warn' });
@@ -535,7 +540,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         this.plugin.requestExclusionAlign();
         this.paintExclusionBanner();
         this.paintStatusCard();
-        void this.paintCoverage();
+        void this.paintCoverage({ refresh: true });
         if (this.shouldPollStartup()) this.startStartupPoll();
     }
 
@@ -609,7 +614,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         if (this.coveragePoll != null) return;
         const tick = () => {
             if (!this.containerEl.isConnected) { this.stopCoveragePoll(); return; }
-            void this.paintCoverage();
+            void this.paintCoverage({ refresh: true });
             this.paintExclusionBanner();
             const job = this.plugin.getIndexJob();
             const active = job != null && job.done < job.total;
@@ -625,18 +630,44 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         this.coveragePoll = null;
     }
 
-    private async paintCoverage(): Promise<void> {
+    /** refresh:true hits IDB; refresh:false (expand) paints the last cached tree. */
+    private async paintCoverage(opts?: { refresh?: boolean }): Promise<void> {
         const host = this.coverageHost;
         if (!host || !host.isConnected) return;
+        const refresh = opts?.refresh !== false;
+        if (!refresh) {
+            if (this.coverageCache) {
+                this.renderCoveragePanel(host, this.coverageCache, this.coverageCacheFailed, true);
+            }
+            return;
+        }
+
         let summary: FolderCoverageSummary;
         let loadFailed = false;
         try {
             summary = await this.plugin.getFolderCoverage();
+            this.coverageCache = summary;
+            this.coverageCacheFailed = false;
         } catch {
-            summary = emptyFolderCoverage();
             loadFailed = true;
+            this.coverageCacheFailed = true;
+            if (this.coverageCache) {
+                if (!host.isConnected || host !== this.coverageHost) return;
+                this.renderCoveragePanel(host, this.coverageCache, false, true);
+                return;
+            }
+            summary = emptyFolderCoverage();
         }
-        if (!host.isConnected || host !== this.coverageHost) return; // re-rendered
+        if (!host.isConnected || host !== this.coverageHost) return;
+        this.renderCoveragePanel(host, summary, loadFailed, false);
+    }
+
+    private renderCoveragePanel(
+        host: HTMLElement,
+        summary: FolderCoverageSummary,
+        loadFailed: boolean,
+        fromCache: boolean,
+    ): void {
         host.empty();
 
         const view = resolveCoveragePanelView({
@@ -650,7 +681,15 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         });
 
         const wrap = host.createDiv({ cls: 'seek-coverage-panel' });
-        wrap.createDiv({ cls: 'seek-coverage-head', text: 'Embedder coverage by folder' });
+        const head = wrap.createDiv({ cls: 'seek-coverage-head' });
+        head.createSpan({ text: 'Embedder coverage by folder' });
+        if (fromCache) {
+            const warn = head.createSpan({ cls: 'seek-coverage-stale' });
+            setIcon(warn, 'alert-triangle');
+            const tip = 'Last cached coverage until the next refresh (every 5s, or when indexing updates).';
+            warn.setAttr('aria-label', tip);
+            setTooltip(warn, tip, { delay: 300 });
+        }
 
         if (view.statusLine) this.renderCoverageMessage(wrap, view.statusLine, 'status');
         if (!view.showTree && view.placeholder) {
@@ -660,18 +699,24 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         if (!view.showTree) return;
 
         const o = view.summary.overall;
+        const overallTone = coverageBarTone(o);
+        const overallTip = formatCoverageCountTip(o);
         const overall = wrap.createDiv({ cls: 'seek-coverage-overall' });
-        overall.createSpan({
-            cls: 'seek-coverage-pct is-' + coverageTone(o),
-            text: `${o.percent}%`,
+        const overallPct = overall.createSpan({
+            cls: 'seek-coverage-pct is-' + overallTone,
+            text: formatCoveragePercent(o),
         });
-        const remainingText = o.remaining > 0 ? ` · ${o.remaining.toLocaleString()} remaining` : '';
-        overall.createSpan({
+        overallPct.setAttr('aria-label', overallTip);
+        setTooltip(overallPct, overallTip, { delay: 300 });
+        const overallBar = overall.createDiv({ cls: 'seek-coverage-track' });
+        const overallFill = overallBar.createDiv({ cls: 'seek-coverage-fill is-' + overallTone });
+        overallFill.style.width = `${coverageBarWidth(o)}%`;
+        const overallMeta = overall.createSpan({
             cls: 'seek-coverage-overall-meta',
-            text: `covered ${o.covered.toLocaleString()} of ${o.total.toLocaleString()} notes` +
-                remainingText +
-                (o.excluded > 0 ? ` · ${o.excluded.toLocaleString()} excluded` : ''),
+            text: formatCoverageMeta(o),
         });
+        overallMeta.setAttr('aria-label', overallTip);
+        setTooltip(overallMeta, overallTip, { delay: 300 });
 
         const rows = wrap.createDiv({ cls: 'seek-coverage-rows' });
         for (const child of view.summary.root.children) this.renderCoverageNode(rows, child, 0);
@@ -718,7 +763,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                 } else {
                     this.coverageExpandedPaths.add(node.path);
                 }
-                void this.paintCoverage();
+                void this.paintCoverage({ refresh: false });
             };
             name.addEventListener('click', (e) => {
                 e.preventDefault();
@@ -738,19 +783,18 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         name.createSpan({ cls: 'seek-coverage-label', text: node.name });
         if (fullyExcluded) name.createSpan({ cls: 'seek-coverage-excluded-tag', text: 'excluded' });
 
+        const tone = coverageBarTone(node);
         const bar = row.createDiv({ cls: 'seek-coverage-track' });
-        const fill = bar.createDiv({ cls: 'seek-coverage-fill is-' + coverageTone(node) });
-        fill.style.width = `${node.percent}%`;
+        const fill = bar.createDiv({ cls: 'seek-coverage-fill is-' + tone });
+        fill.style.width = `${coverageBarWidth(node)}%`;
 
-        row.createSpan({ cls: 'seek-coverage-pct is-' + coverageTone(node), text: `${node.percent}%` });
-        const metaText = fullyExcluded
-            ? `${node.excluded.toLocaleString()} excluded`
-            : node.catchingUp > 0
-                ? `${node.covered.toLocaleString()} / ${node.total.toLocaleString()} · ${node.catchingUp.toLocaleString()} catching up`
-                : node.remaining > 0
-                    ? `${node.covered.toLocaleString()} / ${node.total.toLocaleString()} · ${node.remaining.toLocaleString()} pending`
-                    : `${node.covered.toLocaleString()} / ${node.total.toLocaleString()}`;
-        row.createSpan({ cls: 'seek-coverage-meta', text: metaText });
+        const tip = formatCoverageCountTip(node);
+        const pctEl = row.createSpan({ cls: 'seek-coverage-pct is-' + tone, text: formatCoveragePercent(node) });
+        pctEl.setAttr('aria-label', tip);
+        setTooltip(pctEl, tip, { delay: 300 });
+        const metaEl = row.createSpan({ cls: 'seek-coverage-meta', text: formatCoverageMeta(node) });
+        metaEl.setAttr('aria-label', tip);
+        setTooltip(metaEl, tip, { delay: 300 });
 
         if (!expanded) return;
         for (const child of node.children) this.renderCoverageNode(container, child, depth + 1);
