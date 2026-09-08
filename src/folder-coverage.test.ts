@@ -314,6 +314,56 @@ describe('FolderCoverageNode remaining and status', () => {
         expect(ignored.excluded).toBe(1);
         expect(ignored.status).toBe('excluded');
     });
+
+    it('overlays pendingPaths as catchingUp and forces in-progress', () => {
+        const summary = computeFolderCoverage({
+            allPaths: [
+                'Private/References/a.md',
+                'Private/References/b.md',
+                'Private/Spreedly/c.md',
+                'Notes/x.md',
+            ],
+            coveredPaths: [
+                'Private/References/a.md',
+                'Private/References/b.md',
+                'Private/Spreedly/c.md',
+                'Notes/x.md',
+            ],
+            excludedPaths: [],
+            pendingPaths: [
+                'Private/References/a.md',
+                'Private/Spreedly/c.md',
+            ],
+        });
+
+        expect(summary.overall.catchingUp).toBe(2);
+        expect(summary.overall.status).toBe('in-progress');
+
+        const priv = summary.root.children.find(c => c.path === 'Private')!;
+        expect(priv.catchingUp).toBe(2);
+        expect(priv.status).toBe('in-progress');
+
+        const refs = priv.children.find(c => c.path === 'Private/References')!;
+        expect(refs.catchingUp).toBe(1);
+        expect(refs.covered).toBe(2);
+        expect(refs.status).toBe('in-progress');
+
+        const notes = summary.root.children.find(c => c.path === 'Notes')!;
+        expect(notes.catchingUp).toBe(0);
+        expect(notes.status).toBe('complete');
+    });
+
+    it('ignores pendingPaths that are excluded', () => {
+        const summary = computeFolderCoverage({
+            allPaths: ['Archive/old.md'],
+            coveredPaths: [],
+            excludedPaths: ['Archive/old.md'],
+            pendingPaths: ['Archive/old.md'],
+        });
+        const arch = summary.root.children.find(c => c.path === 'Archive')!;
+        expect(arch.catchingUp).toBe(0);
+        expect(arch.status).toBe('excluded');
+    });
 });
 
 describe('createLiveCoverageSnapshot and flattenCoverageTree', () => {
@@ -346,6 +396,7 @@ describe('createLiveCoverageSnapshot and flattenCoverageTree', () => {
         expect(work.total).toBe(2);
         expect(work.covered).toBe(1);
         expect(work.remaining).toBe(1);
+        expect(work.catchingUp).toBe(0);
         expect(work.status).toBe('in-progress');
     });
 });

@@ -109,6 +109,11 @@ export interface PluginSchedulerHost {
     refreshIndexStatusBar(): void;
     touchIndexInventory(): Promise<void>;
     notifyIndexActivityChanged(): void;
+    noteIndexDeltaPending(paths: Iterable<string>): void;
+    noteIndexDeltaRemoved(paths: Iterable<string>): void;
+    noteIndexDeltaFromCompute(dirty: readonly string[]): void;
+    noteIndexDeltaCommitted(committed: readonly string[]): void;
+    clearIndexDelta(): void;
     maybeUnloadEmbedder(reason: 'idle' | 'background'): void;
     appendErrorIfCurrent(context: string, error: unknown, gen?: number): void;
     runCatchUp(): void;
@@ -162,6 +167,7 @@ export class PluginSchedulerManager {
             if (!this.host.vaultIndexEventsReady) return;
             if (f instanceof TFile && isIndexableFile(f, this.host.settings.indexBases)) {
                 this.dirtyQueue.add(f.path);
+                this.host.noteIndexDeltaPending([f.path]);
                 this.scheduleFlush();
             }
         }));
@@ -170,6 +176,7 @@ export class PluginSchedulerManager {
             if (!(f instanceof TFile) || !isIndexableFile(f, this.host.settings.indexBases)) return;
             this.deletedQueue.add(f.path);
             this.dirtyQueue.delete(f.path);
+            this.host.noteIndexDeltaRemoved([f.path]);
             this.flushStructuralSoon();
         }));
         registerEvent(this.host.app.vault.on('rename', (f, oldPath) => {
@@ -179,8 +186,10 @@ export class PluginSchedulerManager {
             // the archive/un-archive outcome by destination.
             this.deletedQueue.add(oldPath);
             this.dirtyQueue.delete(oldPath);
+            this.host.noteIndexDeltaRemoved([oldPath]);
             if (f instanceof TFile && isIndexableFile(f, this.host.settings.indexBases)) {
                 this.dirtyQueue.add(f.path);
+                this.host.noteIndexDeltaPending([f.path]);
             }
             this.flushStructuralSoon();
         }));
@@ -223,6 +232,7 @@ export class PluginSchedulerManager {
             const stored = await this.host.store.getFileRecord(file.path);
             if (!stored || file.stat.mtime > stored.mtimeMs) {
                 this.dirtyQueue.add(file.path);
+                this.host.noteIndexDeltaPending([file.path]);
                 this.scheduleFlush();
             }
         } catch (e) {
@@ -336,13 +346,16 @@ export class PluginSchedulerManager {
                     bulkJobId = this.host.beginIndexJob('catchup', dirty.length, `Seek: indexing ${dirty.length} changed notes—`);
                     bulkProgress = true;
                 }
+                this.host.noteIndexDeltaFromCompute(dirty);
                 const result = await orchestrator.reindexDelta(dirty, deleted, {
                     embed: !deferEmbed,
                     shouldContinue: () => !this.host.indexingBlocked,
                     onProgress: deferEmbed ? undefined : (msg) => {
                         if (bulkJobId != null) this.host.indexProgress.updateFromProgress(msg, bulkJobId);
+                        this.host.notifyIndexActivityChanged();
                     },
                 });
+                this.host.noteIndexDeltaCommitted(result.committedPaths);
                 // Summary counts what actually committed — an embed preempted by a
                 // query reports the partial total honestly; the drain finishes the
                 // rest silently. No toast on throw (flushDirty's catch logs it).
@@ -363,10 +376,12 @@ export class PluginSchedulerManager {
                 // note keeps its old chunks, doesn't advance its file record, and so
                 // stays dirty + pending for runCatchUp, which fires the moment the
                 // query completes (onQueryInFlight(false)) — computeDelta re-finds it.
-                await orchestrator.reindexDelta(dirty, deleted, {
+                this.host.noteIndexDeltaFromCompute(dirty);
+                const result = await orchestrator.reindexDelta(dirty, deleted, {
                     embed: !deferEmbed,
                     shouldContinue: () => !this.host.indexingBlocked,
                 });
+                this.host.noteIndexDeltaCommitted(result.committedPaths);
                 if ((deferEmbed || this.host.indexingBlocked) && dirty.length > 0) {
                     this.host.catchUpPending = true;
                 }

@@ -160,6 +160,9 @@ function strategyOf(denseWeight: number): Strategy {
     return denseWeight <= 0.55 ? 'keyword' : 'balanced';
 }
 
+/** Settings coverage panel backstop poll while the tab is open (indexing events drive live updates). */
+export const COVERAGE_POLL_MS = 5000;
+
 // Coverage color bucket: full → good, ≥50% → warn (partially covered), below → low.
 function coverageTone(r: { percent: number }): 'good' | 'warn' | 'low' {
     if (r.percent >= 100) return 'good';
@@ -198,8 +201,8 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
     private startupPoll: number | null = null;
     private searchConsoleEl: HTMLElement | null = null;
     private statusCardHost: HTMLElement | null = null;
-    // Per-folder coverage panel: a lightweight poll repaints while the tab is open so a
-    // live backfill (e.g. after an exclusion change) ticks up to 100% without a reopen.
+    // Per-folder coverage panel: indexing events drive live repaints; a 5s backstop
+    // poll still runs while the tab is open so idle vault layout changes aren't missed.
     private coveragePoll: number | null = null;
     private coverageHost: HTMLElement | null = null;
     private exclusionBannerHost: HTMLElement | null = null;
@@ -490,11 +493,11 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                 this.afterExclusionSettingsChanged();
             }));
 
-        const intro = new Setting(wrap)
+        new Setting(wrap)
             .setName('Additional excluded folders')
             .setDesc("Folders Seek excludes from indexing, in addition to Obsidian's Excluded files (when Honor excluded folders is on). Add or remove a folder and Seek backfills or soft-deletes the affected notes automatically.");
 
-        const list = intro.settingEl.createDiv({ cls: 'seek-excluded-folders' });
+        const list = wrap.createDiv({ cls: 'seek-excluded-folders' });
         const folders = [...(this.s.customExcludedFolders ?? [])].sort((a, b) => a.localeCompare(b));
         if (folders.length === 0) {
             list.createDiv({ cls: 'seek-excluded-folders-empty', text: 'No additional folders excluded.' });
@@ -502,7 +505,11 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             for (const folder of folders) {
                 const row = list.createDiv({ cls: 'seek-excluded-folder-row' });
                 row.createSpan({ cls: 'seek-excluded-folder-path', text: folder });
-                const remove = row.createEl('button', { cls: 'seek-excluded-folder-remove', text: 'Remove' });
+                const remove = row.createEl('button', {
+                    cls: 'clickable-icon seek-excluded-folder-remove',
+                    attr: { 'aria-label': `Remove ${folder}` },
+                });
+                setIcon(remove, 'cross');
                 remove.onclick = () => void this.removeCustomExcludedFolder(folder);
             }
         }
@@ -510,8 +517,8 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         let pendingPath = '';
         const add = list.createDiv({ cls: 'seek-excluded-folder-add-row' });
         const input = add.createEl('input', {
-            cls: 'seek-excluded-folder-input',
-            attr: { type: 'text', placeholder: 'e.g. Archive/old' },
+            type: 'text',
+            placeholder: 'e.g. Archive/old',
         });
         new FolderSuggest(this.app, input);
         input.addEventListener('input', () => { pendingPath = input.value; });
@@ -520,7 +527,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             e.preventDefault();
             void this.addCustomExcludedFolder(pendingPath || input.value);
         });
-        const addBtn = add.createEl('button', { cls: 'mod-cta seek-excluded-folder-add-btn', text: 'Add' });
+        const addBtn = add.createEl('button', { text: 'Add' });
         addBtn.onclick = () => void this.addCustomExcludedFolder(pendingPath || input.value);
     }
 
@@ -607,11 +614,9 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             const job = this.plugin.getIndexJob();
             const active = job != null && job.done < job.total;
             if (active) this.paintStatusCard();
-            this.coveragePoll = window.setTimeout(tick, active ? 1000 : 2000);
+            this.coveragePoll = window.setTimeout(tick, COVERAGE_POLL_MS);
         };
-        const job = this.plugin.getIndexJob();
-        const active = job != null && job.done < job.total;
-        this.coveragePoll = window.setTimeout(tick, active ? 1000 : 2000);
+        this.coveragePoll = window.setTimeout(tick, COVERAGE_POLL_MS);
     }
 
     private stopCoveragePoll(): void {
@@ -641,6 +646,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             orchestratorReady: this.plugin.isCoverageSourceReady,
             loadFailed,
             aligningExclusions: !!this.plugin.getExclusionChange(),
+            pendingCount: this.plugin.getIndexDeltaSnapshot().pendingPaths.length,
         });
 
         const wrap = host.createDiv({ cls: 'seek-coverage-panel' });
@@ -739,9 +745,11 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         row.createSpan({ cls: 'seek-coverage-pct is-' + coverageTone(node), text: `${node.percent}%` });
         const metaText = fullyExcluded
             ? `${node.excluded.toLocaleString()} excluded`
-            : node.remaining > 0
-                ? `${node.covered.toLocaleString()} / ${node.total.toLocaleString()} · ${node.remaining.toLocaleString()} pending`
-                : `${node.covered.toLocaleString()} / ${node.total.toLocaleString()}`;
+            : node.catchingUp > 0
+                ? `${node.covered.toLocaleString()} / ${node.total.toLocaleString()} · ${node.catchingUp.toLocaleString()} catching up`
+                : node.remaining > 0
+                    ? `${node.covered.toLocaleString()} / ${node.total.toLocaleString()} · ${node.remaining.toLocaleString()} pending`
+                    : `${node.covered.toLocaleString()} / ${node.total.toLocaleString()}`;
         row.createSpan({ cls: 'seek-coverage-meta', text: metaText });
 
         if (!expanded) return;

@@ -48,6 +48,8 @@ export interface FolderCoverageNode {
     covered: number;       // relevant files in the subtree with a FileRecord
     remaining: number;     // total - covered (files needing processing)
     excluded: number;      // files in the subtree hidden by ignore rules
+    /** Paths in this subtree currently queued / in the active delta (catch-up). */
+    catchingUp: number;
     percent: number;       // covered / total, 0-100
     status: FolderCoverageStatus;
     children: FolderCoverageNode[]; // nested subfolders (recursive hierarchy)
@@ -65,6 +67,7 @@ export interface FlatFolderCoverageItem {
     covered: number;
     remaining: number;
     excluded: number;
+    catchingUp: number;
     percent: number;
     status: FolderCoverageStatus;
     depth: number;
@@ -88,6 +91,8 @@ export interface FolderCoverageInput {
     allPaths: string[];      // every indexable-extension file, before exclusion
     coveredPaths: string[];  // subset of allPaths that has a FileRecord
     excludedPaths: string[]; // subset of allPaths currently excluded by ignore rules
+    /** Paths actively queued or in the current computeDelta dirty set. */
+    pendingPaths?: string[];
 }
 
 // The chain of ancestor folder keys for a file path, from shallowest to deepest.
@@ -116,9 +121,16 @@ function pct(covered: number, denom: number): number {
     return Math.round((covered / denom) * 100);
 }
 
-function folderStatus(total: number, covered: number, excluded: number): FolderCoverageStatus {
+function folderStatus(
+    total: number,
+    covered: number,
+    excluded: number,
+    catchingUp = 0,
+): FolderCoverageStatus {
     if (total === 0 && excluded > 0) return 'excluded';
     if (total === 0) return 'pending';
+    // Actively draining (including re-embeds of already-covered notes).
+    if (catchingUp > 0) return 'in-progress';
     if (covered >= total) return 'complete';
     if (covered > 0) return 'in-progress';
     return 'pending';
@@ -143,11 +155,16 @@ export interface CoveragePanelView {
     statusLine?: CoveragePanelMessage;
 }
 
-function indexingDetail(job: IndexStatusJob | null): string {
+function indexingDetail(job: IndexStatusJob | null, pendingCount?: number): string {
+    const pendingBit = pendingCount != null && pendingCount > 0
+        ? ` · ${pendingCount.toLocaleString()} catching up`
+        : '';
     if (job && job.total > 0) {
-        return `Indexed ${job.done.toLocaleString()} of ${job.total.toLocaleString()} notes so far. The per-folder breakdown updates as embedding catches up.`;
+        return `Indexed ${job.done.toLocaleString()} of ${job.total.toLocaleString()} notes so far${pendingBit}. The per-folder breakdown updates as embedding catches up.`;
     }
-    return 'Seek is still scanning and embedding your vault. Folder coverage will appear once notes are indexed.';
+    return pendingCount != null && pendingCount > 0
+        ? `Seek is catching up on ${pendingCount.toLocaleString()} notes. Folder coverage updates as they embed.`
+        : 'Seek is still scanning and embedding your vault. Folder coverage will appear once notes are indexed.';
 }
 
 function aligningDetail(job: IndexStatusJob | null): string {
@@ -170,8 +187,10 @@ export function resolveCoveragePanelView(input: {
     orchestratorReady: boolean;
     loadFailed?: boolean;
     aligningExclusions?: boolean;
+    /** Active dirty/delta pending count for the status banner. */
+    pendingCount?: number;
 }): CoveragePanelView {
-    const { summary, health, job, orchestratorReady, loadFailed, aligningExclusions } = input;
+    const { summary, health, job, orchestratorReady, loadFailed, aligningExclusions, pendingCount } = input;
     const { total, covered, excluded } = summary.overall;
 
     if (loadFailed) {
@@ -249,7 +268,14 @@ export function resolveCoveragePanelView(input: {
             view.statusLine = {
                 tone: 'pending',
                 title: 'Still indexing',
-                detail: indexingDetail(job),
+                detail: indexingDetail(job, pendingCount),
+            };
+        } else if ((isIndexingActive(health, job) || (pendingCount ?? 0) > 0) && covered >= total) {
+            // Re-embeds of already-covered notes (edits) — tree is full but catch-up is live.
+            view.statusLine = {
+                tone: 'pending',
+                title: 'Still indexing',
+                detail: indexingDetail(job, pendingCount),
             };
         }
         return view;
@@ -300,7 +326,7 @@ export function resolveCoveragePanelView(input: {
             placeholder: {
                 tone: 'pending',
                 title: 'Still indexing',
-                detail: indexingDetail(job),
+                detail: indexingDetail(job, pendingCount),
             },
         };
     }
@@ -324,6 +350,7 @@ export function emptyFolderCoverage(): FolderCoverageSummary {
         covered: 0,
         remaining: 0,
         excluded: 0,
+        catchingUp: 0,
         percent: 0,
         status: 'pending',
         children: [],
@@ -334,6 +361,7 @@ export function emptyFolderCoverage(): FolderCoverageSummary {
 export function computeFolderCoverage(input: FolderCoverageInput): FolderCoverageSummary {
     const coveredSet = new Set(input.coveredPaths);
     const excludedSet = new Set(input.excludedPaths);
+    const pendingSet = new Set(input.pendingPaths ?? []);
 
     // Mutable accumulator per folder node; children keyed by single segment name.
     interface Acc {
@@ -341,27 +369,35 @@ export function computeFolderCoverage(input: FolderCoverageInput): FolderCoverag
         total: number;
         covered: number;
         excluded: number;
+        catchingUp: number;
         children: Map<string, Acc>;
     }
-    const makeAcc = (path: string): Acc => ({ path, total: 0, covered: 0, excluded: 0, children: new Map() });
+    const makeAcc = (path: string): Acc => ({
+        path, total: 0, covered: 0, excluded: 0, catchingUp: 0, children: new Map(),
+    });
     const rootAcc = makeAcc('');
 
-    const bump = (acc: Acc, isCovered: boolean, isExcluded: boolean): void => {
+    const bump = (acc: Acc, isCovered: boolean, isExcluded: boolean, isPending: boolean): void => {
         if (isExcluded) acc.excluded++;
-        else { acc.total++; if (isCovered) acc.covered++; }
+        else {
+            acc.total++;
+            if (isCovered) acc.covered++;
+            if (isPending) acc.catchingUp++;
+        }
     };
 
     for (const p of input.allPaths) {
         const isCovered = coveredSet.has(p);
         const isExcluded = excludedSet.has(p);
-        bump(rootAcc, isCovered, isExcluded);
+        const isPending = !isExcluded && pendingSet.has(p);
+        bump(rootAcc, isCovered, isExcluded, isPending);
         let node = rootAcc;
         for (const key of pathFolderChain(p)) {
             const seg = segmentOf(key);
             let child = node.children.get(seg);
             if (!child) { child = makeAcc(key); node.children.set(seg, child); }
             node = child;
-            bump(node, isCovered, isExcluded);
+            bump(node, isCovered, isExcluded, isPending);
         }
     }
 
@@ -376,8 +412,9 @@ export function computeFolderCoverage(input: FolderCoverageInput): FolderCoverag
             covered: acc.covered,
             remaining,
             excluded: acc.excluded,
+            catchingUp: acc.catchingUp,
             percent: pct(acc.covered, acc.total),
-            status: folderStatus(acc.total, acc.covered, acc.excluded),
+            status: folderStatus(acc.total, acc.covered, acc.excluded, acc.catchingUp),
             children: kids.map(c => finalize(c, depth + 1)),
         };
         return node;
@@ -397,6 +434,7 @@ export function flattenCoverageTree(node: FolderCoverageNode, depth = 0): FlatFo
             covered: node.covered,
             remaining: node.remaining,
             excluded: node.excluded,
+            catchingUp: node.catchingUp,
             percent: node.percent,
             status: node.status,
             depth,

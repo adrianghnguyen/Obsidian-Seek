@@ -99,6 +99,7 @@ import { SeekSettingTab } from './settings-tab';
 import { collectPlatformInfo, isMobilePlatform, resolveDevice, recordActiveBackend, maybeDemoteOnCrash, getStartupWarm } from './platform';
 import { CompositorPacer, cheapYield } from './pacer';
 import { shouldUnloadEmbedder, type UnloadGateState } from './embedder-lifecycle';
+import { IndexDeltaTracker, type IndexDeltaSnapshot } from './index-delta-view';
 import {
     drainCatchUp,
 } from './catchup';
@@ -313,6 +314,9 @@ export default class SeekPlugin extends Plugin {
     private inventoryGen = 0;
     private nextIndexJobId = 1;
     private readonly indexProgress = new IndexStatusBar();
+    /** Pending dirty/delta paths for Settings coverage (indexing-driven). */
+    private readonly indexDelta = new IndexDeltaTracker();
+    private indexDeltaNotifyTimer: number | null = null;
     // Live Seek search modal, if open — remappable Search:* commands target it.
     private activeSearchModal: SeekSearchModal | null = null;
     // Drift auto-recovery (sibling of catch-up). The orchestrator detects persistent
@@ -441,6 +445,44 @@ export default class SeekPlugin extends Plugin {
         return this.indexProgress.jobSpeedView();
     }
 
+    /** Pending dirty/delta paths for Settings coverage overlay. */
+    getIndexDeltaSnapshot(): IndexDeltaSnapshot {
+        return this.indexDelta.snapshot();
+    }
+
+    /** Enqueue path(s) into the pending-delta snapshot (dirtyQueue / create). */
+    noteIndexDeltaPending(paths: Iterable<string>): void {
+        this.indexDelta.addPending(paths);
+        this.scheduleIndexActivityNotify();
+    }
+
+    /** Drop path(s) from the pending-delta snapshot (delete / rename-away). */
+    noteIndexDeltaRemoved(paths: Iterable<string>): void {
+        this.indexDelta.removePending(paths);
+        this.scheduleIndexActivityNotify();
+    }
+
+    /**
+     * Replace pending with computeDelta dirty ∪ live dirtyQueue.
+     * Called at the start of a catch-up sweep or bulk flush.
+     */
+    noteIndexDeltaFromCompute(dirty: readonly string[]): void {
+        this.indexDelta.setFromDelta(dirty, this.dirtyQueue);
+        this.notifyIndexActivityChanged();
+    }
+
+    /** After a reindexDelta burst: drop committed paths from pending. */
+    noteIndexDeltaCommitted(committed: readonly string[]): void {
+        this.indexDelta.applyCommitted(committed);
+        this.notifyIndexActivityChanged();
+    }
+
+    /** Pass finished — clear pending overlay. */
+    clearIndexDelta(): void {
+        this.indexDelta.clear();
+        this.notifyIndexActivityChanged();
+    }
+
     /** Newest index-complete of any mode (logger cache). */
     getLastIndexComplete(): IndexCompleteEntry | null {
         return this.logger.lastIndexComplete;
@@ -536,7 +578,7 @@ export default class SeekPlugin extends Plugin {
         if (this.catchUpJob == null) return;
         this.indexProgress.hide(this.catchUpJob.id);
         this.catchUpJob = null;
-        this.notifyIndexActivityChanged();
+        this.clearIndexDelta();
     }
 
     /** Readiness gate for seek:search / seek:open / seek:insert-link — null when search may run. */
@@ -1276,6 +1318,11 @@ export default class SeekPlugin extends Plugin {
         // First thing, synchronously: a session whose record isn't closed at
         // next boot reads as a crash. Reload/disable/quit all pass through here.
         this.forensics?.markCleanEnd();
+        if (this.indexDeltaNotifyTimer != null) {
+            window.clearTimeout(this.indexDeltaNotifyTimer);
+            this.indexDeltaNotifyTimer = null;
+        }
+        this.indexDelta.clear();
         this.indexProgress.hide();
         this.embedder.teardown();
         this.orchestrator?.dispose();
@@ -2210,8 +2257,21 @@ export default class SeekPlugin extends Plugin {
 
     /** Settings embed diagnostics + coverage poll while an index job is active. */
     notifyIndexActivityChanged(): void {
+        if (this.indexDeltaNotifyTimer != null) {
+            window.clearTimeout(this.indexDeltaNotifyTimer);
+            this.indexDeltaNotifyTimer = null;
+        }
         this.notifySessionTelemetryChanged();
         this.notifyFolderCoverageChanged();
+    }
+
+    /** Debounced Settings refresh after dirtyQueue enqueue storms. */
+    private scheduleIndexActivityNotify(delayMs = 300): void {
+        if (this.indexDeltaNotifyTimer != null) window.clearTimeout(this.indexDeltaNotifyTimer);
+        this.indexDeltaNotifyTimer = window.setTimeout(() => {
+            this.indexDeltaNotifyTimer = null;
+            this.notifyIndexActivityChanged();
+        }, delayMs);
     }
 
     /** Tell the orchestrator to defer background warm while catch-up holds IDB. */
@@ -2498,6 +2558,7 @@ export default class SeekPlugin extends Plugin {
                 const { pending } = await drainCatchUp({
                     computeDelta: async () => {
                         const d = await orchestrator.computeDelta();
+                        this.noteIndexDeltaFromCompute(d.dirty);
                         if (d.dirty.length > 0) this.syncCatchUpJob(d.dirty.length);
                         return d;
                     },
@@ -2512,8 +2573,10 @@ export default class SeekPlugin extends Plugin {
                                 const chunksDone = job.chunksCommitted + (p?.chunks ?? 0);
                                 // Files/total drive status-bar chrome; chunksDone is Settings-only (embed pass).
                                 this.indexProgress.update(filesDone, job.passTotal, undefined, job.id, chunksDone);
+                                this.notifyIndexActivityChanged();
                             },
                         });
+                        this.noteIndexDeltaCommitted(r.committedPaths);
                         if (this.catchUpJob) {
                             this.catchUpJob.committed += r.committedPaths.length;
                             if (r.embedded) {
@@ -2691,11 +2754,11 @@ export default class SeekPlugin extends Plugin {
         return this.orchestrator != null;
     }
 
-    /** Per-folder embedder coverage for the settings surface (passthrough). */
+    /** Per-folder embedder coverage for the settings surface (passthrough + pending overlay). */
     async getFolderCoverage(): Promise<FolderCoverageSummary> {
         if (!this.orchestrator) return emptyFolderCoverage();
         try {
-            return await this.orchestrator.getFolderCoverage();
+            return await this.orchestrator.getFolderCoverage(this.indexDelta.snapshot().pendingPaths);
         } catch {
             return emptyFolderCoverage();
         }
@@ -2777,6 +2840,7 @@ export default class SeekPlugin extends Plugin {
             const result = await this.orchestrator.reindexAll((msg) => {
                 opts?.onProgress?.(msg);
                 this.indexProgress.updateFromProgress(msg, jobId);
+                this.notifyIndexActivityChanged();
             });
             const summary = [
                 result.pass ? '✅' : '❌',
@@ -2810,7 +2874,7 @@ export default class SeekPlugin extends Plugin {
         } finally {
             this.popTaskContext('indexing');
             this.indexProgress.hide(jobId);
-            this.notifyIndexActivityChanged();
+            this.clearIndexDelta();
             void this.touchIndexInventory();
         }
     }

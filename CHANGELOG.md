@@ -6,6 +6,8 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ### Fixed
 - **Settings → Index → Embedding pass** live `ch/s`, `files/s`, and this-pass file/chunk counts now refresh during catch-up or full indexing (poll starts when a job begins; catch-up chunk totals accumulate across bursts; last-pass phases/batch/health update when a pass completes). Status bar unchanged.
+- **Settings → Index → Embedder coverage by folder** refreshes from the same indexing events (dirty queue, computeDelta, committed bursts) as Embedding pass, shows per-folder **catching up** counts for the active delta, and uses a 5s Settings backstop poll instead of 1–2s.
+- **Settings → Index → Advanced → Additional excluded folders** list and add row now span the full card width (no longer squeezed into the setting control column); folder paths use normal text color and remove uses a standard icon button.
 
 ## 1.8.0
 

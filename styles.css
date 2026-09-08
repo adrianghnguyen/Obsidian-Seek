@@ -1679,55 +1679,50 @@
     padding: 10px 0;
 }
 .seek-settings .seek-excluded-block > .setting-item:last-of-type {
-    padding-bottom: 6px;
+    padding-bottom: 0;
 }
 .seek-settings .seek-excluded-folders {
-    width: 100%;
-    margin-top: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 0 0 8px;
 }
 .seek-settings .seek-excluded-folders-empty {
-    color: var(--text-faint);
+    color: var(--text-muted);
     font-size: var(--font-ui-smaller);
 }
 .seek-settings .seek-excluded-folder-row {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 4px 0;
+    gap: 6px;
+    padding: 4px 6px;
+    border-radius: var(--radius-s);
+    background: var(--background-modifier-form-field);
 }
 .seek-settings .seek-excluded-folder-path {
     flex: 1 1 auto;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     font-family: var(--font-monospace);
     font-size: var(--font-ui-small);
+    color: var(--text-normal);
 }
 .seek-settings .seek-excluded-folder-remove {
     flex: 0 0 auto;
-    font-size: var(--font-ui-smaller);
     color: var(--text-muted);
-    background: transparent;
-    border: 1px solid var(--background-modifier-border);
-    border-radius: var(--button-radius);
-    padding: 2px 8px;
-    cursor: pointer;
 }
 .seek-settings .seek-excluded-folder-remove:hover {
     color: var(--text-error);
-    border-color: var(--text-error);
 }
 .seek-settings .seek-excluded-folder-add-row {
     display: flex;
     align-items: center;
     gap: 8px;
-    margin-top: 8px;
 }
-.seek-settings .seek-excluded-folder-input {
+.seek-settings .seek-excluded-folder-add-row input {
     flex: 1 1 auto;
     min-width: 0;
-}
-.seek-settings .seek-excluded-folder-add-btn {
-    flex: 0 0 auto;
 }
 .seek-coverage-track {
     height: 6px;
