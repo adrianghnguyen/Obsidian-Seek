@@ -20,10 +20,11 @@
 // "move caret to end". A naively controlled input would fight the caret.
 
 import { Platform, setIcon } from 'obsidian';
+import type { App } from 'obsidian';
 import type { SuggestEngine } from './suggest';
 import { parseDateMs } from './fusion';
 import { parseNum } from './query-parser';
-import type { SearchModalAction } from './search-modal-hotkeys';
+import { resolveSearchModalKeyAction, type SearchModalAction } from './search-modal-hotkeys';
 
 export type PillOp = 'tag' | 'path' | 'after' | 'before' | 'prop';
 
@@ -59,7 +60,6 @@ export interface PillQueryFieldCallbacks {
     // Remappable search-modal actions (Settings → Hotkeys). The field matches
     // the event against the live hotkey map and forwards the action here.
     onAction: (action: SearchModalAction) => void;
-    matchAction: (e: KeyboardEvent) => SearchModalAction | null;
     // Does this tag bind to a real vault tag (exact or hierarchical parent)?
     // Drives the warn-pill state for a `tag:` that matches nothing.
     validateTag: (tag: string) => boolean;
@@ -201,6 +201,8 @@ export class PillQueryField {
 
     constructor(
         parent: HTMLElement,
+        private app: App,
+        private pluginId: string,
         private suggester: SuggestEngine,
         private cb: PillQueryFieldCallbacks,
         // Whether `after:`/`before:` date filters are available — i.e. Recency is
@@ -317,6 +319,11 @@ export class PillQueryField {
     focus(): void {
         this.editEl.focus();
         caretToEnd(this.editEl);
+    }
+
+    /** True when the contenteditable query input owns keyboard focus. */
+    isEditFocused(): boolean {
+        return document.activeElement === this.editEl;
     }
 
     // Blur the editable — on mobile this dismisses the soft keyboard. Used by the
@@ -749,7 +756,7 @@ export class PillQueryField {
         // navigate results, Enter submits…). Bare modifiers are left alone so a
         // chord-in-progress doesn't drop the selection.
         // Close is excluded so its handler can deselect-without-dismiss.
-        const actionPeekEarly = this.cb.matchAction(e);
+        const actionPeekEarly = resolveSearchModalKeyAction(this.app, this.pluginId, e);
         const pillNavKey = e.key === 'ArrowLeft' || e.key === 'ArrowRight'
             || e.key === 'Backspace' || e.key === 'Delete'
             || e.key === 'Escape' || actionPeekEarly === 'close';
