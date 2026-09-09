@@ -11,6 +11,7 @@ vi.mock('obsidian', async () => {
 
 import { Platform } from 'obsidian';
 import SeekPlugin from './main';
+import { IndexDeltaTracker } from './index-delta-view';
 
 type SchedulerWindow = typeof globalThis & {
     scheduler?: { yield: () => Promise<void> };
@@ -23,6 +24,7 @@ interface CatchUpHarness {
     reindexCalls: () => number;
     inventoryCalls: () => number;
     maxConcurrentInventory: () => number;
+    appendErrorIfCurrent: ReturnType<typeof vi.fn>;
 }
 
 async function flushMicrotasks(): Promise<void> {
@@ -44,6 +46,7 @@ function makeHarness(hidden: boolean): CatchUpHarness {
     let inventoryCalls = 0;
     let activeInventory = 0;
     let maxConcurrentInventory = 0;
+    const appendErrorIfCurrent = vi.fn();
 
     const plugin = Object.create(SeekPlugin.prototype) as Record<string, unknown> & { runCatchUp(): void };
     Object.assign(plugin, {
@@ -56,6 +59,14 @@ function makeHarness(hidden: boolean): CatchUpHarness {
         loadGeneration: 1,
         settings: { catchUpBurstMaxFiles: 30 },
         embedder: { loaded: true },
+        // runCatchUp's compute/reindex wrappers touch Settings delta overlay + dirtyQueue.
+        // `schedulers` is a prototype getter — set the lazy backing field the getter reads.
+        indexDelta: new IndexDeltaTracker(),
+        _schedulers: {
+            dirtyQueue: new Set<string>(),
+            isExclusionAligning: () => false,
+        },
+        notifyIndexActivityChanged: vi.fn(),
         orchestrator: {
             computeDelta: async () => {
                 computeCalls++;
@@ -71,7 +82,7 @@ function makeHarness(hidden: boolean): CatchUpHarness {
         popTaskContext: vi.fn(),
         syncWarmDeferred: vi.fn(),
         syncCatchUpJob: vi.fn(),
-        appendErrorIfCurrent: vi.fn(),
+        appendErrorIfCurrent,
         finishCatchUpJob: vi.fn(),
         clearExclusionChange: vi.fn(),
         runStartupWarm: vi.fn(),
@@ -93,6 +104,7 @@ function makeHarness(hidden: boolean): CatchUpHarness {
         reindexCalls: () => reindexCalls,
         inventoryCalls: () => inventoryCalls,
         maxConcurrentInventory: () => maxConcurrentInventory,
+        appendErrorIfCurrent,
     };
 }
 
@@ -110,6 +122,7 @@ describe('runCatchUp pending-work scheduling', () => {
         h.plugin.runCatchUp();
         await flushMicrotasks();
 
+        expect(h.appendErrorIfCurrent).not.toHaveBeenCalled();
         expect(h.computeCalls()).toBe(1);
         expect(h.reindexCalls()).toBe(1);
         expect(h.inventoryCalls()).toBe(1);
@@ -130,6 +143,7 @@ describe('runCatchUp pending-work scheduling', () => {
         h.plugin.runCatchUp();
         await flushMicrotasks();
 
+        expect(h.appendErrorIfCurrent).not.toHaveBeenCalled();
         expect(h.computeCalls()).toBe(1);
         expect(h.reindexCalls()).toBe(1);
         expect(h.inventoryCalls()).toBe(1);
