@@ -547,7 +547,7 @@ Not every Hugging Face “embedding” checkpoint works with Seek. The load path
 | Index banner | Stale/syncing notices |
 | Footer | Keyboard hints (toggleable) |
 
-**Keyboard model** (defaults; remappable in Settings → Hotkeys under Seek: Search:*):
+**Keyboard model** (defaults; remappable in Settings → Hotkeys under Seek: Search:*). Default bindings are **modal-scoped** — they apply while the Seek search modal is focused (query field or results/footer chrome), not globally in the editor. User remaps in Settings → Hotkeys follow the same focus gate.
 
 | Default | Action |
 |---------|--------|

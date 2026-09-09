@@ -1,10 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { App, Hotkey } from 'obsidian';
 import { Platform } from 'obsidian';
 import {
+    canInsertLinkFromModal,
     eventMatchesHotkey,
     effectiveHotkeys,
+    isSeekChromeFocused,
     matchSearchModalAction,
+    resolveSearchModalKeyAction,
     searchModalCommandId,
     searchModalCommandRegisterHotkeys,
     searchModalFooterHints,
@@ -31,12 +34,58 @@ function appWithHotkeys(custom: Record<string, Hotkey[]>, defaults: Record<strin
 }
 
 describe('search-modal-hotkeys', () => {
-    it('omits bare editor keys from addCommand defaults', () => {
+    it('never registers modal-action defaults globally', () => {
         expect(searchModalCommandRegisterHotkeys([{ modifiers: [], key: 'ArrowUp' }])).toBeUndefined();
         expect(searchModalCommandRegisterHotkeys([{ modifiers: [], key: 'Enter' }])).toBeUndefined();
-        expect(searchModalCommandRegisterHotkeys([{ modifiers: ['Mod'], key: 'Enter' }])).toEqual([
-            { modifiers: ['Mod'], key: 'Enter' },
-        ]);
+        expect(searchModalCommandRegisterHotkeys([{ modifiers: ['Mod'], key: 'Enter' }])).toBeUndefined();
+        expect(searchModalCommandRegisterHotkeys([{ modifiers: ['Alt'], key: 'Enter' }])).toBeUndefined();
+        expect(searchModalCommandRegisterHotkeys([{ modifiers: ['Mod', 'Shift'], key: 'E' }])).toBeUndefined();
+    });
+
+    it('isSeekChromeFocused detects focus inside modal root', () => {
+        const inner = {} as HTMLElement;
+        const modal = {
+            contains: (el: unknown) => el === inner,
+        } as unknown as HTMLElement;
+        const other = {} as HTMLElement;
+
+        vi.stubGlobal('document', { activeElement: null as HTMLElement | null });
+        try {
+            expect(isSeekChromeFocused(modal)).toBe(false);
+            (document as { activeElement: HTMLElement | null }).activeElement = inner;
+            expect(isSeekChromeFocused(modal)).toBe(true);
+            (document as { activeElement: HTMLElement | null }).activeElement = modal;
+            expect(isSeekChromeFocused(modal)).toBe(true);
+            (document as { activeElement: HTMLElement | null }).activeElement = other;
+            expect(isSeekChromeFocused(modal)).toBe(false);
+        } finally {
+            vi.unstubAllGlobals();
+        }
+    });
+
+    it('resolveSearchModalKeyAction blocks insert-link without active editor', () => {
+        const app = {
+            workspace: { getActiveViewOfType: () => null },
+            hotkeyManager: { customKeys: {}, defaultKeys: {} },
+        } as unknown as App;
+        expect(resolveSearchModalKeyAction(
+            app,
+            'seek',
+            evt({ key: 'Enter', altKey: true }),
+        )).toBeNull();
+        expect(canInsertLinkFromModal(app)).toBe(false);
+    });
+
+    it('resolveSearchModalKeyAction allows insert-link with active editor', () => {
+        const app = {
+            workspace: { getActiveViewOfType: () => ({ editor: {} }) },
+            hotkeyManager: { customKeys: {}, defaultKeys: {} },
+        } as unknown as App;
+        expect(resolveSearchModalKeyAction(
+            app,
+            'seek',
+            evt({ key: 'Enter', altKey: true }),
+        )).toBe('insert-link');
     });
 
     it('lists a command for every remappable footer action', () => {

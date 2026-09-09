@@ -2,7 +2,7 @@
 // in Settings → Hotkeys, and the query field matches the *effective* binding
 // (customKeys over defaultKeys) so remaps work while the contenteditable is focused.
 
-import { Platform } from 'obsidian';
+import { MarkdownView, Platform } from 'obsidian';
 import type { App, Hotkey, Modifier } from 'obsidian';
 
 export type SearchModalAction =
@@ -34,8 +34,8 @@ export interface SearchModalCommandSpec {
 
 /**
  * Bare keys the editor owns globally. Registering them as addCommand defaults
- * hijacks the keymap even when checkCallback returns false — omit from addCommand
- * and rely on in-modal fallbacks (query field) instead.
+ * hijacks the keymap even when checkCallback returns false — all modal defaults
+ * are in-modal only (query field + modal capture listener).
  */
 export const EDITOR_CONFLICTING_BARE_KEYS = new Set([
     'ArrowUp',
@@ -45,12 +45,22 @@ export const EDITOR_CONFLICTING_BARE_KEYS = new Set([
     'Escape',
 ]);
 
-/** Hotkeys safe to pass to addCommand — chorded bindings only for editor-native keys. */
-export function searchModalCommandRegisterHotkeys(fallback: Hotkey[]): Hotkey[] | undefined {
-    const safe = fallback.filter(
-        h => h.modifiers.length > 0 || !EDITOR_CONFLICTING_BARE_KEYS.has(h.key),
-    );
-    return safe.length > 0 ? safe : undefined;
+/** Never register modal-action defaults globally — delivery is in-modal only. */
+export function searchModalCommandRegisterHotkeys(_fallback: Hotkey[]): Hotkey[] | undefined {
+    return undefined;
+}
+
+/** True when keyboard focus is inside the Seek modal chrome (field, results, footer). */
+export function isSeekChromeFocused(modalRoot: HTMLElement): boolean {
+    const ae = document.activeElement;
+    if (!ae) return false;
+    return ae === modalRoot || modalRoot.contains(ae);
+}
+
+/** Insert-link chords require an active markdown editor behind the modal. */
+export function canInsertLinkFromModal(app: App): boolean {
+    const view = app.workspace.getActiveViewOfType(MarkdownView);
+    return view?.editor != null;
 }
 
 /** Suffixes only — full command id is `${pluginId}:${id}`. */
@@ -240,6 +250,26 @@ export function matchSearchModalAction(
     }
 
     return best?.action ?? null;
+}
+
+/**
+ * Resolve a modal key action with insert-link editor gating. Returns null when
+ * insert-link chords match but no markdown editor is active (key falls through).
+ */
+export function resolveSearchModalKeyAction(
+    app: App,
+    pluginId: string,
+    evt: KeyboardEvent,
+): SearchModalAction | null {
+    const action = matchSearchModalAction(app, pluginId, evt);
+    if (!action) return null;
+    if (
+        (action === 'insert-link' || action === 'insert-link-alias')
+        && !canInsertLinkFromModal(app)
+    ) {
+        return null;
+    }
+    return action;
 }
 
 /** Footer / hint label from Obsidian when available; else a compact fallback. */

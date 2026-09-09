@@ -50,7 +50,9 @@ import {
 } from './pipeline-stage';
 import type { PipelineStages, PipelineStageEvent } from './pipeline-stage';
 import {
-    matchSearchModalAction,
+    canInsertLinkFromModal,
+    isSeekChromeFocused,
+    resolveSearchModalKeyAction,
     searchModalFooterHints,
     searchModalCloseHintKeys,
     type SearchModalAction,
@@ -279,6 +281,13 @@ export class SeekSearchModal extends Modal {
 
     /** True after onClose — remappable commands' checkCallbacks consult this. */
     get isClosed(): boolean { return this.closed; }
+
+    /** True when keyboard focus is inside this modal's chrome (field, results, footer). */
+    isChromeFocused(): boolean {
+        return isSeekChromeFocused(this.modalEl);
+    }
+
+    private modalKeyHandler: ((e: KeyboardEvent) => void) | null = null;
     // The latest SearchEntry returned by the orchestrator. Click events
     // reference its searchId so offline analysis can correlate the click back
     // to the originating query and the alternatives the user passed over.
@@ -427,10 +436,9 @@ export class SeekSearchModal extends Modal {
         // mirroring the Settings → Recency picker. Drives the suggestion hint so
         // it labels the real field instead of a hardcoded `created`.
         const dateFieldLabel = this.settings.recencyKey === 'modified' ? 'modified' : this.settings.createdProp;
-        this.field = new PillQueryField(contentEl, this.suggester, {
+        this.field = new PillQueryField(contentEl, this.app, this.pluginId, this.suggester, {
             onQueryChange: q => this.scheduleSearch(q),
             onAction: action => this.runAction(action),
-            matchAction: e => matchSearchModalAction(this.app, this.pluginId, e),
             validateTag: tag => this.tagBinds(tag),
         }, this.settings.recencyEpsilon > 0, dateFieldLabel);
         this.field.focus();
@@ -448,6 +456,7 @@ export class SeekSearchModal extends Modal {
         this.renderIndexBanner();
 
         this.resultsEl = contentEl.createDiv({ cls: 'seek-results' });
+        this.resultsEl.tabIndex = -1;
         this.snippetExpanded = false;
         this.applySnippetLineStyle();
         this.renderEmpty();
@@ -458,6 +467,9 @@ export class SeekSearchModal extends Modal {
         // Component 3 — the footer. Hint groups are gated on showHotkeyHints;
         // the index-status + esc cluster is always present.
         this.buildFooter(contentEl);
+
+        this.modalKeyHandler = (e: KeyboardEvent) => this.handleModalKeyDown(e);
+        this.modalEl.addEventListener('keydown', this.modalKeyHandler, { capture: true });
 
         // Observe the in-flight model load (no-op on the warm path). On the cold
         // path: when the model resolves, refresh the empty-state copy so the
@@ -528,6 +540,10 @@ export class SeekSearchModal extends Modal {
         // async completion that races this call.
         this.closed = true;
         this.onActiveChange?.(false);
+        if (this.modalKeyHandler) {
+            this.modalEl.removeEventListener('keydown', this.modalKeyHandler, { capture: true });
+            this.modalKeyHandler = null;
+        }
         this.advancePipeline({ type: 'clear' });
         if (this.loadPoll != null) { window.clearInterval(this.loadPoll); this.loadPoll = null; }
         // Closing with results showing counts as a committed search (see captureRecent).
@@ -590,7 +606,10 @@ export class SeekSearchModal extends Modal {
         let dragged = false;
         this.resultsEl?.addEventListener('touchmove', () => { dragged = true; }, { passive: true });
         this.resultsEl?.addEventListener('touchend', () => {
-            if (dragged) this.field?.blur();
+            if (dragged) {
+                this.field?.blur();
+                this.resultsEl?.focus({ preventScroll: true });
+            }
             dragged = false;
         }, { passive: true });
 
@@ -1674,6 +1693,19 @@ export class SeekSearchModal extends Modal {
 
     // ---- keyboard selection model ----
 
+    /** Capture-phase dispatch when focus is in modal chrome but outside the query field. */
+    private handleModalKeyDown(e: KeyboardEvent): void {
+        if (this.closed || !this.isChromeFocused()) return;
+        if (e.isComposing || e.keyCode === 229) return;
+        if (this.field?.isEditFocused()) return;
+
+        const action = resolveSearchModalKeyAction(this.app, this.pluginId, e);
+        if (!action) return;
+        e.preventDefault();
+        e.stopPropagation();
+        this.runAction(action);
+    }
+
     /** Dispatch a remappable search-modal action (commands + query-field chords). */
     runAction(action: SearchModalAction): void {
         switch (action) {
@@ -1682,8 +1714,14 @@ export class SeekSearchModal extends Modal {
             case 'open': this.openSelected(false); break;
             case 'open-tab': this.openSelected('tab'); break;
             case 'open-split': this.openSelected('split'); break;
-            case 'insert-link': this.insertSelectedLink('plain'); break;
-            case 'insert-link-alias': this.insertSelectedLink('searchAlias'); break;
+            case 'insert-link':
+                if (!canInsertLinkFromModal(this.app)) return;
+                this.insertSelectedLink('plain');
+                break;
+            case 'insert-link-alias':
+                if (!canInsertLinkFromModal(this.app)) return;
+                this.insertSelectedLink('searchAlias');
+                break;
             case 'expand-snippet': this.toggleSnippetExpand(); break;
             case 'fill-autosuggest': this.field?.fillAutosuggest(); break;
             case 'close': this.close(); break;
