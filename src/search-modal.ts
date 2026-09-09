@@ -1074,6 +1074,11 @@ export class SeekSearchModal extends Modal {
                 this.renderResting();
                 this.field?.focus();
             });
+            // Mirror result-row hover: CSS :hover alone leaves selectedRecentIndex
+            // at -1, so Enter (open) is a no-op while the field stays empty.
+            row.addEventListener('mousemove', () => {
+                if (i !== this.selectedRecentIndex) this.selectRecent(i);
+            });
             row.addEventListener('click', () => {
                 this.selectedRecentIndex = -1;
                 this.field?.focus();
@@ -1747,10 +1752,15 @@ export class SeekSearchModal extends Modal {
         const n = this.recentQueries.length;
         if (n === 0) return;
         if (this.selectedRecentIndex < 0) {
-            this.selectedRecentIndex = dir > 0 ? 0 : n - 1;
+            this.selectRecent(dir > 0 ? 0 : n - 1);
         } else {
-            this.selectedRecentIndex = Math.min(Math.max(0, this.selectedRecentIndex + dir), n - 1);
+            this.selectRecent(Math.min(Math.max(0, this.selectedRecentIndex + dir), n - 1));
         }
+    }
+
+    /** Highlight a resting recent-search row (keyboard nav or hover). */
+    private selectRecent(i: number): void {
+        this.selectedRecentIndex = i;
         this.applyRecentSelection();
     }
 
