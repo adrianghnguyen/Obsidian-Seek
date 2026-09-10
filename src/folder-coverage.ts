@@ -6,7 +6,6 @@
 // tree, a placeholder ("still indexing"), or both (tree + status banner).
 //
 import type { IndexStatusHealth, IndexStatusJob } from './index-status-card';
-import { indexPercent } from './index-eta';
 
 // Pure and dependency-injected (no Obsidian / model coupling) so the math and the
 // change detection are unit-testable. The plugin supplies the three live path sets
@@ -14,16 +13,25 @@ import { indexPercent } from './index-eta';
 // subset currently excluded by Obsidian's ignore rules) and the two exclusion
 // snapshots; everything here is set/grouping arithmetic.
 //
-// "Coverage" = live indexable files that have a FileRecord, i.e. they were committed
-// through the embedder at some point. A FileRecord only exists once a file is
-// embedded, so a file with no record is, by construction, not yet covered.
+// "Coverage" is a live snapshot of vault files vs FileRecords (a FileRecord exists
+// only after a file has been chunked/tokenized and committed). Percent and the
+// `covered / total` fraction are the same counts at every node:
 //
-// The coverage is a FULL directory hierarchy: every folder node reports its own
-// subtree, so a nested folder A/B shows "covered / relevant files within A/B",
-// not the whole vault. A file is "relevant" to a folder unless it is currently
-// excluded by Obsidian's ignore rules; percent = covered / relevant.
+//   overall.covered === sum of each top-level folder's covered + vault-root files
+//   overall.total   === sum of each top-level folder's total   + vault-root files
+//
+// 100.00% is allowed only when remaining=0 and nothing is in-flight. A parent
+// cannot read 100% while any descendant still has remaining or catching-up files.
+//
+// State machine (folderStatus → bar tone):
+//   excluded    — no relevant files, ignore-rules hide the subtree     → muted / —
+//   complete    — remaining=0 and catchingUp=0                       → green / 100.00%
+//   in-progress  — catchingUp>0, or some-but-not-all files indexed       → yellow
+//   pending     — relevant files exist, none indexed, none in-flight   → yellow
+//
+// Yellow means "this folder still has work". Two folders with new files both
+// stay yellow and both show their own indexed/total fractions.
 
-// The single-segment name of a folder key ('A/B' → 'B'); '' → ''.
 export function segmentOf(folderKey: string): string {
     const i = folderKey.lastIndexOf('/');
     return i < 0 ? folderKey : folderKey.slice(i + 1);
@@ -36,12 +44,13 @@ export function displayFolderName(folder: string): string {
 
 export type FolderCoverageStatus = 'complete' | 'in-progress' | 'pending' | 'excluded';
 
-// One directory in the hierarchy. `total` is the count of RELEVANT (non-excluded)
-// files in this folder's own subtree (recursively) — the denominator the user cares
-// about. `covered` is the subset of those that have a FileRecord. `excluded` is the
-// count of files in the subtree currently hidden by Obsidian's ignore rules (they
-// are NOT part of `total`). `percent` = covered / total (0% when total is 0, e.g. a
-// fully-excluded folder).
+/** Sentinel path for notes that sit in a folder (or vault root) rather than a subfolder. */
+export const OWN_FILES_PATH = '.';
+
+// One directory in the hierarchy. `total` / `covered` are the RELEVANT (non-excluded)
+// files in this folder's own subtree (recursively). `own*` is the slice that lives
+// directly in this folder (not in a child). Percent is covered/total to 2 decimals;
+// 100 only when remaining=0 and catchingUp=0.
 export interface FolderCoverageNode {
     path: string;          // folder key ('' = vault root, 'A', 'A/B', …)
     name: string;          // single-segment display name
@@ -51,7 +60,12 @@ export interface FolderCoverageNode {
     excluded: number;      // files in the subtree hidden by ignore rules
     /** Paths in this subtree currently queued / in the active delta (catch-up). */
     catchingUp: number;
-    percent: number;       // display % of covered/total; 100 only when remaining=0 and not catching up
+    ownTotal: number;     // relevant files sitting directly in this folder
+    ownCovered: number;
+    ownRemaining: number;
+    ownExcluded: number;
+    ownCatchingUp: number;
+    percent: number;       // display % of covered/total to 2 decimals
     status: FolderCoverageStatus;
     children: FolderCoverageNode[]; // nested subfolders (recursive hierarchy)
 }
@@ -143,57 +157,143 @@ export interface CoverageDisplayNode {
     percent: number;
 }
 
+/** True when this node may show 100.00% / green. */
+export function coverageIsSettled(node: CoverageDisplayNode): boolean {
+    return node.total > 0 && node.remaining === 0 && (node.catchingUp ?? 0) === 0 && node.covered >= node.total;
+}
+
 /** Bar / % tone: green only when settled complete; yellow while remaining or catching up. */
 export function coverageBarTone(node: CoverageDisplayNode): CoverageBarTone {
+    if (node.total <= 0) return 'low';
     if ((node.catchingUp ?? 0) > 0) return 'warn';
-    if (node.remaining > 0) return node.percent >= 50 ? 'warn' : 'low';
-    if (node.percent >= 100) return 'good';
-    if (node.percent >= 50) return 'warn';
+    if (node.remaining > 0) return 'warn';
+    if (coverageIsSettled(node)) return 'good';
     return 'low';
 }
 
-/** Integer % for labels — 100 only when every relevant file is covered and none are in-flight. */
+/**
+ * Display percent to 2 decimal places. 100.00 only when every relevant file is
+ * covered and none are in-flight. Incomplete work never rounds up to 100.00
+ * (3024/3037 → 99.57, not 100.00).
+ */
 export function coverageDisplayPercent(covered: number, total: number, catchingUp = 0): number {
     if (total <= 0) return 0;
-    let percent = indexPercent(covered, total);
-    if (catchingUp > 0 && percent >= 100) percent = 99;
-    return percent;
+    if (covered >= total && catchingUp === 0) return 100;
+    if (covered <= 0) return 0;
+    const raw = (covered / total) * 100;
+    const rounded = Math.round(raw * 100) / 100;
+    if (covered < total || catchingUp > 0) return Math.min(99.99, rounded);
+    return rounded;
 }
 
 /** CSS bar width 0–100; never full while files remain or a delta is in-flight. */
 export function coverageBarWidth(node: CoverageDisplayNode): number {
     if (node.total <= 0) return 0;
-    if (node.remaining === 0 && (node.catchingUp ?? 0) === 0 && node.covered >= node.total) return 100;
+    if (coverageIsSettled(node)) return 100;
     const raw = (node.covered / node.total) * 100;
-    if (raw >= 100) return 99;
+    if (raw >= 100) return 99.99;
     return Math.max(0, raw);
 }
 
 export function formatCoveragePercent(node: CoverageDisplayNode): string {
     if (node.total <= 0) return '—';
-    return `${node.percent}%`;
+    return `${node.percent.toFixed(2)}%`;
 }
 
-/** Incomplete → remaining files; complete → covered / total; empty or excluded → em dash. */
+/** Live indexed/total fraction at every node. Empty or excluded → em dash. */
 export function formatCoverageMeta(node: CoverageDisplayNode): string {
     if (node.total <= 0) return '—';
-    if (node.remaining > 0) {
-        return `${node.remaining.toLocaleString()} remaining`;
-    }
     return `${node.covered.toLocaleString()} / ${node.total.toLocaleString()}`;
 }
 
-/** Hover detail that always includes the fraction, even when the row shows remaining. */
+/** Hover detail that always includes the fraction plus remaining / in-flight. */
 export function formatCoverageCountTip(node: CoverageDisplayNode): string {
     if (node.total <= 0) {
         return (node.excluded ?? 0) > 0
             ? `${node.excluded!.toLocaleString()} notes excluded from the index.`
             : 'No indexable notes in this folder.';
     }
-    const fraction = `${node.covered.toLocaleString()} of ${node.total.toLocaleString()} notes embedded`;
+    const fraction = `${node.covered.toLocaleString()} of ${node.total.toLocaleString()} notes indexed`;
     if (node.remaining > 0) return `${fraction} · ${node.remaining.toLocaleString()} remaining.`;
     if ((node.catchingUp ?? 0) > 0) return `${fraction} · some notes are still updating.`;
     return `${fraction}.`;
+}
+
+/**
+ * Walk the tree and return the first congruence failure, or null if overall
+ * and every folder share the same live snapshot (parent = own files + children).
+ */
+export function coverageCongruenceError(node: FolderCoverageNode): string | null {
+    const childTotal = node.children.reduce((s, c) => s + c.total, 0);
+    const childCovered = node.children.reduce((s, c) => s + c.covered, 0);
+    const childRemaining = node.children.reduce((s, c) => s + c.remaining, 0);
+    const childExcluded = node.children.reduce((s, c) => s + c.excluded, 0);
+    const childCatching = node.children.reduce((s, c) => s + c.catchingUp, 0);
+
+    if (node.remaining !== node.total - node.covered) {
+        return `${node.path || 'vault'}: remaining ${node.remaining} !== total-covered ${node.total - node.covered}`;
+    }
+    if (node.ownRemaining !== node.ownTotal - node.ownCovered) {
+        return `${node.path || 'vault'}: ownRemaining mismatch`;
+    }
+    if (node.total !== node.ownTotal + childTotal) {
+        return `${node.path || 'vault'}: total ${node.total} !== own ${node.ownTotal} + children ${childTotal}`;
+    }
+    if (node.covered !== node.ownCovered + childCovered) {
+        return `${node.path || 'vault'}: covered ${node.covered} !== own ${node.ownCovered} + children ${childCovered}`;
+    }
+    if (node.remaining !== node.ownRemaining + childRemaining) {
+        return `${node.path || 'vault'}: remaining ${node.remaining} !== own ${node.ownRemaining} + children ${childRemaining}`;
+    }
+    if (node.excluded !== node.ownExcluded + childExcluded) {
+        return `${node.path || 'vault'}: excluded mismatch`;
+    }
+    if (node.catchingUp !== node.ownCatchingUp + childCatching) {
+        return `${node.path || 'vault'}: catchingUp ${node.catchingUp} !== own ${node.ownCatchingUp} + children ${childCatching}`;
+    }
+
+    const expectedPct = coverageDisplayPercent(node.covered, node.total, node.catchingUp);
+    if (node.percent !== expectedPct) {
+        return `${node.path || 'vault'}: percent ${node.percent} !== ${expectedPct}`;
+    }
+    if (coverageIsSettled(node) && node.percent !== 100) {
+        return `${node.path || 'vault'}: settled but percent is ${node.percent}`;
+    }
+    if (!coverageIsSettled(node) && node.percent >= 100 && node.total > 0) {
+        return `${node.path || 'vault'}: ${node.percent}% while remaining=${node.remaining} catchingUp=${node.catchingUp}`;
+    }
+    if (node.percent >= 100 && node.children.some(c => c.total > 0 && !coverageIsSettled(c))) {
+        return `${node.path || 'vault'}: 100% while a child is not settled`;
+    }
+
+    for (const child of node.children) {
+        const err = coverageCongruenceError(child);
+        if (err) return err;
+    }
+    return null;
+}
+
+/** Synthetic row for notes that live in this folder rather than a subfolder. */
+export function ownFilesRow(parent: FolderCoverageNode): FolderCoverageNode | null {
+    if (parent.ownTotal <= 0 && parent.ownExcluded <= 0) return null;
+    const remaining = Math.max(0, parent.ownTotal - parent.ownCovered);
+    return {
+        path: parent.path ? `${parent.path}/${OWN_FILES_PATH}` : OWN_FILES_PATH,
+        name: parent.path === '' ? 'vault root' : 'notes here',
+        total: parent.ownTotal,
+        covered: parent.ownCovered,
+        remaining,
+        excluded: parent.ownExcluded,
+        catchingUp: parent.ownCatchingUp,
+        ownTotal: parent.ownTotal,
+        ownCovered: parent.ownCovered,
+        ownRemaining: remaining,
+        ownExcluded: parent.ownExcluded,
+        ownCatchingUp: parent.ownCatchingUp,
+        percent: coverageDisplayPercent(parent.ownCovered, parent.ownTotal, parent.ownCatchingUp),
+        status: folderStatus(parent.ownTotal, parent.ownCovered, parent.ownExcluded, parent.ownCatchingUp),
+        children: [],
+    };
 }
 
 // A well-formed empty summary, used by callers (e.g. the plugin) before the
@@ -418,6 +518,11 @@ export function emptyFolderCoverage(): FolderCoverageSummary {
         remaining: 0,
         excluded: 0,
         catchingUp: 0,
+        ownTotal: 0,
+        ownCovered: 0,
+        ownRemaining: 0,
+        ownExcluded: 0,
+        ownCatchingUp: 0,
         percent: 0,
         status: 'pending',
         children: [],
@@ -470,8 +575,14 @@ export function computeFolderCoverage(input: FolderCoverageInput): FolderCoverag
 
     const finalize = (acc: Acc, depth: number): FolderCoverageNode => {
         const kids = [...acc.children.values()]
-            .sort((a, b) => b.total - a.total || segmentOf(a.path).localeCompare(segmentOf(b.path)));
+            .sort((a, b) => b.total - a.total || segmentOf(a.path).localeCompare(segmentOf(b.path)))
+            .map(c => finalize(c, depth + 1));
         const remaining = Math.max(0, acc.total - acc.covered);
+        const ownTotal = acc.total - kids.reduce((s, c) => s + c.total, 0);
+        const ownCovered = acc.covered - kids.reduce((s, c) => s + c.covered, 0);
+        const ownExcluded = acc.excluded - kids.reduce((s, c) => s + c.excluded, 0);
+        const ownCatchingUp = acc.catchingUp - kids.reduce((s, c) => s + c.catchingUp, 0);
+        const ownRemaining = Math.max(0, ownTotal - ownCovered);
         const percent = coverageDisplayPercent(acc.covered, acc.total, acc.catchingUp);
         const node: FolderCoverageNode = {
             path: acc.path,
@@ -481,9 +592,14 @@ export function computeFolderCoverage(input: FolderCoverageInput): FolderCoverag
             remaining,
             excluded: acc.excluded,
             catchingUp: acc.catchingUp,
+            ownTotal,
+            ownCovered,
+            ownRemaining,
+            ownExcluded,
+            ownCatchingUp,
             percent,
             status: folderStatus(acc.total, acc.covered, acc.excluded, acc.catchingUp),
-            children: kids.map(c => finalize(c, depth + 1)),
+            children: kids,
         };
         return node;
     };
