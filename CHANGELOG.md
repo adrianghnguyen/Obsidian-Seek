@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.9.0
+
+Search modal hotkeys stay in-modal only, Settings Index surfaces refresh live during indexing, and embedder coverage reads more honestly. No reindex is needed, since the index format is unchanged.
+
 ### Added
 - **Settings → Index → Embedding pass** shows live and last-pass **tok/s** (padded embed tokens per second) next to `ch/s` · `files/s`.
 
