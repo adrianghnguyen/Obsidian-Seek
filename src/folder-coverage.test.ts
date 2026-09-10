@@ -20,6 +20,9 @@ import {
     formatCoveragePercent,
     formatCoverageCountTip,
     coverageDisplayPercent,
+    coverageIsSettled,
+    coverageCongruenceError,
+    ownFilesRow,
     type FolderCoverageNode,
 } from './folder-coverage';
 
@@ -79,6 +82,7 @@ describe('computeFolderCoverage (hierarchy, per-subtree %)', () => {
         expect(s.overall.total).toBe(4);
         expect(s.overall.covered).toBe(2);
         expect(s.overall.percent).toBe(50);
+        expect(coverageCongruenceError(s.root)).toBeNull();
     });
 
     it('nested folders nest under their parent in the tree', () => {
@@ -103,7 +107,7 @@ describe('computeFolderCoverage (hierarchy, per-subtree %)', () => {
         const a = byPath(s.root, 'A')!;
         expect(a.total).toBe(3);
         expect(a.covered).toBe(2);
-        expect(a.percent).toBe(67); // round(2/3*100)
+        expect(a.percent).toBe(66.67); // 2/3 → 66.67
         expect(byPath(s.root, 'A/B')!.total).toBe(2);
     });
 
@@ -348,9 +352,10 @@ describe('FolderCoverageNode remaining and status', () => {
         expect(summary.overall.status).toBe('in-progress');
         // Re-embeds must not report 100% — % matches covered/total, capped while in-flight.
         expect(summary.overall.percent).toBeLessThan(100);
-        expect(summary.overall.percent).toBe(99);
+        expect(summary.overall.percent).toBe(99.99);
         expect(summary.overall.remaining).toBe(0);
         expect(coverageBarTone(summary.overall)).toBe('warn');
+        expect(coverageCongruenceError(summary.root)).toBeNull();
 
         const priv = summary.root.children.find(c => c.path === 'Private')!;
         expect(priv.catchingUp).toBe(2);
@@ -361,7 +366,7 @@ describe('FolderCoverageNode remaining and status', () => {
         const refs = priv.children.find(c => c.path === 'Private/References')!;
         expect(refs.catchingUp).toBe(1);
         expect(refs.covered).toBe(2);
-        expect(refs.percent).toBe(99);
+        expect(refs.percent).toBe(99.99);
         expect(refs.status).toBe('in-progress');
         expect(coverageBarTone(refs)).toBe('warn');
 
@@ -385,11 +390,12 @@ describe('FolderCoverageNode remaining and status', () => {
         expect(folder.percent).toBe(0);
         expect(folder.status).toBe('in-progress');
         expect(coverageBarTone(folder)).toBe('warn');
-        expect(formatCoverageMeta(folder)).toBe('2 remaining');
+        expect(formatCoverageMeta(folder)).toBe('0 / 2');
+        expect(formatCoveragePercent(folder)).toBe('0.00%');
         expect(formatCoverageMeta(folder)).not.toMatch(/pending|excluded|catching up/i);
     });
 
-    it('formatCoverageMeta shows remaining while incomplete, fraction when settled', () => {
+    it('formatCoverageMeta always shows the live indexed/total fraction', () => {
         const summary = computeFolderCoverage({
             allPaths: ['done/1.md', 'done/2.md'],
             coveredPaths: ['done/1.md', 'done/2.md'],
@@ -398,9 +404,9 @@ describe('FolderCoverageNode remaining and status', () => {
         });
         const done = summary.root.children.find(c => c.path === 'done')!;
         expect(formatCoverageMeta(done)).toBe('2 / 2');
-        expect(formatCoveragePercent(done)).toBe('99%');
+        expect(formatCoveragePercent(done)).toBe('99.99%');
         expect(formatCoverageMeta(done)).not.toMatch(/pending|excluded|catching up/i);
-        expect(done.percent).toBe(99);
+        expect(done.percent).toBe(99.99);
         expect(coverageBarTone(done)).toBe('warn');
 
         const idle = computeFolderCoverage({
@@ -409,7 +415,7 @@ describe('FolderCoverageNode remaining and status', () => {
             excludedPaths: [],
         }).root.children[0];
         expect(formatCoverageMeta(idle)).toBe('2 / 2');
-        expect(formatCoveragePercent(idle)).toBe('100%');
+        expect(formatCoveragePercent(idle)).toBe('100.00%');
         expect(coverageBarTone(idle)).toBe('good');
 
         const ignored = computeFolderCoverage({
@@ -435,7 +441,7 @@ describe('FolderCoverageNode remaining and status', () => {
         expect(big.catchingUp).toBe(1);
         expect(big.covered).toBe(1000);
         expect(big.percent).toBeLessThan(100);
-        expect(big.percent).toBe(99);
+        expect(big.percent).toBe(99.99);
         expect(coverageBarTone(big)).toBe('warn');
         expect(coverageBarWidth(big)).toBeLessThan(100);
     });
@@ -451,34 +457,37 @@ describe('FolderCoverageNode remaining and status', () => {
         expect(summary.overall.covered).toBe(3024);
         expect(summary.overall.total).toBe(3037);
         expect(summary.overall.remaining).toBe(13);
-        expect(summary.overall.percent).toBe(99);
-        expect(formatCoveragePercent(summary.overall)).toBe('99%');
-        expect(formatCoverageMeta(summary.overall)).toBe('13 remaining');
+        expect(summary.overall.percent).toBe(99.57);
+        expect(formatCoveragePercent(summary.overall)).toBe('99.57%');
+        expect(formatCoverageMeta(summary.overall)).toBe('3,024 / 3,037');
         expect(coverageBarTone(summary.overall)).toBe('warn');
         expect(coverageBarWidth(summary.overall)).toBeLessThan(100);
         expect(coverageBarWidth(summary.overall)).toBeCloseTo((3024 / 3037) * 100, 5);
+        expect(coverageCongruenceError(summary.root)).toBeNull();
 
         const gap = summary.root.children.find(c => c.path === 'Gap')!;
         expect(gap.remaining).toBe(13);
         expect(gap.percent).toBe(0);
-        expect(formatCoverageMeta(gap)).toBe('13 remaining');
-        expect(formatCoveragePercent(gap)).toBe('0%');
-        expect(coverageBarTone(gap)).toBe('low');
+        expect(formatCoverageMeta(gap)).toBe('0 / 13');
+        expect(formatCoveragePercent(gap)).toBe('0.00%');
+        expect(coverageBarTone(gap)).toBe('warn');
 
         const done = summary.root.children.find(c => c.path === 'Done')!;
         expect(done.remaining).toBe(0);
         expect(formatCoverageMeta(done)).toBe('3,024 / 3,024');
-        expect(formatCoveragePercent(done)).toBe('100%');
+        expect(formatCoveragePercent(done)).toBe('100.00%');
         expect(coverageBarTone(done)).toBe('good');
         expect(formatCoverageCountTip(summary.overall)).toContain('3,024 of 3,037');
         expect(formatCoverageCountTip(summary.overall)).toContain('13 remaining');
     });
 
-    it('coverageDisplayPercent matches indexPercent and caps in-flight 100%', () => {
-        expect(coverageDisplayPercent(3024, 3037)).toBe(99);
-        expect(coverageDisplayPercent(2, 2, 1)).toBe(99);
+    it('coverageDisplayPercent is 2-decimal and never 100 until settled', () => {
+        expect(coverageDisplayPercent(3024, 3037)).toBe(99.57);
+        expect(coverageDisplayPercent(2, 2, 1)).toBe(99.99);
         expect(coverageDisplayPercent(2, 2, 0)).toBe(100);
         expect(coverageDisplayPercent(0, 0)).toBe(0);
+        expect(coverageDisplayPercent(1, 3)).toBe(33.33);
+        expect(coverageDisplayPercent(2, 3)).toBe(66.67);
     });
 
     it('ignores pendingPaths that are excluded', () => {
@@ -491,6 +500,97 @@ describe('FolderCoverageNode remaining and status', () => {
         const arch = summary.root.children.find(c => c.path === 'Archive')!;
         expect(arch.catchingUp).toBe(0);
         expect(arch.status).toBe('excluded');
+    });
+
+    it('treats 3 newly added files as a live indexed/total snapshot, not 100%', () => {
+        const summary = computeFolderCoverage({
+            allPaths: ['Notes/a.md', 'Notes/b.md', 'Notes/c.md', 'Notes/d.md', 'Notes/e.md'],
+            coveredPaths: ['Notes/a.md', 'Notes/b.md'],
+            excludedPaths: [],
+            pendingPaths: ['Notes/c.md', 'Notes/d.md', 'Notes/e.md'],
+        });
+        const notes = summary.root.children.find(c => c.path === 'Notes')!;
+        expect(notes.covered).toBe(2);
+        expect(notes.total).toBe(5);
+        expect(notes.remaining).toBe(3);
+        expect(notes.percent).toBe(40);
+        expect(formatCoveragePercent(notes)).toBe('40.00%');
+        expect(formatCoverageMeta(notes)).toBe('2 / 5');
+        expect(coverageBarTone(notes)).toBe('warn');
+        expect(summary.overall.percent).toBe(40);
+        expect(formatCoverageMeta(summary.overall)).toBe('2 / 5');
+        expect(coverageCongruenceError(summary.root)).toBeNull();
+        expect(coverageIsSettled(notes)).toBe(false);
+        expect(coverageIsSettled(summary.overall)).toBe(false);
+    });
+
+    it('marks every folder with remaining work yellow, not only the one currently draining', () => {
+        const summary = computeFolderCoverage({
+            allPaths: [
+                'Alpha/a.md', 'Alpha/b.md', 'Alpha/c.md',
+                'Beta/x.md', 'Beta/y.md',
+                'Done/z.md',
+            ],
+            coveredPaths: ['Alpha/a.md', 'Done/z.md'],
+            excludedPaths: [],
+            pendingPaths: ['Alpha/b.md'],
+        });
+        const alpha = summary.root.children.find(c => c.path === 'Alpha')!;
+        const beta = summary.root.children.find(c => c.path === 'Beta')!;
+        const done = summary.root.children.find(c => c.path === 'Done')!;
+
+        expect(formatCoverageMeta(alpha)).toBe('1 / 3');
+        expect(formatCoveragePercent(alpha)).toBe('33.33%');
+        expect(coverageBarTone(alpha)).toBe('warn');
+        expect(alpha.status).toBe('in-progress');
+
+        expect(formatCoverageMeta(beta)).toBe('0 / 2');
+        expect(formatCoveragePercent(beta)).toBe('0.00%');
+        expect(coverageBarTone(beta)).toBe('warn');
+        expect(beta.status).toBe('pending');
+
+        expect(formatCoverageMeta(done)).toBe('1 / 1');
+        expect(formatCoveragePercent(done)).toBe('100.00%');
+        expect(coverageBarTone(done)).toBe('good');
+
+        expect(formatCoverageMeta(summary.overall)).toBe('2 / 6');
+        expect(formatCoveragePercent(summary.overall)).toBe('33.33%');
+        expect(coverageBarTone(summary.overall)).toBe('warn');
+        expect(summary.overall.percent).toBeLessThan(100);
+        expect(coverageCongruenceError(summary.root)).toBeNull();
+    });
+
+    it('never lets overall read 100% while a child still has work', () => {
+        const summary = computeFolderCoverage({
+            allPaths: ['A/1.md', 'A/2.md', 'B/1.md'],
+            coveredPaths: ['A/1.md', 'A/2.md'],
+            excludedPaths: [],
+        });
+        expect(summary.overall.percent).toBeLessThan(100);
+        expect(coverageIsSettled(summary.overall)).toBe(false);
+        const a = summary.root.children.find(c => c.path === 'A')!;
+        const b = summary.root.children.find(c => c.path === 'B')!;
+        expect(coverageIsSettled(a)).toBe(true);
+        expect(coverageIsSettled(b)).toBe(false);
+        expect(coverageCongruenceError(summary.root)).toBeNull();
+    });
+
+    it('surfaces vault-root notes as their own row so overall matches the visible parts', () => {
+        const summary = computeFolderCoverage({
+            allPaths: ['root.md', 'A/1.md', 'A/2.md'],
+            coveredPaths: ['A/1.md', 'A/2.md'],
+            excludedPaths: [],
+        });
+        expect(summary.root.ownTotal).toBe(1);
+        expect(summary.root.ownCovered).toBe(0);
+        const own = ownFilesRow(summary.root)!;
+        expect(own.name).toBe('vault root');
+        expect(formatCoverageMeta(own)).toBe('0 / 1');
+        expect(coverageBarTone(own)).toBe('warn');
+        expect(summary.overall.covered).toBe(2);
+        expect(summary.overall.total).toBe(3);
+        expect(summary.overall.percent).toBe(66.67);
+        expect(coverageCongruenceError(summary.root)).toBeNull();
     });
 });
 
@@ -513,7 +613,8 @@ describe('createLiveCoverageSnapshot and flattenCoverageTree', () => {
         expect(snapshot.overall.total).toBe(3);
         expect(snapshot.overall.covered).toBe(1);
         expect(snapshot.overall.remaining).toBe(2);
-        expect(snapshot.overall.percent).toBe(33);
+        expect(snapshot.overall.percent).toBe(33.33);
+        expect(coverageCongruenceError(summary.root)).toBeNull();
 
         const paths = snapshot.folders.map(f => f.path);
         expect(paths).toContain('work');

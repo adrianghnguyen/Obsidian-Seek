@@ -1602,7 +1602,7 @@
 }
 .seek-coverage-overall {
     display: grid;
-    grid-template-columns: 3.5em 1fr minmax(6.5em, 9em);
+    grid-template-columns: 5.25em 1fr minmax(7em, 10em);
     gap: 8px;
     align-items: center;
     margin-bottom: 10px;
@@ -1630,7 +1630,7 @@
 }
 .seek-coverage-row {
     display: grid;
-    grid-template-columns: minmax(8em, 18em) 1fr 3.5em minmax(6.5em, 9em);
+    grid-template-columns: minmax(8em, 18em) 1fr 5.25em minmax(7em, 10em);
     gap: 8px;
     align-items: center;
     font-size: 12px;
@@ -1761,6 +1761,16 @@
     font-weight: 600;
 }
 .seek-coverage-row.is-excluded { opacity: 0.55; }
+.seek-coverage-row.is-indexing .seek-coverage-label,
+.seek-coverage-overall.is-indexing .seek-coverage-pct {
+    color: var(--text-warning, var(--text-normal));
+}
+.seek-coverage-row.is-own-files .seek-coverage-label {
+    font-style: italic;
+}
+.seek-coverage-row.is-own-files:not(.is-indexing) .seek-coverage-label {
+    color: var(--text-muted);
+}
 .seek-coverage-meta {
     color: var(--text-faint);
     text-align: right;
