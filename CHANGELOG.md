@@ -4,6 +4,9 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Changed
+- **Settings → Index → Index coverage by folder** is a 10-cell meter instead of a solid percent bar. The percent is labeled **in the index** (notes already searchable). Cells show what Seek is doing now: solid green indexed, hatched green updating, yellow adding, grey not indexed. Refreshing notes that are already searchable no longer look like a 100% vs “still indexing” contradiction. A status banner distinguishes **Updating notes already in the index** from **Adding notes to the index** without repeating this-pass fractions. A folded remaining-this-pass file list names the notes behind hatched/yellow cells (full reindex stays count-only). The folder tree stays on screen while Seek is starting, restoring, or a refresh failed.
+
 ## 1.9.0
 
 Search modal hotkeys stay in-modal only, Settings Index surfaces refresh live during indexing, and embedder coverage reads more honestly. No reindex is needed, since the index format is unchanged.

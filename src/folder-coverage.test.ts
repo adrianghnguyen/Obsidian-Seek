@@ -23,6 +23,14 @@ import {
     coverageIsSettled,
     coverageCongruenceError,
     ownFilesRow,
+    allocateCoverageCells,
+    coverageCellClasses,
+    coverageStateCounts,
+    remainingFileDisplay,
+    remainingFilesPreview,
+    remainingFilesFoldLabel,
+    COVERAGE_CELL_COUNT,
+    type CoverageStateCounts,
     type FolderCoverageNode,
 } from './folder-coverage';
 
@@ -53,6 +61,27 @@ function byPath(node: FolderCoverageNode, path: string): FolderCoverageNode | un
         if (r) return r;
     }
     return undefined;
+}
+
+function expectExclusive(node: FolderCoverageNode): void {
+    expect(node.healthy + node.refreshing + node.indexing + node.uncovered).toBe(node.total);
+    expect(node.catchingUp).toBe(node.refreshing + node.indexing);
+    expect(node.remaining).toBe(node.total - node.covered);
+}
+
+function cellTally(counts: CoverageStateCounts): Record<keyof CoverageStateCounts, number> {
+    const cells = allocateCoverageCells(counts);
+    const tally: Record<keyof CoverageStateCounts, number> = {
+        healthy: 0, refreshing: 0, indexing: 0, uncovered: 0,
+    };
+    expect(cells).not.toBeNull();
+    expect(cells!.length).toBe(COVERAGE_CELL_COUNT);
+    for (const kind of cells!) {
+        tally[kind]++;
+        expect(tally[kind]).toBeGreaterThanOrEqual(0);
+    }
+    expect(tally.healthy + tally.refreshing + tally.indexing + tally.uncovered).toBe(COVERAGE_CELL_COUNT);
+    return tally;
 }
 
 describe('computeFolderCoverage (hierarchy, per-subtree %)', () => {
@@ -237,7 +266,7 @@ describe('resolveCoveragePanelView', () => {
         expect(view.statusLine?.title).toBe('Restoring index…');
     });
 
-    it('shows a status banner above a partial tree while indexing', () => {
+    it('shows an Adding banner above a partial tree while notes are not yet in the index', () => {
         const view = resolveCoveragePanelView({
             summary: readySummary,
             health: 'indexing',
@@ -245,9 +274,105 @@ describe('resolveCoveragePanelView', () => {
             orchestratorReady: true,
         });
         expect(view.showTree).toBe(true);
-        expect(view.statusLine?.title).toBe('Still indexing');
-        expect(view.statusLine?.detail).toContain('1 remaining');
+        expect(view.statusLine?.title).toBe('Adding notes to the index');
+        expect(view.statusLine?.detail).toContain('1 note is not searchable yet');
+        expect(view.statusLine?.detail).not.toContain('1 / 2');
+        expect(view.statusLine?.detail).not.toContain('44%');
         expect(view.statusLine?.detail).not.toContain('Folder coverage will appear');
+    });
+
+    it('shows Updating copy when every note is already in the index and a pass is live', () => {
+        const summary = computeFolderCoverage({
+            allPaths: ['a/1.md', 'b/1.md'],
+            coveredPaths: ['a/1.md', 'b/1.md'],
+            excludedPaths: [],
+            pendingPaths: ['a/1.md'],
+        });
+        const view = resolveCoveragePanelView({
+            summary,
+            health: 'indexing',
+            job: { kind: 'catchup', done: 54, total: 124 },
+            orchestratorReady: true,
+            pendingCount: 70,
+        });
+        expect(view.showTree).toBe(true);
+        expect(view.statusLine?.title).toBe('Updating notes already in the index');
+        expect(view.statusLine?.detail).toContain('70 notes in this pass');
+        expect(view.statusLine?.detail).not.toContain('54 / 124');
+        expect(view.statusLine?.detail).not.toContain('44%');
+    });
+
+    it('keeps the tree on error, locked, and not-ready when notes exist', () => {
+        const errorView = resolveCoveragePanelView({
+            summary: readySummary,
+            health: 'error',
+            job: null,
+            orchestratorReady: true,
+        });
+        expect(errorView.showTree).toBe(true);
+        expect(errorView.statusLine?.title).toBe('Index error');
+
+        const lockedView = resolveCoveragePanelView({
+            summary: readySummary,
+            health: 'locked',
+            job: null,
+            orchestratorReady: true,
+        });
+        expect(lockedView.showTree).toBe(true);
+        expect(lockedView.statusLine?.title).toBe('Index locked');
+
+        const startingView = resolveCoveragePanelView({
+            summary: readySummary,
+            health: 'ok',
+            job: null,
+            orchestratorReady: false,
+        });
+        expect(startingView.showTree).toBe(true);
+        expect(startingView.statusLine?.title).toBe('Still starting up');
+    });
+
+    it('keeps the tree when a refresh fails but a snapshot exists', () => {
+        const view = resolveCoveragePanelView({
+            summary: readySummary,
+            health: 'ok',
+            job: null,
+            orchestratorReady: true,
+            loadFailed: true,
+        });
+        expect(view.showTree).toBe(true);
+        expect(view.statusLine?.title).toBe("Couldn't read coverage");
+    });
+
+    it('hides the tree on error or load failure with no notes', () => {
+        const errorView = resolveCoveragePanelView({
+            summary: emptyFolderCoverage(),
+            health: 'error',
+            job: null,
+            orchestratorReady: true,
+        });
+        expect(errorView.showTree).toBe(false);
+        expect(errorView.placeholder?.title).toBe('Index error');
+
+        const failedView = resolveCoveragePanelView({
+            summary: emptyFolderCoverage(),
+            health: 'ok',
+            job: null,
+            orchestratorReady: true,
+            loadFailed: true,
+        });
+        expect(failedView.showTree).toBe(false);
+        expect(failedView.placeholder?.title).toBe("Couldn't read coverage");
+    });
+
+    it('explains an empty vault', () => {
+        const view = resolveCoveragePanelView({
+            summary: emptyFolderCoverage(),
+            health: 'ok',
+            job: null,
+            orchestratorReady: true,
+        });
+        expect(view.showTree).toBe(false);
+        expect(view.placeholder?.title).toBe('No indexable notes');
     });
 
     it('prefers aligning-with-exclusions copy over still-indexing', () => {
@@ -308,26 +433,38 @@ describe('FolderCoverageNode remaining and status', () => {
         expect(done.covered).toBe(2);
         expect(done.remaining).toBe(0);
         expect(done.status).toBe('complete');
+        expect(done.healthy).toBe(2);
+        expect(done.refreshing).toBe(0);
+        expect(done.indexing).toBe(0);
+        expect(done.uncovered).toBe(0);
+        expectExclusive(done);
 
         const partial = byPath.get('partial')!;
         expect(partial.total).toBe(2);
         expect(partial.covered).toBe(1);
         expect(partial.remaining).toBe(1);
         expect(partial.status).toBe('in-progress');
+        expect(partial.healthy).toBe(1);
+        expect(partial.uncovered).toBe(1);
+        expectExclusive(partial);
 
         const waiting = byPath.get('waiting')!;
         expect(waiting.total).toBe(1);
         expect(waiting.covered).toBe(0);
         expect(waiting.remaining).toBe(1);
         expect(waiting.status).toBe('pending');
+        expect(waiting.uncovered).toBe(1);
+        expect(waiting.indexing).toBe(0);
+        expectExclusive(waiting);
 
         const ignored = byPath.get('ignored')!;
         expect(ignored.total).toBe(0);
         expect(ignored.excluded).toBe(1);
         expect(ignored.status).toBe('excluded');
+        expect(ignored.healthy + ignored.refreshing + ignored.indexing + ignored.uncovered).toBe(0);
     });
 
-    it('overlays pendingPaths as catchingUp and forces in-progress', () => {
+    it('overlays pendingPaths as refreshing only and still reads 100% in the index', () => {
         const summary = computeFolderCoverage({
             allPaths: [
                 'Private/References/a.md',
@@ -349,29 +486,35 @@ describe('FolderCoverageNode remaining and status', () => {
         });
 
         expect(summary.overall.catchingUp).toBe(2);
+        expect(summary.overall.refreshing).toBe(2);
+        expect(summary.overall.indexing).toBe(0);
+        expect(summary.overall.healthy).toBe(2);
         expect(summary.overall.status).toBe('in-progress');
-        // Re-embeds must not report 100% — % matches covered/total, capped while in-flight.
-        expect(summary.overall.percent).toBeLessThan(100);
-        expect(summary.overall.percent).toBe(99.99);
+        expect(summary.overall.percent).toBe(100);
         expect(summary.overall.remaining).toBe(0);
-        expect(coverageBarTone(summary.overall)).toBe('warn');
+        expect(coverageBarTone(summary.overall)).toBe('good');
         expect(coverageCongruenceError(summary.root)).toBeNull();
+        expectExclusive(summary.overall);
 
         const priv = summary.root.children.find(c => c.path === 'Private')!;
         expect(priv.catchingUp).toBe(2);
+        expect(priv.refreshing).toBe(2);
         expect(priv.status).toBe('in-progress');
-        expect(priv.percent).toBeLessThan(100);
-        expect(coverageBarTone(priv)).toBe('warn');
+        expect(priv.percent).toBe(100);
+        expect(coverageBarTone(priv)).toBe('good');
 
         const refs = priv.children.find(c => c.path === 'Private/References')!;
         expect(refs.catchingUp).toBe(1);
+        expect(refs.refreshing).toBe(1);
+        expect(refs.indexing).toBe(0);
         expect(refs.covered).toBe(2);
-        expect(refs.percent).toBe(99.99);
+        expect(refs.percent).toBe(100);
         expect(refs.status).toBe('in-progress');
-        expect(coverageBarTone(refs)).toBe('warn');
+        expect(coverageBarTone(refs)).toBe('good');
 
         const notes = summary.root.children.find(c => c.path === 'Notes')!;
         expect(notes.catchingUp).toBe(0);
+        expect(notes.healthy).toBe(1);
         expect(notes.percent).toBe(100);
         expect(notes.status).toBe('complete');
         expect(coverageBarTone(notes)).toBe('good');
@@ -386,6 +529,9 @@ describe('FolderCoverageNode remaining and status', () => {
         });
         const folder = summary.root.children.find(c => c.path === 'NewFolder')!;
         expect(folder.catchingUp).toBe(2);
+        expect(folder.indexing).toBe(2);
+        expect(folder.refreshing).toBe(0);
+        expect(folder.uncovered).toBe(0);
         expect(folder.covered).toBe(0);
         expect(folder.percent).toBe(0);
         expect(folder.status).toBe('in-progress');
@@ -393,6 +539,7 @@ describe('FolderCoverageNode remaining and status', () => {
         expect(formatCoverageMeta(folder)).toBe('0 / 2');
         expect(formatCoveragePercent(folder)).toBe('0.00%');
         expect(formatCoverageMeta(folder)).not.toMatch(/pending|excluded|catching up/i);
+        expectExclusive(folder);
     });
 
     it('formatCoverageMeta always shows the live indexed/total fraction', () => {
@@ -404,10 +551,12 @@ describe('FolderCoverageNode remaining and status', () => {
         });
         const done = summary.root.children.find(c => c.path === 'done')!;
         expect(formatCoverageMeta(done)).toBe('2 / 2');
-        expect(formatCoveragePercent(done)).toBe('99.99%');
+        expect(formatCoveragePercent(done)).toBe('100.00%');
         expect(formatCoverageMeta(done)).not.toMatch(/pending|excluded|catching up/i);
-        expect(done.percent).toBe(99.99);
-        expect(coverageBarTone(done)).toBe('warn');
+        expect(done.percent).toBe(100);
+        expect(done.refreshing).toBe(1);
+        expect(coverageBarTone(done)).toBe('good');
+        expect(formatCoverageCountTip(done)).toContain('updating this pass');
 
         const idle = computeFolderCoverage({
             allPaths: ['done/1.md', 'done/2.md'],
@@ -429,7 +578,7 @@ describe('FolderCoverageNode remaining and status', () => {
         expect(ignored.status).toBe('excluded');
     });
 
-    it('never rounds a live delta up to 100% on a large folder', () => {
+    it('keeps 100% in the index on a large folder while one note is updating', () => {
         const allPaths = Array.from({ length: 1000 }, (_, i) => `Big/n${i}.md`);
         const summary = computeFolderCoverage({
             allPaths,
@@ -439,11 +588,12 @@ describe('FolderCoverageNode remaining and status', () => {
         });
         const big = summary.root.children.find(c => c.path === 'Big')!;
         expect(big.catchingUp).toBe(1);
+        expect(big.refreshing).toBe(1);
         expect(big.covered).toBe(1000);
-        expect(big.percent).toBeLessThan(100);
-        expect(big.percent).toBe(99.99);
-        expect(coverageBarTone(big)).toBe('warn');
-        expect(coverageBarWidth(big)).toBeLessThan(100);
+        expect(big.percent).toBe(100);
+        expect(coverageBarTone(big)).toBe('good');
+        expect(coverageBarWidth(big)).toBe(100);
+        expectExclusive(big);
     });
 
     it('overall and folder rows share remaining-aware % and meta', () => {
@@ -481,13 +631,14 @@ describe('FolderCoverageNode remaining and status', () => {
         expect(formatCoverageCountTip(summary.overall)).toContain('13 remaining');
     });
 
-    it('coverageDisplayPercent is 2-decimal and never 100 until settled', () => {
+    it('coverageDisplayPercent is 2-decimal and 100 when every note is in the index', () => {
         expect(coverageDisplayPercent(3024, 3037)).toBe(99.57);
-        expect(coverageDisplayPercent(2, 2, 1)).toBe(99.99);
+        expect(coverageDisplayPercent(2, 2, 1)).toBe(100);
         expect(coverageDisplayPercent(2, 2, 0)).toBe(100);
         expect(coverageDisplayPercent(0, 0)).toBe(0);
         expect(coverageDisplayPercent(1, 3)).toBe(33.33);
         expect(coverageDisplayPercent(2, 3)).toBe(66.67);
+        expect(coverageDisplayPercent(1, 2)).toBe(50);
     });
 
     it('ignores pendingPaths that are excluded', () => {
@@ -591,6 +742,195 @@ describe('FolderCoverageNode remaining and status', () => {
         expect(summary.overall.total).toBe(3);
         expect(summary.overall.percent).toBe(66.67);
         expect(coverageCongruenceError(summary.root)).toBeNull();
+        expectExclusive(summary.root);
+        expectExclusive(own);
+        expect(own.uncovered).toBe(1);
+    });
+
+    it('covered pending path is refreshing only, not indexing', () => {
+        const summary = computeFolderCoverage({
+            allPaths: ['Notes/a.md'],
+            coveredPaths: ['Notes/a.md'],
+            excludedPaths: [],
+            pendingPaths: ['Notes/a.md'],
+        });
+        const notes = summary.root.children[0];
+        expect(notes).toMatchObject({
+            healthy: 0, refreshing: 1, indexing: 0, uncovered: 0, catchingUp: 1, percent: 100,
+        });
+        expectExclusive(notes);
+    });
+
+    it('uncovered pending path is indexing yellow, not grey', () => {
+        const summary = computeFolderCoverage({
+            allPaths: ['Notes/a.md'],
+            coveredPaths: [],
+            excludedPaths: [],
+            pendingPaths: ['Notes/a.md'],
+        });
+        const notes = summary.root.children[0];
+        expect(notes).toMatchObject({
+            healthy: 0, refreshing: 0, indexing: 1, uncovered: 0, catchingUp: 1, percent: 0,
+        });
+        expectExclusive(notes);
+    });
+
+    it('uncovered idle path is grey, not indexing', () => {
+        const summary = computeFolderCoverage({
+            allPaths: ['Notes/a.md'],
+            coveredPaths: [],
+            excludedPaths: [],
+        });
+        const notes = summary.root.children[0];
+        expect(notes).toMatchObject({
+            healthy: 0, refreshing: 0, indexing: 0, uncovered: 1, catchingUp: 0,
+        });
+        expectExclusive(notes);
+    });
+
+    it('splits mixed dirty covered notes from brand-new pending notes', () => {
+        const covered = Array.from({ length: 95 }, (_, i) => `Mix/c${i}.md`);
+        const dirty = covered.slice(0, 5);
+        const fresh = Array.from({ length: 5 }, (_, i) => `Mix/n${i}.md`);
+        const summary = computeFolderCoverage({
+            allPaths: [...covered, ...fresh],
+            coveredPaths: covered,
+            excludedPaths: [],
+            pendingPaths: [...dirty, ...fresh],
+        });
+        expect(summary.overall).toMatchObject({
+            healthy: 90, refreshing: 5, indexing: 5, uncovered: 0,
+            covered: 95, total: 100, percent: 95, catchingUp: 10,
+        });
+        expect(coverageStateCounts(summary.overall)).toEqual({
+            healthy: 90, refreshing: 5, indexing: 5, uncovered: 0,
+        });
+        expectExclusive(summary.overall);
+        expect(coverageCongruenceError(summary.root)).toBeNull();
+    });
+});
+
+describe('allocateCoverageCells', () => {
+    it('gives 70 refreshing of 3649 one hatched cell', () => {
+        expect(cellTally({ healthy: 3579, refreshing: 70, indexing: 0, uncovered: 0 }))
+            .toEqual({ healthy: 9, refreshing: 1, indexing: 0, uncovered: 0 });
+    });
+
+    it('allocates mixed 40/10/20/30 as 4/1/2/3', () => {
+        expect(cellTally({ healthy: 40, refreshing: 10, indexing: 20, uncovered: 30 }))
+            .toEqual({ healthy: 4, refreshing: 1, indexing: 2, uncovered: 3 });
+    });
+
+    it('fills all 10 cells for a single exclusive state', () => {
+        expect(cellTally({ healthy: 12, refreshing: 0, indexing: 0, uncovered: 0 }))
+            .toEqual({ healthy: 10, refreshing: 0, indexing: 0, uncovered: 0 });
+        expect(cellTally({ healthy: 0, refreshing: 0, indexing: 8, uncovered: 0 }))
+            .toEqual({ healthy: 0, refreshing: 0, indexing: 10, uncovered: 0 });
+        expect(cellTally({ healthy: 0, refreshing: 0, indexing: 0, uncovered: 3 }))
+            .toEqual({ healthy: 0, refreshing: 0, indexing: 0, uncovered: 10 });
+    });
+
+    it('returns no cells for an excluded empty folder', () => {
+        expect(allocateCoverageCells({ healthy: 0, refreshing: 0, indexing: 0, uncovered: 0 })).toBeNull();
+        expect(coverageCellClasses({ healthy: 0, refreshing: 0, indexing: 0, uncovered: 0 })).toEqual([]);
+    });
+
+    it('keeps min-one refreshing and indexing when grey is scarce', () => {
+        expect(cellTally({ healthy: 98, refreshing: 1, indexing: 1, uncovered: 0 }))
+            .toEqual({ healthy: 8, refreshing: 1, indexing: 1, uncovered: 0 });
+    });
+
+    it('gives 100 idle + 3 new pending a min-one yellow cell', () => {
+        expect(cellTally({ healthy: 100, refreshing: 0, indexing: 3, uncovered: 0 }))
+            .toEqual({ healthy: 9, refreshing: 0, indexing: 1, uncovered: 0 });
+    });
+
+    it('always sums to 10 across fixtures and never goes negative', () => {
+        const fixtures: CoverageStateCounts[] = [
+            { healthy: 3579, refreshing: 70, indexing: 0, uncovered: 0 },
+            { healthy: 40, refreshing: 10, indexing: 20, uncovered: 30 },
+            { healthy: 100, refreshing: 0, indexing: 3, uncovered: 0 },
+            { healthy: 1, refreshing: 1, indexing: 1, uncovered: 1 },
+            { healthy: 0, refreshing: 1, indexing: 1, uncovered: 98 },
+            { healthy: 95, refreshing: 5, indexing: 5, uncovered: 0 },
+        ];
+        for (const counts of fixtures) {
+            const tally = cellTally(counts);
+            for (const n of Object.values(tally)) expect(n).toBeGreaterThanOrEqual(0);
+        }
+        expect(coverageCellClasses({ healthy: 10, refreshing: 0, indexing: 0, uncovered: 0 }))
+            .toEqual(Array(10).fill('is-healthy'));
+    });
+});
+
+describe('fullJobActive and live pending overlay', () => {
+    const pathSets = {
+        allPaths: ['A/1.md', 'A/2.md', 'B/1.md'],
+        coveredPaths: ['A/1.md', 'A/2.md'],
+        excludedPaths: [] as string[],
+    };
+
+    it('paints uncovered notes yellow while a full job is active', () => {
+        const withJob = computeFolderCoverage({ ...pathSets, coveredPaths: [], pendingPaths: [], fullJobActive: true });
+        expect(withJob.overall).toMatchObject({
+            indexing: 3, uncovered: 0, healthy: 0, refreshing: 0, catchingUp: 3, percent: 0,
+        });
+        expectExclusive(withJob.overall);
+
+        const idle = computeFolderCoverage({ ...pathSets, coveredPaths: [], pendingPaths: [] });
+        expect(idle.overall).toMatchObject({ indexing: 0, uncovered: 3, catchingUp: 0 });
+    });
+
+    it('keeps healthy green and remaining uncovered yellow during a full job', () => {
+        const summary = computeFolderCoverage({ ...pathSets, pendingPaths: [], fullJobActive: true });
+        expect(summary.overall).toMatchObject({
+            healthy: 2, refreshing: 0, indexing: 1, uncovered: 0, percent: 66.67,
+        });
+        expectExclusive(summary.overall);
+        expect(coverageCongruenceError(summary.root)).toBeNull();
+    });
+
+    it('recomputes hatch from the same path sets when pending changes', () => {
+        const idle = computeFolderCoverage({
+            allPaths: ['Notes/a.md', 'Notes/b.md'],
+            coveredPaths: ['Notes/a.md', 'Notes/b.md'],
+            excludedPaths: [],
+            pendingPaths: [],
+        });
+        expect(idle.overall).toMatchObject({ healthy: 2, refreshing: 0, percent: 100 });
+
+        const live = computeFolderCoverage({
+            allPaths: ['Notes/a.md', 'Notes/b.md'],
+            coveredPaths: ['Notes/a.md', 'Notes/b.md'],
+            excludedPaths: [],
+            pendingPaths: ['Notes/a.md'],
+        });
+        expect(live.overall).toMatchObject({ healthy: 1, refreshing: 1, indexing: 0, percent: 100 });
+        expect(coverageBarTone(live.overall)).toBe('good');
+
+        const cleared = computeFolderCoverage({
+            allPaths: ['Notes/a.md', 'Notes/b.md'],
+            coveredPaths: ['Notes/a.md', 'Notes/b.md'],
+            excludedPaths: [],
+            pendingPaths: [],
+        });
+        expect(cleared.overall).toMatchObject({ healthy: 2, refreshing: 0, percent: 100 });
+        expect(cleared.overall.status).toBe('complete');
+    });
+});
+
+describe('remaining files preview', () => {
+    it('shows basename and parent, caps at 50, and labels the fold', () => {
+        expect(remainingFileDisplay('Private/Notes/alpha.md')).toBe('alpha.md · Private/Notes');
+        expect(remainingFileDisplay('root.md')).toBe('root.md');
+        const paths = Array.from({ length: 52 }, (_, i) => `Folder/n${i}.md`);
+        const preview = remainingFilesPreview(paths);
+        expect(preview.shown).toHaveLength(50);
+        expect(preview.more).toBe(2);
+        expect(preview.shown[0]).toBe('n0.md · Folder');
+        expect(remainingFilesFoldLabel(70)).toBe('70 notes updating this pass');
+        expect(remainingFilesFoldLabel(1)).toBe('1 note updating this pass');
+        expect(remainingFilesFoldLabel(0)).toBe('');
     });
 });
 
