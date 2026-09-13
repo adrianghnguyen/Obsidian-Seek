@@ -64,7 +64,9 @@ import {
     exclusionDiffIsEmpty,
     emptyFolderCoverage,
     createLiveCoverageSnapshot,
+    computeFolderCoverage,
     type ExclusionDiff,
+    type FolderCoveragePathSets,
     type FolderCoverageSummary,
     type LiveCoverageSnapshot,
 } from './folder-coverage';
@@ -2752,11 +2754,27 @@ export default class SeekPlugin extends Plugin {
         return this.orchestrator != null;
     }
 
+    /** Path sets for Settings coverage (IDB + vault walk). Throws if the orchestrator is missing. */
+    async getFolderCoveragePathSets(): Promise<FolderCoveragePathSets> {
+        if (!this.orchestrator) throw new Error('Seek coverage source is not ready');
+        return this.orchestrator.getFolderCoveragePathSets();
+    }
+
+    private coverageFullJobActive(): boolean {
+        const job = this.getIndexJob();
+        return job?.kind === 'full' && job.done < job.total;
+    }
+
     /** Per-folder embedder coverage for the settings surface (passthrough + pending overlay). */
     async getFolderCoverage(): Promise<FolderCoverageSummary> {
         if (!this.orchestrator) return emptyFolderCoverage();
         try {
-            return await this.orchestrator.getFolderCoverage(this.indexDelta.snapshot().pendingPaths);
+            const sets = await this.orchestrator.getFolderCoveragePathSets();
+            return computeFolderCoverage({
+                ...sets,
+                pendingPaths: this.indexDelta.snapshot().pendingPaths,
+                fullJobActive: this.coverageFullJobActive(),
+            });
         } catch {
             return emptyFolderCoverage();
         }

@@ -39,15 +39,19 @@ import {
 import { formatRecentSearchLine } from './session-telemetry';
 import type { SettingsTelemetrySink } from './main';
 import { formatRoughEta, indexPercent } from './index-eta';
-import type { FolderCoverageNode, FolderCoverageSummary, CoveragePanelMessage } from './folder-coverage';
+import type { FolderCoverageNode, FolderCoverageSummary, FolderCoveragePathSets, CoveragePanelMessage } from './folder-coverage';
 import {
     emptyFolderCoverage,
     resolveCoveragePanelView,
+    computeFolderCoverage,
     coverageBarTone,
-    coverageBarWidth,
+    coverageStateCounts,
+    coverageCellClasses,
     formatCoverageMeta,
     formatCoveragePercent,
     formatCoverageCountTip,
+    remainingFilesFoldLabel,
+    remainingFilesPreview,
     ownFilesRow,
     OWN_FILES_PATH,
 } from './folder-coverage';
@@ -217,6 +221,9 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
     // Last successful coverage tree. Expand/collapse re-renders this without IDB.
     private coverageCache: FolderCoverageSummary | null = null;
     private coverageCacheFailed = false;
+    /** Last IDB/vault path sets — recomputed with live pendingPaths on every paint. */
+    private coveragePathSets: FolderCoveragePathSets | null = null;
+    private remainingFilesOpen = false;
 
     onSessionTelemetryChanged(): void {
         if (!this.containerEl.isConnected) return;
@@ -388,7 +395,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         // Per-folder embedder-pipeline coverage (which folders have been run through
         // the embedder, and how completely). Repaints live during a backfill.
         this.coverageHost = containerEl.createDiv({ cls: 'seek-coverage-host' });
-        if (this.coverageCache) this.paintCoverage({ refresh: false });
+        if (this.coveragePathSets || this.coverageCache) this.paintCoverage({ refresh: false });
         void this.paintCoverage({ refresh: true });
 
         if (this.plugin.indexHealthState === 'degraded') {
@@ -636,63 +643,89 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         this.coveragePoll = null;
     }
 
-    /** refresh:true hits IDB; refresh:false (expand) paints the last cached tree. */
+    /** refresh:true hits IDB; refresh:false (expand) paints path-sets + live pending. */
     private async paintCoverage(opts?: { refresh?: boolean }): Promise<void> {
         const host = this.coverageHost;
         if (!host || !host.isConnected) return;
         const refresh = opts?.refresh !== false;
         if (!refresh) {
-            if (this.coverageCache) {
-                this.renderCoveragePanel(host, this.coverageCache, this.coverageCacheFailed, true);
-            }
+            this.paintCoverageFromCache(host);
             return;
         }
 
-        let summary: FolderCoverageSummary;
         let loadFailed = false;
         try {
-            summary = await this.plugin.getFolderCoverage();
-            this.coverageCache = summary;
+            this.coveragePathSets = await this.plugin.getFolderCoveragePathSets();
             this.coverageCacheFailed = false;
         } catch {
             loadFailed = true;
             this.coverageCacheFailed = true;
-            if (this.coverageCache) {
+            if (this.coveragePathSets || this.coverageCache) {
                 if (!host.isConnected || host !== this.coverageHost) return;
-                this.renderCoveragePanel(host, this.coverageCache, false, true);
+                this.paintCoverageFromCache(host, true);
                 return;
             }
-            summary = emptyFolderCoverage();
         }
         if (!host.isConnected || host !== this.coverageHost) return;
-        this.renderCoveragePanel(host, summary, loadFailed, false);
+        const summary = this.coveragePathSets
+            ? this.liveCoverageSummary(this.coveragePathSets)
+            : emptyFolderCoverage();
+        this.coverageCache = summary;
+        this.renderCoveragePanel(host, summary, loadFailed);
+    }
+
+    private liveCoverageSummary(pathSets: FolderCoveragePathSets): FolderCoverageSummary {
+        const job = this.plugin.getIndexJob();
+        return computeFolderCoverage({
+            ...pathSets,
+            pendingPaths: this.plugin.getIndexDeltaSnapshot().pendingPaths,
+            fullJobActive: job?.kind === 'full' && job.done < job.total,
+        });
+    }
+
+    private paintCoverageFromCache(host: HTMLElement, failed = false): void {
+        if (this.coveragePathSets) {
+            const summary = this.liveCoverageSummary(this.coveragePathSets);
+            this.coverageCache = summary;
+            this.renderCoveragePanel(host, summary, failed || this.coverageCacheFailed);
+            return;
+        }
+        if (this.coverageCache) {
+            this.renderCoveragePanel(host, this.coverageCache, this.coverageCacheFailed);
+        }
     }
 
     private renderCoveragePanel(
         host: HTMLElement,
         summary: FolderCoverageSummary,
         loadFailed: boolean,
-        fromCache: boolean,
     ): void {
         host.empty();
 
+        const pendingPaths = this.plugin.getIndexDeltaSnapshot().pendingPaths;
+        const job = this.plugin.getIndexJob();
         const view = resolveCoveragePanelView({
             summary,
             health: this.statusState(),
-            job: this.plugin.getIndexJob(),
+            job,
             orchestratorReady: this.plugin.isCoverageSourceReady,
             loadFailed,
             aligningExclusions: !!this.plugin.getExclusionChange(),
-            pendingCount: this.plugin.getIndexDeltaSnapshot().pendingPaths.length,
+            pendingCount: pendingPaths.length,
         });
 
         const wrap = host.createDiv({ cls: 'seek-coverage-panel' });
         const head = wrap.createDiv({ cls: 'seek-coverage-head' });
-        head.createSpan({ text: 'Embedder coverage by folder' });
-        if (fromCache) {
+        const titles = head.createDiv({ cls: 'seek-coverage-head-text' });
+        titles.createSpan({ cls: 'seek-coverage-title', text: 'Index coverage by folder' });
+        titles.createDiv({
+            cls: 'seek-coverage-sub',
+            text: 'Share of notes already searchable. Cells show what Seek is doing now.',
+        });
+        if (loadFailed) {
             const warn = head.createSpan({ cls: 'seek-coverage-stale' });
             setIcon(warn, 'alert-triangle');
-            const tip = 'Last cached coverage until the next refresh (every 5s, or when indexing updates).';
+            const tip = 'Could not refresh coverage. Showing the last snapshot.';
             warn.setAttr('aria-label', tip);
             setTooltip(warn, tip, { delay: 300 });
         }
@@ -708,17 +741,19 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         const overallTone = coverageBarTone(o);
         const overallTip = formatCoverageCountTip(o);
         const overall = wrap.createDiv({
-            cls: 'seek-coverage-overall' + (overallTone === 'warn' ? ' is-indexing' : ''),
+            cls: 'seek-coverage-overall' + (o.remaining > 0 || o.indexing > 0 ? ' is-indexing' : ''),
         });
-        const overallPct = overall.createSpan({
+        this.renderCoverageCells(overall, o);
+        const overallPctWrap = overall.createDiv({ cls: 'seek-coverage-pct-wrap' });
+        const overallPct = overallPctWrap.createSpan({
             cls: 'seek-coverage-pct is-' + overallTone,
             text: formatCoveragePercent(o),
         });
+        if (o.total > 0) {
+            overallPctWrap.createSpan({ cls: 'seek-coverage-pct-caption', text: 'in the index' });
+        }
         overallPct.setAttr('aria-label', overallTip);
         setTooltip(overallPct, overallTip, { delay: 300 });
-        const overallBar = overall.createDiv({ cls: 'seek-coverage-track' });
-        const overallFill = overallBar.createDiv({ cls: 'seek-coverage-fill is-' + overallTone });
-        overallFill.style.width = `${coverageBarWidth(o)}%`;
         const overallMeta = overall.createSpan({
             cls: 'seek-coverage-overall-meta',
             text: formatCoverageMeta(o),
@@ -726,10 +761,75 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         overallMeta.setAttr('aria-label', overallTip);
         setTooltip(overallMeta, overallTip, { delay: 300 });
 
+        this.renderCoverageLegend(wrap);
+        this.renderRemainingFiles(wrap, pendingPaths, job);
+
         const rows = wrap.createDiv({ cls: 'seek-coverage-rows' });
         const rootOwn = view.summary.root.children.length > 0 ? ownFilesRow(view.summary.root) : null;
         if (rootOwn) this.renderCoverageNode(rows, rootOwn, 0);
         for (const child of view.summary.root.children) this.renderCoverageNode(rows, child, 0);
+    }
+
+    private renderCoverageCells(parent: HTMLElement, node: FolderCoverageNode): void {
+        const track = parent.createDiv({ cls: 'seek-coverage-track seek-coverage-cells' });
+        const classes = coverageCellClasses(coverageStateCounts(node));
+        if (classes.length === 0) {
+            track.addClass('is-empty');
+            return;
+        }
+        for (const cls of classes) {
+            track.createDiv({ cls: `seek-coverage-cell ${cls}` });
+        }
+    }
+
+    private renderCoverageLegend(parent: HTMLElement): void {
+        const legend = parent.createDiv({ cls: 'seek-coverage-legend' });
+        const items: Array<[string, string]> = [
+            ['healthy', 'Indexed'],
+            ['refreshing', 'Updating'],
+            ['indexing', 'Adding'],
+            ['uncovered', 'Not indexed'],
+        ];
+        for (const [kind, label] of items) {
+            const item = legend.createDiv({ cls: 'seek-coverage-legend-item' });
+            item.createDiv({ cls: `seek-coverage-cell is-${kind} is-swatch` });
+            item.createSpan({ text: label });
+        }
+    }
+
+    private renderRemainingFiles(
+        parent: HTMLElement,
+        pendingPaths: readonly string[],
+        job: ReturnType<SeekPlugin['getIndexJob']>,
+    ): void {
+        if (pendingPaths.length > 0) {
+            const fold = parent.createEl('details', { cls: 'seek-coverage-remaining' });
+            fold.open = this.remainingFilesOpen;
+            fold.addEventListener('toggle', () => { this.remainingFilesOpen = fold.open; });
+            fold.createEl('summary', {
+                cls: 'seek-coverage-remaining-summary',
+                text: remainingFilesFoldLabel(pendingPaths.length),
+            });
+            const preview = remainingFilesPreview(pendingPaths);
+            const list = fold.createEl('ul', { cls: 'seek-coverage-remaining-list' });
+            for (const label of preview.shown) {
+                list.createEl('li', { text: label });
+            }
+            if (preview.more > 0) {
+                list.createEl('li', {
+                    cls: 'seek-coverage-remaining-more',
+                    text: `and ${preview.more.toLocaleString()} more`,
+                });
+            }
+            return;
+        }
+        if (!job || job.kind !== 'full' || job.done >= job.total) return;
+        const rem = Math.max(0, job.total - job.done);
+        if (rem <= 0) return;
+        parent.createDiv({
+            cls: 'seek-coverage-remaining-count',
+            text: remainingFilesFoldLabel(rem),
+        });
     }
 
     private renderCoverageMessage(
@@ -751,11 +851,12 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         const expanded = hasChildren && this.coverageExpandedPaths.has(node.path);
         const tone = coverageBarTone(node);
         const isOwnFiles = node.path === OWN_FILES_PATH || node.path.endsWith(`/${OWN_FILES_PATH}`);
+        const adding = node.remaining > 0 || node.indexing > 0;
         const row = container.createDiv({
             cls: 'seek-coverage-row'
                 + (fullyExcluded ? ' is-excluded' : '')
                 + (expanded ? ' is-expanded' : '')
-                + (tone === 'warn' ? ' is-indexing' : '')
+                + (adding ? ' is-indexing' : '')
                 + (isOwnFiles ? ' is-own-files' : ''),
         });
         const name = row.createDiv({
@@ -797,9 +898,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         name.createSpan({ cls: 'seek-coverage-label', text: node.name });
         if (fullyExcluded) name.createSpan({ cls: 'seek-coverage-excluded-tag', text: 'excluded' });
 
-        const bar = row.createDiv({ cls: 'seek-coverage-track' });
-        const fill = bar.createDiv({ cls: 'seek-coverage-fill is-' + tone });
-        fill.style.width = `${coverageBarWidth(node)}%`;
+        this.renderCoverageCells(row, node);
 
         const tip = formatCoverageCountTip(node);
         const pctEl = row.createSpan({ cls: 'seek-coverage-pct is-' + tone, text: formatCoveragePercent(node) });

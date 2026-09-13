@@ -1555,12 +1555,25 @@
 }
 .seek-coverage-head {
     display: flex;
-    align-items: center;
-    gap: 6px;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+.seek-coverage-head-text {
+    min-width: 0;
+    flex: 1 1 auto;
+}
+.seek-coverage-title {
     font-size: 11px;
     color: var(--text-muted);
     text-transform: lowercase;
-    margin-bottom: 8px;
+}
+.seek-coverage-sub {
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.35;
+    margin-top: 3px;
 }
 .seek-coverage-stale {
     display: inline-flex;
@@ -1602,10 +1615,22 @@
 }
 .seek-coverage-overall {
     display: grid;
-    grid-template-columns: 5.25em 1fr minmax(7em, 10em);
+    grid-template-columns: 1fr minmax(6.5em, 8.5em) minmax(7em, 10em);
     gap: 8px;
     align-items: center;
-    margin-bottom: 10px;
+    margin-bottom: 8px;
+}
+.seek-coverage-pct-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 1px;
+}
+.seek-coverage-pct-caption {
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--text-muted);
+    white-space: nowrap;
 }
 .seek-coverage-pct {
     font-weight: 700;
@@ -1741,21 +1766,84 @@
     flex: 1 1 auto;
     min-width: 0;
 }
-.seek-coverage-track {
-    height: 6px;
+.seek-coverage-track.seek-coverage-cells {
+    display: flex;
+    align-items: stretch;
+    gap: 2px;
+    height: 8px;
+    border-radius: 0;
+    background: transparent;
+    overflow: visible;
+}
+.seek-coverage-cells.is-empty {
+    height: 8px;
     border-radius: 4px;
     background: var(--background-modifier-border);
-    overflow: hidden;
 }
-.seek-coverage-fill {
-    height: 100%;
-    border-radius: 4px;
-    background: var(--interactive-accent);
-    transition: width 300ms ease;
+.seek-coverage-cell {
+    flex: 1 1 0;
+    min-width: 0;
+    height: 8px;
+    border-radius: 2px;
+    background: var(--background-modifier-border);
 }
-.seek-coverage-fill.is-good { background: var(--text-success, var(--interactive-accent)); }
-.seek-coverage-fill.is-warn { background: var(--text-warning, var(--interactive-accent)); }
-.seek-coverage-fill.is-low { background: var(--text-muted); }
+.seek-coverage-cell.is-healthy {
+    background: var(--text-success, var(--interactive-accent));
+}
+.seek-coverage-cell.is-refreshing {
+    background: repeating-linear-gradient(
+        -45deg,
+        var(--text-success, var(--interactive-accent)) 0 2px,
+        color-mix(in srgb, var(--text-success, var(--interactive-accent)) 50%, var(--background-primary)) 2px 4px
+    );
+}
+.seek-coverage-cell.is-indexing {
+    background: var(--text-warning, #d4a017);
+}
+.seek-coverage-cell.is-uncovered {
+    background: var(--background-modifier-border);
+}
+.seek-coverage-cell.is-swatch {
+    width: 10px;
+    height: 10px;
+    flex: 0 0 10px;
+    border-radius: 2px;
+}
+.seek-coverage-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    margin: 0 0 10px;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+.seek-coverage-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+.seek-coverage-remaining {
+    margin: 0 0 10px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+.seek-coverage-remaining-summary {
+    cursor: pointer;
+    color: var(--text-muted);
+}
+.seek-coverage-remaining-list {
+    margin: 6px 0 0;
+    padding-left: 1.25em;
+    color: var(--text-muted);
+}
+.seek-coverage-remaining-more {
+    font-style: italic;
+}
+.seek-coverage-remaining-count {
+    margin: 0 0 10px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
 .seek-coverage-row .seek-coverage-pct {
     text-align: right;
     font-weight: 600;
@@ -2251,9 +2339,25 @@
     row-gap: 3px;
 }
 .is-phone .seek-settings .seek-coverage-overall {
-    grid-template-columns: 3.5em 1fr minmax(6.5em, 9em);
+    grid-template-columns: 1fr minmax(6.5em, 9em);
+    grid-template-areas:
+        "pctwrap meta"
+        "track track";
+    row-gap: 6px;
 }
 .is-phone .seek-settings .seek-coverage-name { grid-area: name; }
-.is-phone .seek-settings .seek-coverage-track { grid-area: track; }
-.is-phone .seek-settings .seek-coverage-pct { grid-area: pct; }
-.is-phone .seek-settings .seek-coverage-meta { grid-area: meta; }
+.is-phone .seek-settings .seek-coverage-row .seek-coverage-track { grid-area: track; }
+.is-phone .seek-settings .seek-coverage-overall .seek-coverage-track { grid-area: track; }
+.is-phone .seek-settings .seek-coverage-row .seek-coverage-pct { grid-area: pct; }
+.is-phone .seek-settings .seek-coverage-row .seek-coverage-meta { grid-area: meta; }
+.is-phone .seek-settings .seek-coverage-pct-wrap { grid-area: pctwrap; }
+.is-phone .seek-settings .seek-coverage-overall-meta { grid-area: meta; }
+.is-phone .seek-settings .seek-coverage-cell {
+    height: 10px;
+}
+.is-phone .seek-settings .seek-coverage-cells.is-empty {
+    height: 10px;
+}
+.is-phone .seek-settings .seek-coverage-legend {
+    margin-bottom: 12px;
+}

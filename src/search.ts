@@ -51,7 +51,7 @@ import { buildSynonymMap, chunkDeclaresAlias, type SynonymMap } from './synonyms
 import { TaskContextTracker } from './task-context';
 import type { FileCacheLite, VaultLexIndex } from './vault-lex';
 import { IndexStore, classifyFileDelta, findOrphanChunkIds, isStoreClosedError, isQuotaError, stripContent, META_SCHEMA_VERSION, type MetaConfig, type FileRecord } from './index-store';
-import { computeFolderCoverage, type FolderCoverageSummary } from './folder-coverage';
+import { computeFolderCoverage, type FolderCoveragePathSets, type FolderCoverageSummary } from './folder-coverage';
 import { INDEX_QUOTA_MSG } from './index-notice';
 import { LocalEmbedder, EMBEDDING_DIM, LEGACY_ENGLISH_MODEL_ID, MODEL_ID, PLUGIN_VERSION } from './embedder';
 import { SeekLogger } from './logger';
@@ -1766,16 +1766,20 @@ export class SearchOrchestrator {
     // = the subset currently out of index because of Obsidian's "Excluded files" (and
     // the honor toggle). All three are live vault reads, so this reflects the current
     // exclusion state without waiting for a delta pass.
-    async getFolderCoverage(pendingPaths?: readonly string[]): Promise<FolderCoverageSummary> {
+    async getFolderCoveragePathSets(): Promise<FolderCoveragePathSets> {
         const all = this.indexableFiles();
         const allPaths = all.map(f => f.path);
         const excludedPaths = all.filter(f => !this.shouldIndex(f.path)).map(f => f.path);
         const coveredPaths = await this.store.listFilePaths();
+        return { allPaths, coveredPaths, excludedPaths };
+    }
+
+    async getFolderCoverage(pendingPaths?: readonly string[], fullJobActive?: boolean): Promise<FolderCoverageSummary> {
+        const sets = await this.getFolderCoveragePathSets();
         return computeFolderCoverage({
-            allPaths,
-            coveredPaths,
-            excludedPaths,
+            ...sets,
             pendingPaths: pendingPaths ? [...pendingPaths] : undefined,
+            fullJobActive,
         });
     }
 
