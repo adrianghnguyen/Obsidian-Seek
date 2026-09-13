@@ -6,32 +6,106 @@ Seek is a native hybrid search plugin for Obsidian vaults, built to find buried 
 
 Relevance has been tested and evaluated on hundreds of thousands of queries and notes, and offers easy customization to best suit your vault.
 
-> **Fork notice:** This repo is a maintained fork of [ryan-manor/Obsidian-Seek](https://github.com/ryan-manor/Obsidian-Seek) by Ryan Manor, extended by [Adrian Nguyen](https://github.com/adrianghnguyen/Obsidian-Seek). Current version: **1.4.0**. The [upstream user guide](https://publish.obsidian.md/rmm/Seek+Documentation/About+Seek) still applies for core relevance and tuning; see [CHANGELOG.md](./CHANGELOG.md) for fork-specific additions.
+> **Fork notice:** This repo is a maintained fork of [ryan-manor/Obsidian-Seek](https://github.com/ryan-manor/Obsidian-Seek) by Ryan Manor, extended by [Adrian Nguyen](https://github.com/adrianghnguyen/Obsidian-Seek). Current version: **1.8.0**. The [upstream user guide](https://publish.obsidian.md/rmm/Seek+Documentation/About+Seek) still applies for core relevance and tuning; see [What's different in this fork](#whats-different-in-this-fork) and [CHANGELOG.md](./CHANGELOG.md) for fork-specific additions.
 
 <img width="735" height="595" alt="Screenshot 2026-06-30 at 09 25 33" src="https://github.com/user-attachments/assets/ab5bf543-8d57-4f79-b912-bede11bac059" />
 
+## What's different in this fork
+
+Compared to upstream [ryan-manor/Obsidian-Seek](https://github.com/ryan-manor/Obsidian-Seek) (**1.1.3**), this fork (**1.8.0**) keeps the same hybrid ranking core and adds UX, diagnostics, and automation. Full history is in [CHANGELOG.md](./CHANGELOG.md).
+
+**Search & modal**
+- Progressive pipeline (Name match → Lexical BM25 → Hybrid semantic) with warm-up lexical results before the model finishes loading
+- Optional footer stage indicator; remappable in-modal hotkeys (Settings → Hotkeys) that do not register globally
+- Insert-link defaults are **Alt+Enter** (plain) and **Alt+Shift+Enter** (alias); upstream uses Shift+Enter
+- Configurable modal size, snippet depth, and result aliases; Quick Switcher–like dismiss after tab/split open (optional keep-open)
+- Mod+Enter / Mod+Alt+Enter (and clicks) open in a new tab or split via OpenTarget modifiers
+
+**Indexing & Settings**
+- Live startup timeline, boot history, and boot-over-boot trend
+- Embedder coverage by folder tree; embedding-pass throughput (`ch/s`, `files/s`, `tok/s`)
+- Seek-only **Additional excluded folders** (additive with Obsidian’s Excluded files), with automatic backfill / soft-delete
+- BM25 field-weight sliders under Relevance → Advanced (score-time; no reindex)
+
+**Automation & desktop**
+- `seek:open` CLI and richer `obsidian://seek` open targets (`paneType=tab|split|window`)
+- Lexical `seek:search` during warm-up (`ready: false` / `warming` in JSON)
+- Experimental background query worker (desktop, Settings → Model & performance)
+- Windows CRLF-safe markdown fence/table parsing for indexing
+
+Core relevance tuning still follows the [upstream user guide](https://publish.obsidian.md/rmm/Seek+Documentation/About+Seek); fork-only surfaces are documented below and in Settings → Seek.
+
 ## Features
 
-- Support for 52 languages (plus code)
-- Inline filtering with autosuggestions
-- Support for mobile with a cross-device, synced index
-- Highly tuned and evaluated for relevance on any size of Obsidian vault, even up to tens of thousands of notes
-- **Recent searches** in the modal resting state
-- **Insert a wiki link** from search (Shift+Enter) without leaving the editor
-- **Configurable open target** for Cmd/Ctrl+click — new tab, split pane, or window (desktop)
-- **Warm-up lexical results** before semantic ranking is ready on a fresh start
-- **Settings startup timeline** with boot-over-boot trend and per-folder embedder coverage tree
-- **Automatic backfill** when Obsidian excluded-files settings change
-- **Obsidian CLI** headless search, open, and insert-link (`seek:search`, `seek:open`, `seek:insert-link`)
-- **Experimental background query worker** (desktop, Settings → Model & performance)
+**Search**
+- Hybrid lexical + semantic ranking, tuned for vaults from hundreds to tens of thousands of notes
+- Progressive results (name match → lexical BM25 → hybrid semantic) with optional footer stage indicator
+- Recent searches in the modal resting state; remappable in-modal hotkeys (Settings → Hotkeys)
+- Configurable modal size, snippet depth, and result aliases
+- Inline filters with autosuggestions (`#tag`, `path:`, `[key:value]`, dates, negation)
+- BM25 field-weight sliders under Relevance → Advanced (no reindex)
 
-The user guide for Seek can be found [here](https://publish.obsidian.md/rmm/Seek+Documentation/About+Seek), and more information about Seek's relevance tuning and evaluation is [here](https://publish.obsidian.md/rmm/Seek+Documentation/Seek+Evaluation+%26+Development).
+**Indexing**
+- Status-bar progress during full and catch-up passes
+- Settings embedding pass shows live `ch/s`, `files/s`, and `tok/s`, plus per-folder embedder coverage
+- Startup timeline, boot history, and boot-over-boot trend in Settings → Index
+- Automatic backfill / soft-delete when Obsidian’s Excluded files or Seek’s additional excluded folders change
+- Cross-device synced index for mobile (sidecar hydrate without re-embedding)
+
+**Automation**
+- Obsidian CLI: `seek:search`, `seek:open`, `seek:insert-link` (Obsidian 1.12.7+)
+- Deep links via `obsidian://seek` (search or open top hit)
+- Lexical results during warm-up (`ready: false` in JSON) before semantic ranking is ready
+
+**Desktop extras**
+- Insert a wiki link from search without leaving the editor (Alt+Enter / Alt+Shift+Enter)
+- Experimental background query worker (Settings → Model & performance)
+
+Support for 52 languages (plus code). The [upstream user guide](https://publish.obsidian.md/rmm/Seek+Documentation/About+Seek) and [evaluation notes](https://publish.obsidian.md/rmm/Seek+Documentation/Seek+Evaluation+%26+Development) cover relevance tuning in depth.
 
 ## Installation
 
 1. Install the plugin in your vault.
 2. Open Obsidian and let Seek build the index on first load (typically 1–3 minutes; longer for very large vaults).
 3. Open search with the **Search** command and start typing.
+
+## Search examples
+
+Type a natural-language query, then narrow with filters. Press `[` for a property-type-aware filter menu. `before:` / `after:` use the recency date field from Settings → Relevance.
+
+```text
+standup notes #meetings/1x1
+project alpha path:"Projects/Active"
+[status:done][priority>2]
+budget review before:2026-01-01 after:2025-06-01
+meeting -archive
+```
+
+| Operator | Effect |
+|----------|--------|
+| `#tag` / `tag:x` | Tag filter (hierarchical) |
+| `path:pattern` | Path glob (`path:"folder with spaces"`) |
+| `[key:value]` / `[key>n]` | Frontmatter match or numeric compare |
+| `before:DATE` / `after:DATE` | Date range on the configured recency field |
+| `-term` | Exclude notes containing that term |
+
+## Keyboard shortcuts
+
+Defaults apply **only while the Seek search modal is focused** (they do not hijack the editor). Remap under Settings → Hotkeys; the modal footer shows your live bindings.
+
+| Action | Default |
+|--------|---------|
+| Navigate results | ↑ / ↓ |
+| Open | Enter |
+| Open in new tab | Mod+Enter |
+| Open in split | Mod+Alt+Enter |
+| Insert plain link | Alt+Enter (desktop; active markdown editor) |
+| Insert link with alias | Alt+Shift+Enter |
+| Expand snippet | Mod+Shift+E |
+| Fill autosuggest | Tab |
+| Close | Esc |
+
+Mod+click / Mod+Alt+click also open in a new tab or split. By default the modal closes after those opens (Quick Switcher–like); opt into fan-out under Display → **Keep search open when opening in new tab or split**.
 
 ## How It Works
 
@@ -45,7 +119,7 @@ A search streams results through three tiers, each promoting into the next witho
 2. **Lexical BM25** — the persisted keyword index ranks matches within a few milliseconds, before the embedding model has finished computing vectors.
 3. **Hybrid semantic** — the dense embedding and fusion pass reconciles the list in place with the final ranked results.
 
-The search footer shows this ladder (Name match → Lexical BM25 → Hybrid semantic), bolding the active stage as each tier resolves. Because the lexical tier is served from the persisted index, search works even on a cold start, before the model finishes downloading or loading.
+Because the lexical tier is served from the persisted index, search works even on a cold start, before the model finishes downloading or loading. Enable Display → **Show search stages** for a persistent Name match → Lexical BM25 → Hybrid semantic indicator in the modal footer (off by default).
 
 ### Local index cache
 
@@ -66,9 +140,31 @@ Seek registers Obsidian CLI commands for headless use (Obsidian 1.12.7+ with the
 obsidian seek:search query="project notes" format=json vault=MyVault
 obsidian seek:open query="project notes" rank=1 paneType=tab vault=MyVault
 obsidian seek:insert-link query="project notes" rank=1 vault=MyVault
+obsidian seek:insert-link query="project notes" rank=1 alias="label" heading=true vault=MyVault
 ```
 
-Deep links via `obsidian://seek` support search, open, and insert-link modes with the same parameters.
+- **`format=json`** — structured results. During warm-up you may get lexical hits with `ready: false` (and `warming: true`) until semantic search is available; `seek:open` / `seek:insert-link` wait for full readiness so a wrong top hit cannot misfire.
+- **Per-query recency** (not persisted): `recencyWeight=` and `recencyHalflife=` on `seek:search`.
+- **Insert-link**: plain `[[Note]]` by default; pass `alias=` for a display label and `heading=true` for `[[Note#Section]]`.
+
+Deep links (encode `#` in query text — it is both a URL fragment and Seek’s `#tag` sigil):
+
+```text
+obsidian://seek?query=project%20notes
+obsidian://seek?query=project%20notes&mode=open&paneType=split&vault=MyVault
+```
+
+## Settings overview
+
+Under **Settings → Seek**:
+
+| Section | What you’ll find |
+|---------|------------------|
+| **Relevance** | Fusion diagram, search-stages explainer, recency / title boosts, BM25 field weights (Advanced) |
+| **Display** | Modal size, snippets, aliases, stage indicator, hotkey hints, keep-open on tab/split |
+| **Index** | Status and reindex, embedding-pass throughput, folder coverage tree, boot history, excluded folders (Obsidian + Seek-only additional) |
+| **Model & performance** | Compute backend; experimental background query worker (desktop, per-device) |
+| **Diagnostics** | Logging report (paths/queries redacted by default), recent search timings |
 
 ## Network Use
 
