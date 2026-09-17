@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { IframeRunner, buildChildScript, buildWorkerProbeScript, buildEmbedWorkerScript, isChromiumPowerPreferenceAdapterWarning, stripGpuPowerPreference, SOFT_DISPOSE_MS, WORKER_PROBE_TIMEOUT_MS } from './iframe-runner';
+import { IframeRunner, TRANSFORMERS_VERSION, buildChildScript, buildWorkerProbeScript, buildEmbedWorkerScript, isChromiumPowerPreferenceAdapterWarning, stripGpuPowerPreference, SOFT_DISPOSE_MS, WORKER_PROBE_TIMEOUT_MS } from './iframe-runner';
 
 // F5 — per-RPC timeout. A jetsam-killed iframe child never replies; without the
 // timeout the parent promise hangs forever, stranding the embed catch's
@@ -313,6 +313,31 @@ describe('iframe child message handler — source check', () => {
         const dispatchIdx = script.indexOf("data.type === 'load'", handlerStart);
         expect(guardIdx).toBeGreaterThan(handlerStart);
         expect(guardIdx).toBeLessThan(dispatchIdx);
+    });
+});
+
+describe('TRANSFORMERS_VERSION pin', () => {
+    it('ships transformers.js 4.3.0 from jsDelivr (ORT-Web 1.31-dev)', () => {
+        expect(TRANSFORMERS_VERSION).toBe('4.3.0');
+        const script = buildChildScript(
+            `https://cdn.jsdelivr.net/npm/@huggingface/transformers@${TRANSFORMERS_VERSION}`,
+            384,
+        );
+        expect(script).toContain('@huggingface/transformers@4.3.0');
+        expect(script).not.toContain('@huggingface/transformers@4.2.0');
+    });
+});
+
+describe('iframe child WebGPU path — Safari glue override (4.3.0 #1700)', () => {
+    it('rewrites the remaining Safari <26 plain pin and no-ops when already asyncify', () => {
+        const script = buildChildScript('https://example.com/cdn', 384);
+        expect(script).toContain('function overrideWebkitGlueForWebgpu');
+        expect(script).toContain("includes('ort-wasm-simd-threaded.mjs')");
+        expect(script).toContain("includes('ort-wasm-simd-threaded.asyncify.mjs')");
+        const callIdx = script.indexOf('const glue = overrideWebkitGlueForWebgpu(env)');
+        const tryIdx = script.indexOf("async function tryWebgpu");
+        expect(tryIdx).toBeGreaterThan(-1);
+        expect(callIdx).toBeGreaterThan(tryIdx);
     });
 });
 

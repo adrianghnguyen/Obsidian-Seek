@@ -124,7 +124,7 @@ describe('IndexedDB Lifecycle & Lock Safety (src/idb-lifecycle-lock.test.ts)', (
                 timestamp: new Date().toISOString(),
                 schemaVersion: 1,
                 buildTimestamp: 'test-build',
-                transformersVersion: '4.2.0',
+                transformersVersion: '4.3.0',
                 cdnUrl: 'https://test-cdn',
                 iframeReady: true,
                 initMs: 1,

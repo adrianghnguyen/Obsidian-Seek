@@ -49,7 +49,7 @@ function fakeInitRunner() {
             await gate;
             if (ready) live = true;
             return {
-                buildTimestamp: 't', cdnUrl: 'c', transformersVersion: '4.2.0',
+                buildTimestamp: 't', cdnUrl: 'c', transformersVersion: '4.3.0',
                 ready, error: ready ? null : 'boom', initMs: 1,
             };
         },
@@ -95,7 +95,7 @@ function fakeRecycleRunner() {
             initCalls++;
             live = true;
             return {
-                buildTimestamp: 't', cdnUrl: 'c', transformersVersion: '4.2.0',
+                buildTimestamp: 't', cdnUrl: 'c', transformersVersion: '4.3.0',
                 ready: true, error: null, initMs: 1,
             };
         },
@@ -135,7 +135,7 @@ function fakeRecycleRunnerGatedInit() {
             await initGate;
             live = true;
             return {
-                buildTimestamp: 't', cdnUrl: 'c', transformersVersion: '4.2.0',
+                buildTimestamp: 't', cdnUrl: 'c', transformersVersion: '4.3.0',
                 ready: true, error: null, initMs: 1,
             };
         },
@@ -174,7 +174,7 @@ function fakeRecycleRunnerDeferredDispose() {
             initCalls++;
             live = true;
             return {
-                buildTimestamp: 't', cdnUrl: 'c', transformersVersion: '4.2.0',
+                buildTimestamp: 't', cdnUrl: 'c', transformersVersion: '4.3.0',
                 ready: true, error: null, initMs: 1,
             };
         },

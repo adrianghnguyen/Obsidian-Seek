@@ -1527,14 +1527,17 @@ export default class SeekPlugin extends Plugin {
                 // wasmPaths to a webgpuInit-capable glue (jspi/asyncify — see
                 // overrideWebkitGlueForWebgpu in iframe-runner.ts), the fix that
                 // let the iPad run granite on WKWebView WebGPU (2026-06-10).
-                // tx.js 4.2.0 otherwise pins anything Safari-detected (WKWebView
-                // included) to the plain wasm glue compiled WITHOUT webgpuInit,
-                // so without that override the webgpu EP init throws by
-                // construction. On failure the load falls back to WASM on a
-                // fresh module instance (tx.js's webInitChain has no rejection
-                // handler — one failed load poisons the instance) and logs
-                // webgpuError. ⚠️ ORT #26827 hang risk still applies on iPhone,
-                // which is why iPhone stays off the 'auto' path by default.
+                // tx.js 4.2.0 pinned anything Safari-detected (WKWebView
+                // included) to the plain wasm glue compiled WITHOUT webgpuInit;
+                // 4.3.0 (#1700) gives Safari 26+ asyncify/WebGPU, but older
+                // WKWebView without navigator.gpu still gets the plain pin, so
+                // the override remains a no-op on 26+ and a rewrite on the
+                // remaining plain path. On failure the load falls back to WASM
+                // on a fresh module instance (tx.js's webInitChain has no
+                // rejection handler — one failed load poisons the instance)
+                // and logs webgpuError. ⚠️ ORT #26827 hang risk still applies
+                // on iPhone, which is why iPhone stays off the 'auto' path by
+                // default.
                 const requestedDevice = resolveDevice();
                 // Model selection: the LOCAL_MODEL dev override wins (it's a
                 // base URL, not a hub id); otherwise MODEL_ID. Both ride dtype

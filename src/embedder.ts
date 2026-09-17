@@ -93,7 +93,7 @@ export interface EmbedBatchTimed {
 // ml97 is english-r2's ModernBERT sibling — same 384-d, CLS pooling, no
 // query/doc prompts — shipped as a self-hosted GBQ-int4 export (q4 body +
 // GatherBlockQuantized int4 embedding table): 61 MB vs english-r2's 99.5 MB,
-// WebGPU-native Gather (ORT ≥1.23, in the tx.js 4.2.0 pinned ort-web).
+// WebGPU-native Gather (ORT ≥1.23, in the pinned tx.js 4.3.0 / ORT-Web 1.31-dev).
 // Three-way relevance gate 2026-06-10 ([[Seek MultiLanguage]]): quantization
 // free on English (±0.003), Belebele dense tax ≤0.021 (worst ko); english-r2
 // kept a −2 pt code edge but collapses on non-English (Belebele dense
