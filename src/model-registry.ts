@@ -17,7 +17,7 @@
 // different repo fires the EXISTING reindex machinery (warnOnModelIndexDrift) for
 // free — no churn to the drift / sidecar-version-gate code. `revision` is now
 // threaded into the transformers.js load (createPipeline/from_pretrained both take
-// a `revision` option, verified against tx.js 4.2.0) AND into the sidecar version
+// a `revision` option, verified against tx.js 4.2.0 and still present in 4.3.0) AND into the sidecar version
 // gate, so a pinned commit sha makes embeddings reproducible across devices/time
 // and refuses cross-revision sidecar hydration (F10). Eviction still matches on
 // repo alone (a revision bump's stale bytes are reclaimed by the OS / next switch).
@@ -101,7 +101,7 @@ export function activeModelSpec(settings: SeekSettings): ModelSpec {
 // ---- Cache-API eviction (parent-side; orchestrated from main.ts) --------------
 // transformers.js caches model files in caches.open('transformers-cache') keyed by
 // the HF resolve URL `https://huggingface.co/<repo>/resolve/<rev>/<file>` (verified
-// against the shipped @huggingface/transformers@4.2.0 bundle). On a model switch we
+// against the shipped @huggingface/transformers@4.3.0 bundle). On a model switch we
 // delete every cached HF model request that is NOT the active repo, reclaiming the
 // old model's ~100 MB. Pure predicate below is unit-tested; the orchestration that
 // opens `caches` lives in main.ts (and is benign if the cache is absent).

@@ -59,7 +59,7 @@ describe('shouldEvictCacheUrl', () => {
     });
 
     it('ignores non-HF / non-resolve URLs (jsdelivr runtime, etc.)', () => {
-        expect(shouldEvictCacheUrl('https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0', ACTIVE_REPO)).toBe(false);
+        expect(shouldEvictCacheUrl('https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0', ACTIVE_REPO)).toBe(false);
         expect(shouldEvictCacheUrl('https://example.com/whatever', ACTIVE_REPO)).toBe(false);
     });
 
@@ -76,7 +76,7 @@ describe('isCacheUrlForRepo', () => {
         expect(isCacheUrlForRepo(hfUrl(ACTIVE_REPO), ACTIVE_REPO)).toBe(true);
         expect(isCacheUrlForRepo(hfUrl(ACTIVE_REPO, 'config.json'), ACTIVE_REPO)).toBe(true);
         expect(isCacheUrlForRepo(hfUrl('tooape/other'), ACTIVE_REPO)).toBe(false);
-        expect(isCacheUrlForRepo('https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0', ACTIVE_REPO)).toBe(false);
+        expect(isCacheUrlForRepo('https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0', ACTIVE_REPO)).toBe(false);
     });
 
     it('is the exact inverse of shouldEvictCacheUrl for HF model URLs', () => {
@@ -113,13 +113,13 @@ describe('evictStaleModelCaches', () => {
             hfUrl(ACTIVE_REPO, 'config.json'),
             hfUrl('tooape/old-model'),
             hfUrl('tooape/older-still', 'tokenizer.json'),
-            'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0',
+            'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0',
         ]);
         const res = await evictStaleModelCaches(f.cs, ACTIVE_REPO);
         expect(res.seen).toBe(5);
         expect(res.deleted).toBe(2);                 // two stale repos
         expect(f.remaining()).toContain(hfUrl(ACTIVE_REPO));
-        expect(f.remaining()).toContain('https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0');
+        expect(f.remaining()).toContain('https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0');
         expect(f.remaining()).not.toContain(hfUrl('tooape/old-model'));
     });
 
@@ -141,14 +141,14 @@ describe('deleteModelCaches', () => {
             hfUrl(ACTIVE_REPO),
             hfUrl(ACTIVE_REPO, 'config.json'),
             hfUrl('tooape/other-model'),
-            'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0',
+            'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0',
         ]);
         const res = await deleteModelCaches(f.cs, ACTIVE_REPO);
         expect(res.seen).toBe(4);
         expect(res.deleted).toBe(2);                            // both active-repo entries
         expect(f.remaining()).not.toContain(hfUrl(ACTIVE_REPO));
         expect(f.remaining()).toContain(hfUrl('tooape/other-model'));
-        expect(f.remaining()).toContain('https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0');
+        expect(f.remaining()).toContain('https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0');
     });
 
     it('no-ops cleanly when the transformers cache is absent', async () => {

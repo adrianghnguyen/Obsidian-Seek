@@ -15,13 +15,13 @@ import { ACTIVE_MODEL_SPEC } from './model-registry';
 
 declare const __BUILD_TS__: string;
 
-// HARD FLOOR — do not downgrade below 4.x. v4 bundles ORT-Web 1.26-dev,
+// HARD FLOOR — do not downgrade below 4.x. v4 bundles ORT-Web 1.26-dev+,
 // whose WebGPU MatMulNBits kernels are what make q4 viable on this stack.
 // Measured on the Personal vault (2075 files / ~3950 chunks, WebGPU, same
 // fused PTQ q4 model, 2026-05-17):
 //   tx.js 3.8.0  q4  →   6.7 ch/s,  heap Δ ~186 MB
 //   tx.js 3.8.0  q8  →  13.2 ch/s,  heap Δ ~380 MB
-//   tx.js 4.2.0  q4  →  20.6 ch/s,  heap Δ ~103 MB   ← current
+//   tx.js 4.2.0  q4  →  20.6 ch/s,  heap Δ ~103 MB   ← 4.2.0 baseline
 // i.e. v4 q4 is ~3× faster than v3 q4 AND ~1.6× faster than v3 q8 at ~¼
 // the heap. The q4 throughput penalty was never a fusion confound (op
 // histograms confirmed v3 q4 was fully fused, 24× MultiHeadAttention, and
@@ -33,8 +33,15 @@ declare const __BUILD_TS__: string;
 // BROKEN on 3.8.0's ORT-Web and only works on 4.x's ORT-Web 1.26. 3.8.0 was
 // pinned for iOS (v4 ORT-Web can't init WebGPU in iOS WKWebView) — under 4.2,
 // iOS will fail the WebGPU load and fall back to WASM at load time (iOS is
-// query-only anyway). Desktop indexing needs 4.2 for granite WebGPU.
-export const TRANSFORMERS_VERSION = '4.2.0';
+// query-only anyway). Desktop indexing needs 4.2+ for granite WebGPU.
+// 2026-09-17: bumped 4.2.0 -> 4.3.0. Bundled ORT-Web jumps 1.26.0-dev.20260416
+// → 1.31.0-dev.20260914. tx.js #1700 enables WebGPU on Safari 26+ (asyncify
+// glue by default); Safari <26 without navigator.gpu still gets the plain
+// WASM pin. overrideWebkitGlueForWebgpu remains: it no-ops when wasmPaths is
+// already asyncify, and still rewrites the plain pin if a WebGPU attempt
+// lands on older WKWebView. webInitChain still has no rejection handler in
+// 4.3.0 — keep the fragment-suffixed freshTransformers() workaround.
+export const TRANSFORMERS_VERSION = '4.3.0';
 const CDN_URL = `https://cdn.jsdelivr.net/npm/@huggingface/transformers@${TRANSFORMERS_VERSION}`;
 
 // Warmup grid constants — exported so the parent can compose a fingerprint
@@ -1226,17 +1233,18 @@ function sliceAndRenormalize(vec, targetDim) {
     return sliced;
 }
 
-// tx.js 4.2.0 serializes every session creation through a module-level
+// tx.js 4.x serializes every session creation through a module-level
 // promise chain with NO rejection handler (src/backends/onnx.js:
-// webInitChain = webInitChain.then(load)). One rejected createPipeline
-// poisons the chain for the module instance's lifetime: every later attempt
-// SKIPS its load() and re-throws the FIRST error verbatim. That's why the
-// 2026-06-10 iPad failure surfaced the raw "[webgpu] webgpuInit is not a
-// function" error with no ladder/fallback wrapping — the wasm fallback never
-// ran. Fix: give each load attempt a fresh module instance via a
-// fragment-suffixed dynamic import. The module map keys on the full URL
-// (fragment included) so '#seek-gen-2' is a distinct instance, while fetch
-// strips the fragment — same HTTP cache entry, no re-download.
+// webInitChain = webInitChain.then(load) — still true in 4.3.0). One
+// rejected createPipeline poisons the chain for the module instance's
+// lifetime: every later attempt SKIPS its load() and re-throws the FIRST
+// error verbatim. That's why the 2026-06-10 iPad failure surfaced the raw
+// "[webgpu] webgpuInit is not a function" error with no ladder/fallback
+// wrapping — the wasm fallback never ran. Fix: give each load attempt a
+// fresh module instance via a fragment-suffixed dynamic import. The module
+// map keys on the full URL (fragment included) so '#seek-gen-2' is a
+// distinct instance, while fetch strips the fragment — same HTTP cache
+// entry, no re-download.
 let importGen = 0;
 async function freshTransformers(modelId) {
     importGen++;
@@ -1266,22 +1274,24 @@ async function loadTokenizer(modelId, revision) {
     return { ok: true, cached: false };
 }
 
-// tx.js 4.2.0 pins anything that detects as Safari — WKWebView included — to
-// the PLAIN wasm glue (ort-wasm-simd-threaded.mjs), the one dist variant
-// compiled WITHOUT the webgpuInit entry point (src/backends/onnx.js, the
-// apis.IS_SAFARI wasmPaths branch). So on WebKit the webgpu EP init is
+// tx.js 4.2.0 pinned anything Safari-detected — WKWebView included — to the
+// PLAIN wasm glue (ort-wasm-simd-threaded.mjs), the dist variant compiled
+// WITHOUT the webgpuInit entry point. So on WebKit the webgpu EP init was
 // structurally guaranteed to throw "De().webgpuInit is not a function"
 // regardless of what the GPU supports — this, not a WKWebView capability
-// gap, is the 2026-06-02/06-10 iOS failure. The pin only applies when
-// wasmPaths is unset, so rewriting wasmPaths right after import (before the
-// first createPipeline caches it via ensureWasmLoaded) restores a
-// WebGPU-capable glue: jspi when the engine has JSPI (14.5 MB, no asyncify
-// transform), else asyncify (23.6 MB). No-op off WebKit — everywhere else
-// tx.js already picks asyncify. ⚠️ tx.js presumably pinned Safari to the
-// plain glue for a reason (ORT #26827-class WASM-compile hangs are the
-// suspect), so this runs only on the WebGPU attempt path, which mobile only
-// reaches on the 'auto' device (iPad by default, or a forced-WebGPU override —
-// see platform.ts resolveDevice; iPhone + Android stay on WASM).
+// gap, was the 2026-06-02/06-10 iOS failure. 4.3.0 (#1700) changed the pin:
+// Safari 26+ (and older Safari with navigator.gpu) get asyncify; only
+// Safari <26 without WebGPU stays on the plain glue. The pin only applies
+// when wasmPaths is unset, so rewriting wasmPaths right after import (before
+// the first createPipeline caches it via ensureWasmLoaded) restores a
+// WebGPU-capable glue on the remaining plain-pin path: jspi when the engine
+// has JSPI (14.5 MB, no asyncify transform), else asyncify (23.6 MB). No-op
+// when wasmPaths is already asyncify (Safari 26+ / desktop) or off WebKit.
+// ⚠️ tx.js presumably pinned older Safari to the plain glue for a reason
+// (ORT #26827-class WASM-compile hangs are the suspect), so this runs only
+// on the WebGPU attempt path, which mobile only reaches on the 'auto'
+// device (iPad by default, or a forced-WebGPU override — see platform.ts
+// resolveDevice; iPhone + Android stay on WASM).
 function overrideWebkitGlueForWebgpu(env) {
     const wp = env.backends.onnx.wasm.wasmPaths;
     if (!wp || typeof wp !== 'object' || !wp.mjs) return null;
