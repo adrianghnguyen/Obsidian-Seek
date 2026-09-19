@@ -2,6 +2,18 @@
 
 ## Cursor Cloud specific instructions
 
+### Cursor Cloud environment
+
+Setup is owned by `obsidian-plugin-development`. This repo ships the shared pointer only (Seek has no plugin-owned secret-id map). **Do not copy script bodies here.**
+
+- Pointer: `.cursor/environment.json` (same `install` / `start` on all four `main`s)
+- Scripts (plugin-development only): `scripts/cloud-e2e/env-install.sh`, `env-start.sh`, `install-acp-agents.sh`, `paths.env`
+- Walkthrough: `scripts/cloud-e2e/README.md`, `GETTING-STARTED.md`
+- Secret **ids**: no `.cloud-e2e/secret-bindings.json` here; empty fallback `obsidian-plugin-development/scripts/cloud-e2e/bindings/seek.json` via `load-bindings.mjs`
+- Identity gate: `env-start.sh` CDP eval + `paths.env` (no separate id file)
+
+Project doc: `/cursor/stores/bc-a8a2e9ee-3f2b-4d31-ae8c-85b3734c071e/docs/cursor-environment-docs.md`
+
 ### UI transparency gate
 Any feature, behavioral change, or settings addition that affects what the user sees or experiences must be reviewed against the plugin's own UI surfaces — Settings (especially the Relevance pipeline diagram and the Search stages explainer), the search modal footer, status bar, and keyboard hints. If the change introduces a new state, label, ranking stage, or visual cue that the plugin advertises, the corresponding UI surface in the plugin must be updated to explain or reflect it. This ensures Seek users always have a path to understand what the plugin is doing.
 
