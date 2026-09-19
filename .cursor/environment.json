@@ -1,0 +1,10 @@
+{
+  "name": "Obsidian plugins E2E",
+  "install": "bash /agent/repos/obsidian-plugin-development/scripts/cloud-e2e/env-install.sh",
+  "start": "bash /agent/repos/obsidian-plugin-development/scripts/cloud-e2e/env-start.sh",
+  "repositoryDependencies": [
+    "github.com/adrianghnguyen/obsidian-agent-client",
+    "github.com/adrianghnguyen/obsidian-seek",
+    "github.com/adrianghnguyen/whisper-obsidian-plugin"
+  ]
+}
