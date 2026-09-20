@@ -1289,7 +1289,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
 
         new Setting(containerEl)
             .setName('Keyboard hints bar')
-            .setDesc('Displays keyboard hints under results in the search modal. Hints reflect bindings active while the modal is focused; remap under Settings → Hotkeys.')
+            .setDesc('Displays keyboard hints in the search modal (footer bar, query-bar Tab hint, selected-row keycaps). Hints reflect bindings active while the modal is focused; remap under Settings → Hotkeys.')
             .addToggle(t => t.setValue(this.s.showHotkeyHints).onChange(async v => { this.s.showHotkeyHints = v; await this.save(); }));
 
         new Setting(containerEl)
