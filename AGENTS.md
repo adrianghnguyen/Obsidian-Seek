@@ -11,7 +11,7 @@ Setup is owned by `obsidian-plugin-development`. This repo ships the shared poin
 - Walkthrough: `scripts/cloud-e2e/README.md`, `GETTING-STARTED.md`
 - Secret **ids**: no `.cloud-e2e/secret-bindings.json` here; empty fallback `obsidian-plugin-development/scripts/cloud-e2e/bindings/seek.json` via `load-bindings.mjs`
 - Identity gate: `env-start.sh` CDP eval + `paths.env` (no separate id file)
-- **Finish gate (cloud sessions):** Obsidian Plugin Development skill `obsidian-cloud-vm-demos` — VM runtime proof + mandatory screenshots for visible changes; local sandbox does not replace cloud proof.
+- **Finish gate (cloud sessions):** Obsidian Plugin Development skill `obsidian-cloud-vm-demos` — VM runtime proof + mandatory screenshots for visible changes; local sandbox does not replace cloud proof. When a PR exists, embed demo screenshots/video in the **PR description** (Cursor dashboard: **Allow posting artifacts to GitHub**; see [Artifacts in GitHub](https://cursor.com/docs/cloud-agent/capabilities#artifacts-in-github)).
 
 Project doc: `/cursor/stores/bc-a8a2e9ee-3f2b-4d31-ae8c-85b3734c071e/docs/cursor-environment-docs.md`
 
