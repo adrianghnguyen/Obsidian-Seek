@@ -51,10 +51,14 @@ import {
 import type { PipelineStages, PipelineStageEvent } from './pipeline-stage';
 import {
     canInsertLinkFromModal,
+    insertLinkAliasTabHintKeys,
+    isBareTabKey,
     isSeekChromeFocused,
     resolveSearchModalKeyAction,
     searchModalFooterHints,
+    searchModalFooterLabel,
     searchModalCloseHintKeys,
+    SEARCH_MODAL_COMMANDS,
     type SearchModalAction,
 } from './search-modal-hotkeys';
 
@@ -187,7 +191,9 @@ interface SeekResultRow {
     snippetEl: HTMLElement;
     metaEl: HTMLElement;
     scoreEl: HTMLElement;
-    keycapEl: HTMLElement;
+    keycapsEl: HTMLElement;
+    enterKeycapEl: HTMLElement;
+    tabKeycapEl: HTMLElement;
     data: ScoredChunk;
     rank: number;
     lastSnippet: string;
@@ -439,6 +445,7 @@ export class SeekSearchModal extends Modal {
         this.field = new PillQueryField(contentEl, this.app, this.pluginId, this.suggester, {
             onQueryChange: q => this.scheduleSearch(q),
             onAction: action => this.runAction(action),
+            canInsertLinkWithAliasOnTab: () => this.canInsertLinkWithAliasOnTab(),
             validateTag: tag => this.tagBinds(tag),
         }, this.settings.recencyEpsilon > 0, dateFieldLabel);
         this.field.focus();
@@ -1439,7 +1446,9 @@ export class SeekSearchModal extends Modal {
             snippetEl: el.createDiv({ cls: 'seek-result-snippet' }),
             metaEl: el.createDiv({ cls: 'seek-result-meta' }),
             scoreEl: el.createDiv({ cls: 'seek-result-score' }),
-            keycapEl: el.createEl('kbd', { cls: 'seek-result-kbd', text: '↵' }),
+            keycapsEl: el.createDiv({ cls: 'seek-result-kbds' }),
+            enterKeycapEl: undefined as unknown as HTMLElement,
+            tabKeycapEl: undefined as unknown as HTMLElement,
             data: null as unknown as ScoredChunk,
             rank: i + 1,
             lastSnippet: '\0', // sentinel ≠ any real snippet so first apply renders
@@ -1447,6 +1456,10 @@ export class SeekSearchModal extends Modal {
             aliasesExpanded: false,
             lastAliasSig: '\0',
         };
+        row.enterKeycapEl = row.keycapsEl.createEl('kbd', { cls: 'seek-result-kbd', text: '↵' });
+        row.tabKeycapEl = row.keycapsEl.createEl('kbd', { cls: 'seek-result-kbd', text: 'tab' });
+        row.tabKeycapEl.hide();
+        row.keycapsEl.hide();
         row.aliasHintEl.hide();
         el.addEventListener('click', e => {
             if ((e.target as HTMLElement).closest('a, .seek-meta-alias-more')) return;
@@ -1706,9 +1719,40 @@ export class SeekSearchModal extends Modal {
 
         const action = resolveSearchModalKeyAction(this.app, this.pluginId, e);
         if (!action) return;
+
+        if (action === 'fill-autosuggest' || (action === 'insert-link-alias' && isBareTabKey(e))) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (this.field?.fillAutosuggest()) return;
+            if (this.canInsertLinkWithAliasOnTab()) this.runAction('insert-link-alias');
+            return;
+        }
+
         e.preventDefault();
         e.stopPropagation();
         this.runAction(action);
+    }
+
+    private canInsertLinkWithAliasOnTab(): boolean {
+        if (Platform.isMobile) return false;
+        if (!canInsertLinkFromModal(this.app)) return false;
+        if (this.currentResults.length === 0) return false;
+        return this.selectedIndex >= 0 && this.selectedIndex < this.currentResults.length;
+    }
+
+    private refreshInsertLinkTabHints(): void {
+        const showTab = this.settings.showHotkeyHints && this.canInsertLinkWithAliasOnTab();
+        const tabKeys = insertLinkAliasTabHintKeys(this.app, this.pluginId);
+        const aliasSpec = SEARCH_MODAL_COMMANDS.find(c => c.action === 'insert-link-alias');
+        const label = aliasSpec ? searchModalFooterLabel(aliasSpec) : 'insert link with alias';
+        this.field?.setQueryActionHint(tabKeys, label, showTab && tabKeys.length > 0);
+        const showRowTab = showTab && tabKeys.length > 0;
+        this.rows.forEach((row, i) => {
+            const sel = i === this.selectedIndex;
+            row.keycapsEl.toggle(sel);
+            row.enterKeycapEl.toggle(sel);
+            row.tabKeycapEl.toggle(sel && showRowTab);
+        });
     }
 
     /** Dispatch a remappable search-modal action (commands + query-field chords). */
@@ -1777,10 +1821,9 @@ export class SeekSearchModal extends Modal {
     // mousemove handler); keyboard nav leaves it on to chase off-screen rows.
     private applySelection(scroll = true): void {
         this.rows.forEach((row, i) => {
-            const sel = i === this.selectedIndex;
-            row.el.toggleClass('is-selected', sel);
-            row.keycapEl.toggle(sel);
+            row.el.toggleClass('is-selected', i === this.selectedIndex);
         });
+        this.refreshInsertLinkTabHints();
         if (!scroll) return;
         const list = this.resultsEl;
         const row = this.rows[this.selectedIndex];

@@ -731,11 +731,37 @@
     font-variant-numeric: tabular-nums;
 }
 
-/* The ↵ keycap on the selected row. */
-.seek-result-kbd {
+/* ↵ + tab keycaps on the selected result row. */
+.seek-result-kbds {
     position: absolute;
     right: 12px;
     top: 9px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.seek-result-kbd {
+    font-size: 11px;
+}
+
+/* Tab → insert link with alias (query bar, when hints + editor + results). */
+.seek-q-action-hint {
+    flex: 0 0 auto;
+    align-self: center;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 42%;
+    font-size: 11.5px;
+    color: var(--text-faint);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.seek-q-action-hint kbd {
+    font-size: 11px;
 }
 
 .seek-empty {

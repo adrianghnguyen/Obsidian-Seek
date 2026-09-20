@@ -24,7 +24,11 @@ import type { App } from 'obsidian';
 import type { SuggestEngine } from './suggest';
 import { parseDateMs } from './fusion';
 import { parseNum } from './query-parser';
-import { resolveSearchModalKeyAction, type SearchModalAction } from './search-modal-hotkeys';
+import {
+    isBareTabKey,
+    resolveSearchModalKeyAction,
+    type SearchModalAction,
+} from './search-modal-hotkeys';
 
 export type PillOp = 'tag' | 'path' | 'after' | 'before' | 'prop';
 
@@ -60,6 +64,8 @@ export interface PillQueryFieldCallbacks {
     // Remappable search-modal actions (Settings → Hotkeys). The field matches
     // the event against the live hotkey map and forwards the action here.
     onAction: (action: SearchModalAction) => void;
+    // Tab (secondary insert-with-alias): after fill-autosuggest fails, allowed?
+    canInsertLinkWithAliasOnTab?: () => boolean;
     // Does this tag bind to a real vault tag (exact or hierarchical parent)?
     // Drives the warn-pill state for a `tag:` that matches nothing.
     validateTag: (tag: string) => boolean;
@@ -198,6 +204,7 @@ export class PillQueryField {
     private placeholderEl: HTMLElement;
     private suggEl: HTMLElement;
     private suggLis: HTMLElement[] = [];
+    private actionHintEl: HTMLElement;
 
     constructor(
         parent: HTMLElement,
@@ -243,6 +250,9 @@ export class PillQueryField {
         // same state so they never double up (see .seek-caret in styles.css).
         this.caretEl = editWrap.createSpan({ cls: 'seek-caret' });
         this.placeholderEl = editWrap.createSpan({ cls: 'seek-ph', text: 'Search your vault…' });
+
+        this.actionHintEl = this.rootEl.createSpan({ cls: 'seek-q-action-hint' });
+        this.actionHintEl.hide();
 
         this.suggEl = this.rootEl.createEl('ul', { cls: 'seek-sugg' });
         this.suggEl.hide();
@@ -364,6 +374,18 @@ export class PillQueryField {
             return true;
         }
         return false;
+    }
+
+    /** Inline query-bar hint (Tab → insert link with alias); gated by the modal. */
+    setQueryActionHint(keys: string[], label: string, visible: boolean): void {
+        this.actionHintEl.empty();
+        if (!visible || keys.length === 0) {
+            this.actionHintEl.hide();
+            return;
+        }
+        for (const key of keys) this.actionHintEl.createEl('kbd', { text: key });
+        this.actionHintEl.createSpan({ text: ` ${label}` });
+        this.actionHintEl.show();
     }
 
     // Seed the field from a raw query string (an obsidian://seek?query= deep
@@ -872,10 +894,13 @@ export class PillQueryField {
         // command hotkey path does not double-fire the same chord.
         const action = actionPeekEarly;
         if (action) {
-            if (action === 'fill-autosuggest') {
+            if (action === 'fill-autosuggest' || (action === 'insert-link-alias' && isBareTabKey(e))) {
                 e.preventDefault();
                 e.stopPropagation();
-                this.fillAutosuggest();
+                if (this.fillAutosuggest()) return;
+                if (this.cb.canInsertLinkWithAliasOnTab?.()) {
+                    this.cb.onAction('insert-link-alias');
+                }
                 return;
             }
             // Remapped close (not Escape) still clears pill/sugg before dismiss.

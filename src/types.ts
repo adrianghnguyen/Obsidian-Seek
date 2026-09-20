@@ -653,7 +653,7 @@ export const DEFAULT_SETTINGS: SeekSettings = {
     showScores: false,         // OFF by default: per-result score line (Matching % · recency · title); opt-in via Display settings. (Also auto-hidden until the corpus is calibrated — ≥200 notes + full pass.) Default-only flip, no migration: installs that already persisted showScores keep their choice.
     verboseTrace: false,       // OFF: persist only the top-10 ranking trace per search (what the report shows); ON = full 50-deep tail for offline eval. Diagnostic-only, no UI
     redactReport: true,        // ON: salted tokens for paths/titles/queries in the generated report — the share-safe default for a file made to be pasted into a public issue; see field comment
-    showHotkeyHints: true,     // ON: show the modal footer keyboard-hint bar + result counter; OFF = full-results-only modal
+    showHotkeyHints: true,     // ON: footer keyboard-hint bar, query-bar Tab hint, result keycaps; OFF = full-results-only modal
     showSearchStages: false,   // OFF by default: show the 3-stage progression (Name match → Lexical BM25 → Hybrid semantic) in the modal footer bar; opt-in via Display settings
     keepSearchOpenOnTabSplit: false, // OFF: dismiss after tab/split/window open (Quick Switcher-like); ON: fan-out keep modal focused
     insertLinkIncludeHeading: false, // OFF (default): note-only links; ON adds #heading for section hits
