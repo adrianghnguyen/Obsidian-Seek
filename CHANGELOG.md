@@ -4,6 +4,9 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Added
+- **Tab** is a secondary shortcut for **insert link with alias** in the search modal (alongside Alt+Shift+Enter). When a ghost completion or suggestion menu is active, Tab still **fills autosuggest** first; otherwise Tab inserts `[[Note|search text]]` at the cursor when a markdown editor is open and a result is selected. Selected rows and the query bar show Tab hints when keyboard hints are enabled.
+
 ### Changed
 - **Embedding runtime** pins transformers.js **4.3.0** from jsDelivr (bundled ORT-Web **1.31-dev**, up from 4.2.0 / 1.26-dev). Same Granite q4 revision (`54db88c…`); shader warmup recompiles once. No reindex — index identity is model/revision/dim, not the JS runtime. Safari 26+ can use WebGPU; older WKWebView still falls back to WASM.
 

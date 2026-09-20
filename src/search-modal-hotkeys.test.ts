@@ -10,6 +10,7 @@ import {
     resolveSearchModalKeyAction,
     searchModalCommandId,
     searchModalCommandRegisterHotkeys,
+    insertLinkAliasTabHintKeys,
     searchModalFooterHints,
     SEARCH_MODAL_COMMANDS,
 } from './search-modal-hotkeys';
@@ -106,6 +107,13 @@ describe('search-modal-hotkeys', () => {
         expect(matchSearchModalAction(app, pluginId, evt({ key: 'Enter', ctrlKey: true, altKey: true }))).toBe('open-split');
         expect(matchSearchModalAction(app, pluginId, evt({ key: 'Enter', altKey: true }))).toBe('insert-link');
         expect(matchSearchModalAction(app, pluginId, evt({ key: 'Enter', altKey: true, shiftKey: true }))).toBe('insert-link-alias');
+        expect(matchSearchModalAction(app, pluginId, evt({ key: 'Tab' }))).toBe('insert-link-alias');
+    });
+
+    it('insert-link-alias defaults include bare Tab', () => {
+        const spec = SEARCH_MODAL_COMMANDS.find(c => c.action === 'insert-link-alias');
+        expect(spec?.hotkeys.some(h => h.key === 'Tab' && h.modifiers.length === 0)).toBe(true);
+        expect(insertLinkAliasTabHintKeys(appWithHotkeys({}), 'seek')).toEqual(['tab']);
     });
 
     it('honors customKeys override (including cleared bindings)', () => {

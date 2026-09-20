@@ -100,9 +100,9 @@ Defaults apply **only while the Seek search modal is focused** (they do not hija
 | Open in new tab | Mod+Enter |
 | Open in split | Mod+Alt+Enter |
 | Insert plain link | Alt+Enter (desktop; active markdown editor) |
-| Insert link with alias | Alt+Shift+Enter |
+| Insert link with alias | Alt+Shift+Enter; **Tab** when no ghost/suggestion (desktop; active markdown editor) |
 | Expand snippet | Mod+Shift+E |
-| Fill autosuggest | Tab |
+| Fill autosuggest | Tab (wins over insert-with-alias when a completion is available) |
 | Close | Esc |
 
 Mod+click / Mod+Alt+click also open in a new tab or split. By default the modal closes after those opens (Quick Switcher–like); opt into fan-out under Display → **Keep search open when opening in new tab or split**.

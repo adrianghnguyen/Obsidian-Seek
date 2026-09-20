@@ -108,7 +108,10 @@ export const SEARCH_MODAL_COMMANDS: readonly SearchModalCommandSpec[] = [
         id: 'search-insert-link-alias',
         name: 'Search: Insert link with alias',
         action: 'insert-link-alias',
-        hotkeys: [{ modifiers: ['Alt', 'Shift'], key: 'Enter' }],
+        hotkeys: [
+            { modifiers: ['Alt', 'Shift'], key: 'Enter' },
+            { modifiers: [], key: 'Tab' },
+        ],
         desktopOnly: true,
         shedClass: 'seek-foot-grp-alt',
     },
@@ -221,6 +224,11 @@ export function eventMatchesHotkey(evt: KeyboardEvent, hotkey: Hotkey): boolean 
 
 export function eventMatchesAnyHotkey(evt: KeyboardEvent, hotkeys: Hotkey[]): boolean {
     return hotkeys.some(h => eventMatchesHotkey(evt, h));
+}
+
+/** Unmodified Tab (fill-autosuggest / insert-link-with-alias secondary). */
+export function isBareTabKey(evt: KeyboardEvent): boolean {
+    return evt.key === 'Tab' && !evt.altKey && !evt.shiftKey && !evt.ctrlKey && !evt.metaKey;
 }
 
 function modifierCount(hotkey: Hotkey): number {
@@ -374,12 +382,23 @@ export function searchModalFooterHints(app: App, pluginId: string): FooterHotkey
     return hints;
 }
 
+/** Keycap glyphs for the Tab binding on insert-link-with-alias (empty when remapped off Tab). */
+export function insertLinkAliasTabHintKeys(app: App, pluginId: string): string[] {
+    const spec = SEARCH_MODAL_COMMANDS.find(c => c.action === 'insert-link-alias');
+    if (!spec) return [];
+    const fullId = searchModalCommandId(pluginId, spec.id);
+    const keys = effectiveHotkeys(app, fullId, spec.hotkeys);
+    const tabHk = keys.find(hk => hotkeyKey(hk).toLowerCase() === 'tab');
+    if (!tabHk) return [];
+    return hotkeyToCaps(tabHk);
+}
+
 export function searchModalCloseHintKeys(app: App, pluginId: string): string[] {
     const keys = capsForAction(app, pluginId, 'close');
     return keys.length > 0 ? keys : ['esc'];
 }
 
-function hotkeyToCaps(hotkey: Hotkey): string[] {
+export function hotkeyToCaps(hotkey: Hotkey): string[] {
     const caps: string[] = [];
     const mods = modifierSet(hotkey.modifiers);
     if (mods.has('Mod')) caps.push(Platform.isMacOS ? '⌘' : 'Ctrl');
