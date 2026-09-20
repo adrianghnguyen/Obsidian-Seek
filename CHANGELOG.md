@@ -4,6 +4,8 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.11.0
+
 ### Added
 - **Tab** is a secondary shortcut for **insert link with alias** in the search modal (alongside Alt+Shift+Enter). When a ghost completion or suggestion menu is active, Tab still **fills autosuggest** first; otherwise Tab inserts `[[Note|search text]]` at the cursor when a markdown editor is open and a result is selected. Selected rows and the query bar show Tab hints when keyboard hints are enabled.
 
