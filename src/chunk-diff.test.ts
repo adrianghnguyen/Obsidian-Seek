@@ -102,6 +102,28 @@ describe('chunk-diff commit — only changed chunks re-embed', () => {
         expect(stillStable.length).toBeGreaterThan(0);
     });
 
+    it('a one-section edit does not token-count every chunk', async () => {
+        const { s, embedded } = await bootWithNote(noteBody('one', 'two', 'three'));
+        const counted: string[] = [];
+        const orig = s.embedder.tokenCounts.bind(s.embedder);
+        s.embedder.tokenCounts = (async (texts: string[]) => {
+            counted.push(...texts);
+            return orig(texts);
+        }) as typeof s.embedder.tokenCounts;
+
+        await s.edit('Note.md', noteBody('one', 'two EDITED', 'three'), 2000);
+
+        // The edited section is embedded, so it is counted for bucket routing.
+        // The stable sections cannot reach the token window and are not sent
+        // to the tokenizer at all.
+        expect(embedded.some(t => t.includes('EDITED'))).toBe(true);
+        expect(counted.some(t => t.includes('EDITED'))).toBe(true);
+        expect(counted.some(t => t.includes('alpha0'))).toBe(false);
+        expect(counted.some(t => t.includes('charlie0'))).toBe(false);
+        expect(counted.length).toBeGreaterThan(0);
+        expect(counted.length).toBeLessThan(3);
+    });
+
     it('appends a delta-apply entry recording the incremental patch (v16 telemetry)', async () => {
         const { s } = await bootWithNote(noteBody('one', 'two', 'three'));
         const appended: Array<Record<string, unknown>> = [];

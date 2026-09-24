@@ -157,6 +157,32 @@ export function createBatchedTokenCounter(
 // (importing iframe-runner here would drag the template string into tests).
 export const TOKEN_BUDGET = 512;
 
+// Incremental prefilter (embed loop only). A chunk cannot reach the window
+// when its collapsed embed input is still under the budget even at one token
+// per JS character, after reserving tokenizer specials (CLS/SEP — the fake
+// counter and the iframe both count them). TOKEN_WINDOW_NEAR_CEILING keeps
+// the band just below that ceiling on the exact-count path: a split there
+// changes chunk ids, so the diff has to see enforceTokenBudget's output.
+// This is the opposite of gatedCounter, which SKIPS the tokenizer only once
+// a text is provably OVER the window. Do not use the 4.5 chars/token
+// estimator here — that one under-counts dense text.
+export const TOKENIZER_SPECIAL_TOKENS = 2;
+export const TOKEN_WINDOW_NEAR_CEILING = 64;
+
+/** Longest collapsed embed input that cannot reach the near-ceiling band. */
+export function tokenWindowSafeCharLimit(budget = TOKEN_BUDGET): number {
+    return budget - TOKEN_WINDOW_NEAR_CEILING - TOKENIZER_SPECIAL_TOKENS;
+}
+
+/**
+ * True when this chunk might reach the token window, including the
+ * near-ceiling band. False means the incremental loop may diff the chunker
+ * id without a tokenCounts RPC; enforceTokenBudget would not split it.
+ */
+export function chunkMayExceedTokenWindow(chunk: Chunk, budget = TOKEN_BUDGET): boolean {
+    return embedInput(chunk).length > tokenWindowSafeCharLimit(budget);
+}
+
 // Horizontal-whitespace runs at least this long collapse to a single space in
 // the dense channel (embedInput + every gatedCounter text). 16 is past any
 // legitimate code indentation level that carries dense signal and far past
@@ -307,6 +333,100 @@ export async function enforceTokenBudget(
         outCounts.push(...r.counts);
     }
     return { chunks: outChunks, counts: outCounts, splits, overBudget };
+}
+
+export interface PrefilteredTokenBudget {
+    chunks: Chunk[];
+    // Parallel to `chunks`. null = under the char gate, not sent to countTokens.
+    // The caller token-counts those only if the diff says they must be embedded.
+    counts: Array<number | null>;
+    splits: number;
+    overBudget: number;
+}
+
+/**
+ * Incremental prefilter. Exact-count and re-pack only chunks that might
+ * reach the window; those results are what the diff must see (a split
+ * changes ids). Shorter chunks pass through object-identical with a null
+ * count, so their chunker ids are the diff ids and they never hit the
+ * tokenizer RPC here. Consecutive over-window chunks share one
+ * enforceTokenBudget call; a short chunk between them is its own group so
+ * split parts stay in file order.
+ */
+export async function enforceTokenBudgetForDiff(
+    chunks: Chunk[],
+    countTokens: CountTokens,
+    budget = TOKEN_BUDGET,
+): Promise<PrefilteredTokenBudget> {
+    if (chunks.length === 0) return { chunks: [], counts: [], splits: 0, overBudget: 0 };
+
+    type Group = { kind: 'safe'; chunk: Chunk } | { kind: 'risky'; chunks: Chunk[] };
+    const groups: Group[] = [];
+    for (const chunk of chunks) {
+        if (!chunkMayExceedTokenWindow(chunk, budget)) {
+            groups.push({ kind: 'safe', chunk });
+            continue;
+        }
+        const last = groups[groups.length - 1];
+        if (last && last.kind === 'risky') last.chunks.push(chunk);
+        else groups.push({ kind: 'risky', chunks: [chunk] });
+    }
+    if (groups.every(g => g.kind === 'safe')) {
+        return { chunks, counts: chunks.map(() => null), splits: 0, overBudget: 0 };
+    }
+
+    const merged: Chunk[] = [];
+    const counts: Array<number | null> = [];
+    let splits = 0;
+    let overBudget = 0;
+    for (const group of groups) {
+        if (group.kind === 'safe') {
+            merged.push(group.chunk);
+            counts.push(null);
+            continue;
+        }
+        const budgeted = await enforceTokenBudget(group.chunks, countTokens, budget);
+        merged.push(...budgeted.chunks);
+        counts.push(...budgeted.counts);
+        splits += budgeted.splits;
+        overBudget += budgeted.overBudget;
+    }
+    return { chunks: merged, counts, splits, overBudget };
+}
+
+/**
+ * Exact token counts for chunks the prefilter skipped, and only those.
+ * `counts` is parallel to `chunks`; a number is already final (the packer
+ * counted it). Null slots are the embed inputs sent to `countTokens`.
+ */
+export async function fillSkippedTokenCounts(
+    chunks: Chunk[],
+    counts: ReadonlyArray<number | null>,
+    countTokens: CountTokens,
+): Promise<number[]> {
+    if (chunks.length !== counts.length) {
+        throw new Error(`token count width mismatch: ${counts.length} !== ${chunks.length}`);
+    }
+    const missingAt: number[] = [];
+    const missing: string[] = [];
+    for (let i = 0; i < chunks.length; i++) {
+        if (counts[i] == null) {
+            missingAt.push(i);
+            missing.push(embedInput(chunks[i]));
+        }
+    }
+    const out = new Array<number>(chunks.length);
+    for (let i = 0; i < chunks.length; i++) {
+        const known = counts[i];
+        if (known != null) out[i] = known;
+    }
+    if (missingAt.length === 0) return out;
+    const got = await countTokens(missing);
+    if (got.length !== missing.length) {
+        throw new Error(`tokenCounts length mismatch: ${got.length} !== ${missing.length}`);
+    }
+    for (let j = 0; j < missingAt.length; j++) out[missingAt[j]] = got[j];
+    return out;
 }
 
 interface SplitResult {

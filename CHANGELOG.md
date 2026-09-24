@@ -4,6 +4,9 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Changed
+- **Incremental indexing skips the tokenizer call for chunks that cannot reach the token window.** A short edit no longer tokenizes every unchanged chunk before the diff. Chunks near or over the window still go through the token-budget packer before that diff, so over-long sections still split the same way.
+
 ## 1.11.0
 
 ### Added

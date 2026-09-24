@@ -58,7 +58,7 @@ import { SeekLogger } from './logger';
 import { seekPerf } from './perf-console';
 import { Forensics } from './forensics';
 import { selectIndexBucket } from './iframe-runner';
-import { enforceTokenBudget, embedInput, createBatchedTokenCounter, TOKEN_COUNTS_BATCH, type TokenBudgetResult } from './token-budget';
+import { enforceTokenBudget, enforceTokenBudgetForDiff, fillSkippedTokenCounts, embedInput, createBatchedTokenCounter, TOKEN_COUNTS_BATCH } from './token-budget';
 import { packSignBits } from './binary';
 import { BinaryScorerWorker } from './binary-scorer';
 import { quantizeInt8, dequantizeInt8, type QuantVec } from './quant';
@@ -1225,19 +1225,35 @@ export class SearchOrchestrator {
             // tokenizer — token-counts RPC) and capture the EXACT count of
             // every final input for bucket routing below. The count RPC is
             // tokenizer-only (~ms per file) — folded into chunk time.
-            let budgeted: TokenBudgetResult;
+            //
+            // Incremental only: skip that RPC for chunks whose character
+            // length cannot reach the window (chunkMayExceedTokenWindow).
+            // Their chunker ids are already the post-budget ids. Over-budget
+            // and near-ceiling chunks still run enforceTokenBudget BEFORE the
+            // diff below — a split changes ids. Full passes count every chunk;
+            // there is no diff to protect. dedupViaSidecar is unchanged.
+            let fileCounts: Array<number | null>;
             try {
                 const tbStart = performance.now();
-                budgeted = await enforceTokenBudget(fileChunks, ts => this.embedder.tokenCounts(ts));
+                if (mode === 'incremental') {
+                    const pre = await enforceTokenBudgetForDiff(fileChunks, ts => this.embedder.tokenCounts(ts));
+                    fileChunks = pre.chunks;
+                    fileCounts = pre.counts;
+                    tokenBudgetSplits += pre.splits;
+                    tokenBudgetOverBudget += pre.overBudget;
+                } else {
+                    const budgeted = await enforceTokenBudget(fileChunks, ts => this.embedder.tokenCounts(ts));
+                    fileChunks = budgeted.chunks;
+                    fileCounts = budgeted.counts;
+                    tokenBudgetSplits += budgeted.splits;
+                    tokenBudgetOverBudget += budgeted.overBudget;
+                }
                 chunkMs += performance.now() - tbStart;
             } catch (e) {
                 filesSkippedError++;
                 await this.logger.appendError(`tokenBudget:${file.path}`, e);
                 continue;
             }
-            fileChunks = budgeted.chunks;
-            tokenBudgetSplits += budgeted.splits;
-            tokenBudgetOverBudget += budgeted.overBudget;
             chunksPerFile.push(fileChunks.length);
 
             // Chunk-diff commit (issue #5): content-hash ids make "what actually
@@ -1250,7 +1266,7 @@ export class SearchOrchestrator {
             // its re-commit). Incremental-only: a full reindex nuked the DB, so
             // there is no record to diff against.
             let embedChunks = fileChunks;
-            let embedCounts = budgeted.counts;
+            let embedCounts: Array<number | null> = fileCounts;
             let keepIds: Set<string> | undefined;
             const allChunkIds = fileChunks.map(c => c.chunk_id);
             // All THREE sinks gate the diff — a partially-wired caller would
@@ -1268,11 +1284,11 @@ export class SearchOrchestrator {
                         keepIds = plan.keepIds;
                         chunksReconciled += plan.keepIds.size;
                         const nextChunks: Chunk[] = [];
-                        const nextCounts: number[] = [];
+                        const nextCounts: Array<number | null> = [];
                         for (let i = 0; i < fileChunks.length; i++) {
                             if (plan.embedIds.has(fileChunks[i].chunk_id)) {
                                 nextChunks.push(fileChunks[i]);
-                                nextCounts.push(budgeted.counts[i]);
+                                nextCounts.push(fileCounts[i]);
                             }
                         }
                         embedChunks = nextChunks;
@@ -1294,7 +1310,7 @@ export class SearchOrchestrator {
                     const dropped = await this.store.deleteFile(file.path).catch(() => [] as string[]);
                     budget.removedSink.push(...dropped.filter(id => !alreadyRemoved.has(id)));
                     embedChunks = fileChunks;
-                    embedCounts = budgeted.counts;
+                    embedCounts = fileCounts;
                     keepIds = undefined;
                 }
             }
@@ -1320,6 +1336,28 @@ export class SearchOrchestrator {
                 continue;
             }
 
+            // Exact counts for bucket routing. The prefilter already counted
+            // near-ceiling and over-budget chunks. Null slots are chunks that
+            // cannot reach the window; count only the ones this diff is about
+            // to embed. Unchanged short chunks never hit the tokenizer.
+            // A fully-counted file (full pass, or every chunk near the window)
+            // stays synchronous — no extra yield before the bucket buffers.
+            let resolvedCounts: number[];
+            if (embedCounts.every((c): c is number => c != null)) {
+                resolvedCounts = embedCounts;
+            } else {
+                try {
+                    const tbStart = performance.now();
+                    resolvedCounts = await fillSkippedTokenCounts(
+                        embedChunks, embedCounts, ts => this.embedder.tokenCounts(ts));
+                    chunkMs += performance.now() - tbStart;
+                } catch (e) {
+                    filesSkippedError++;
+                    await this.logger.appendError(`tokenBudget:${file.path}`, e);
+                    continue;
+                }
+            }
+
             const fs: FileState = {
                 file, chunks: embedChunks,
                 vectors: new Array<Float32Array | null>(embedChunks.length).fill(null),
@@ -1334,10 +1372,10 @@ export class SearchOrchestrator {
                 // ≥ the input's REAL token count, so truncation cannot fire
                 // (enforceTokenBudget guarantees count ≤ 512 except for the
                 // counted-and-logged oversize-title pathology).
-                const bucket = selectIndexBucket(embedCounts[slot]);
+                const bucket = selectIndexBucket(resolvedCounts[slot]);
                 let buf = buffers.get(bucket);
                 if (!buf) { buf = []; buffers.set(bucket, buf); }
-                buf.push({ fs, slot, input, tokens: embedCounts[slot] });
+                buf.push({ fs, slot, input, tokens: resolvedCounts[slot] });
                 if (buf.length >= rollingBatchFor(bucket)) await flushBucket(bucket);
             }
 

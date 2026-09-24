@@ -25,9 +25,11 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import type { Chunk, ChunkMetadata } from './types';
 import {
-    enforceTokenBudget, embedInput, overlapSeed, collapsePadding,
+    enforceTokenBudget, enforceTokenBudgetForDiff, fillSkippedTokenCounts,
+    embedInput, overlapSeed, collapsePadding,
     PAD_RUN_MIN, MAX_COLLAPSED_CHARS_PER_TOKEN, TOKEN_BUDGET, type CountTokens,
     createBatchedTokenCounter, TOKEN_COUNTS_BATCH,
+    chunkMayExceedTokenWindow, tokenWindowSafeCharLimit,
 } from './token-budget';
 import { chunkIdFor } from './chunker';
 import { parseAtoms, normalizeNewlines, type Atom } from './atoms';
@@ -537,5 +539,112 @@ describe('createBatchedTokenCounter', () => {
         await batcher.flush();
         expect(batched.chunks.map(c => c.chunk_id)).toEqual(direct.chunks.map(c => c.chunk_id));
         expect(batcher.getRpcCount()).toBeGreaterThan(0);
+    });
+});
+
+// Collapsed embed input of exactly `n` characters. Title is empty so the
+// prefix is the two newlines embedInput always inserts.
+function chunkOfEmbedLength(n: number): Chunk {
+    const chunk = mkChunk({ title: '', content: 'a'.repeat(Math.max(0, n - 2)) });
+    if (embedInput(chunk).length !== n) {
+        throw new Error(`embed length ${embedInput(chunk).length} !== ${n}`);
+    }
+    return chunk;
+}
+
+describe('chunkMayExceedTokenWindow', () => {
+    const limit = tokenWindowSafeCharLimit();
+
+    it('is false when the collapsed embed input cannot reach the near-ceiling band', () => {
+        expect(chunkMayExceedTokenWindow(chunkOfEmbedLength(limit))).toBe(false);
+        expect(chunkMayExceedTokenWindow(mkChunk({ content: 'short body one' }))).toBe(false);
+    });
+
+    it('is true for a near-ceiling embed input', () => {
+        expect(chunkMayExceedTokenWindow(chunkOfEmbedLength(limit + 1))).toBe(true);
+    });
+
+    it('is true for an over-budget embed input', () => {
+        const body = Array.from({ length: 12 }, (_, i) => makeParagraph(30, `p${i}`)).join('\n\n');
+        const chunk = mkChunk({ content: body });
+        expect(embedInput(chunk).length).toBeGreaterThan(limit);
+        expect(fakeCount(embedInput(chunk))).toBeGreaterThan(TOKEN_BUDGET);
+        expect(chunkMayExceedTokenWindow(chunk)).toBe(true);
+    });
+
+    it('judges the collapsed embed input, so padding runs do not trip the gate', () => {
+        const chunk = mkChunk({ title: 'T', content: `word${' '.repeat(80)}tail` });
+        expect(embedInput(chunk).length).toBeLessThanOrEqual(limit);
+        expect(chunkMayExceedTokenWindow(chunk)).toBe(false);
+    });
+});
+
+describe('enforceTokenBudgetForDiff', () => {
+    it('does not token-count chunks that cannot reach the window', async () => {
+        const short = mkChunk({ content: 'stable paragraph stays' });
+        const near = chunkOfEmbedLength(tokenWindowSafeCharLimit() + 1);
+        expect(chunkMayExceedTokenWindow(short)).toBe(false);
+        expect(chunkMayExceedTokenWindow(near)).toBe(true);
+        const seen: string[] = [];
+        const counting: CountTokens = async texts => {
+            seen.push(...texts);
+            return texts.map(fakeCount);
+        };
+
+        const r = await enforceTokenBudgetForDiff([short, near], counting);
+
+        expect(seen.some(t => t === embedInput(short))).toBe(false);
+        expect(seen.some(t => t === embedInput(near))).toBe(true);
+        expect(r.chunks[0]).toBe(short);
+        expect(r.counts[0]).toBeNull();
+        expect(r.chunks[1]).toBe(near);
+        expect(r.counts[1]).toBe(fakeCount(embedInput(near)));
+        expect(r.splits).toBe(0);
+    });
+
+    it('re-packs an over-budget chunk and leaves short neighbours uncounted, in order', async () => {
+        const shortA = mkChunk({ content: 'alpha stays whole', title: 'Note > Alpha' });
+        const body = Array.from({ length: 12 }, (_, i) => makeParagraph(30, `p${i}`)).join('\n\n');
+        const huge = mkChunk({ content: body, title: 'Note > Huge' });
+        const shortB = mkChunk({ content: 'charlie stays whole', title: 'Note > Charlie' });
+        const seen: string[] = [];
+        const counting: CountTokens = async texts => {
+            seen.push(...texts);
+            return texts.map(fakeCount);
+        };
+
+        const r = await enforceTokenBudgetForDiff([shortA, huge, shortB], counting);
+
+        expect(seen.some(t => t === embedInput(shortA))).toBe(false);
+        expect(seen.some(t => t === embedInput(shortB))).toBe(false);
+        expect(seen.some(t => t.includes('p0word0'))).toBe(true);
+        expect(r.chunks[0]).toBe(shortA);
+        expect(r.counts[0]).toBeNull();
+        expect(r.chunks[r.chunks.length - 1]).toBe(shortB);
+        expect(r.counts[r.counts.length - 1]).toBeNull();
+        expect(r.splits).toBe(1);
+        expect(r.chunks.length).toBeGreaterThan(3);
+        const middle = r.counts.slice(1, -1);
+        expect(middle.every(c => typeof c === 'number' && (c as number) <= TOKEN_BUDGET)).toBe(true);
+    });
+
+    it('fills exact counts only for the skipped chunks the caller still embeds', async () => {
+        const short = mkChunk({ content: 'edited paragraph' });
+        const kept = mkChunk({ content: 'untouched paragraph', title: 'Note > Kept' });
+        const pre = await enforceTokenBudgetForDiff([short, kept], async () => {
+            throw new Error('prefilter must not count short chunks');
+        });
+        expect(pre.counts).toEqual([null, null]);
+        const seen: string[] = [];
+        const filled = await fillSkippedTokenCounts(
+            [pre.chunks[0]],
+            [pre.counts[0]],
+            async texts => {
+                seen.push(...texts);
+                return texts.map(fakeCount);
+            },
+        );
+        expect(seen).toEqual([embedInput(short)]);
+        expect(filled).toEqual([fakeCount(embedInput(short))]);
     });
 });
