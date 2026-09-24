@@ -527,8 +527,12 @@ export class CacheManager {
         this.forensics?.beat('bm25-warm-start', { trigger });
         try {
             let warmedChunks: ChunkMeta[] | null = null;
+            // hydrate and model-load can win warmPromise before the startup
+            // triggers. They stay light (no resident int8 scan, one pass) so
+            // that win does not time a full embedding cursor as the warm.
             const lightFrame = trigger === 'pre-catchup' || trigger === 'startup-good-enough'
-                || trigger === 'startup' || trigger === 'post-catchup';
+                || trigger === 'startup' || trigger === 'post-catchup'
+                || trigger === 'hydrate' || trigger === 'model-load';
             const singlePass = lightFrame;
             do {
                 const frame = await this.ensureFrame(

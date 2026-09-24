@@ -4,6 +4,9 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Changed
+- **Cache warm** after a sidecar hydrate, and while the embedding model loads, uses the same light preload as startup (signs and lexical index only, one pass). Those steps can start the warm first; they no longer scan every stored embedding into memory. Search scores are unchanged. No reindex.
+
 ## 1.11.0
 
 ### Added
