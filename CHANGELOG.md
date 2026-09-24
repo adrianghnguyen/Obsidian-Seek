@@ -4,6 +4,9 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Changed
+- **Cache warm** reads packed sign bits with one IndexedDB `getAll` (and `getAllKeys` for chunk ids) instead of a cursor step per chunk. Key order and sign bytes are unchanged, and no reindex is required.
+
 ## 1.11.0
 
 ### Added

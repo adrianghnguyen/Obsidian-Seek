@@ -1079,31 +1079,31 @@ export class IndexStore {
     // Stage-1 read: pull every chunk's packed sign-bit vector. Cheap (~64 KB
     // per 1k chunks at d=512) and intended to be cached in memory by the
     // search orchestrator across queries — see search.ts binaryIndexCache.
-    // The cursor walk produces ids and per-chunk Uint8Arrays in IDB order;
-    // callers concatenate them into one contiguous buffer for scoring.
+    // getAllKeys + getAll (not a per-row cursor) return ids and packed bytes
+    // in the same IDB key order a forward cursor would. Both requests are
+    // issued before the first await so the readonly transaction cannot
+    // auto-commit between them. Callers concatenate the Uint8Arrays into one
+    // contiguous buffer for scoring. No persisted sign blob — this is only
+    // the read shape.
     async listAllBinary(): Promise<{ ids: string[]; packed: Uint8Array[] }> {
         const db = this.requireDb();
         const tx = db.transaction(STORE_BINARY, 'readonly');
         const store = tx.objectStore(STORE_BINARY);
-        const ids: string[] = [];
-        const packed: Uint8Array[] = [];
-        await new Promise<void>((resolve, reject) => {
-            const cursor = store.openCursor();
-            cursor.onsuccess = () => {
-                const c = cursor.result;
-                if (!c) { resolve(); return; }
-                ids.push(String(c.key));
-                packed.push(c.value as Uint8Array);
-                c.continue();
-            };
-            cursor.onerror = () => reject(cursor.error ?? new Error('cursor read failed'));
-        });
-        return { ids, packed };
+        const keysReq = store.getAllKeys();
+        const valuesReq = store.getAll();
+        const [keys, values] = await Promise.all([
+            awaitRequest(keysReq),
+            awaitRequest(valuesReq),
+        ]);
+        return {
+            ids: keys.map(k => String(k)),
+            packed: values as Uint8Array[],
+        };
     }
 
-    // Bulk read of the int8 rerank tier: every {chunk_id → QuantVec}. Mirrors
-    // listAllBinary — one readonly cursor, raw {q,s} (NO dequant). Consumed once
-    // per dataGeneration by ensureFrame() (search.ts) to assemble the resident
+    // Bulk read of the int8 rerank tier: every {chunk_id → QuantVec}. Still one
+    // readonly cursor of raw {q,s} (NO dequant) — unlike listAllBinary's getAll.
+    // Consumed once per dataGeneration by ensureFrame() (search.ts) to assemble the resident
     // rerank block held in RAM, so stage-2 can dequantize candidates without a
     // per-keystroke IDB round-trip. The resident block dequantizes on demand
     // with the SAME dequantizeInt8 that getEmbeddingsByIds uses below, so the
@@ -1130,9 +1130,9 @@ export class IndexStore {
 
     // Phase-0 diagnostic (read-only, no schema touch): walk every store once and
     // sum the LOGICAL bytes of each row by the store's value shape (see
-    // index-size.ts for the rules). One readonly cursor per store — the same
-    // listAllBinary idiom — so it never holds the whole index in memory. The
-    // caller (main.ts) pairs the returned logical total with
+    // index-size.ts for the rules). One readonly cursor per store, so the
+    // diagnostic never holds a second full copy of each value. The caller
+    // (main.ts) pairs the returned logical total with
     // navigator.storage.estimate() so physical − logical = LevelDB slack.
     //
     // The legacy `chunks` store is intentionally omitted: it's deleted on the v8

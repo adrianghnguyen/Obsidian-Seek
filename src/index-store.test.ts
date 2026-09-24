@@ -8,9 +8,11 @@
 // the REAL method against a faithful in-memory cursor (no fake-indexeddb dep)
 // and assert byte-equality against a reference per-get implementation.
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import 'fake-indexeddb/auto';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { IndexStore, classifyFileDelta, planRestoreOps, findOrphanChunkIds, isStoreClosedError, isTransientIdbUnavailable, STORE_NOT_OPENED, indexDbPrefix, type StoreSnapshot } from './index-store';
 import { quantizeInt8, dequantizeInt8, type QuantVec } from './quant';
+import type { Chunk } from './types';
 
 // The closed-store discriminator behind the reindex storm bound: the indexer rethrows
 // (aborting the whole pass) ONLY for this error, and skips just the one file otherwise.
@@ -332,5 +334,73 @@ describe('planRestoreOps', () => {
 
     it('handles an empty snapshot', () => {
         expect(planRestoreOps([])).toEqual([]);
+    });
+});
+
+// listAllBinary is the cache-warm sign read. It must stay a bulk getAll (plus
+// getAllKeys for the out-of-line chunk ids), in IDB key order, with each packed
+// row still a Uint8Array. A per-row cursor would put openCursor on the call.
+describe('listAllBinary — getAll in key order', () => {
+    const opened: IndexStore[] = [];
+    afterEach(() => { for (const s of opened.splice(0)) s.close(); });
+
+    async function boot(): Promise<IndexStore> {
+        const store = new IndexStore();
+        await store.open(`binary-getall-${Math.random().toString(36).slice(2)}`, 'seek-test');
+        opened.push(store);
+        return store;
+    }
+
+    function chunk(id: string): Chunk {
+        return {
+            chunk_id: id, title: id, content: id, note_path: `${id}.md`,
+            heading_path: [], metadata: { tags: [], aliases: [], created: null, modified: null, properties: {} },
+            start_line: 0, end_line: 0,
+        };
+    }
+
+    function tier(bin: Uint8Array): { q: QuantVec; bin: Uint8Array } {
+        return { q: { q: new Int8Array([1]), s: 1 }, bin };
+    }
+
+    it('returns empty arrays when the binary store is empty, without a cursor', async () => {
+        const store = await boot();
+        const cursor = vi.spyOn(IDBObjectStore.prototype, 'openCursor');
+        const getAll = vi.spyOn(IDBObjectStore.prototype, 'getAll');
+        const getAllKeys = vi.spyOn(IDBObjectStore.prototype, 'getAllKeys');
+        try {
+            await expect(store.listAllBinary()).resolves.toEqual({ ids: [], packed: [] });
+            expect(cursor).not.toHaveBeenCalled();
+            expect(getAll).toHaveBeenCalledTimes(1);
+            expect(getAllKeys).toHaveBeenCalledTimes(1);
+        } finally {
+            cursor.mockRestore();
+            getAll.mockRestore();
+            getAllKeys.mockRestore();
+        }
+    });
+
+    it('pairs packed bytes with ids in IndexedDB key order, not insertion order', async () => {
+        const store = await boot();
+        // Inserted out of key order, including the string order '1' < '10' < '2'.
+        const rows: Array<{ id: string; bin: Uint8Array }> = [
+            { id: '10', bin: new Uint8Array([1, 0]) },
+            { id: '2', bin: new Uint8Array([2]) },
+            { id: '1', bin: new Uint8Array([1, 1, 1]) },
+        ];
+        await store.putBatchQuantized(
+            rows.map(r => chunk(r.id)),
+            rows.map(r => tier(r.bin)),
+        );
+        const cursor = vi.spyOn(IDBObjectStore.prototype, 'openCursor');
+        try {
+            const got = await store.listAllBinary();
+            expect(cursor).not.toHaveBeenCalled();
+            expect(got.ids).toEqual(['1', '10', '2']);
+            expect(got.packed.map(p => Array.from(p))).toEqual([[1, 1, 1], [1, 0], [2]]);
+            expect(got.packed.every(p => p instanceof Uint8Array)).toBe(true);
+        } finally {
+            cursor.mockRestore();
+        }
     });
 });
