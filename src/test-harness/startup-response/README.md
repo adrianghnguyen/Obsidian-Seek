@@ -12,10 +12,11 @@ It uses:
 - in-memory vault and sidecar fixtures;
 - deterministic embeddings and logical stage costs.
 
-Primary CI assertions are deterministic operation budgets: recent files walked,
-subset and commit counts, zero full-vault rechunk fallbacks, and one modal retry
-per coverage transition. These identify algorithmic regressions without depending
-on runner speed.
+Primary CI assertions are deterministic operation budgets: the search gate
+releases after the three-day window, older sidecar-covered files are still
+hydrated in that same pass, subset and commit counts match the files walked,
+zero full-vault rechunk fallbacks, and one modal retry per coverage transition.
+These identify algorithmic regressions without depending on runner speed.
 
 Run it with:
 

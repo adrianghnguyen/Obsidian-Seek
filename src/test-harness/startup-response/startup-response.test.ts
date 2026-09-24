@@ -2,9 +2,23 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
     SMALL_PEER_DELTA_FIXTURE,
     recentFixturePaths,
+    type StartupResponseFixture,
 } from './fixtures';
 import { ModalResponseHarness } from './modal-response-harness';
 import { StartupResponseHarness } from './startup-response-harness';
+
+function walkedOrder(fixture: StartupResponseFixture): string[] {
+    return [...fixture.notes]
+        .sort((a, b) => a.ageDays - b.ageDays)
+        .map(note => note.path);
+}
+
+/** Logical cost of the scan plus the three-day window, before older tiers. */
+function recentWindowBudget(harness: StartupResponseHarness): number {
+    const recent = recentFixturePaths(harness.fixture);
+    return harness.costs.sidecarScanMs
+        + recent.length * (harness.costs.fileRechunkMs + harness.costs.commitMs);
+}
 
 const SLO_MS = 10_000;
 const harnesses: StartupResponseHarness[] = [];
@@ -28,48 +42,51 @@ describe('startup response without a live Obsidian vault', () => {
         const results = await harness.search();
 
         expect(observation.gateAtMs).not.toBeNull();
+        expect(observation.gateAtMs!).toBe(recentWindowBudget(harness));
         expect(observation.gateAtMs!).toBeLessThan(SLO_MS);
-        expect(observation.walkedPaths).toEqual(
-            recentFixturePaths(SMALL_PEER_DELTA_FIXTURE),
-        );
+        expect(observation.walkedPaths).toEqual(walkedOrder(SMALL_PEER_DELTA_FIXTURE));
         expect(results[0]).toBe(SMALL_PEER_DELTA_FIXTURE.expectedFirstPath);
     });
 
-    it('uses real sidecar and IndexedDB code while leaving older files for background work', async () => {
+    it('uses real sidecar and IndexedDB code and hydrates older covered files in the same pass', async () => {
         const harness = await startupHarness();
 
         const observation = await harness.hydrateRecentFirst();
 
-        expect(observation.hydrate.hydrated).toBe(2);
+        expect(observation.hydrate.hydrated).toBe(SMALL_PEER_DELTA_FIXTURE.notes.length);
         expect(observation.searchablePaths).toEqual(
-            recentFixturePaths(SMALL_PEER_DELTA_FIXTURE).sort(),
+            SMALL_PEER_DELTA_FIXTURE.notes.map(note => note.path).sort(),
         );
         expect(observation.hydrate.acceptedProducers).toBe(1);
     });
 
     it('covers every file modified in the last three days before releasing the SLO gate', async () => {
         const harness = await startupHarness();
-
-        const observation = await harness.hydrateRecentFirst();
-
-        expect(observation.searchablePaths).toEqual(
-            recentFixturePaths(SMALL_PEER_DELTA_FIXTURE).sort(),
-        );
-    });
-
-    it('stays within the recent-window operation budget before gate release', async () => {
-        const harness = await startupHarness();
         const recentPaths = recentFixturePaths(SMALL_PEER_DELTA_FIXTURE);
 
         const observation = await harness.hydrateRecentFirst();
 
-        expect(observation.walkedPaths).toHaveLength(recentPaths.length);
+        expect(observation.gateAtMs).toBe(recentWindowBudget(harness));
+        expect(observation.walkedPaths.slice(0, recentPaths.length)).toEqual(recentPaths);
+        expect(observation.searchablePaths).toEqual(expect.arrayContaining(recentPaths));
+    });
+
+    it('releases the gate on the recent-window budget, then hydrates older covered files', async () => {
+        const harness = await startupHarness();
+        const recentPaths = recentFixturePaths(SMALL_PEER_DELTA_FIXTURE);
+        const allPaths = walkedOrder(SMALL_PEER_DELTA_FIXTURE);
+
+        const observation = await harness.hydrateRecentFirst();
+
+        expect(observation.gateAtMs).toBe(recentWindowBudget(harness));
+        expect(observation.walkedPaths).toEqual(allPaths);
         expect(observation.work).toEqual({
             fullRechunkCalls: 0,
-            subsetCalls: recentPaths.length,
-            chunkCommits: recentPaths.length,
-            fileRecordCommits: recentPaths.length,
+            subsetCalls: allPaths.length,
+            chunkCommits: allPaths.length,
+            fileRecordCommits: allPaths.length,
         });
+        expect(allPaths.length).toBeGreaterThan(recentPaths.length);
     });
 
     it('retries exactly once when the first chunk becomes searchable', async () => {

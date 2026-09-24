@@ -429,11 +429,12 @@ async function hydrateFromSidecarGreedy(
         deps.onTierComplete?.(tierDetail);
         deps.log?.('sidecar-hydrate-tier', tierDetail);
 
-        if (goodEnoughReleased && tier.id === 'hydrate-tier-3d') {
-            stoppedEarly = true;
-            stopReason = 'gate-released';
-            break;
-        }
+        // The search gate already opened after the three-day tier (onGoodEnough
+        // above). Keep walking older tiers anyway: those notes are in the sidecar,
+        // and stopping here returns before their file records exist, so
+        // reconcileOnLoad computeDelta marks them dirty and catch-up re-embeds
+        // them. Fresh-id exhaustion is still the stop — an uncovered id is left
+        // for the embed pass. Do not overlap that pass with this walk.
         if (freshIdsRemaining.size === 0) {
             stoppedEarly = true;
             stopReason = 'freshIds-empty';

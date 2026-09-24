@@ -4,6 +4,9 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Changed
+- **Sidecar hydrate** keeps walking older tiers after the three-day search gate releases, so notes the sidecar already covers are restored before startup reconcile marks them dirty.
+
 ## 1.11.0
 
 ### Added

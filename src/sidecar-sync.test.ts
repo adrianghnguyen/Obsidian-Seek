@@ -551,4 +551,64 @@ describe('probePeerAhead', () => {
         expect(subsetPaths.length).toBe(1);
         expect(subsetPaths[0]).toEqual(['recent.md']);
     });
+
+    it('keeps walking older sidecar tiers after the search gate releases', async () => {
+        // Covered notes outside the three-day window must be hydrated before
+        // hydrate returns. Otherwise reconcileOnLoad marks them dirty and
+        // catch-up re-embeds vectors the sidecar already holds. The gate still
+        // opens as soon as the three-day tier commits — later tiers do not
+        // delay onGoodEnough.
+        const a = new FakeAdapter();
+        const now = Date.now();
+        const notes: NoteSpec[] = [
+            { path: 'recent.md', mtime: now, ids: ['r1'] },
+            { path: 'week.md', mtime: now - 10 * 86_400_000, ids: ['w1'] },
+            { path: 'old.md', mtime: now - 40 * 86_400_000, ids: ['o1'] },
+        ];
+        await seedSidecar(a, 'desktop-aaa', notes);
+
+        const subsetPaths: string[][] = [];
+        let goodEnough = false;
+        let subsetsWhenGateReleased = -1;
+        const greedyLogs: Array<{ msg: string; detail: { reason?: string | null; tiersRun?: number } }> = [];
+        const { deps, store, fileRecs } = makeDeps(a, notes, {
+            existingIds: async () => new Set(),
+            greedyHydrate: true,
+            listHydrateFiles: async () => [
+                { path: 'recent.md', mtimeMs: now },
+                { path: 'week.md', mtimeMs: now - 10 * 86_400_000 },
+                { path: 'old.md', mtimeMs: now - 40 * 86_400_000 },
+            ],
+            reChunkSubset: async files => {
+                subsetPaths.push(files.map(f => f.path));
+                return files.map(ref => {
+                    const n = notes.find(x => x.path === ref.path)!;
+                    return { notePath: n.path, mtimeMs: n.mtime, chunks: n.ids.map(id => chunk(id, n.path)) };
+                });
+            },
+            reChunk: async () => { throw new Error('full reChunk should not run'); },
+            onGoodEnough: () => {
+                goodEnough = true;
+                subsetsWhenGateReleased = subsetPaths.length;
+            },
+            log: (msg, detail) => {
+                greedyLogs.push({ msg, detail: detail as { reason?: string | null; tiersRun?: number } });
+            },
+        });
+        const r = await hydrateFromSidecar(deps);
+
+        expect(goodEnough).toBe(true);
+        expect(subsetsWhenGateReleased).toBe(1);
+        expect(subsetPaths).toEqual([['recent.md'], ['week.md'], ['old.md']]);
+        expect(r.hydrated).toBe(3);
+        expect(r.hydratedNotePaths).toEqual(['recent.md', 'week.md', 'old.md']);
+        expect(store.has('r1')).toBe(true);
+        expect(store.has('w1')).toBe(true);
+        expect(store.has('o1')).toBe(true);
+        expect(fileRecs.has('week.md')).toBe(true);
+        expect(fileRecs.has('old.md')).toBe(true);
+        const summary = greedyLogs.find(entry => entry.msg === 'sidecar-hydrate-greedy');
+        expect(summary?.detail.reason).toBe('freshIds-empty');
+        expect(summary?.detail.tiersRun).toBe(3);
+    });
 });
