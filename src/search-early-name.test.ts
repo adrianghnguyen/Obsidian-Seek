@@ -34,6 +34,7 @@ describe('search early name paint', () => {
     async function index(s: Scenario, distractors: number): Promise<void> {
         writeFixture(s, distractors);
         await s.coldStart();
+        await s.settleWarm();
     }
 
     it('vault ladder matches alias prefix without a resident frame', async () => {

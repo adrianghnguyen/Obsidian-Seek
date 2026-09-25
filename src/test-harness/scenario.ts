@@ -168,6 +168,17 @@ export class Scenario {
     // never stamped identity, re-healing forever.
     coldStart = (): Promise<unknown> => this.orch.reindexAll();
 
+    /** Wait for reindexAll's fire-and-forget warmCaches (BM25 + resident frame). */
+    async settleWarm(timeoutMs = 5000): Promise<void> {
+        await this.orch.warmCaches('scenario-settle');
+        const o = this.orch as unknown as { bm25Cache: unknown; frameCache: unknown };
+        const t0 = Date.now();
+        while ((!o.bm25Cache || !o.frameCache) && Date.now() - t0 < timeoutMs) {
+            await new Promise(r => setTimeout(r, 10));
+        }
+        if (!o.bm25Cache || !o.frameCache) throw new Error('warm never settled');
+    }
+
     async teardown(): Promise<void> {
         // dispose() signals any in-flight embed loop to stop. We deliberately do
         // NOT close the store: each Scenario opens a uniquely-named DB (see boot),
