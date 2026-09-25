@@ -4,13 +4,19 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
-  build:
+  typecheck:
+    name: CI / Typecheck
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -19,9 +25,217 @@ jobs:
           node-version: "22.x"
           cache: npm
       - run: npm ci
-      - name: Typecheck
-        run: npm run typecheck
-      - name: Test
-        run: npm test
-      - name: Build
-        run: npm run build
+      - run: npm run typecheck
+
+  build:
+    name: CI / Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: "22.x"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+  test-index-store:
+    name: CI / Index & store
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: "22.x"
+          cache: npm
+      - run: npm ci
+      - run: npm run test:ci:index-store
+
+  test-search:
+    name: CI / Search & ranking
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: "22.x"
+          cache: npm
+      - run: npm ci
+      - run: npm run test:ci:search
+
+  test-cli-ux:
+    name: CI / CLI & UX
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: "22.x"
+          cache: npm
+      - run: npm ci
+      - run: npm run test:ci:cli-ux
+
+  test-platform:
+    name: CI / Platform & infra
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: "22.x"
+          cache: npm
+      - run: npm ci
+      - run: npm run test:ci:platform
+
+  test-functional-fixtures:
+    name: CI / Functional acceptance (fixtures)
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: "22.x"
+          cache: npm
+      - run: npm ci
+      - run: npm run test:functional-fixtures
+
+  e2e-triage:
+    name: CI / E2E triage
+    if: github.event.pull_request.draft != true && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: "22.x"
+          cache: npm
+      - run: npm ci
+      - name: Run deterministic triage
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: node scripts/ci/e2e-triage.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: triage-json
+          path: triage.json
+      - name: Dispatch LLM triage agent
+        env:
+          CURSOR_E2E_TRIAGE_DISPATCH_URL: ${{ secrets.CURSOR_E2E_TRIAGE_DISPATCH_URL }}
+          CURSOR_E2E_TRIAGE_DISPATCH_TOKEN: ${{ secrets.CURSOR_E2E_TRIAGE_DISPATCH_TOKEN }}
+          GITHUB_EVENT_NUMBER: ${{ github.event.pull_request.number }}
+        run: bash scripts/ci/dispatch-e2e-triage-agent.sh
+      - name: Wait for PR E2E labels
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_EVENT_NUMBER: ${{ github.event.pull_request.number }}
+          TRIAGE_JSON: triage.json
+        run: bash scripts/ci/wait-for-e2e-labels.sh --timeout 600
+
+  detect-scope:
+    name: CI / Detect E2E scope
+    if: always() && !cancelled() && github.event.pull_request.draft != true && github.event_name == 'pull_request'
+    needs: [e2e-triage]
+    runs-on: ubuntu-latest
+    outputs:
+      needs_e2e: ${{ steps.scope.outputs.needs_e2e }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            hot:
+              - 'src/main.ts'
+              - 'src/embedder.ts'
+              - 'src/search.ts'
+              - 'src/index-store.ts'
+              - 'src/index-coordinator.ts'
+              - 'src/cli-handlers.ts'
+              - 'src/search-modal*.ts'
+              - 'src/settings-tab.ts'
+              - 'styles.css'
+              - 'manifest.json'
+              - 'src/test-harness/functional-core/**'
+              - '.github/workflows/**'
+      - name: Resolve needs_e2e
+        id: scope
+        env:
+          GITHUB_EVENT_NUMBER: ${{ github.event.pull_request.number }}
+          HOT: ${{ steps.filter.outputs.hot }}
+        run: |
+          set -euo pipefail
+          LABELS=$(gh pr view "$GITHUB_EVENT_NUMBER" --json labels -q '.labels[].name' || true)
+          if echo "$LABELS" | grep -qx 'skip-e2e'; then
+            echo "needs_e2e=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if echo "$LABELS" | grep -qx 'needs-e2e'; then
+            echo "needs_e2e=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$HOT" = "true" ]; then
+            echo "needs_e2e=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "needs_e2e=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  functional-e2e:
+    name: CI / Functional E2E (Obsidian)
+    if: github.event.pull_request.draft != true && github.event_name == 'pull_request' && needs.detect-scope.outputs.needs_e2e == 'true' && vars.SEEK_OBSIDIAN_E2E_IN_GHA == 'true'
+    needs: [detect-scope, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: adrianghnguyen/obsidian-plugin-development
+          path: obsidian-plugin-development
+          token: ${{ secrets.OBSIDIAN_PLUGIN_DEV_PAT || github.token }}
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: "22.x"
+          cache: npm
+      - run: npm ci && npm run build
+      - name: Run Obsidian E2E bundle
+        env:
+          OBSIDIAN_PLUGIN_DEV_DIR: ${{ github.workspace }}/obsidian-plugin-development
+        run: bash scripts/ci/run-functional-e2e.sh
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: functional-e2e-traces
+          path: .cursor/functional-traces/
+          if-no-files-found: ignore
+
+  e2e-gate:
+    name: CI / E2E gate
+    if: always() && !cancelled() && github.event.pull_request.draft != true && github.event_name == 'pull_request'
+    needs: [detect-scope, functional-e2e]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce E2E when required
+        env:
+          E2E_IN_GHA: ${{ vars.SEEK_OBSIDIAN_E2E_IN_GHA }}
+        run: |
+          if [ "${{ needs.detect-scope.outputs.needs_e2e }}" != "true" ]; then
+            echo "E2E not required — pass"
+            exit 0
+          fi
+          if [ "$E2E_IN_GHA" != "true" ]; then
+            echo "E2E triage required Obsidian E2E; SEEK_OBSIDIAN_E2E_IN_GHA is not enabled — pass (use Cloud/local until GHA stack is ready)"
+            exit 0
+          fi
+          if [ "${{ needs.functional-e2e.result }}" != "success" ]; then
+            echo "E2E required but result: ${{ needs.functional-e2e.result }}"
+            exit 1
+          fi

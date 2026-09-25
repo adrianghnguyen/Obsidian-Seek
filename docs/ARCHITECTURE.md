@@ -658,8 +658,10 @@ npm test         # vitest run
 |------|-------|----------|
 | **Unit** | Pure functions, isolated modules | Colocated `*.test.ts` |
 | **Composed** | Full orchestrator + fake IndexedDB | `test-harness/scenario.test.ts` |
+| **Functional acceptance (CI)** | F3-minimal query matrix on fake vault | `test-harness/functional-core/`, `npm run test:functional-fixtures` |
+| **Obsidian E2E (CI, conditional)** | Real app + embedder F3/F2/F4 | `scripts/ci/run-functional-e2e.sh`, playbook drivers |
 
-CI (`.github/workflows/ci.yml`): Node 22 → typecheck → test → build on push/PR.
+CI (`.github/workflows/ci.yml`) on ready PRs: parallel area Vitest jobs (`test:ci:*`), **Functional acceptance (fixtures)**, **E2E triage** (script + optional Cursor agent → `needs-e2e` / `skip-e2e`), and **Functional E2E** when required. Partition manifest: [`ci/test-areas.mts`](../ci/test-areas.mts).
 
 ### Release
 
