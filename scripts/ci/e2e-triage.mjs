@@ -20,8 +20,23 @@ const { values, positionals } = parseArgs({
 });
 
 function gitDiffFiles(baseRef) {
-    const base = baseRef || process.env.GITHUB_BASE_REF || 'origin/main';
-    const mergeBase = execSync(`git merge-base HEAD ${base}`, { encoding: 'utf8' }).trim();
+    let mergeBase = process.env.GITHUB_BASE_SHA;
+    if (!mergeBase) {
+        const baseBranch =
+            baseRef ||
+            process.env.GITHUB_BASE_REF ||
+            process.env.GITHUB_EVENT_PULL_REQUEST_BASE_REF ||
+            'main';
+        const remoteRef = baseBranch.startsWith('origin/') ? baseBranch : `origin/${baseBranch.replace(/^refs\/heads\//, '')}`;
+        try {
+            execSync(`git fetch origin ${baseBranch.replace(/^origin\//, '').replace(/^refs\/heads\//, '')} --depth=1`, {
+                stdio: 'ignore',
+            });
+        } catch {
+            /* shallow checkout may already include base */
+        }
+        mergeBase = execSync(`git merge-base HEAD ${remoteRef}`, { encoding: 'utf8' }).trim();
+    }
     const names = execSync(`git diff --name-only ${mergeBase}...HEAD`, { encoding: 'utf8' })
         .split('\n')
         .map((s) => s.trim())

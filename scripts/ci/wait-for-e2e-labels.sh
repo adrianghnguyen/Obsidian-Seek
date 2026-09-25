@@ -24,6 +24,16 @@ has_decision_label() {
   gh pr view "$PR" --json labels -q '.labels[].name' 2>/dev/null | grep -qxE 'needs-e2e|skip-e2e'
 }
 
+if [[ -z "${CURSOR_E2E_TRIAGE_DISPATCH_URL:-}" ]] && has_decision_label; then
+  echo "Script pre-label present; agent dispatch disabled"
+  exit 0
+fi
+
+# Without agent dispatch, do not wait the full timeout when triage already labeled.
+if [[ -z "${CURSOR_E2E_TRIAGE_DISPATCH_URL:-}" ]]; then
+  TIMEOUT=30
+fi
+
 deadline=$((SECONDS + TIMEOUT))
 while (( SECONDS < deadline )); do
   if has_decision_label; then
