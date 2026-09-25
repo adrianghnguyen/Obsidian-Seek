@@ -17,7 +17,10 @@ fi
 # shellcheck source=/dev/null
 source "$PLUGIN_DEV_DIR/scripts/cloud-e2e/paths.env" 2>/dev/null || true
 
-bash "$PLUGIN_DEV_DIR/scripts/cloud-e2e/env-install.sh"
+if ! bash "$PLUGIN_DEV_DIR/scripts/cloud-e2e/env-install.sh"; then
+  echo "cloud-e2e env-install failed (expected on GHA until multi-repo layout is configured)"
+  exit 1
+fi
 bash "$PLUGIN_DEV_DIR/scripts/cloud-e2e/env-start.sh"
 
 PLUGIN_DEST="${SEEK_CLOUD_VAULT_ROOT:-/tmp/seek-e2e-vault}/.obsidian/plugins/seek"

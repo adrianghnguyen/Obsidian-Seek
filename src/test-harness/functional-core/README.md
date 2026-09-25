@@ -20,3 +20,5 @@ node scripts/ci/e2e-triage.mjs --files-json /path/to/payload.json --dry-run
 ```
 
 Obsidian parity: `run-scenario.ps1 -Id F3 -FixtureSet minimal -AllQueryCases`.
+
+GitHub Actions Obsidian E2E runs only when the repository variable **`SEEK_OBSIDIAN_E2E_IN_GHA`** is `true` (Cloud Agent layout required).
