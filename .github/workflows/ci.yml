@@ -191,7 +191,7 @@ jobs:
 
   functional-e2e:
     name: CI / Functional E2E (Obsidian)
-    if: github.event.pull_request.draft != true && github.event_name == 'pull_request' && needs.detect-scope.outputs.needs_e2e == 'true'
+    if: github.event.pull_request.draft != true && github.event_name == 'pull_request' && needs.detect-scope.outputs.needs_e2e == 'true' && vars.SEEK_OBSIDIAN_E2E_IN_GHA == 'true'
     needs: [detect-scope, build]
     runs-on: ubuntu-latest
     steps:
@@ -224,9 +224,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Enforce E2E when required
+        env:
+          E2E_IN_GHA: ${{ vars.SEEK_OBSIDIAN_E2E_IN_GHA }}
         run: |
           if [ "${{ needs.detect-scope.outputs.needs_e2e }}" != "true" ]; then
             echo "E2E not required — pass"
+            exit 0
+          fi
+          if [ "$E2E_IN_GHA" != "true" ]; then
+            echo "E2E triage required Obsidian E2E; SEEK_OBSIDIAN_E2E_IN_GHA is not enabled — pass (use Cloud/local until GHA stack is ready)"
             exit 0
           fi
           if [ "${{ needs.functional-e2e.result }}" != "success" ]; then
