@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Seek E2E triage result",
+  "type": "object",
+  "required": ["version", "decision", "confidence", "matchedRules", "reasons", "diffStats", "files"],
+  "properties": {
+    "version": { "type": "integer", "const": 1 },
+    "decision": { "type": "string", "enum": ["require", "skip", "review"] },
+    "confidence": { "type": "string", "enum": ["high", "low"] },
+    "matchedRules": { "type": "array", "items": { "type": "string" } },
+    "reasons": { "type": "array", "items": { "type": "string" } },
+    "diffStats": {
+      "type": "object",
+      "required": ["fileCount", "srcFileCount", "hotPathLineCount"],
+      "properties": {
+        "fileCount": { "type": "integer" },
+        "srcFileCount": { "type": "integer" },
+        "hotPathLineCount": { "type": "integer" }
+      }
+    },
+    "files": { "type": "array", "items": { "type": "string" } },
+    "labels": {
+      "type": "object",
+      "properties": {
+        "hasNeedsE2e": { "type": "boolean" },
+        "hasSkipE2e": { "type": "boolean" }
+      }
+    }
+  }
+}

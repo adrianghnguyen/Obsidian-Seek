@@ -4,6 +4,9 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Added
+- **CI:** PR checks split by area (index & store, search, CLI & UX, platform) plus **Functional acceptance (fixtures)** (F3-minimal harness on fake vault). **E2E triage** (deterministic script + Project agent) sets `needs-e2e` / `skip-e2e`; conditional **Obsidian E2E** (F3/F2/F4) blocks merge when required.
+
 ## 1.11.0
 
 ### Added

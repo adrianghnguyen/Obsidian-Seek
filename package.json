@@ -8,6 +8,13 @@
         "build": "node esbuild.config.mjs production",
         "typecheck": "tsc --noEmit",
         "test": "vitest run",
+        "test:ci:index-store": "vitest run --config ci/vitest.index-store.config.mts",
+        "test:ci:search": "vitest run --config ci/vitest.search.config.mts",
+        "test:ci:cli-ux": "vitest run --config ci/vitest.cli-ux.config.mts",
+        "test:ci:platform": "vitest run --config ci/vitest.platform.config.mts",
+        "test:functional-fixtures": "vitest run --config ci/vitest.functional-fixtures.config.mts",
+        "test:ci:all": "npm run test:ci:index-store && npm run test:ci:search && npm run test:ci:cli-ux && npm run test:ci:platform && npm run test:functional-fixtures",
+        "test:e2e-triage": "vitest run scripts/ci/e2e-triage.test.ts",
         "version": "node version-bump.mjs && git add manifest.json versions.json"
     },
     "keywords": [
