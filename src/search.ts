@@ -69,7 +69,7 @@ import { hydrateFromSidecar, rankAcceptedProducers, probePeerAhead, type ReChunk
 import { pluginIdentity, shouldStampLiveIdentity, identityHealEligibility, type IndexIdentity } from './identity';
 import { gzipString, gunzipToString, gzipAvailable } from './gzip';
 import { IndexCoordinator } from './index-coordinator';
-import { CompositorPacer, cheapYield } from './pacer';
+import { CompositorPacer, yieldAfterEmbedDispatch } from './pacer';
 import { isMobilePlatform, residentInt8Enabled } from './platform';
 import { CacheManager } from './cache-manager';
 import { SearchQuery, type RecencyOverride, dedupByPath, topKByScore } from './search-query';
@@ -737,6 +737,10 @@ export class SearchOrchestrator {
             budgetMs?: number; shouldContinue?: () => boolean; addsSink?: DeltaAdd[]; storeWasEmpty?: boolean;
             removedSink?: string[]; removedBodiesSink?: Map<string, string>;
             metaPatchSink?: Array<{ id: string; meta: ChunkMeta }>;
+            // Desktop catch-up only. When set, incremental dispatches cheap-yield
+            // until this returns true (a search query is in flight), then idle-pace.
+            // Omitted: every incremental dispatch idle-paces (flush, workflow, mobile).
+            isQueryInFlight?: () => boolean;
         } = {},
     ): Promise<{ entry: IndexCompleteEntry; sidecarJob: SidecarFlushJob | null; quarantineUnwound: number }> {
         // Per-bucket rolling-buffer embed. Each chunk lands in the buffer for
@@ -955,15 +959,14 @@ export class SearchOrchestrator {
                 result = await this.embedder.embedBatch(inputs, bucket);
             }
             embedBatchLatencyMs.push(result.iframeLatencyMs);
-            // Pace against compositor pressure between dispatches — the rIC yield
-            // keeps duty cycle capped (see "Seek System Bog-Down Diagnosis.md"
-            // §PR #1). Degrades to setTimeout(0) on iOS (no rIC); takes the cheap
-            // yield when hidden (no compositor — pacer.ts, issue #5). The wait is
-            // timed into paceWaitMs so a pacing inversion (compute dwarfed by
-            // pace waits) is visible in the field instead of hiding in embed time.
+            // Pace between dispatches. A full reindex cheap-yields. Desktop catch-up
+            // does too until a search query is actually in flight, then idle-paces
+            // (rIC, ~1s timeout) so that query can cut in. Other incremental callers
+            // keep idle pacing. Hidden windows still skip rIC inside pace() (issue #5).
+            // The wait is timed into paceWaitMs so a pacing inversion stays visible.
             const paceStart = performance.now();
-            if (mode === 'full') await cheapYield();
-            else await pacer.pace();
+            const queryInFlight = budget.isQueryInFlight ? budget.isQueryInFlight() : null;
+            await yieldAfterEmbedDispatch(pacer, mode, queryInFlight);
             paceWaitMs += performance.now() - paceStart;
             return result.vectors;
         };
@@ -1917,7 +1920,12 @@ export class SearchOrchestrator {
         // onProgress: optional live-progress stream (embedAndCommitFiles calls it
         // in 'incremental' mode). No caller wires it to a Notice — indexing toasts
         // are start + end-summary only; live progress belongs to the settings tab.
-        opts: { embed: boolean; maxFiles?: number; budgetMs?: number; shouldContinue?: () => boolean; onProgress?: (msg: string) => void },
+        opts: {
+            embed: boolean; maxFiles?: number; budgetMs?: number; shouldContinue?: () => boolean;
+            onProgress?: (msg: string) => void;
+            // Desktop catch-up: cheap-yield between embed batches until this is true.
+            isQueryInFlight?: () => boolean;
+        },
     ): Promise<{ deletedPaths: number; deletedChunks: number; embedded: IndexCompleteEntry | null; deferredEmbed: number; sidecarHydrated: number; carriedOver: number; committedPaths: string[] }> {
         // Set inside the mutex by applyDelta; read after to gate the re-warm. A
         // successful incremental patch IS the warm, so warmCaches is skipped (it
@@ -2087,6 +2095,7 @@ export class SearchOrchestrator {
                             {
                                 budgetMs: opts.budgetMs, shouldContinue: opts.shouldContinue, addsSink: adds, storeWasEmpty,
                                 removedSink: removedIds, removedBodiesSink: removedBodies, metaPatchSink: metaPatches,
+                                isQueryInFlight: opts.isQueryInFlight,
                             });
                         embedded = engineOut.entry;
                         sidecarJob = engineOut.sidecarJob;

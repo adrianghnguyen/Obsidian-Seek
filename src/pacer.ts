@@ -42,16 +42,30 @@ function schedulerYield(): Promise<void> | null {
 
 // Cheap thread-yield for LATENCY-SENSITIVE paths (the cold-search BM25 fit):
 // gives the compositor/input a turn WITHOUT waiting for a full idle window.
-// CompositorPacer's rIC wait is correct for background work (reindex, catch-up,
-// compaction) where deferring to the user is the point — but on a path the
-// user is actively waiting on, an rIC could stall up to IDLE_TIMEOUT_MS per
-// yield under load. scheduler.yield() is continuation-preserving (our resume
-// runs ahead of other queued tasks); setTimeout(0) is the universal fallback
-// (~1-4 ms). Both bound the added latency to milliseconds per call.
+// CompositorPacer's rIC wait is correct for background work where deferring
+// to the user is the point — but on a path the user is actively waiting on,
+// an rIC could stall up to IDLE_TIMEOUT_MS per yield under load.
+// scheduler.yield() is continuation-preserving (our resume runs ahead of
+// other queued tasks); setTimeout(0) is the universal fallback (~1-4 ms).
+// Both bound the added latency to milliseconds per call.
 export function cheapYield(): Promise<void> {
     const yielded = schedulerYield();
     if (yielded) return yielded;
     return new Promise<void>(resolve => window.setTimeout(() => resolve(), 0));
+}
+
+// Between embed dispatches. A full reindex always cheap-yields. Desktop
+// catch-up opts in (`queryInFlight` is true or false, not null) and cheap-yields
+// until a search query is actually in flight, then idle-paces so that query
+// can cut in. `null` keeps the historical incremental idle pace (flush, workflow,
+// mobile catch-up — callers that did not opt in).
+export async function yieldAfterEmbedDispatch(
+    pacer: CompositorPacer,
+    mode: 'full' | 'incremental',
+    queryInFlight: boolean | null,
+): Promise<void> {
+    if (mode === 'full' || queryInFlight === false) return cheapYield();
+    return pacer.pace();
 }
 
 export class CompositorPacer {

@@ -4,6 +4,9 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Changed
+- **Desktop catch-up** cheap-yields between embed batches until a search query is actually in flight, then idle-paces again so that query can cut in. Mobile still pauses catch-up for the whole search session. The 30-file / 4 second burst fence is unchanged.
+
 ## 1.11.0
 
 ### Added
