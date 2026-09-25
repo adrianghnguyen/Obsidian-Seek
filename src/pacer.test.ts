@@ -8,7 +8,7 @@
 // entirely and take the cheap continuation yield.
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { CompositorPacer } from './pacer';
+import { CompositorPacer, yieldAfterEmbedDispatch } from './pacer';
 
 type G = { activeDocument?: { hidden: boolean }; requestIdleCallback?: unknown };
 const g = globalThis as unknown as G;
@@ -65,5 +65,49 @@ describe('CompositorPacer — hidden-aware pacing', () => {
         await p.pace();
         await p.pace();   // budget left in the granted slice → no second rIC
         expect(ricCalls).toBe(1);
+    });
+});
+
+describe('yieldAfterEmbedDispatch', () => {
+    function hangingRic(): { calls: () => number } {
+        let ricCalls = 0;
+        g.activeDocument = { hidden: false };
+        g.requestIdleCallback = (): number => { ricCalls++; return 1; };
+        return { calls: () => ricCalls };
+    }
+
+    function firingRic(): { calls: () => number } {
+        let ricCalls = 0;
+        g.activeDocument = { hidden: false };
+        g.requestIdleCallback = (cb: (d: { timeRemaining: () => number; didTimeout: boolean }) => void): number => {
+            ricCalls++;
+            cb({ timeRemaining: () => 0, didTimeout: true });
+            return 1;
+        };
+        return { calls: () => ricCalls };
+    }
+
+    it('full reindex cheap-yields and never waits on requestIdleCallback', async () => {
+        const ric = hangingRic();
+        await yieldAfterEmbedDispatch(new CompositorPacer(), 'full', null);
+        expect(ric.calls()).toBe(0);
+    });
+
+    it('incremental without the catch-up opt-in still idle-paces', async () => {
+        const ric = firingRic();
+        await yieldAfterEmbedDispatch(new CompositorPacer(), 'incremental', null);
+        expect(ric.calls()).toBe(1);
+    });
+
+    it('catch-up cheap-yields until a query is in flight', async () => {
+        const ric = hangingRic();
+        await yieldAfterEmbedDispatch(new CompositorPacer(), 'incremental', false);
+        expect(ric.calls()).toBe(0);
+    });
+
+    it('catch-up idle-paces once a query is in flight', async () => {
+        const ric = firingRic();
+        await yieldAfterEmbedDispatch(new CompositorPacer(), 'incremental', true);
+        expect(ric.calls()).toBe(1);
     });
 });

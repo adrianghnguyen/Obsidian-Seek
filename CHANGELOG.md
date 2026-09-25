@@ -7,6 +7,9 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 ### Added
 - **CI:** PR checks split by area (index & store, search, CLI & UX, platform) plus **Functional acceptance (fixtures)** (F3-minimal harness on fake vault). **E2E triage** (deterministic script + Project agent) sets `needs-e2e` / `skip-e2e`; conditional **Obsidian E2E** (F3/F2/F4) blocks merge when required.
 
+### Changed
+- **Desktop catch-up** cheap-yields between embed batches until a search query is actually in flight, then idle-paces again so that query can cut in. Mobile still pauses catch-up for the whole search session. The 30-file / 4 second burst fence is unchanged.
+
 ## 1.11.0
 
 ### Added

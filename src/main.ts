@@ -2566,6 +2566,9 @@ export default class SeekPlugin extends Plugin {
                     reindexDelta: async (d, del, opts) => {
                         const r = await orchestrator.reindexDelta(d, del, {
                             ...opts,
+                            // Desktop only: cheap-yield each embed batch until a query
+                            // is actually in flight. Mobile omits this and idle-paces.
+                            ...(mobile ? {} : { isQueryInFlight: () => this.queryInFlightCount > 0 }),
                             onProgress: (msg) => {
                                 const job = this.catchUpJob;
                                 if (!job) return;
@@ -2599,8 +2602,12 @@ export default class SeekPlugin extends Plugin {
                         return r;
                     },
                     isHidden: shouldPauseForHidden,
+                    // Mobile keeps the search-session abort (modal open, not only a
+                    // query RPC). Desktop does too — this patch only changes yield.
                     isSearchActive: () => this.indexingBlocked,
-                    pace: () => pacer.pace(),
+                    // Desktop catch-up cheap-yields between bursts until a query is
+                    // in flight, then idle-paces. Mobile stays on the pacer.
+                    pace: () => (mobile || this.queryInFlightCount > 0) ? pacer.pace() : cheapYield(),
                     maxFiles: burst.maxFiles,
                     budgetMs: burst.budgetMs,
                 });
