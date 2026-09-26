@@ -23,7 +23,8 @@ import { Platform, setIcon } from 'obsidian';
 import type { App } from 'obsidian';
 import type { SuggestEngine } from './suggest';
 import { parseDateMs } from './fusion';
-import { parseNum } from './query-parser';
+import { parseNum, parseQuery } from './query-parser';
+import { parseTextSearchMode, describeTextSearchMode } from './text-search-mode';
 import {
     isBareTabKey,
     resolveSearchModalKeyAction,
@@ -205,6 +206,8 @@ export class PillQueryField {
     private suggEl: HTMLElement;
     private suggLis: HTMLElement[] = [];
     private actionHintEl: HTMLElement;
+    private modeBadgeEl: HTMLElement;
+    private textHintEl: HTMLElement;
 
     constructor(
         parent: HTMLElement,
@@ -227,6 +230,8 @@ export class PillQueryField {
 
         this.magEl = this.rootEl.createDiv({ cls: 'seek-mag' });
         setIcon(this.magEl, 'search');
+
+        this.modeBadgeEl = this.rootEl.createSpan({ cls: 'seek-text-mode-badge' });
 
         this.fieldEl = this.rootEl.createDiv({ cls: 'seek-field' });
 
@@ -253,6 +258,9 @@ export class PillQueryField {
 
         this.actionHintEl = this.rootEl.createSpan({ cls: 'seek-q-action-hint' });
         this.actionHintEl.hide();
+
+        this.textHintEl = this.rootEl.createDiv({ cls: 'seek-text-hint' });
+        this.textHintEl.hide();
 
         this.suggEl = this.rootEl.createEl('ul', { cls: 'seek-sugg' });
         this.suggEl.hide();
@@ -608,7 +616,44 @@ export class PillQueryField {
         this.renderGhost();
         this.renderSugg();
         this.updatePlaceholder();
+        this.syncTextSearchChrome();
         this.cb.onQueryChange(this.getQueryString());
+    }
+
+    /** Whether the current free-text + pills query uses exact / regex lane. */
+    isExactTextQuery(): boolean {
+        const { cleanedQuery } = parseQuery(this.getQueryString());
+        const { mode } = parseTextSearchMode(cleanedQuery);
+        return mode.kind !== 'hybrid' || mode.regexInvalid;
+    }
+
+    private syncTextSearchChrome(): void {
+        const { cleanedQuery } = parseQuery(this.getQueryString());
+        const { mode } = parseTextSearchMode(cleanedQuery);
+        const label = describeTextSearchMode(mode);
+        if (label) {
+            this.modeBadgeEl.setText(label);
+            this.modeBadgeEl.addClass('is-visible');
+            this.modeBadgeEl.toggleClass('is-warn', mode.regexInvalid);
+        } else {
+            this.modeBadgeEl.removeClass('is-visible');
+            this.modeBadgeEl.removeClass('is-warn');
+            this.modeBadgeEl.setText('');
+        }
+        const free = this.readText();
+        let hint = '';
+        const quoteCount = (free.match(/"/g) ?? []).length;
+        if (quoteCount % 2 === 1) {
+            hint = 'Close " for exact phrase or word';
+        } else if (/(?:^|\s)\+\S*$/.test(free) || free.trimEnd().endsWith('+')) {
+            hint = '+word = exact word (same as "word")';
+        }
+        if (hint) {
+            this.textHintEl.setText(hint);
+            this.textHintEl.show();
+        } else {
+            this.textHintEl.hide();
+        }
     }
 
     // ---- accept / commit / remove ----

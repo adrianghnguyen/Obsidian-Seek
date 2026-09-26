@@ -1209,12 +1209,15 @@ export interface SearchEntry {
     lexPartialMs?: number;
     // True when the lexical BM25-only onPartial was emitted.
     lexPartialFired?: boolean;
+    /** Exact / regex text lane (vNext): hybrid = default BM25+semantic. */
+    textSearchKind?: 'hybrid' | 'exact' | 'regex';
+    textSearchRegexInvalid?: boolean;
 }
 
 // First-page callback from search() — name hits only, before embed/binary finish.
 export interface SearchPartial {
     results: ScoredChunk[];
-    source: 'name' | 'lexical' | 'hybrid';
+    source: 'name' | 'lexical' | 'hybrid' | 'exact';
     /** Number of name hits scanned (only set when source === 'name'). */
     nameHitCount?: number;
     cleanedQuery: string;
