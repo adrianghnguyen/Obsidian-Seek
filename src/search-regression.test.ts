@@ -49,6 +49,19 @@ describe('search regression baseline', () => {
         expect(entry.cleanedQuery).not.toBe('');
     });
 
+    // ---- E1: Exact phrase lane skips embed and matches literal substring ----
+    it('E1: quoted phrase uses exact scan and does not embed', async () => {
+        const s = await boot();
+        await indexAll(s);
+
+        const spy = vi.spyOn(s.embedder, 'embed');
+        const { results, entry } = await s.orch.search('"concert setlist"', 5);
+        expect(entry.textSearchKind).toBe('exact');
+        expect(results.length).toBeGreaterThan(0);
+        expect(results[0]?.note_path).toBe('music.md');
+        expect(spy).not.toHaveBeenCalled();
+    });
+
     // ---- R2: Full pipeline returns correct rank-1 for alias query ----
     it('R2: alias query returns the aliased note at rank 1', async () => {
         const s = await boot();

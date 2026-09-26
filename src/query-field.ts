@@ -23,7 +23,8 @@ import { Platform, setIcon } from 'obsidian';
 import type { App } from 'obsidian';
 import type { SuggestEngine } from './suggest';
 import { parseDateMs } from './fusion';
-import { parseNum } from './query-parser';
+import { parseNum, parseQuery } from './query-parser';
+import { parseTextSearchMode, describeTextSearchMode } from './text-search-mode';
 import {
     isBareTabKey,
     resolveSearchModalKeyAction,
@@ -205,6 +206,7 @@ export class PillQueryField {
     private suggEl: HTMLElement;
     private suggLis: HTMLElement[] = [];
     private actionHintEl: HTMLElement;
+    private modeBadgeEl: HTMLElement;
 
     constructor(
         parent: HTMLElement,
@@ -254,6 +256,34 @@ export class PillQueryField {
         this.actionHintEl = this.rootEl.createSpan({ cls: 'seek-q-action-hint' });
         this.actionHintEl.hide();
 
+        this.modeBadgeEl = this.rootEl.createSpan({ cls: 'seek-text-mode-badge' });
+
+        const infoWrap = this.rootEl.createDiv({ cls: 'seek-exact-info-wrap' });
+        const info = infoWrap.createEl('button', {
+            cls: 'seek-exact-info',
+            attr: { type: 'button', 'aria-label': 'Exact search syntax' },
+        });
+        setIcon(info, 'info');
+        const tip = infoWrap.createDiv({ cls: 'seek-exact-tip' });
+        tip.createDiv({ cls: 'seek-exact-tip-title', text: 'Exact search' });
+        const rows: Array<[string, string]> = [
+            ['"phrase"', 'exact substring'],
+            ['"a" "b"', 'all must appear'],
+            ['+word', 'same as "word"'],
+            ['/pattern/', 'regex on note text'],
+            ['~', 'case-sensitive prefix'],
+        ];
+        for (const [sym, desc] of rows) {
+            const row = tip.createDiv({ cls: 'seek-exact-tip-row' });
+            row.createSpan({ cls: 'seek-exact-tip-sym', text: sym });
+            row.createSpan({ cls: 'seek-exact-tip-desc', text: desc });
+        }
+        infoWrap.addEventListener('mousedown', e => e.stopPropagation());
+        infoWrap.addEventListener('mouseenter', () => infoWrap.addClass('is-open'));
+        infoWrap.addEventListener('mouseleave', () => infoWrap.removeClass('is-open'));
+        infoWrap.addEventListener('focusin', () => infoWrap.addClass('is-open'));
+        infoWrap.addEventListener('focusout', () => infoWrap.removeClass('is-open'));
+
         this.suggEl = this.rootEl.createEl('ul', { cls: 'seek-sugg' });
         this.suggEl.hide();
         // Keep the editable focused when interacting with the dropdown.
@@ -288,7 +318,7 @@ export class PillQueryField {
         this.rootEl.addEventListener('mousedown', e => {
             const t = e.target as HTMLElement;
             if (t === this.editEl || this.editEl.contains(t)) return;
-            if (t.closest('.seek-pill') || t.closest('.seek-sugg')) return;
+            if (t.closest('.seek-pill') || t.closest('.seek-sugg') || t.closest('.seek-exact-info-wrap')) return;
             // Inside the editable's wrapper but not on the text itself — the empty
             // space past a short query (.seek-edit is inline, so it's only as wide
             // as the text; the rest of the line is .seek-editwrap, which fills the
@@ -608,7 +638,30 @@ export class PillQueryField {
         this.renderGhost();
         this.renderSugg();
         this.updatePlaceholder();
+        this.syncTextSearchChrome();
         this.cb.onQueryChange(this.getQueryString());
+    }
+
+    /** Whether the current free-text + pills query uses exact / regex lane. */
+    isExactTextQuery(): boolean {
+        const { cleanedQuery } = parseQuery(this.getQueryString());
+        const { mode } = parseTextSearchMode(cleanedQuery);
+        return mode.kind !== 'hybrid' || mode.regexInvalid;
+    }
+
+    private syncTextSearchChrome(): void {
+        const { cleanedQuery } = parseQuery(this.getQueryString());
+        const { mode } = parseTextSearchMode(cleanedQuery);
+        const label = describeTextSearchMode(mode);
+        if (label) {
+            this.modeBadgeEl.setText(label);
+            this.modeBadgeEl.addClass('is-visible');
+            this.modeBadgeEl.toggleClass('is-warn', mode.regexInvalid);
+        } else {
+            this.modeBadgeEl.removeClass('is-visible');
+            this.modeBadgeEl.removeClass('is-warn');
+            this.modeBadgeEl.setText('');
+        }
     }
 
     // ---- accept / commit / remove ----

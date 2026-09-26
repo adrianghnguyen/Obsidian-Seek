@@ -1136,7 +1136,13 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         }
         block.createDiv({
             cls: 'seek-progressive-desc',
-            text: 'Seek streams results through these stages as they become available. When "Search progression stages" is enabled under Display settings, all three stages are shown in the search modal footer and highlight progressively as each step completes. Each stage replaces the previous one in-place, so you always see the best results so far. On a fresh start, name match and lexical BM25 read your notes on disk — they do not wait for the search-index cache — and semantic ranking joins once the model and caches are ready. BM25 field weights (Advanced) tune which parts of a note keyword matching prefers — title, aliases, tags, body, properties, and headings.',
+            text: 'Seek streams results through these stages as they become available. When "Search progression stages" is enabled under Display settings, all three stages are shown in the search modal footer and highlight progressively as each step completes. Each stage replaces the previous one in-place, so you always see the best results so far. On a fresh start, name match and lexical BM25 read your notes on disk — they do not wait for the search-index cache — and semantic ranking joins once the model and caches are ready. BM25 field weights (Advanced) tune which parts of a note keyword matching prefers — title, aliases, tags, body, properties, and headings. When you use exact-text shorthands in the search bar ("…", +word, /…/, optional ~ for case-sensitive), the footer shows Name match → Exact text instead and semantic ranking is skipped for that query.',
+        });
+        const exactBlock = containerEl.createDiv({ cls: 'seek-exact-syntax' });
+        exactBlock.createDiv({ cls: 'seek-progressive-title', text: 'Exact text syntax' });
+        exactBlock.createDiv({
+            cls: 'seek-progressive-desc',
+            text: 'In the search modal free-text area (alongside filter pills): "phrase" matches that exact substring; multiple quoted parts or +word terms must all appear ("a" "b" or +a +b); /pattern/ runs a regex on note bodies; prefix ~ for case-sensitive matching. Hover the info icon on the query row for the same list. A badge shows the active mode. These queries scan indexed note text only — no embedding step.',
         });
     }
 
@@ -1294,7 +1300,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
 
         new Setting(containerEl)
             .setName('Search progression stages')
-            .setDesc('Displays the 3-stage search pipeline (Name match → Lexical BM25 → Hybrid semantic) in the modal footer bar.')
+            .setDesc('Shows the search pipeline in the modal footer (Name → Lexical BM25 → Hybrid semantic, or Name → Exact text when you use "…", +word, or /regex/).')
             .addToggle(t => t.setValue(this.s.showSearchStages).onChange(async v => { this.s.showSearchStages = v; await this.save(); }));
 
         new Setting(containerEl)

@@ -17,6 +17,8 @@ import type { SeekLogger } from './logger';
 import { ENGLISH_STOPWORDS } from './bm25';
 import { buildHighlightRanges } from './highlight';
 import { buildPassageTerms, markPattern } from './passage';
+import { parseQuery } from './query-parser';
+import { parseTextSearchMode, literalMarkPattern, literalPassageTerms } from './text-search-mode';
 import { matchStrength } from './dense-stats';
 import { SuggestEngine } from './suggest';
 import { PillQueryField } from './query-field';
@@ -47,6 +49,7 @@ import {
     initialPipelineStageState,
     PIPELINE_STAGE_ORDER,
     type PipelineStageId,
+    type PipelineStagePhase,
 } from './pipeline-stage';
 import type { PipelineStages, PipelineStageEvent } from './pipeline-stage';
 import {
@@ -252,6 +255,9 @@ export class SeekSearchModal extends Modal {
     private pipeStageEl: HTMLElement | null = null;
     private pipeStageEls: Map<PipelineStageId, HTMLElement> = new Map();
     private pipeStageArrowEls: HTMLElement[] = [];
+    /** Footer shows Name → Exact text instead of BM25 → Hybrid when true. */
+    private exactPipelineLayout = false;
+    private exactStagePhase: PipelineStagePhase = 'pending';
     // The currently displayed, ordered results — the array the keyboard model
     // indexes into via `selectedIndex`.
     private currentResults: ScoredChunk[] = [];
@@ -680,14 +686,17 @@ export class SeekSearchModal extends Modal {
         this.pipeStageEl.empty();
         this.pipeStageEls.clear();
         this.pipeStageArrowEls = [];
-        const labelMap: Record<PipelineStageId, string> = {
-            name: 'Name match', lexical: 'Lexical BM25', hybrid: 'Hybrid semantic',
-        };
-        for (let i = 0; i < PIPELINE_STAGE_ORDER.length; i++) {
-            const id = PIPELINE_STAGE_ORDER[i];
+        const labelMap: Record<PipelineStageId, string> = this.exactPipelineLayout
+            ? { name: 'Name match', lexical: 'Exact text', hybrid: 'Exact text' }
+            : { name: 'Name match', lexical: 'Lexical BM25', hybrid: 'Hybrid semantic' };
+        const order: PipelineStageId[] = this.exactPipelineLayout
+            ? ['name', 'lexical']
+            : [...PIPELINE_STAGE_ORDER];
+        for (let i = 0; i < order.length; i++) {
+            const id = order[i]!;
             const span = this.pipeStageEl.createSpan({ cls: 'seek-pipe-stage', text: labelMap[id] });
             this.pipeStageEls.set(id, span);
-            if (i < PIPELINE_STAGE_ORDER.length - 1) {
+            if (i < order.length - 1) {
                 const arrow = this.pipeStageEl.createSpan({ cls: 'seek-pipe-stage-arrow', text: '→' });
                 this.pipeStageArrowEls.push(arrow);
             }
@@ -705,12 +714,18 @@ export class SeekSearchModal extends Modal {
         }
         const st = this.pipelineStages;
         const idle = st.name === 'pending' && st.lexical === 'pending' && st.hybrid === 'pending';
+        const order: PipelineStageId[] = this.exactPipelineLayout
+            ? ['name', 'lexical']
+            : [...PIPELINE_STAGE_ORDER];
 
-        for (let i = 0; i < PIPELINE_STAGE_ORDER.length; i++) {
-            const id = PIPELINE_STAGE_ORDER[i];
+        for (let i = 0; i < order.length; i++) {
+            const id = order[i]!;
             const span = this.pipeStageEls.get(id);
             if (!span) continue;
-            const phase = st[id];
+            let phase = st[id];
+            if (this.exactPipelineLayout && id === 'lexical') {
+                phase = this.exactStagePhase;
+            }
             span.className = 'seek-pipe-stage';
             if (idle) {
                 span.addClass('is-idle');
@@ -729,13 +744,28 @@ export class SeekSearchModal extends Modal {
             if (idle) {
                 arrow.addClass('is-idle');
             } else {
-                const prevId = PIPELINE_STAGE_ORDER[i];
-                if (st[prevId] === 'done') {
+                const prevId = order[i]!;
+                let prevDone = st[prevId] === 'done';
+                if (this.exactPipelineLayout && prevId === 'lexical') {
+                    prevDone = this.exactStagePhase === 'done';
+                }
+                if (prevDone) {
                     arrow.addClass('is-done');
                 } else {
                     arrow.addClass('is-pending');
                 }
             }
+        }
+    }
+
+    private updateExactPipelineLayout(query: string): void {
+        const { cleanedQuery } = parseQuery(query);
+        const next = parseTextSearchMode(cleanedQuery).mode.kind !== 'hybrid';
+        if (next === this.exactPipelineLayout) return;
+        this.exactPipelineLayout = next;
+        if (this.pipeStageEl) {
+            this.buildPipelineStages();
+            this.syncPipelineStages();
         }
     }
 
@@ -749,6 +779,7 @@ export class SeekSearchModal extends Modal {
         switch (source) {
             case 'name': return 'name-done';
             case 'lexical': return 'lexical-done';
+            case 'exact': return 'lexical-done';
             case 'hybrid': return 'final'; // safety-valve if a future orchestrator emits 'hybrid'
         }
     }
@@ -757,6 +788,23 @@ export class SeekSearchModal extends Modal {
     // labels. Idempotent — does nothing when the event would not change state
     // (e.g. a duplicate name-done from the cold-start double pass).
     private advancePipeline(event: PipelineStageEvent): void {
+        if (this.exactPipelineLayout) {
+            if (event.type === 'query') {
+                this.pipelineStages = { name: 'active', lexical: 'pending', hybrid: 'pending' };
+                this.exactStagePhase = 'pending';
+            } else if (event.type === 'name-done') {
+                this.pipelineStages = { name: 'done', lexical: 'pending', hybrid: 'pending' };
+                this.exactStagePhase = 'active';
+            } else if (event.type === 'lexical-done' || event.type === 'final') {
+                this.pipelineStages = { name: 'done', lexical: 'done', hybrid: 'done' };
+                this.exactStagePhase = 'done';
+            } else if (event.type === 'clear') {
+                this.pipelineStages = initialPipelineStageState();
+                this.exactStagePhase = 'pending';
+            }
+            this.syncPipelineStages();
+            return;
+        }
         const next = nextPipelineStage(this.pipelineStages, event);
         if (next === this.pipelineStages) return;
         this.pipelineStages = next;
@@ -826,6 +874,7 @@ export class SeekSearchModal extends Modal {
             this.activeSearchAbort?.abort();
         }
         this.lastQuery = query;
+        this.updateExactPipelineLayout(query);
         // The user is typing → still an active session; (re)arm the settle debounce
         // so catch-up only drains once they pause. Covers both real and cleared
         // queries (clear-then-walk-away should still eventually settle + drain).
@@ -959,6 +1008,11 @@ export class SeekSearchModal extends Modal {
                 this.latestSearchEntry = entry;
                 this.latestResultsShown = results;
                 this.latestSearchCompletedAt = performance.now();
+                if (entry.textSearchRegexInvalid) {
+                    this.renderStatus('Invalid regular expression — fix the /…/ pattern and try again.');
+                    this.advancePipeline({ type: 'final' });
+                    return;
+                }
                 this.renderResults(results);
                 this.advancePipeline({ type: 'final' });
                 this.maybeRecordSearchLatency(id, query, results);
@@ -1627,7 +1681,12 @@ export class SeekSearchModal extends Modal {
         // A filter-only / browse query (no free text) has nothing to "match"
         // against — suppress the score entirely rather than score a non-match.
         const scoresMeaningful = this.app.vault.getMarkdownFiles().length >= MATCH_STRENGTH_MIN_NOTES;
-        if (this.settings.showScores && scoresMeaningful && hasTextQuery && strength != null) {
+        const exactTextSearch = (this.latestSearchEntry?.textSearchKind ?? 'hybrid') !== 'hybrid';
+        if (this.settings.showScores && scoresMeaningful && hasTextQuery && exactTextSearch) {
+            const label = 'Literal match';
+            if (row.scoreEl.textContent !== label) row.scoreEl.setText(label);
+            row.scoreEl.show();
+        } else if (this.settings.showScores && scoresMeaningful && hasTextQuery && strength != null) {
             // Title shown as a normalized [0,1] match strength (1 = full known-item
             // title match), mirroring how recency renders its raw signal rather than
             // the weighted contribution that enters `final`. title_boost is
@@ -1649,7 +1708,9 @@ export class SeekSearchModal extends Modal {
 
         const limits = this.effectiveSnippetLimits();
         const passageTerms = hasTextQuery
-            ? buildPassageTerms(cleanedQuery, () => 0)
+            ? (exactTextSearch
+                ? literalPassageTerms(parseTextSearchMode(cleanedQuery).mode)
+                : buildPassageTerms(cleanedQuery, () => 0))
             : [];
         const rawSnippet = hasTextQuery
             ? makeSnippet(r.content, passageTerms, limits.chars)
@@ -1677,11 +1738,17 @@ export class SeekSearchModal extends Modal {
     // The mark matcher for the current query (see snippetMarkCache).
     private snippetMarkRe(): RegExp | null {
         const query = this.latestSearchEntry?.cleanedQuery ?? '';
+        const kind = this.latestSearchEntry?.textSearchKind ?? 'hybrid';
         if (this.snippetMarkCache?.query !== query) {
-            this.snippetMarkCache = {
-                query,
-                re: query.trim() ? markPattern(buildPassageTerms(query, () => 0)) : null,
-            };
+            let re: RegExp | null = null;
+            if (query.trim()) {
+                if (kind !== 'hybrid') {
+                    re = literalMarkPattern(parseTextSearchMode(query).mode);
+                } else {
+                    re = markPattern(buildPassageTerms(query, () => 0));
+                }
+            }
+            this.snippetMarkCache = { query, re };
         }
         return this.snippetMarkCache.re;
     }

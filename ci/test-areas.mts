@@ -85,6 +85,7 @@ export const CI_TEST_AREAS = {
         'src/suggest.test.ts',
         'src/synonyms.test.ts',
         'src/tag-grammar.test.ts',
+        'src/text-search-mode.test.ts',
         'src/title-nav-coverage.test.ts',
         'src/token-budget.test.ts',
         'src/tokenize.test.ts',

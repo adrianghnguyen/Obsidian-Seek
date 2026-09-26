@@ -5,6 +5,7 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 ## [Unreleased]
 
 ### Added
+- **Exact text search:** In the search modal, use `"phrase"`, repeated quotes or `+word` for literal AND, `/regex/`, or a leading `~` for case-sensitive matching. A badge shows the active mode; hover the info icon on the query row for the shorthand list. Semantic embedding is skipped for these queries. Settings → Relevance documents syntax and the Name → Exact text footer stage.
 - **CI:** PR checks split by area (index & store, search, CLI & UX, platform) plus **Functional acceptance (fixtures)** (F3-minimal harness on fake vault). **E2E triage** (deterministic script + Project agent) sets `needs-e2e` / `skip-e2e`; conditional **Obsidian E2E** (F3/F2/F4) blocks merge when required.
 
 ### Changed

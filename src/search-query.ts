@@ -82,6 +82,12 @@ import { calibratedConfidence } from './dense-stats';
 import { IndexCoordinator } from './index-coordinator';
 import { cheapYield } from './pacer';
 import { parseQuery, compileMatcher, excludedNotePaths } from './query-parser';
+import {
+    parseTextSearchMode,
+    bodyMatchesTextMode,
+    literalPassageTerms,
+    type TextSearchMode,
+} from './text-search-mode';
 import { makeSnippet, SNIPPET_PREVIEW_LIMITS } from './snippet';
 import { buildPassageTerms } from './passage';
 import { enumerateNumberPropertyNames } from './prop-types';
@@ -514,6 +520,130 @@ export class SearchQuery {
         return resolveBm25FieldBoosts(this.settings);
     }
 
+    private async runExactTextSearch(
+        query: string,
+        cleanedQuery: string,
+        filters: QueryFilters | null,
+        textMode: TextSearchMode,
+        topK: number,
+        filterCtx: FilterContext,
+        recencyOverride: RecencyOverride | undefined,
+        onPartial: ((partial: SearchPartial) => void | Promise<void>) | undefined,
+        signal: AbortSignal | undefined,
+        searchId: string,
+        t0: number,
+    ): Promise<{ results: ScoredChunk[]; entry: SearchEntry }> {
+        const throwIfAborted = (): void => {
+            if (signal?.aborted) {
+                throw Object.assign(new Error('Query superseded'), { name: 'AbortError', code: 'ABORTED' });
+            }
+        };
+        const runAppendSearchTelemetry = this.delegates?.appendSearchTelemetry ?? this.appendSearchTelemetry.bind(this);
+
+        const peekFrame = this.delegates?.peekResidentFrame ?? this.cacheManager.peekResidentFrame.bind(this.cacheManager);
+        const frame = peekFrame();
+        let orderedChunks: ChunkMeta[];
+        let orderedIds: string[];
+        if (frame) {
+            orderedChunks = frame.orderedChunks;
+            orderedIds = frame.orderedIds;
+        } else {
+            orderedChunks = await this.store.listAllMeta();
+            orderedIds = orderedChunks.map(c => c.chunk_id);
+        }
+        throwIfAborted();
+
+        const matcher = filters ? compileMatcher(filters, filterCtx) : null;
+        const validRows = frame?.validRows ?? orderedChunks.map(() => true);
+        const tombstoneCount = frame?.tombstoneCount ?? 0;
+        let mask = buildSelectionMask(orderedChunks, validRows, tombstoneCount, matcher);
+
+        if (filters?.exclude && filters.exclude.length > 0) {
+            const bodyMap = await this.store.getBodiesMap(orderedIds);
+            throwIfAborted();
+            const excludedNotes = excludedNotePaths(orderedChunks, filters.exclude, id => bodyMap.get(id));
+            if (excludedNotes.size > 0) {
+                if (!mask) mask = new Array<boolean>(orderedChunks.length).fill(true);
+                for (let i = 0; i < orderedChunks.length; i++) {
+                    if (mask[i] && excludedNotes.has(orderedChunks[i].note_path ?? '')) mask[i] = false;
+                }
+            }
+        }
+
+        const recencyKey = this.settings.recencyKey;
+        const createdProp = this.settings.createdProp;
+        const epsilon = recencyOverride?.epsilon ?? this.settings.recencyEpsilon;
+        const halfLife = recencyOverride?.halfLifeDays ?? this.settings.recencyHalfLifeDays;
+
+        const scored: ScoredChunk[] = [];
+        const BODY_BATCH = 120;
+        for (let batchStart = 0; batchStart < orderedChunks.length; batchStart += BODY_BATCH) {
+            throwIfAborted();
+            const batchEnd = Math.min(batchStart + BODY_BATCH, orderedChunks.length);
+            const batchIds: string[] = [];
+            const batchIdx: number[] = [];
+            for (let i = batchStart; i < batchEnd; i++) {
+                if (mask && !mask[i]) continue;
+                batchIds.push(orderedIds[i]!);
+                batchIdx.push(i);
+            }
+            if (batchIds.length === 0) continue;
+            const bodies = await this.store.getBodiesMap(batchIds);
+            throwIfAborted();
+            await cheapYield();
+            for (let j = 0; j < batchIdx.length; j++) {
+                const i = batchIdx[j]!;
+                const body = bodies.get(batchIds[j]!) ?? '';
+                if (!bodyMatchesTextMode(body, textMode)) continue;
+                const c = orderedChunks[i]!;
+                const raw = recencyDate(c, recencyKey, createdProp);
+                const t = raw ? Date.parse(raw) : NaN;
+                let recency = 0;
+                if (epsilon > 0 && Number.isFinite(t)) {
+                    const ageDays = (Date.now() - t) / (86400 * 1000);
+                    recency = epsilon * Math.pow(0.5, ageDays / halfLife);
+                }
+                scored.push({
+                    ...c,
+                    content: body,
+                    score: 1 + recency,
+                    ranking_signals: {
+                        dense: 0,
+                        bm25: 0,
+                        hybrid: 0,
+                        recency,
+                        title_boost: 0,
+                        denseRaw: 0,
+                    },
+                    lexicalOnly: true,
+                });
+            }
+        }
+
+        scored.sort((a, b) => b.score - a.score);
+        const results = dedupByPath(scored, topK);
+
+        const snippetChars = SNIPPET_PREVIEW_LIMITS[this.settings.snippetPreview].chars;
+        const passageTerms = literalPassageTerms(textMode);
+        for (const r of results) {
+            r.snippet = makeSnippet(r.content, passageTerms, snippetChars);
+        }
+
+        if (onPartial && results.length > 0) {
+            await onPartial({ results, source: 'exact', cleanedQuery });
+            throwIfAborted();
+        }
+
+        const totalMs = performance.now() - t0;
+        const entry = this.emptySearchEntry(query, cleanedQuery, filters, topK, searchId, 0, totalMs);
+        entry.totalChunks = orderedChunks.length;
+        entry.candidateUnionSize = scored.length;
+        entry.textSearchKind = textMode.kind;
+        throwIfAborted();
+        await runAppendSearchTelemetry(entry);
+        return { results, entry };
+    }
+
     async searchLexicalOnly(
         query: string,
         topK = 10,
@@ -527,8 +657,19 @@ export class SearchQuery {
         };
         throwIfAborted();
         const t0 = performance.now();
-        const cleanedQuery = parseQuery(query, this.buildFilterContext()).cleanedQuery;
+        const filterCtx = this.buildFilterContext();
+        const { cleanedQuery, filters } = parseQuery(query, filterCtx);
         if (!cleanedQuery.trim()) return { results: [] };
+        const { mode: textMode } = parseTextSearchMode(cleanedQuery);
+        if (textMode.regexInvalid) return { results: [] };
+        if (textMode.kind !== 'hybrid') {
+            const searchId = `${Date.now()}-lex`;
+            const out = await this.runExactTextSearch(
+                query, cleanedQuery, filters, textMode, topK, filterCtx,
+                undefined, onPartial, signal, searchId, performance.now(),
+            );
+            return { results: out.results };
+        }
 
         const emitLadder = this.delegates?.emitVaultLadder ?? this.emitVaultLadder.bind(this);
         const vault = await emitLadder(cleanedQuery, topK, onPartial, signal, t0);
@@ -554,6 +695,23 @@ export class SearchQuery {
 
         const filterCtx = this.buildFilterContext(recencyOverride);
         const { cleanedQuery, filters } = parseQuery(query, filterCtx);
+        const { mode: textMode } = parseTextSearchMode(cleanedQuery);
+
+        if (textMode.regexInvalid) {
+            const entry = this.emptySearchEntry(query, cleanedQuery, filters, topK, searchId, 0, performance.now() - t0);
+            entry.textSearchKind = 'regex';
+            entry.textSearchRegexInvalid = true;
+            throwIfAborted();
+            await (this.delegates?.appendSearchTelemetry ?? this.appendSearchTelemetry.bind(this))(entry);
+            return { results: [], entry };
+        }
+
+        if (textMode.kind !== 'hybrid' && cleanedQuery.trim()) {
+            return this.runExactTextSearch(
+                query, cleanedQuery, filters, textMode, topK, filterCtx,
+                recencyOverride, onPartial, signal, searchId, t0,
+            );
+        }
 
         const peekFrame = this.delegates?.peekResidentFrame ?? this.cacheManager.peekResidentFrame.bind(this.cacheManager);
         const emitLadder = this.delegates?.emitVaultLadder ?? this.emitVaultLadder.bind(this);
