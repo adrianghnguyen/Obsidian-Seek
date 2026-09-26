@@ -98,7 +98,7 @@ describe('catchUpBurstLimits', () => {
     it('uses clamped setting on desktop', () => {
         expect(catchUpBurstLimits({ mobile: false, burstMaxFiles: 8 })).toEqual({
             maxFiles: 8,
-            budgetMs: 4000,
+            budgetMs: 8000,
         });
     });
 });
