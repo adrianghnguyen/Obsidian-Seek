@@ -40,6 +40,18 @@ describe('sizeOfRow', () => {
         expect(sizeOfRow('bm25', rec)).toBe(expected);
     });
 
+    it('weighs a packed sign frame by its bytes, ids, and stamp', () => {
+        const rec = {
+            ids: ['abc', 'def'],
+            packed: new Uint8Array(96),
+            bytesPerVec: 48,
+            stamp: { modelId: 'm', embeddingDim: 384, chunkCount: 2 },
+        };
+        const idsBytes = new TextEncoder().encode(rec.ids.join('\n')).length;
+        const stampBytes = new TextEncoder().encode(JSON.stringify(rec.stamp)).length;
+        expect(sizeOfRow('signframe', rec)).toBe(96 + idsBytes + stampBytes);
+    });
+
     it('weighs a GZIPPED bm25 blob (Uint8Array) correctly — forward-compat with Phase 1', () => {
         const rec = { json: new Uint8Array(2048), stamp: null };
         // gzipped blob byteLength + JSON.stringify(null) === 'null' (4 bytes)

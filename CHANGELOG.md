@@ -9,6 +9,7 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ### Changed
 - **Desktop catch-up** cheap-yields between embed batches until a search query is actually in flight, then idle-paces again so that query can cut in. Mobile still pauses catch-up for the whole search session. The 30-file / 4 second burst fence is unchanged.
+- **Startup cache warm** stores the packed sign-bit frame as one IndexedDB blob, the same way the BM25 index is already stored. The next boot of an already-built index loads that blob instead of walking every sign row. A model change or a chunk the blob does not cover still walks the rows and rewrites the blob. No new setting.
 
 ## 1.11.0
 

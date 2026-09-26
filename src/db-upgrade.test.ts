@@ -79,6 +79,18 @@ describe('openDb upgrade path — documented destructive rebuilds actually happe
         });
     }
 
+    it('a v11 origin keeps its rows and gains the sign_frame store (additive cache)', async () => {
+        const name = 'seek-test-upgrade-v11-sign-frame';
+        await seedOldDb(name, 11);
+        const db = await openDb(name);
+        expect(db.version).toBe(DB_VERSION);
+        expect(await counts(db)).toEqual(
+            Object.fromEntries(DATA_STORES.map(s => [s, 1])),
+        );
+        expect(db.objectStoreNames.contains('sign_frame')).toBe(true);
+        db.close();
+    });
+
     it(`a current v${DB_VERSION} database reopens with its data INTACT (no spurious drop)`, async () => {
         const name = 'seek-test-upgrade-current';
         await seedOldDb(name, DB_VERSION);

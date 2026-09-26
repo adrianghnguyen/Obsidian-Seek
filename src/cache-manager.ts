@@ -11,6 +11,8 @@
  * - `synonymCache`: Vault synonym lookup map (`SynonymMap`).
  * - Persisting and loading serialized BM25 index blobs to/from disk (`saveBm25DiskCache`,
  *   `loadBm25DiskCache`) to bypass expensive lexical re-parsing on startup.
+ * - Persisting the packed sign frame as one IndexedDB blob so boot does not
+ *   cursor-walk every `binary` row. A miss still walks and rewrites the blob.
  *
  * ## Order Dependencies & Lifecycle
  * - **Dependency tier**: State Authority Layer. Instantiated synchronously in the
@@ -67,6 +69,13 @@ import {
     buildBm25Stamp,
     bm25StampMatches,
 } from './bm25-persist';
+import {
+    asSignPacked,
+    buildSignFrameStamp,
+    signFrameCoversChunks,
+    signFramePackedShapeOk,
+    signFrameStampMatches,
+} from './sign-frame-persist';
 
 export interface CacheManagerDeps {
     app: App;
@@ -259,7 +268,10 @@ export class CacheManager {
 
         const buildGeneration = this.coord.generation;
         const chunks = await this.store.listAllMeta();
-        await this.ensureBinaryIndex(chunks.length);
+        const loadedFromBlob = await this.tryLoadPersistedSignFrame(chunks);
+        if (!loadedFromBlob) {
+            await this.ensureBinaryIndex(chunks.length);
+        }
         if (chunks.length === 0 || !this.binaryIndex) {
             if (shouldDiscardPartialFrame(buildGeneration, this.coord.generation)) return this.ensureFrame();
             this.frameCache = null;
@@ -316,7 +328,55 @@ export class CacheManager {
             return assembled;
         }
         this.frameCache = assembled;
+        if (!loadedFromBlob) {
+            await this.persistSignFrame(chunks);
+        }
         return this.frameCache;
+    }
+
+    async tryLoadPersistedSignFrame(chunks: ChunkMeta[]): Promise<boolean> {
+        try {
+            if (chunks.length === 0) return false;
+            const rec = await this.store.getSignFrame();
+            if (!rec) return false;
+            const meta = await this.store.getMeta();
+            if (!meta.lastIndexedAt) return false;
+            const live = buildSignFrameStamp(meta, rec.ids?.length ?? 0);
+            if (!signFrameStampMatches(rec.stamp, live)) return false;
+            const packed = asSignPacked(rec.packed);
+            if (!packed || !Array.isArray(rec.ids)) return false;
+            const ids = rec.ids.map(id => String(id));
+            if (!signFramePackedShapeOk(ids, packed, rec.bytesPerVec)) return false;
+            if (!signFrameCoversChunks(ids, chunks)) return false;
+            this.binaryIndex = {
+                ids,
+                packed,
+                bytesPerVec: rec.bytesPerVec,
+                generation: this.coord.generation,
+            };
+            return true;
+        } catch (e) {
+            console.warn('[seek] persisted sign frame load failed (walking rows)', e);
+            return false;
+        }
+    }
+
+    async persistSignFrame(chunks: ChunkMeta[]): Promise<void> {
+        try {
+            const bin = this.binaryIndex;
+            if (!bin || bin.generation !== this.coord.generation) return;
+            if (!signFrameCoversChunks(bin.ids, chunks)) return;
+            const meta = await this.store.getMeta();
+            if (!meta.lastIndexedAt) return;
+            await this.store.putSignFrame({
+                ids: bin.ids,
+                packed: bin.packed,
+                bytesPerVec: bin.bytesPerVec,
+                stamp: buildSignFrameStamp(meta, bin.ids.length),
+            });
+        } catch (e) {
+            console.warn('[seek] sign frame persist failed (cold start will walk rows)', e);
+        }
     }
 
     bm25CacheValid(orderedChunks: ChunkMeta[]): boolean {

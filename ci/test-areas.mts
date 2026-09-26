@@ -49,6 +49,7 @@ export const CI_TEST_AREAS = {
         'src/sidecar-coordinator.test.ts',
         'src/sidecar-sync.test.ts',
         'src/sidecar.test.ts',
+        'src/sign-frame-startup.test.ts',
         'src/workflow-coordinator.test.ts',
     ],
     search: [
@@ -79,6 +80,7 @@ export const CI_TEST_AREAS = {
         'src/search-modal-tab-dispatch.test.ts',
         'src/search-pipeline-sequence.test.ts',
         'src/select.test.ts',
+        'src/sign-frame-persist.test.ts',
         'src/snippet.test.ts',
         'src/suggest.test.ts',
         'src/synonyms.test.ts',
