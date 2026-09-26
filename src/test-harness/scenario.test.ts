@@ -3,6 +3,8 @@
 // ORDERING bugs that single-decision unit tests miss by construction. See
 // scenario.ts and [[Seek Testing Strategy]].
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { drainCatchUp } from '../catchup';
+import { cyrb53Hex } from '../chunker';
 import { Scenario } from './scenario';
 
 describe('Tier-2 scenario harness', () => {
@@ -165,5 +167,118 @@ describe('Tier-2 scenario harness', () => {
         const paths = new Set((await s.store.listFileRecords()).map(r => r.note_path));
         expect(paths.has('note.md')).toBe(false);
         expect(paths.has('keep.md')).toBe(true);
+    });
+
+    // ── Scenario 6 — a dirty IDB lock must not wedge the next catch-up ─────
+    // A partial commit aborts its readwrite transaction (the IndexedDB lock the
+    // chunk stores are held under). That abort has to finish: the write mutex
+    // (isWriting), the delta gate (currentDelta), and the connection itself
+    // (the next count() opens a fresh transaction on the same stores). Files
+    // then change outside the plugin — FakeVault.write, no reconcile — and
+    // drainCatchUp must index them. A lock left open fails this: count() never
+    // returns, or the drain stays pending with the new bytes uncommitted.
+    it('an aborted commit releases the IDB lock so later external edits still catch up', async () => {
+        const s = await boot();
+        const seed = 'seed note that anchors the cold index identity';
+        const partial = 'gamma note left dirty by the partial commit';
+        s.vault.write('seed.md', seed, 1000);
+        s.vault.write('partial.md', partial, 1000);
+        await s.coldStart();
+
+        // Three notes appear while Seek is not watching (external edits).
+        const before = {
+            'a.md': 'alpha note written outside the plugin before the fault',
+            'b.md': 'beta note written outside the plugin before the fault',
+            'c.md': 'gamma sibling written outside the plugin before the fault',
+        };
+        s.vault.write('a.md', before['a.md'], 2000);
+        s.vault.write('b.md', before['b.md'], 2000);
+        s.vault.write('c.md', before['c.md'], 2000);
+
+        const db = (s.store as unknown as { db: IDBDatabase }).db;
+        const orig = db.transaction.bind(db);
+        let aborts = 0;
+        let abortSeen = false;
+        const spy = vi.spyOn(db, 'transaction').mockImplementation((storeNames, mode, options) => {
+            const tx = orig(storeNames, mode, options);
+            const names = (Array.isArray(storeNames) ? storeNames : [storeNames]).map(String);
+            // The per-file commit transaction (putBatchQuantized). Abort the first
+            // one the way a quota/crash abort does: tx.abort() finishes the
+            // transaction and drops its store locks. Later commits in this pass
+            // must still be able to open.
+            if (mode === 'readwrite' && names.includes('chunk_meta') && aborts === 0) {
+                aborts += 1;
+                tx.onabort = () => { abortSeen = true; };
+                tx.abort();
+            }
+            return tx;
+        });
+
+        const coord = (s.orch as unknown as { coord: { currentDelta: Promise<void> | null } }).coord;
+        try {
+            const delta = await s.orch.computeDelta();
+            expect(delta.dirty.slice().sort()).toEqual(['a.md', 'b.md', 'c.md']);
+            await s.orch.reindexDelta(delta.dirty, delta.deleted, { embed: true });
+        } finally {
+            spy.mockRestore();
+        }
+
+        // The abort actually ran against a live transaction, then released.
+        expect(aborts).toBe(1);
+        await new Promise<void>(r => setImmediate(r));
+        expect(abortSeen).toBe(true);
+
+        // Lock released: mutex idle, delta gate clear, next transaction on the
+        // same stores succeeds. A stuck readwrite or a coalesced count that
+        // never settles fails the race.
+        expect(s.orch.isWriting()).toBe(false);
+        expect(coord.currentDelta).toBeNull();
+        expect(s.store.isOpen()).toBe(true);
+        const genAfterFault = s.orch.currentGeneration();
+        const counted = await Promise.race([
+            s.store.count(),
+            new Promise<never>((_, reject) => {
+                setTimeout(() => reject(new Error('count blocked on a dirty IDB lock')), 2000);
+            }),
+        ]);
+        expect(counted.chunks).toBeGreaterThan(0);
+
+        // Further external edits, still with no plugin event — the catch-up
+        // path has to notice them from the vault, not from a queued handler.
+        const after = {
+            'a.md': 'kelp forest rewritten after the aborted commit',
+            'b.md': 'obsidian basalt rewritten after the aborted commit',
+            'd.md': 'quartz geode created outside the plugin after the lock',
+        };
+        s.vault.write('a.md', after['a.md'], 3000);
+        s.vault.write('b.md', after['b.md'], 3000);
+        s.vault.write('d.md', after['d.md'], 3000);
+
+        const { pending } = await drainCatchUp({
+            computeDelta: () => s.orch.computeDelta(),
+            reindexDelta: (dirty, deleted, opts) => s.orch.reindexDelta(dirty, deleted, opts),
+            isHidden: () => false,
+            isSearchActive: () => false,
+            pace: async () => {},
+            maxFiles: 3,
+        });
+
+        expect(pending).toBe(false);
+        expect(s.orch.isWriting()).toBe(false);
+        expect(coord.currentDelta).toBeNull();
+        expect(s.orch.currentGeneration()).toBeGreaterThanOrEqual(genAfterFault);
+        expect((await s.orch.computeDelta()).dirty).toEqual([]);
+
+        const byPath = new Map((await s.store.listFileRecords()).map(r => [r.note_path, r]));
+        expect(byPath.get('a.md')?.contentHash).toBe(cyrb53Hex(after['a.md']));
+        expect(byPath.get('b.md')?.contentHash).toBe(cyrb53Hex(after['b.md']));
+        expect(byPath.get('d.md')?.contentHash).toBe(cyrb53Hex(after['d.md']));
+        expect(byPath.get('partial.md')?.contentHash).toBe(cyrb53Hex(partial));
+        expect(byPath.has('seed.md')).toBe(true);
+        expect(byPath.has('c.md')).toBe(true);
+
+        // Search waits on currentDelta. A gate left unresolved hangs here.
+        const { results } = await s.orch.search('kelp forest rewritten', 5);
+        expect(results[0]?.note_path).toBe('a.md');
     });
 });
