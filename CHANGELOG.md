@@ -8,7 +8,8 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 - **CI:** PR checks split by area (index & store, search, CLI & UX, platform) plus **Functional acceptance (fixtures)** (F3-minimal harness on fake vault). **E2E triage** (deterministic script + Project agent) sets `needs-e2e` / `skip-e2e`; conditional **Obsidian E2E** (F3/F2/F4) blocks merge when required.
 
 ### Changed
-- **Desktop catch-up** cheap-yields between embed batches until a search query is actually in flight, then idle-paces again so that query can cut in. Mobile still pauses catch-up for the whole search session. The 30-file / 4 second burst fence is unchanged.
+- **Desktop catch-up** per-burst wall-clock budget raised from 4 s to 8 s (30-file cap unchanged). Large multi-chunk notes were hitting the time fence before the file cap, splitting catch-up into extra bursts and idle gaps between them.
+- **Desktop catch-up** cheap-yields between embed batches until a search query is actually in flight, then idle-paces again so that query can cut in. Mobile still pauses catch-up for the whole search session.
 - **Startup cache warm** stores the packed sign-bit frame as one IndexedDB blob, the same way the BM25 index is already stored. The next boot of an already-built index loads that blob instead of walking every sign row. A model change or a chunk the blob does not cover still walks the rows and rewrites the blob. No new setting.
 
 ## 1.11.0
