@@ -207,7 +207,6 @@ export class PillQueryField {
     private suggLis: HTMLElement[] = [];
     private actionHintEl: HTMLElement;
     private modeBadgeEl: HTMLElement;
-    private textHintEl: HTMLElement;
 
     constructor(
         parent: HTMLElement,
@@ -230,8 +229,6 @@ export class PillQueryField {
 
         this.magEl = this.rootEl.createDiv({ cls: 'seek-mag' });
         setIcon(this.magEl, 'search');
-
-        this.modeBadgeEl = this.rootEl.createSpan({ cls: 'seek-text-mode-badge' });
 
         this.fieldEl = this.rootEl.createDiv({ cls: 'seek-field' });
 
@@ -259,8 +256,33 @@ export class PillQueryField {
         this.actionHintEl = this.rootEl.createSpan({ cls: 'seek-q-action-hint' });
         this.actionHintEl.hide();
 
-        this.textHintEl = this.rootEl.createDiv({ cls: 'seek-text-hint' });
-        this.textHintEl.hide();
+        this.modeBadgeEl = this.rootEl.createSpan({ cls: 'seek-text-mode-badge' });
+
+        const infoWrap = this.rootEl.createDiv({ cls: 'seek-exact-info-wrap' });
+        const info = infoWrap.createEl('button', {
+            cls: 'seek-exact-info',
+            attr: { type: 'button', 'aria-label': 'Exact search syntax' },
+        });
+        setIcon(info, 'info');
+        const tip = infoWrap.createDiv({ cls: 'seek-exact-tip' });
+        tip.createDiv({ cls: 'seek-exact-tip-title', text: 'Exact search' });
+        const rows: Array<[string, string]> = [
+            ['"phrase"', 'exact substring'],
+            ['"a" "b"', 'all must appear'],
+            ['+word', 'same as "word"'],
+            ['/pattern/', 'regex on note text'],
+            ['~', 'case-sensitive prefix'],
+        ];
+        for (const [sym, desc] of rows) {
+            const row = tip.createDiv({ cls: 'seek-exact-tip-row' });
+            row.createSpan({ cls: 'seek-exact-tip-sym', text: sym });
+            row.createSpan({ cls: 'seek-exact-tip-desc', text: desc });
+        }
+        infoWrap.addEventListener('mousedown', e => e.stopPropagation());
+        infoWrap.addEventListener('mouseenter', () => infoWrap.addClass('is-open'));
+        infoWrap.addEventListener('mouseleave', () => infoWrap.removeClass('is-open'));
+        infoWrap.addEventListener('focusin', () => infoWrap.addClass('is-open'));
+        infoWrap.addEventListener('focusout', () => infoWrap.removeClass('is-open'));
 
         this.suggEl = this.rootEl.createEl('ul', { cls: 'seek-sugg' });
         this.suggEl.hide();
@@ -296,7 +318,7 @@ export class PillQueryField {
         this.rootEl.addEventListener('mousedown', e => {
             const t = e.target as HTMLElement;
             if (t === this.editEl || this.editEl.contains(t)) return;
-            if (t.closest('.seek-pill') || t.closest('.seek-sugg')) return;
+            if (t.closest('.seek-pill') || t.closest('.seek-sugg') || t.closest('.seek-exact-info-wrap')) return;
             // Inside the editable's wrapper but not on the text itself — the empty
             // space past a short query (.seek-edit is inline, so it's only as wide
             // as the text; the rest of the line is .seek-editwrap, which fills the
@@ -639,20 +661,6 @@ export class PillQueryField {
             this.modeBadgeEl.removeClass('is-visible');
             this.modeBadgeEl.removeClass('is-warn');
             this.modeBadgeEl.setText('');
-        }
-        const free = this.readText();
-        let hint = '';
-        const quoteCount = (free.match(/"/g) ?? []).length;
-        if (quoteCount % 2 === 1) {
-            hint = 'Close " for exact phrase or word';
-        } else if (/(?:^|\s)\+\S*$/.test(free) || free.trimEnd().endsWith('+')) {
-            hint = '+word = exact word (same as "word")';
-        }
-        if (hint) {
-            this.textHintEl.setText(hint);
-            this.textHintEl.show();
-        } else {
-            this.textHintEl.hide();
         }
     }
 

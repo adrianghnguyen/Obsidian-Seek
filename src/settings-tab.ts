@@ -1142,7 +1142,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         exactBlock.createDiv({ cls: 'seek-progressive-title', text: 'Exact text syntax' });
         exactBlock.createDiv({
             cls: 'seek-progressive-desc',
-            text: 'In the search modal free-text area (alongside filter pills): "phrase" matches that exact substring; multiple quoted parts or +word terms must all appear ("a" "b" or +a +b); /pattern/ runs a regex on note bodies; prefix ~ for case-sensitive matching. A live badge beside the query field shows the active mode. These queries scan indexed note text only — no embedding step.',
+            text: 'In the search modal free-text area (alongside filter pills): "phrase" matches that exact substring; multiple quoted parts or +word terms must all appear ("a" "b" or +a +b); /pattern/ runs a regex on note bodies; prefix ~ for case-sensitive matching. Hover the info icon on the query row for the same list. A badge shows the active mode. These queries scan indexed note text only — no embedding step.',
         });
     }
 

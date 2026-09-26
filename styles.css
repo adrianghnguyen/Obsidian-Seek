@@ -155,7 +155,7 @@
 .seek-q {
     position: relative;
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     gap: 10px;
     /* Inline-end padding clears the native close button (12px inset + 28px wide)
        so pills and text never run beneath it. */
@@ -202,11 +202,13 @@
 .seek-text-mode-badge {
     display: none;
     flex: 0 0 auto;
-    max-width: 42%;
+    align-self: center;
+    max-width: 11rem;
     padding: 2px 8px;
-    border-radius: 6px;
+    border-radius: 999px;
     font-size: 11px;
     font-weight: 600;
+    line-height: 1.35;
     letter-spacing: 0.02em;
     white-space: nowrap;
     overflow: hidden;
@@ -226,12 +228,84 @@
     background: color-mix(in srgb, var(--text-error) 10%, var(--background-primary));
 }
 
-.seek-text-hint {
-    flex: 1 0 100%;
-    font-size: 11.5px;
-    line-height: 1.35;
+.seek-exact-info-wrap {
+    position: relative;
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    align-self: center;
+}
+
+.seek-modal .seek-exact-info {
+    all: unset;
+    position: relative;
+    box-sizing: border-box;
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    min-width: 24px;
+    min-height: 24px;
+    border-radius: 999px;
     color: var(--text-muted);
-    padding: 0 2px 2px;
+    cursor: help;
+}
+
+.seek-modal .seek-exact-info svg {
+    width: 16px;
+    height: 16px;
+}
+
+.seek-modal .seek-exact-info:hover,
+.seek-modal .seek-exact-info:focus-visible {
+    color: var(--text-normal);
+    background: var(--background-modifier-hover);
+}
+
+.seek-exact-tip {
+    display: none;
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    z-index: 80;
+    width: 16.5rem;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--background-modifier-border);
+    background: var(--background-primary);
+    box-shadow: var(--shadow-s);
+    text-align: left;
+    cursor: default;
+}
+
+.seek-modal .seek-exact-info-wrap:hover .seek-exact-tip,
+.seek-modal .seek-exact-info-wrap:focus-within .seek-exact-tip,
+.seek-modal .seek-exact-info-wrap.is-open .seek-exact-tip {
+    display: block;
+}
+
+.seek-exact-tip-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-normal);
+    margin-bottom: 4px;
+}
+
+.seek-exact-tip-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 11.5px;
+    line-height: 1.45;
+    color: var(--text-muted);
+}
+
+.seek-exact-tip-sym {
+    flex: 0 0 5.5rem;
+    font-family: var(--font-monospace);
+    color: var(--text-normal);
 }
 
 .seek-field {
@@ -1038,15 +1112,17 @@
    follow the 3-stage search progression (Name match → Lexical BM25 → Hybrid semantic)
    without distracting layout shifts or pop-in/pop-out flickering. */
 .seek-pipe-run {
-	display: inline-flex;
+	display: flex;
 	align-items: center;
+	justify-content: center;
 	gap: 4px;
-	margin-right: 12px;
+	flex: 1 0 100%;
+	order: -1;
+	margin: 0 0 4px;
 	font-size: 10.5px;
 	font-weight: 500;
 	color: var(--text-muted);
 	white-space: nowrap;
-	flex-shrink: 0;
 }
 
 .seek-pipe-stage {
