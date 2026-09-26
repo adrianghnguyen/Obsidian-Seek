@@ -365,6 +365,10 @@ describe('IndexedDB Lifecycle & Lock Safety (src/idb-lifecycle-lock.test.ts)', (
             await expect(store.deleteChunksByIds(['c1'])).rejects.toThrow(STORE_NOT_OPENED);
             await expect(store.putBm25('{"index":true}', 'stamp')).rejects.toThrow(STORE_NOT_OPENED);
             await expect(store.getBm25()).rejects.toThrow(STORE_NOT_OPENED);
+            await expect(store.putSignFrame({
+                ids: ['c1'], packed: new Uint8Array([1]), bytesPerVec: 1, stamp: {},
+            })).rejects.toThrow(STORE_NOT_OPENED);
+            await expect(store.getSignFrame()).rejects.toThrow(STORE_NOT_OPENED);
 
             // None of the post-unload operations attempted to reopen or acquire locks on IndexedDB
             expect(openSpy).not.toHaveBeenCalled();

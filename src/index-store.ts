@@ -117,7 +117,13 @@ export function indexDbPrefix(pluginId: string): string {
 // mixed body/file-relative index), so we force one clean rebuild here. No
 // CHUNKER_VERSION bump: ids are unchanged, peers' sidecars stay valid, and the
 // sidecar carries no line numbers (hydrate re-chunks the live file).
-export const DB_VERSION = 11;
+// DB_VERSION 12 (2026-09-25): ADDITIVE — new `sign_frame` store holding one
+// packed sign-bit blob (ids + concatenated bytes) plus a model/dim stamp, so a
+// cold start can load the resident binary frame with a single get instead of
+// cursor-walking every `binary` row. Purely a cache: a stamp or id-coverage
+// miss falls back to listAllBinary(), so no existing store is touched and no
+// reindex is forced. Same precedent as the v7 BM25 blob.
+export const DB_VERSION = 12;
 // Version of the META RECORD SHAPE (the MetaConfig field set), NOT the IDB store
 // layout above. Written by every setMeta site in search.ts; carried into the
 // identity tuple (identity.ts identityFromMeta → dbVersion) but deliberately not
@@ -155,15 +161,27 @@ const STORE_BINARY = 'binary';
 const STORE_FILES = 'files';
 const STORE_META = 'meta';
 const STORE_BM25 = 'bm25';
+const STORE_SIGN_FRAME = 'sign_frame';
 
 const META_KEY = 'config';
 const BM25_KEY = 'index';
+const SIGN_FRAME_KEY = 'packed';
 
 // A persisted MiniSearch index: the toJSON string + an opaque stamp the caller
 // (search.ts) uses to decide whether the blob is loadable for the live corpus +
 // analyzer. The store treats `stamp` as opaque — it neither builds nor validates it.
 export interface Bm25Record {
     json: string;
+    stamp: unknown;
+}
+
+// One packed sign frame: the concatenated binary rows (listAllBinary + concatPacked)
+// plus the chunk ids they line up with. `stamp` is opaque here — cache-manager
+// validates it. A miss falls back to the per-row cursor.
+export interface SignFrameRecord {
+    ids: string[];
+    packed: Uint8Array;
+    bytesPerVec: number;
     stamp: unknown;
 }
 
@@ -204,6 +222,7 @@ const COMPACTION_STORES: { store: string; inlineKey: boolean }[] = [
     { store: STORE_FILES,      inlineKey: true },
     { store: STORE_META,       inlineKey: false },
     { store: STORE_BM25,       inlineKey: false },
+    { store: STORE_SIGN_FRAME, inlineKey: false },
 ];
 
 export interface FileRecord {
@@ -560,6 +579,11 @@ export function openDb(
             if (!db.objectStoreNames.contains(STORE_BM25)) {
                 db.createObjectStore(STORE_BM25);
             }
+            // v11 -> v12: ADDITIVE — one packed sign-frame blob (gated cache,
+            // listAllBinary fallback, so no data drop / reindex).
+            if (!db.objectStoreNames.contains(STORE_SIGN_FRAME)) {
+                db.createObjectStore(STORE_SIGN_FRAME);
+            }
         };
     });
 }
@@ -836,6 +860,26 @@ export class IndexStore {
         const db = this.requireDb();
         const tx = db.transaction(STORE_BM25, 'readonly');
         const rec = await awaitRequest(tx.objectStore(STORE_BM25).get(BM25_KEY)) as Bm25Record | undefined;
+        return rec ?? null;
+    }
+
+    // Persist the concatenated sign-bit frame (single fixed key — one blob per
+    // vault DB). Overwrites the previous blob. The per-row `binary` store stays
+    // the source of truth; this is only the boot cache.
+    async putSignFrame(record: SignFrameRecord): Promise<void> {
+        const db = this.requireDb();
+        const tx = db.transaction(STORE_SIGN_FRAME, 'readwrite');
+        tx.objectStore(STORE_SIGN_FRAME).put(record, SIGN_FRAME_KEY);
+        await awaitTx(tx);
+    }
+
+    // Read the packed sign frame, or null if none stored yet. The caller checks
+    // the stamp and that every live chunk id is covered before skipping the
+    // per-row cursor.
+    async getSignFrame(): Promise<SignFrameRecord | null> {
+        const db = this.requireDb();
+        const tx = db.transaction(STORE_SIGN_FRAME, 'readonly');
+        const rec = await awaitRequest(tx.objectStore(STORE_SIGN_FRAME).get(SIGN_FRAME_KEY)) as SignFrameRecord | undefined;
         return rec ?? null;
     }
 
@@ -1142,6 +1186,7 @@ export class IndexStore {
         const db = this.requireDb();
         const plan: { store: string; label: string; rule: SizingRule }[] = [
             { store: STORE_BM25,       label: 'BM25 inverted index', rule: 'bm25' },
+            { store: STORE_SIGN_FRAME, label: 'packed sign frame',   rule: 'signframe' },
             { store: STORE_CHUNK_BODY, label: 'chunk bodies',        rule: 'utf8' },
             { store: STORE_CHUNK_META, label: 'chunk metadata',      rule: 'json' },
             { store: STORE_EMBEDDINGS, label: 'int8 vectors',        rule: 'quantvec' },

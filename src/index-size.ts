@@ -24,7 +24,8 @@
 //   bm25     — { json, stamp } (the serialized MiniSearch index; the IDB blob is
 //              plaintext JSON — gzip applies only to the cross-device sync sidecar,
 //              never in IDB — but we size a Uint8Array too, defensively)
-export type SizingRule = 'bytes' | 'quantvec' | 'utf8' | 'json' | 'bm25';
+//   signframe — { ids, packed, bytesPerVec, stamp } (one concatenated sign blob)
+export type SizingRule = 'bytes' | 'quantvec' | 'utf8' | 'json' | 'bm25' | 'signframe';
 
 export interface StoreSizeRow {
     store: string;  // raw store name, e.g. 'bm25' (stable key for the verdict logic)
@@ -79,6 +80,16 @@ export function sizeOfRow(rule: SizingRule, value: unknown): number {
                 : r.json instanceof Uint8Array ? r.json.byteLength
                 : 0;
             return blob + utf8Len(JSON.stringify(r.stamp ?? null));
+        }
+        case 'signframe': {
+            const r = value as { packed?: unknown; ids?: unknown; stamp?: unknown };
+            const packed = r.packed instanceof Uint8Array ? r.packed.byteLength
+                : r.packed instanceof ArrayBuffer ? r.packed.byteLength
+                : 0;
+            const ids = Array.isArray(r.ids)
+                ? utf8Len((r.ids as unknown[]).map(id => String(id)).join('\n'))
+                : 0;
+            return packed + ids + utf8Len(JSON.stringify(r.stamp ?? null));
         }
     }
 }
