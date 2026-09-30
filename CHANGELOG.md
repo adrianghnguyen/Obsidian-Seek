@@ -10,6 +10,7 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ### Fixed
 - **Warm boots no longer hang on "Starting up…".** A healthy warm index (every synced chunk already stored) previously returned from the sidecar hydrate without releasing the startup gate, and could fall through to walking the older hydrate tiers — re-chunking thousands of notes on the main thread, starving model load, and locking search at `starting` for minutes (observed ~474s on a ~4.4k-note vault). The gate now releases on the warm no-op path, and after the three-day tier when hydration did not add anything new.
+- **"Syncing from another device" no longer sticks forever on a stale peer.** The peer signal only counted whether *any* other device's sidecar file existed, so a peer built with an older model/revision — one that can never hydrate a current-identity index — was treated as a heal on its way, pinning the status on **Restoring**. A peer now counts only when its index identity actually matches this build (`metaAccepts`), so the state is truthful: a real heal shows the calm syncing notice, otherwise the index reads as action-needed.
 - **`IndexedDB` boot watchdog and diagnostics.** The boot watchdog state is logged as a `boot-watchdog` entry so a wedged startup is visible in the logging report, and the CLI search gate reports "startup is taking longer than expected (retry or rebuild the index)" rather than an optimistic "still loading".
 
 ## 1.12.0

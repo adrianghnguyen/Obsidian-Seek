@@ -2098,6 +2098,25 @@
 .seek-index-hover.is-hidden { display: none; }
 .seek-index-hover .seek-status-card { margin: 0; }
 
+/* Hover-card recovery block (stuck/locked): one-click Retry without opening Settings. */
+.seek-index-hover-recovery {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--background-modifier-border);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.seek-index-hover-recovery-msg {
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller);
+}
+.seek-index-hover-recovery-btn { width: 100%; }
+.seek-index-hover-recovery-hint {
+    color: var(--text-faint);
+    font-size: var(--font-ui-smaller);
+}
+
 /* ---- Index: reindex progress ---- */
 .seek-settings .seek-progress-row {
     padding: 10px 0;
