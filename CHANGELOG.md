@@ -4,6 +4,8 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.12.1
+
 ### Added
 - **Startup stuck watchdog.** If Seek does not become searchable within ~45s of boot (a wedged IndexedDB open/read, or a stalled startup continuation), every surface now shows a **Startup stuck** state instead of a perpetual "Starting up…". The search-modal footer and banner explain the wait and offer **Open settings**, and the command palette exposes **Retry opening the search index** and **Force reset search index** in this state so recovery is possible without a restart.
 - **Settings → Index → Recover search index.** When startup is stuck or the index is locked, a recovery row appears next to the status card with **Retry** (re-open the store and resume boot) and **Rebuild index** (two-step confirm; deletes and rebuilds the index). It appears live if the state flips while Settings is open, so recovery no longer depends on knowing the command palette.
