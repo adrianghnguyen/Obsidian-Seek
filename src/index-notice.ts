@@ -31,7 +31,7 @@
 // so the modal renders the same thing everywhere (the reindex itself lives behind the
 // Settings affordance, which owns any platform-specific guardrails).
 
-export type DegradedReason = 'version' | 'drift' | 'peer-ahead' | null;
+export type DegradedReason = 'version' | 'drift' | 'peer-ahead' | 'stuck' | null;
 export type IndexHealth = 'healthy' | 'recovering' | 'degraded';
 
 export interface IndexBannerSpec {
@@ -47,6 +47,11 @@ export interface IndexBannerSpec {
 export const INDEX_STALE_MSG = 'Index change detected. Search results may be inaccurate. Please reindex.';
 export const INDEX_SYNCING_MSG = 'A newer index is syncing from another device. Results may be inaccurate.';
 export const INDEX_PEER_AHEAD_MSG = 'Another device has a newer index. Update Seek on this device to use it.';
+// Boot watchdog: startup exceeded its expected window without becoming searchable.
+// Unlike INDEX_STARTING_MSG (an optimistic "in a moment"), this copy admits the wait
+// and points at recovery — the old "Starting" state promised progress that never came.
+export const INDEX_STUCK_TITLE = 'Startup is taking too long';
+export const INDEX_STUCK_MSG = 'Seek has been starting much longer than expected. Retry the search index, or rebuild it if it stays stuck.';
 // Shown (rate-limited) when index commits fail with QuotaExceededError — device
 // storage is full. The un-committed files stay dirty by the drain's own criterion,
 // so once space frees up the normal catch-up path heals them without a manual
@@ -61,6 +66,11 @@ export const INDEX_QUOTA_MSG = 'Seek: device storage is full — some notes coul
 // is syncing" off 'recovering' falsely shows "syncing from another device" on a
 // single-device vault mid drift-recovery. The peer fact must be carried explicitly.
 export function indexBannerSpec(health: IndexHealth, reason: DegradedReason, peerSyncPending = false): IndexBannerSpec | null {
+    // Boot watchdog fired: startup never reached a searchable state (the store
+    // opened but hydrate stalled, or a backing-store read never resolved). This is
+    // the ONLY reason that offers recovery actions, so the user is never stranded
+    // on a permanent "Starting" with no path forward.
+    if (reason === 'stuck') return { message: INDEX_STUCK_MSG, tone: 'warn', showAction: true };
     // Local build is behind a peer's index version: the fix is to update the plugin (not
     // reindex), so warn with no action button. Independent of health (always 'degraded').
     if (reason === 'peer-ahead') return { message: INDEX_PEER_AHEAD_MSG, tone: 'warn', showAction: false };
@@ -94,13 +104,14 @@ export const INDEX_UP_TO_DATE_LABEL = 'Ready';
 export const INDEX_LOCKED_TITLE = 'Index locked';
 export const INDEX_LOCKED_MSG = 'Seek cannot open the search index database. It will retry in the background — run **Retry opening the search index** from the command palette, or quit Obsidian if it stays locked.';
 export const INDEX_LOCKED_LABEL = 'Locked';
+export const INDEX_STUCK_LABEL = 'Stuck';
 
 export type IndexLoadPhase = 'hydrating' | 'indexing' | 'idle';
-export type IndexLoadKind = 'resting' | 'starting' | 'restoring' | 'indexing' | 'onboarding' | 'locked';
-export type IndexFooterKind = 'restoring' | 'starting' | 'error' | 'indexing' | 'model-loading' | 'no-index' | 'up-to-date' | 'locked';
+export type IndexLoadKind = 'resting' | 'starting' | 'restoring' | 'indexing' | 'onboarding' | 'locked' | 'stuck';
+export type IndexFooterKind = 'restoring' | 'starting' | 'error' | 'indexing' | 'model-loading' | 'no-index' | 'up-to-date' | 'locked' | 'stuck';
 export type IndexFooterTone = 'info' | 'accent' | 'bad' | 'warn' | 'mid' | 'good';
 /** Shared by status bar, settings card, modal, and CLI — one precedence tree. */
-export type IndexUiStatus = 'none' | 'starting' | 'restoring' | 'ok' | 'indexing' | 'error' | 'locked';
+export type IndexUiStatus = 'none' | 'starting' | 'restoring' | 'ok' | 'indexing' | 'error' | 'locked' | 'stuck';
 
 export interface IndexLoadFlags {
     hydrating: boolean;
@@ -190,6 +201,8 @@ export function resolveIndexLoadPhase(flags: IndexLoadFlags): IndexLoadPhase {
 export interface IndexUiStatusInput {
     /** IndexedDB refused to open after short retries — beats starting/ready. */
     storeLocked?: boolean;
+    /** Boot watchdog fired: startup exceeded its expected window without becoming searchable. */
+    stuck?: boolean;
     /** Plugin construct → onload sidecar/reconcile IIFE (and optional startup cache warm). */
     booting: boolean;
     /** First post-boot scheduling decision (idle vs catch-up vs full) not yet applied. */
@@ -218,6 +231,10 @@ export interface IndexUiStatusInput {
  */
 export function resolveIndexUiStatus(input: IndexUiStatusInput): IndexUiStatus {
     if (input.storeLocked) return 'locked';
+    // Boot watchdog fired: the boot continuation never became searchable within the
+    // expected window. Stuck outranks starting/restoring so every surface (status bar,
+    // Settings, modal footer, CLI) shows action-required instead of perpetual progress.
+    if (input.stuck) return 'stuck';
     if (input.waitingForSidecar || input.peerSyncPending) {
         return 'restoring';
     }
@@ -249,7 +266,7 @@ export function resolveSidecarWait(
 }
 
 /** CLI / headless search gate — null when the index checklist is satisfied. */
-export type CliSearchGateHealth = 'ok' | 'starting' | 'restoring' | 'indexing' | 'error' | 'none' | 'locked';
+export type CliSearchGateHealth = 'ok' | 'starting' | 'restoring' | 'indexing' | 'error' | 'none' | 'locked' | 'stuck';
 
 export interface CliSearchGateInput {
     warmPhase: 'starting' | 'restoring' | null;
@@ -264,11 +281,15 @@ export const CLI_SEARCH_GATE_RESTORING = 'Seek not ready — restoring search in
 export const CLI_SEARCH_GATE_INDEXING = 'Seek not ready — index still building';
 export const CLI_SEARCH_GATE_NO_INDEX = 'Seek not ready — no indexed notes yet';
 export const CLI_SEARCH_GATE_LOCKED = 'Seek not ready — search index is locked';
+export const CLI_SEARCH_GATE_STUCK = 'Seek not ready — startup is taking longer than expected (retry or rebuild the index)';
 /** Soft (non-blocking) notice for a populated store still warming at boot. */
 export const CLI_SEARCH_WARMING = 'Seek is warming up — lexical results only until semantic search is ready';
 
 export function resolveCliSearchGate(input: CliSearchGateInput): string | null {
     if (input.uiHealth === 'locked') return CLI_SEARCH_GATE_LOCKED;
+    // Boot watchdog fired: startup was expected to be searchable by now. Report the
+    // stuck state rather than an optimistic "still loading" so diagnostics/CLI agree.
+    if (input.uiHealth === 'stuck') return CLI_SEARCH_GATE_STUCK;
     // A full rebuild is always a hard block — even over a populated store and
     // even while booting. Results mid-pass are partial and misleading.
     if (input.fullJobActive) return CLI_SEARCH_GATE_INDEXING;
@@ -319,6 +340,12 @@ export function indexLoadSpec(input: IndexLoadInput): IndexLoadSpec {
     if (input.uiHealth === 'locked') {
         return { kind: 'locked', title: INDEX_LOCKED_TITLE, message: INDEX_LOCKED_MSG, showAction: false };
     }
+    // Boot watchdog fired: check BEFORE the populated-index shortcut below, so a
+    // partial index that never became searchable still shows the stuck state and
+    // its recovery actions instead of a reassuring "resting" body.
+    if (input.uiHealth === 'stuck') {
+        return { kind: 'stuck', title: INDEX_STUCK_TITLE, message: INDEX_STUCK_MSG, showAction: true };
+    }
     const chunks = effectiveModalChunks(input.chunks, input.uiHealth, input.inventoryChunks);
     // Full rebuild is not searchable until the pass finishes — even when the store
     // still holds chunks from the pre-nuke index or a partial write.
@@ -353,7 +380,7 @@ export function indexLoadSpec(input: IndexLoadInput): IndexLoadSpec {
 }
 
 export function isIndexWaitKind(kind: IndexLoadKind): boolean {
-    return kind === 'starting' || kind === 'restoring' || kind === 'indexing' || kind === 'locked';
+    return kind === 'starting' || kind === 'restoring' || kind === 'indexing' || kind === 'locked' || kind === 'stuck';
 }
 
 // Search-modal footer: always-visible icon + one-word label. UI path is
@@ -362,6 +389,9 @@ export function isIndexWaitKind(kind: IndexLoadKind): boolean {
 export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
     if (input.uiHealth === 'locked') {
         return { kind: 'locked', label: INDEX_LOCKED_LABEL, icon: 'lock', tone: 'bad' };
+    }
+    if (input.uiHealth === 'stuck' || input.reason === 'stuck') {
+        return { kind: 'stuck', label: INDEX_STUCK_LABEL, icon: 'alert-triangle', tone: 'bad' };
     }
     if (input.uiHealth === 'restoring' || input.kind === 'restoring' || input.waitingForSidecar || input.peerSyncPending) {
         return { kind: 'restoring', label: INDEX_RESTORING_LABEL, icon: 'refresh-cw', tone: 'info' };

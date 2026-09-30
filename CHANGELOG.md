@@ -4,6 +4,13 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Added
+- **Startup stuck watchdog.** If Seek does not become searchable within ~45s of boot (a wedged IndexedDB open/read, or a stalled startup continuation), every surface now shows a **Startup stuck** state instead of a perpetual "Starting up…". The search-modal footer and banner explain the wait and offer **Open settings**, and the command palette exposes **Retry opening the search index** and **Force reset search index** in this state so recovery is possible without a restart.
+
+### Fixed
+- **Warm boots no longer hang on "Starting up…".** A healthy warm index (every synced chunk already stored) previously returned from the sidecar hydrate without releasing the startup gate, and could fall through to walking the older hydrate tiers — re-chunking thousands of notes on the main thread, starving model load, and locking search at `starting` for minutes (observed ~474s on a ~4.4k-note vault). The gate now releases on the warm no-op path, and after the three-day tier when hydration did not add anything new.
+- **`IndexedDB` boot watchdog and diagnostics.** The boot watchdog state is logged as a `boot-watchdog` entry so a wedged startup is visible in the logging report, and the CLI search gate reports "startup is taking longer than expected (retry or rebuild the index)" rather than an optimistic "still loading".
+
 ## 1.12.0
 
 ### Added

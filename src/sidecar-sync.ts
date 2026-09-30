@@ -407,9 +407,18 @@ async function hydrateFromSidecarGreedy(
         allHydratedPaths.push(...tierHydratedPaths);
         tiersRun++;
 
-        const gateReleased = goodEnoughReleased
-            || ((tier.id === 'hydrate-tier-3d' || freshIdsRemaining.size === 0)
-            && (tierHydrated > 0 || freshIdsRemaining.size === 0));
+        // Gate policy: the THREE-DAY tier is the "recent notes are present" signal.
+        // Once it has been fully walked, the index is as good as it will get for
+        // startup, so the gate must release there EVEN on a warm index where
+        // nothing needed hydrating (tierHydrated === 0). The original condition
+        // additionally required `tierHydrated > 0`, which never held when every
+        // coverable chunk was already in the store — so a healthy warm boot walked
+        // the remaining tiers (30d/90d/full), re-chunking the whole vault on the
+        // main thread, starving model load and keeping `warmPhase` at 'starting'
+        // for minutes (observed 474s on a ~4.4k-note vault). Deeper-tier recovery
+        // is still owed when fresh ids remain, but it no longer blocks search.
+        const tierWalked = tier.id === 'hydrate-tier-3d' || freshIdsRemaining.size === 0;
+        const gateReleased = goodEnoughReleased || tierWalked;
         if (gateReleased && !goodEnoughReleased) {
             deps.onGoodEnough?.();
             goodEnoughReleased = true;
@@ -540,6 +549,13 @@ export async function hydrateFromSidecar(deps: HydrateDeps): Promise<HydrateResu
         const r: HydrateResult = { ...empty, ...bg, scanned: scan.map.size, refusedProducers: refused, acceptedProducers: accepted.length, peerAhead };
         deps.log?.('sidecar-hydrate-skip-rechunk', { scanned: scan.map.size, reason: 'no-fresh-ids' });
         deps.log?.('sidecar-hydrate', r);
+        // WARM FAST PATH: this device already holds every synced id, so there is
+        // nothing to hydrate and the index is as good as it will get this boot.
+        // This branch must still release the startup gate. The original omission was
+        // the PRIMARY cause of "stuck on Starting": a warm/no-op sync returned here
+        // without calling onGoodEnough, so search stayed gated and `warmPhase` held
+        // 'starting' until some unrelated path (catch-up, identity) happened to fire.
+        deps.onGoodEnough?.();
         return r;
     }
 
@@ -562,6 +578,10 @@ export async function hydrateFromSidecar(deps: HydrateDeps): Promise<HydrateResu
     if (candidates.length === 0) {
         const r: HydrateResult = { ...empty, ...bg, scanned: scan.map.size, refusedProducers: refused, acceptedProducers: accepted.length, peerAhead };
         deps.log?.('sidecar-hydrate', r);
+        // Nothing to hydrate (the fresh ids our scan predicted never resolved to a
+        // candidate note). The index is as good as it will get — release the gate so
+        // a warm boot cannot hang at 'starting' (mirrors the no-fresh-ids fast path).
+        deps.onGoodEnough?.();
         return r;
     }
 

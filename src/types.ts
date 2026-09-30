@@ -1615,6 +1615,20 @@ export interface StoreForceResetEntry {
     nuked?: boolean;
 }
 
+/**
+ * Boot watchdog fired: the post-layout boot did not become searchable within the
+ * expected window (not merely slow — a wedged store open/read or a stalled
+ * continuation). The UI flips to the Stuck state and offers manual recovery.
+ */
+export interface BootWatchdogEntry {
+    type: 'boot-watchdog';
+    timestamp: string;
+    elapsedMs: number;
+    reason: 'startup-not-searchable';
+    storeOpen: boolean;
+    hydrating: boolean;
+}
+
 /** Catch-up armed because Honor / excluded folders changed. */
 export interface ExclusionAlignEntry {
     type: 'exclusion-align';
@@ -1667,5 +1681,6 @@ export type LogEntry = (
     | StoreLockRetryEntry
     | StoreLockExhaustedEntry
     | StoreForceResetEntry
+    | BootWatchdogEntry
     | ExclusionAlignEntry
 ) & LogMeta;
