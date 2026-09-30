@@ -52,6 +52,12 @@ export const INDEX_PEER_AHEAD_MSG = 'Another device has a newer index. Update Se
 // and points at recovery — the old "Starting" state promised progress that never came.
 export const INDEX_STUCK_TITLE = 'Startup is taking too long';
 export const INDEX_STUCK_MSG = 'Seek has been starting much longer than expected. Retry the search index, or rebuild it if it stays stuck.';
+// Settings recovery affordance shown ONLY while startup is stuck or the store is
+// locked. Unlike the command palette (which the user must know to search), this puts
+// the recovery action directly next to the state that needs it.
+export const INDEX_RECOVERY_NAME = 'Recover search index';
+export const INDEX_RECOVERY_STUCK_DESC = 'Startup did not finish loading the index. Retry first; if it stays stuck, rebuild the index (this re-embeds every note).';
+export const INDEX_RECOVERY_LOCKED_DESC = 'Seek could not open the index database. Retry first; if it stays locked, rebuild the index (this re-embeds every note).';
 // Shown (rate-limited) when index commits fail with QuotaExceededError — device
 // storage is full. The un-committed files stay dirty by the drain's own criterion,
 // so once space frees up the normal catch-up path heals them without a manual
