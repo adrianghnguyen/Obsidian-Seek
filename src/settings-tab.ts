@@ -21,6 +21,11 @@ import type { IndexStats, ModelStatus } from './main';
 import type { SidecarIndexLocation, SearchModalHeight, SearchModalWidth, SnippetPreview } from './types';
 import { DEFAULT_SETTINGS, MATCH_STRENGTH_MIN_NOTES } from './types';
 import {
+    INDEX_RECOVERY_NAME,
+    INDEX_RECOVERY_STUCK_DESC,
+    INDEX_RECOVERY_LOCKED_DESC,
+} from './index-notice';
+import {
     BM25_FIELD_KEYS,
     BM25_FIELD_BOOST_MIN,
     BM25_FIELD_BOOST_MAX,
@@ -194,6 +199,10 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
     private bm25WeightsOpen = false;
     private reindexPhase: 'idle' | 'confirm' = 'idle';
     private reindexStarting = false;
+    // Recovery row (Retry / Rebuild) shown only while startup is stuck or the store is
+    // locked; two-step confirm so a rebuild (full re-embed) can't fire on one click.
+    private recoveryRebuildConfirm = false;
+    private recoveryBusy = false;
     private progressPoll: number | null = null;
     private jobStartedAt = 0;
     // Live-progress DOM refs, repointed on each display() so the runFullReindex
@@ -210,6 +219,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
     private startupPoll: number | null = null;
     private searchConsoleEl: HTMLElement | null = null;
     private statusCardHost: HTMLElement | null = null;
+    private recoveryRowHost: HTMLElement | null = null;
     // Per-folder coverage panel: indexing events drive live repaints; a 1s poll
     // while work remains (5s when idle) is the backstop so vault layout changes aren't missed.
     private coveragePoll: number | null = null;
@@ -302,6 +312,9 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         this.plugin.registerSettingsTelemetrySink(null);
         this.searchConsoleEl = null;
         this.statusCardHost = null;
+        this.recoveryRowHost = null;
+        this.recoveryRebuildConfirm = false;
+        this.recoveryBusy = false;
         this.coverageHost = null;
         this.exclusionBannerHost = null;
         this.stats = null;
@@ -359,6 +372,9 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
     private shouldPollStartup(): boolean {
         const health = this.statusState();
         if (health === 'starting' || health === 'restoring') return true;
+        // Keep repainting while stuck/locked so the recovery row appears and clears
+        // live without the user reopening Settings.
+        if (health === 'stuck' || health === 'locked') return true;
         if (!this.plugin.getStartupTimingView().bootComplete) return true;
         // Live embed rates on the status card while any index job is active.
         const job = this.plugin.getIndexJob();
@@ -590,13 +606,32 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
 
     private renderStatusCard(containerEl: HTMLElement): void {
         this.statusCardHost = containerEl.createDiv({ cls: 'seek-status-card-host' });
+        this.recoveryRowHost = containerEl.createDiv({ cls: 'seek-recovery-host' });
         this.paintStatusCard();
+    }
+
+    // Recovery row (Retry / Rebuild) is host-based so it can appear live when the health
+    // flips to stuck/locked without the user reopening Settings. Repainted alongside the
+    // status card; an in-progress rebuild/retry keeps the row mounted until it resolves.
+    private paintRecoveryRow(): void {
+        const host = this.recoveryRowHost;
+        if (!host || !host.isConnected) return;
+        const health = this.statusState();
+        const active = health === 'stuck' || health === 'locked';
+        if (!active && !this.recoveryBusy) {
+            this.recoveryRebuildConfirm = false;
+            host.empty();
+            return;
+        }
+        host.empty();
+        this.renderRecoveryRow(host);
     }
 
     private paintStatusCard(): void {
         const host = this.statusCardHost;
         if (!host || !host.isConnected) return;
         host.empty();
+        this.paintRecoveryRow();
         const startup = this.plugin.getStartupTimingView();
         renderSettingsIndexStatusCard(host, {
             health: this.statusState(),
@@ -959,6 +994,60 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         }
     }
 
+
+    /**
+     * Recovery affordance for a wedged startup: shown ONLY when the canonical health is
+     * 'stuck' (boot watchdog fired) or 'locked' (IDB refused to open). Puts the recovery
+     * action next to the state that needs it, instead of relying on the command palette.
+     *   - Retry    → re-attempt the store open / resume boot (non-destructive).
+     *   - Rebuild  → two-step confirm, then nuke + full reindex (re-embeds everything).
+     */
+    private renderRecoveryRow(containerEl: HTMLElement): void {
+        const health = this.statusState();
+        if (health !== 'stuck' && health !== 'locked') {
+            this.recoveryRebuildConfirm = false;
+            return;
+        }
+        if (this.recoveryRebuildConfirm) {
+            new Setting(containerEl)
+                .setName('Rebuild search index')
+                .setDesc("This deletes the current index and re-indexes every note. This may take a few minutes. Search will be unavailable until it's complete.")
+                .addButton(b => b.setButtonText('Cancel').onClick(() => { this.recoveryRebuildConfirm = false; this.rerender(); }))
+                .addButton(b => b.setButtonText('Delete & rebuild').setWarning().onClick(() => {
+                    this.recoveryRebuildConfirm = false;
+                    this.recoveryBusy = true;
+                    this.rerender();
+                    void this.plugin.forceResetIndexFromSettings().finally(() => {
+                        this.recoveryBusy = false;
+                        this.stats = null;
+                        this.rerender();
+                        void this.loadData();
+                    });
+                }));
+            return;
+        }
+        new Setting(containerEl)
+            .setName(INDEX_RECOVERY_NAME)
+            .setDesc(health === 'locked' ? INDEX_RECOVERY_LOCKED_DESC : INDEX_RECOVERY_STUCK_DESC)
+            .addButton(b => b
+                .setButtonText(this.recoveryBusy ? 'Rebuilding…' : 'Rebuild index')
+                .setWarning()
+                .setDisabled(this.recoveryBusy)
+                .onClick(() => { this.recoveryRebuildConfirm = true; this.rerender(); }))
+            .addButton(b => b
+                .setButtonText(this.recoveryBusy ? 'Retrying…' : 'Retry')
+                .setCta()
+                .setDisabled(this.recoveryBusy)
+                .onClick(() => {
+                    this.recoveryBusy = true;
+                    this.rerender();
+                    void this.plugin.recoverIndexFromSettings().finally(() => {
+                        this.recoveryBusy = false;
+                        this.rerender();
+                        void this.loadData();
+                    });
+                }));
+    }
 
     private renderReindexRow(containerEl: HTMLElement): void {
         if (this.showIndexingProgress()) {

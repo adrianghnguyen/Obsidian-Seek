@@ -1321,6 +1321,24 @@ export default class SeekPlugin extends Plugin {
         await this.resumeBootAfterStoreOpen(bootGen);
     }
 
+    /**
+     * Settings recovery affordance: retry opening the index and resume boot.
+     * Public so the Settings tab can offer the same one-click recovery the command
+     * palette exposes when startup is stuck or the store is locked.
+     */
+    async recoverIndexFromSettings(): Promise<void> {
+        await this.retryIndexStoreOpen();
+    }
+
+    /**
+     * Settings recovery affordance: nuke the index and rebuild it from scratch.
+     * Public wrapper around the self-heal path, which already clears the stuck/locked
+     * state and schedules a full reindex.
+     */
+    async forceResetIndexFromSettings(): Promise<void> {
+        await this.forceResetAndReindex(this.loadGeneration);
+    }
+
     /** Sidecar hydrate + reconcile after the index store opens (boot or retry). */
     private async resumeBootAfterStoreOpen(bootGen: number): Promise<void> {
         if (this.bootContinuationDone) return;
