@@ -32,9 +32,13 @@ import {
     CLI_SEARCH_GATE_INDEXING,
     CLI_SEARCH_GATE_NO_INDEX,
     CLI_SEARCH_GATE_LOCKED,
+    CLI_SEARCH_GATE_STUCK,
     INDEX_LOCKED_MSG,
     INDEX_LOCKED_TITLE,
     INDEX_LOCKED_LABEL,
+    INDEX_STUCK_MSG,
+    INDEX_STUCK_TITLE,
+    INDEX_STUCK_LABEL,
     isIndexWaitKind,
     type IndexFooterInput,
 } from './index-notice';
@@ -42,6 +46,16 @@ import {
 describe('indexBannerSpec', () => {
     it('returns null for a healthy index', () => {
         expect(indexBannerSpec('healthy', null)).toBeNull();
+    });
+
+    it('surfaces the boot-watchdog stuck state with recovery actions', () => {
+        const spec = indexBannerSpec('degraded', 'stuck');
+        expect(spec?.message).toBe(INDEX_STUCK_MSG);
+        expect(spec?.tone).toBe('warn');
+        expect(spec?.showAction).toBe(true);
+        // Stuck wins regardless of health — a startup that never became searchable
+        // must not be hidden by a coincidentally 'healthy' health value.
+        expect(indexBannerSpec('healthy', 'stuck')?.showAction).toBe(true);
     });
 
     it('returns null for a drift degradation — that is not a version change', () => {
@@ -156,6 +170,21 @@ describe('indexLoadSpec', () => {
         expect(spec.kind).toBe('starting');
         expect(spec.message).toBe(INDEX_STARTING_MSG);
         expect(spec.showAction).toBe(false);
+    });
+
+    it('shows the stuck state with recovery actions when the boot watchdog fired', () => {
+        const spec = indexLoadSpec({ chunks: 0, phase: 'hydrating', uiHealth: 'stuck' });
+        expect(spec.kind).toBe('stuck');
+        expect(spec.title).toBe(INDEX_STUCK_TITLE);
+        expect(spec.message).toBe(INDEX_STUCK_MSG);
+        expect(spec.showAction).toBe(true);
+    });
+
+    it('stuck beats the populated-index resting shortcut (partial index never searchable)', () => {
+        // A partial index must not present a reassuring resting body while startup is
+        // wedged — the user needs the recovery affordance.
+        expect(indexLoadSpec({ chunks: 1200, phase: 'hydrating', uiHealth: 'stuck' }).kind).toBe('stuck');
+        expect(indexLoadSpec({ chunks: 1200, phase: 'idle', uiHealth: 'stuck' }).showAction).toBe(true);
     });
 
     it('says Indexing only while a real index pass is running', () => {
@@ -444,6 +473,15 @@ describe('resolveCliSearchGate', () => {
         expect(resolveCliSearchGate({ warmPhase: null, uiHealth: 'error', chunks: 50 })).toBeNull();
     });
 
+    it('reports the stuck state instead of an optimistic warming message', () => {
+        // Without this, a wedged startup reported "still loading"/"warming up" forever
+        // and gave the CLI/diagnostics no signal that recovery actions are needed.
+        expect(resolveCliSearchGate({ warmPhase: 'starting', uiHealth: 'stuck', chunks: null }))
+            .toBe(CLI_SEARCH_GATE_STUCK);
+        expect(resolveCliSearchGate({ warmPhase: null, uiHealth: 'stuck', chunks: 120 }))
+            .toBe(CLI_SEARCH_GATE_STUCK);
+    });
+
     it('is ready when warm phase is clear, uiHealth ok, and chunks > 0', () => {
         expect(resolveCliSearchGate({ warmPhase: null, uiHealth: 'ok', chunks: 412 })).toBeNull();
     });
@@ -532,6 +570,17 @@ describe('resolveIndexUiStatus', () => {
             ...idle, storeLocked: true, goodEnough: true, hydrating: true,
         })).toBe('locked');
     });
+
+    it('boot watchdog stuck outranks starting and restoring, but not locked', () => {
+        // The whole point of the watchdog: a boot that never becomes searchable must
+        // not read as perpetual Starting. Stuck beats booting/hydrating/waiting.
+        expect(resolveIndexUiStatus({ ...idle, stuck: true, booting: true })).toBe('stuck');
+        expect(resolveIndexUiStatus({ ...idle, stuck: true, hydrating: true })).toBe('stuck');
+        expect(resolveIndexUiStatus({ ...idle, stuck: true, waitingForSidecar: true })).toBe('stuck');
+        expect(resolveIndexUiStatus({ ...idle, stuck: true, searchableChunks: null })).toBe('stuck');
+        // Store-locked has its own recovery ladder and stays the more specific state.
+        expect(resolveIndexUiStatus({ ...idle, stuck: true, storeLocked: true })).toBe('locked');
+    });
 });
 
 describe('locked index UI', () => {
@@ -540,6 +589,16 @@ describe('locked index UI', () => {
         modelReady: true,
         uiHealth: 'locked',
     };
+
+    it('footer shows Stuck with a bad tone when the boot watchdog fired', () => {
+        expect(indexFooterStatus({ kind: 'resting', modelReady: true, uiHealth: 'stuck' })).toMatchObject({
+            kind: 'stuck',
+            label: INDEX_STUCK_LABEL,
+            tone: 'bad',
+        });
+        // Carried reason also drives it (belt-and-braces when uiHealth lags).
+        expect(indexFooterStatus({ kind: 'resting', modelReady: true, uiHealth: 'starting', reason: 'stuck' }).kind).toBe('stuck');
+    });
 
     it('footer shows Locked, not Starting or Ready', () => {
         expect(indexFooterStatus(idleFooter)).toMatchObject({

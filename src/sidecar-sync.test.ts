@@ -551,4 +551,89 @@ describe('probePeerAhead', () => {
         expect(subsetPaths.length).toBe(1);
         expect(subsetPaths[0]).toEqual(['recent.md']);
     });
+
+    it('WARM index (nothing to hydrate) releases the gate without re-chunking the vault', async () => {
+        // Regression: a healthy warm boot — every coverable chunk already in the store —
+        // used to return from hydrate WITHOUT calling onGoodEnough, so the startup gate
+        // never released and `warmPhase` held 'starting' indefinitely. The store override
+        // that precedes it could also walk the remaining tiers and re-chunk the whole
+        // vault on the main thread (observed 474s on prod). Both are covered here.
+        const a = new FakeAdapter();
+        const now = Date.now();
+        const old = now - 200 * 86_400_000; // well outside every hydrate tier
+        const notes: NoteSpec[] = [
+            { path: 'recent.md', mtime: now, ids: ['r1'] },
+            { path: 'ancient.md', mtime: old, ids: ['x1'] },
+        ];
+        await seedSidecar(a, 'desktop-aaa', notes);
+
+        const subsetPaths: string[][] = [];
+        let goodEnough = false;
+        // The store already holds EVERY id → nothing is ever `needed`; the scan has no
+        // fresh id, so the cheap pre-gate short-circuits before any re-chunk.
+        const { deps } = makeDeps(a, notes, {
+            existingIds: async () => new Set(['r1', 'x1']),
+            greedyHydrate: true,
+            listHydrateFiles: async () => [
+                { path: 'recent.md', mtimeMs: now },
+                { path: 'ancient.md', mtimeMs: old },
+            ],
+            reChunkSubset: async files => {
+                subsetPaths.push(files.map(f => f.path));
+                return files.map(ref => {
+                    const n = notes.find(x => x.path === ref.path)!;
+                    return { notePath: n.path, mtimeMs: n.mtime, chunks: n.ids.map(id => chunk(id, n.path)) };
+                });
+            },
+            reChunk: async () => { throw new Error('full reChunk should not run'); },
+            onGoodEnough: () => { goodEnough = true; },
+        });
+        const r = await hydrateFromSidecar(deps);
+
+        expect(r.hydrated).toBe(0);        // warm — nothing to hydrate
+        expect(goodEnough).toBe(true);     // gate released (this is the fix)
+        expect(subsetPaths.length).toBe(0); // and NO tier was walked / re-chunked
+    });
+
+    it('gate releases after the 3-day tier even when it hydrated nothing new', async () => {
+        // A fresh id OUTSIDE the 3-day tier must not keep the gate closed while the
+        // older tiers are walked. The 3-day tier is the startup signal: once it is
+        // walked, release (deeper recovery may continue after the gate opens).
+        const a = new FakeAdapter();
+        const now = Date.now();
+        const old = now - 200 * 86_400_000;
+        const notes: NoteSpec[] = [
+            { path: 'recent.md', mtime: now, ids: ['r1'] },
+            { path: 'ancient.md', mtime: old, ids: ['x1'] },
+        ];
+        await seedSidecar(a, 'desktop-aaa', notes);
+
+        const subsetPaths: string[][] = [];
+        let goodEnough = false;
+        // x1 is fresh (missing); the ancient note sits outside the 3-day tier.
+        const { deps } = makeDeps(a, notes, {
+            existingIds: async () => new Set(['r1']),
+            greedyHydrate: true,
+            listHydrateFiles: async () => [
+                { path: 'recent.md', mtimeMs: now },
+                { path: 'ancient.md', mtimeMs: old },
+            ],
+            reChunkSubset: async files => {
+                subsetPaths.push(files.map(f => f.path));
+                return files.map(ref => {
+                    const n = notes.find(x => x.path === ref.path)!;
+                    return { notePath: n.path, mtimeMs: n.mtime, chunks: n.ids.map(id => chunk(id, n.path)) };
+                });
+            },
+            reChunk: async () => { throw new Error('full reChunk should not run'); },
+            onGoodEnough: () => { goodEnough = true; },
+        });
+        const r = await hydrateFromSidecar(deps);
+
+        expect(goodEnough).toBe(true); // released after the 3-day tier
+        // The 3-day tier ran; the ancient note's deeper tier was never walked.
+        const walked = subsetPaths.flat();
+        expect(walked).toContain('recent.md');
+        expect(walked).not.toContain('ancient.md');
+    });
 });

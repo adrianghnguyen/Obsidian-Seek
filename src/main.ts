@@ -136,6 +136,14 @@ const LONG_TASK_THRESHOLD_MS = 250;
 // the cost only lands on background indexing — never on the user opening
 // search. Kept small: user-approved budget is "a few seconds, no more".
 const POST_LAYOUT_BOOT_BUFFER_MS = 3500;
+// Boot watchdog: if startup has neither become searchable (`indexGoodEnough`) nor
+// reached the store-locked recovery path within this window, surface the Stuck state
+// with manual recovery actions. Sizing: a healthy boot is single-digit seconds; a
+// large cold hydrate is minutes but is NOT stuck (it marks good enough as the 3-day
+// tier completes). 45s is well past every non-stuck path yet short enough that a
+// wedged store (an IDB open/read that never resolves) doesn't strand the user on a
+// permanent "Starting" with no explanation.
+const STUCK_BOOT_TIMEOUT_MS = 45_000;
 
 
 // Sidecar compaction: how many 'incomplete-rechunk' verdicts (each = a full
@@ -391,6 +399,13 @@ export default class SeekPlugin extends Plugin {
     /** IndexedDB refused to open after short retries — surfaces Locked UI and deferred retry. */
     private indexStoreLocked = false;
     private storeOpenRetryScheduler: StoreOpenRetryScheduler | null = null;
+    // Boot watchdog: set when startup exceeds STUCK_BOOT_TIMEOUT_MS without becoming
+    // searchable (indexGoodEnough) and without a store lock (which has its own retry
+    // ladder). Distinguishes "genuinely still working" from "wedged with no progress"
+    // so the UI can offer recovery instead of a perpetual Starting state. Cleared the
+    // moment the boot continuation reaches a searchable/ready state.
+    private indexBootStuck = false;
+    private bootWatchdogTimer: number | null = null;
     private bootResumeCtx: {
         migrateSidecarPath: boolean;
         sidecarIndexDir: string;
@@ -498,6 +513,7 @@ export default class SeekPlugin extends Plugin {
     private statusBarHealth(): IndexStatusHealth {
         return resolveIndexUiStatus({
             storeLocked: this.indexStoreLocked,
+            stuck: this.indexBootStuck,
             booting: this.indexBootPending,
             bootDecisionPending: this.indexBootDecisionPending,
             hydrating: this.sidecarHydrating,
@@ -971,17 +987,22 @@ export default class SeekPlugin extends Plugin {
             id: 'retry-index-store',
             name: 'Retry opening the search index',
             checkCallback: (checking) => {
-                if (checking) return isRetryIndexStoreCommandEnabled(this.indexStoreLocked);
+                if (checking) return isRetryIndexStoreCommandEnabled(this.indexStoreLocked || this.indexBootStuck);
+                // Allow an explicit retry from the Stuck state even when the store
+                // reports open but boot never became searchable (a wedged read).
+                if (!this.indexStoreLocked && !this.indexBootStuck) return false;
+                void this.retryIndexStoreOpen();
+                return true;
             },
-            callback: () => { void this.retryIndexStoreOpen(); },
         });
 
         this.addCommand({
             id: 'force-reset-index',
             name: 'Force reset search index',
             checkCallback: (checking) => {
-                if (checking) return this.indexStoreLocked;
-                if (!this.indexStoreLocked) return false;
+                const enabled = this.indexStoreLocked || this.indexBootStuck;
+                if (checking) return enabled;
+                if (!enabled) return false;
                 const bootGen = this.loadGeneration;
                 void this.forceResetAndReindex(bootGen);
                 return true;
@@ -1057,6 +1078,11 @@ export default class SeekPlugin extends Plugin {
         if (!this.isBootCurrent(bootGen)) return;
         this.bootStartMs = performance.now();
         this.startupTelemetry.beginBoot(this.bootStartMs);
+        // Re-arm a fresh watchdog window and clear any stale Stuck flag from a prior
+        // pass (retry/self-heal paths re-enter here). If this pass also fails to become
+        // searchable, the timer fires again with the current bootGen.
+        this.markBootStuckResolved();
+        this.armBootWatchdog(bootGen);
         {
             const span = {
                 type: 'startup-span' as const,
@@ -1125,6 +1151,51 @@ export default class SeekPlugin extends Plugin {
         }
     }
 
+    // ---- Boot watchdog -----------------------------------------------------
+    // Armed when the post-layout boot starts and disarmed when the boot reaches a
+    // searchable/ready state, a store lock, or unload. If it fires, startup is
+    // wedged (not merely slow): flip the canonical health to Stuck so every surface
+    // offers recovery, and log a boot-watchdog entry for diagnostics.
+    private armBootWatchdog(bootGen: number): void {
+        this.clearBootWatchdog();
+        this.bootWatchdogTimer = window.setTimeout(() => {
+            this.bootWatchdogTimer = null;
+            if (!this.isBootCurrent(bootGen)) return;
+            // Healthy outcomes never leave booting=true; treat them as resolved even if
+            // the explicit resolve call raced the timer.
+            if (this.indexGoodEnough || this.indexStoreLocked || !this.indexBootPending) return;
+            this.indexBootStuck = true;
+            // Carry the reason to the banner surface (indexBannerSpec) without
+            // clobbering a real version/drift/peer-ahead reason that may already stand.
+            if (this.degradedReason == null) this.degradedReason = 'stuck';
+            void this.logger.append({
+                type: 'boot-watchdog',
+                timestamp: new Date().toISOString(),
+                elapsedMs: STUCK_BOOT_TIMEOUT_MS,
+                reason: 'startup-not-searchable',
+                storeOpen: this.store.isOpen(),
+                hydrating: this.sidecarHydrating,
+            }).catch(() => {});
+            console.warn(`[seek] boot watchdog fired after ${STUCK_BOOT_TIMEOUT_MS}ms — startup never became searchable; surfacing Stuck state`);
+            this.refreshIndexStatusBar();
+        }, STUCK_BOOT_TIMEOUT_MS);
+    }
+
+    private clearBootWatchdog(): void {
+        if (this.bootWatchdogTimer != null) {
+            window.clearTimeout(this.bootWatchdogTimer);
+            this.bootWatchdogTimer = null;
+        }
+    }
+
+    /** Leave the Stuck state once boot work resumes or completes. */
+    private markBootStuckResolved(): void {
+        if (!this.indexBootStuck) return;
+        this.indexBootStuck = false;
+        if (this.degradedReason === 'stuck') this.degradedReason = null;
+        this.refreshIndexStatusBar();
+    }
+
     private disposeStoreOpenRetryScheduler(): void {
         this.storeOpenRetryScheduler?.dispose();
         this.storeOpenRetryScheduler = null;
@@ -1161,6 +1232,9 @@ export default class SeekPlugin extends Plugin {
             isCurrent: () => this.isSessionWorkCurrent(bootGen),
             onLocked: () => {
                 this.indexStoreLocked = true;
+                // A store-lock has its own retry + self-heal ladder; the generic watchdog
+                // must not also claim "stuck" over it (Locked is the accurate state).
+                this.clearBootWatchdog();
                 this.refreshIndexStatusBar();
             },
             onRetry: (attempt, delayMs, elapsedMs) => {
@@ -1196,6 +1270,7 @@ export default class SeekPlugin extends Plugin {
     /** Self-heal: nuke the IndexedDB database and schedule a full reindex. */
     private async forceResetAndReindex(bootGen: number): Promise<void> {
         if (!this.isBootCurrent(bootGen)) return;
+        this.markBootStuckResolved();
         try {
             new Notice('Seek: search index is stuck locked — resetting database...', 8000);
             await this.logger.append({
@@ -1222,6 +1297,7 @@ export default class SeekPlugin extends Plugin {
     }
 
     private async retryIndexStoreOpen(): Promise<void> {
+        this.markBootStuckResolved();
         if (this.storeOpenRetryScheduler) {
             // Use retryNow to bypass pending backoff timers.
             this.storeOpenRetryScheduler.retryNow();
@@ -1301,6 +1377,8 @@ export default class SeekPlugin extends Plugin {
         this.unloading = true;
         this.bootBuffer?.cancel();
         this.bootBuffer = null;
+        this.clearBootWatchdog();
+        this.indexBootStuck = false;
         this.disposeStoreOpenRetryScheduler();
         this.indexStoreLocked = false;
         this.bootContinuationDone = false;
@@ -2170,6 +2248,9 @@ export default class SeekPlugin extends Plugin {
         if (this.indexGoodEnough) return;
         this.indexGoodEnough = true;
         this.indexBootPending = false;
+        // Reached searchable — stand down the stuck watchdog.
+        this.clearBootWatchdog();
+        this.markBootStuckResolved();
         void this.logStartupGateReleased();
         void this.touchIndexInventory();
         this.refreshIndexStatusBar();
