@@ -844,6 +844,7 @@ export default class SeekPlugin extends Plugin {
             getStats: () => this.getIndexStats(),
             getHealth: () => this.statusBarHealth(),
             onOpenSettings: () => this.openSeekSettings(),
+            onRecover: () => { void this.retryIndexStoreOpen(); },
         });
 
         // Incremental indexing: live vault-event triggers + the startup catch-up

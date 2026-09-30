@@ -253,11 +253,23 @@ export class SidecarCoordinator {
         return this.afterHydrateExclusive(result);
     }
 
-    // Does ANY other device have a sidecar in the index dir, regardless of its identity?
+    // Does another device hold a sidecar this build can actually ingest? Only a peer
+    // whose index identity MATCHES ours can heal us embed-free, so "a peer file exists"
+    // is not enough: a STALE peer (older model/revision) can never hydrate a
+    // current-identity index, and counting it as "on its way" strands the device on
+    // Restoring forever. Requiring metaAccepts means the caller's two branches are
+    // truthful — 'recovering' only when a heal is genuinely coming, otherwise the
+    // index is action-needed (reindex / update).
     async peerSidecarPresent(): Promise<boolean> {
         if (!this.coord.sidecarOn()) return false;
-        const ids = await listSidecarDeviceIds(this.app.vault.adapter, this.coord.dir!);
-        return ids.some(id => id !== this.logger.deviceId);
+        const adapter = this.app.vault.adapter;
+        const dir = this.coord.dir!;
+        const expect = expectationFor();
+        for (const dev of await listSidecarDeviceIds(adapter, dir)) {
+            if (dev === this.logger.deviceId) continue;
+            if (metaAccepts(await readDeviceMeta(adapter, dir, dev), expect)) return true;
+        }
+        return false;
     }
 
     // Referential-integrity sweep (Phase 3 steady-state GC): delete every chunk no

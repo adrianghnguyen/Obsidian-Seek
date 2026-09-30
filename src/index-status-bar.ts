@@ -82,6 +82,8 @@ export interface IndexStatusBarHooks {
     getStats: () => Promise<IndexStatusCardStats>;
     getHealth: () => IndexStatusHealth;
     onOpenSettings: () => void;
+    /** One-click recovery for a wedged startup (stuck/locked) — retries the index. */
+    onRecover: () => void;
 }
 
 export class IndexStatusBar {
@@ -344,8 +346,10 @@ export class IndexStatusBar {
         if (gen !== this.hoverGen) return;
         hover.empty();
         let health = hooks.getHealth();
-        if (health === 'starting' || health === 'restoring' || health === 'locked') {
-            /* keep canonical hydrate/lock labels even if a job is queued */
+        if (health === 'starting' || health === 'restoring' || health === 'locked' || health === 'stuck') {
+            /* keep canonical hydrate/lock/stuck labels even if a job is queued.
+               'stuck' must be excluded from the empty-store remap below, or a wedged
+               startup with no inventory would read as 'none' and hide the recovery. */
         } else if (this.jobActive) health = 'indexing';
         else if (health !== 'error' && health !== 'indexing' && stats.files === 0 && stats.chunks === 0) health = 'none';
         renderIndexStatusCard(hover, {
@@ -354,6 +358,32 @@ export class IndexStatusBar {
             job: this.job(),
             eta: this.jobActive ? formatRoughEta(this.done, this.total, performance.now() - this.jobStartedAt) : null,
         });
+        // One-click recovery lives on the hover card so a wedged startup is fixable
+        // without opening Settings. Destructive rebuild stays in Settings; this is the
+        // non-destructive Retry (same action as the command palette / Settings row).
+        if (health === 'stuck' || health === 'locked') {
+            this.renderHoverRecovery(hover, health);
+        }
+    }
+
+    private renderHoverRecovery(hover: HTMLElement, health: IndexStatusHealth): void {
+        const wrap = hover.createDiv({ cls: 'seek-index-hover-recovery' });
+        wrap.createDiv({
+            cls: 'seek-index-hover-recovery-msg',
+            text: health === 'locked'
+                ? 'The index database is locked.'
+                : 'Startup is taking too long.',
+        });
+        const btn = wrap.createEl('button', { cls: 'seek-index-hover-recovery-btn mod-cta', text: 'Retry search index' });
+        // Stop the click from bubbling to the root handler (which opens Settings) and
+        // keep the popover from closing under the pointer mid-click.
+        btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            this.hooks?.onRecover();
+            this.hideHover();
+        });
+        wrap.createDiv({ cls: 'seek-index-hover-recovery-hint', text: 'Still stuck? Rebuild from Settings → Index.' });
     }
 
     private hideHover(): void {

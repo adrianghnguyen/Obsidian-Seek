@@ -10,6 +10,10 @@ import { CacheManager } from './cache-manager';
 import { SidecarCoordinator } from './sidecar-coordinator';
 import { SearchOrchestrator } from './search';
 import { FakeVault, fakeEmbedder } from './test-harness/scenario';
+import { SIDECAR_FORMAT } from './sidecar';
+import { writeDeviceMeta, expectationFor } from './sidecar-meta';
+
+const EXPECT = expectationFor();
 
 class MemoryAdapter {
     files = new Map<string, string>();
@@ -63,6 +67,22 @@ class MemoryAdapter {
     async remove(p: string): Promise<void> {
         this.files.delete(p);
         this.bins.delete(p);
+    }
+    // Atomic meta writes (writeTextAtomic) rename a temp file over the target.
+    async rename(from: string, to: string): Promise<void> {
+        const v = this.files.get(from);
+        if (v !== undefined) {
+            this.files.set(to, v);
+            this.files.delete(from);
+            return;
+        }
+        const b = this.bins.get(from);
+        if (b !== undefined) {
+            this.bins.set(to, b);
+            this.bins.delete(from);
+            return;
+        }
+        throw new Error(`ENOENT: ${from}`);
     }
 }
 
@@ -170,6 +190,46 @@ describe('SidecarCoordinator', () => {
             // Reaping dead identity sidecars when nothing exists returns 0
             const reaped = await coordinator.reapDeadIdentitySidecars();
             expect(reaped).toBe(0);
+        });
+
+        it('peerSidecarPresent only counts a peer this build can ingest (stale peer is not "on its way")', async () => {
+            const settings = structuredClone(DEFAULT_SETTINGS);
+            settings.sidecarEnabled = true;
+            const indexDir = '.seek-test-index';
+            const coord = new IndexCoordinator(indexDir, settings);
+            const cacheManager = new CacheManager({ app, store, coord, embedder, settings, logger });
+            const coordinator = new SidecarCoordinator({
+                app, store, coord, embedder, logger, settings,
+                cacheManager,
+                chunksFor: () => [],
+                indexableFiles: () => [],
+                shouldIndex: () => true,
+            });
+
+            // A STALE peer (different modelId) can never hydrate a current-identity index.
+            // Counting it as "syncing" stranded the device on Restoring forever.
+            await writeDeviceMeta(adapter as never, indexDir, {
+                format: SIDECAR_FORMAT,
+                modelId: 'hotchpotch/bekko-embedding-v1-a8m',
+                revision: null,
+                chunkerVersion: EXPECT.chunkerVersion,
+                dim: EXPECT.dim,
+                deviceId: 'desktop-stale',
+                lastFullReindex: null,
+            });
+            expect(await coordinator.peerSidecarPresent()).toBe(false);
+
+            // A CURRENT-identity peer IS a real heal in progress.
+            await writeDeviceMeta(adapter as never, indexDir, {
+                format: SIDECAR_FORMAT,
+                modelId: EXPECT.modelId,
+                revision: EXPECT.revision,
+                chunkerVersion: EXPECT.chunkerVersion,
+                dim: EXPECT.dim,
+                deviceId: 'desktop-current',
+                lastFullReindex: null,
+            });
+            expect(await coordinator.peerSidecarPresent()).toBe(true);
         });
 
         it('sweeps orphan chunks when store has orphans', async () => {

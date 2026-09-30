@@ -25,6 +25,7 @@ interface StubEl {
     max: number;
     value: number;
     children: StubEl[];
+    events: Record<string, Array<(e: unknown) => void>>;
     empty(): void;
     createDiv(opts?: { cls?: string; text?: string }): StubEl;
     createSpan(opts?: { cls?: string; text?: string }): StubEl;
@@ -33,7 +34,8 @@ interface StubEl {
     removeClass(cls: string): void;
     setText(text: string): void;
     setAttr(key: string, value: string): void;
-    addEventListener(_type: string, _fn: unknown): void;
+    addEventListener(type: string, fn: unknown): void;
+    fire(type: string, e?: unknown): void;
     querySelector(sel: string): StubEl | null;
 }
 
@@ -45,6 +47,7 @@ function stubEl(tagName = 'div'): StubEl {
         max: 1,
         value: 0,
         children: [],
+        events: {},
         empty() { el.children = []; el.textContent = ''; },
         createDiv(opts) { return el.createEl('div', opts); },
         createSpan(opts) { return el.createEl('span', opts); },
@@ -61,7 +64,12 @@ function stubEl(tagName = 'div'): StubEl {
         },
         setText(text) { el.textContent = text; },
         setAttr() { /* unused in assertions */ },
-        addEventListener() { /* unused in assertions */ },
+        addEventListener(type, fn) {
+            (el.events[type] ??= []).push(fn as (e: unknown) => void);
+        },
+        fire(type, e) {
+            for (const fn of el.events[type] ?? []) fn(e);
+        },
         querySelector(sel) {
             const walk = (n: StubEl): StubEl | null => {
                 if (sel.startsWith('.')) {
@@ -164,6 +172,7 @@ describe('IndexStatusBar', () => {
         }),
         getHealth: () => 'ok' as const,
         onOpenSettings: () => {},
+        onRecover: () => {},
     };
 
     it('paints file counts and progress bar without chunk rate on the label', () => {
@@ -352,6 +361,7 @@ describe('renderIndexStatusCard', () => {
             }),
             getHealth: () => 'indexing' as const,
             onOpenSettings: () => {},
+            onRecover: () => {},
         });
         bar.show(15, 'Seek: indexing 15 notes…');
         bar.update(3, 15);
@@ -426,5 +436,56 @@ describe('INDEX_STATUS_HEALTH locked', () => {
             label: 'Index locked',
             compact: 'Locked',
         });
+    });
+});
+
+describe('INDEX_STATUS_HEALTH stuck', () => {
+    it('uses compact Stuck and bad tone for status bar and settings', () => {
+        expect(INDEX_STATUS_HEALTH.stuck).toEqual({
+            tone: 'bad',
+            label: 'Startup stuck',
+            compact: 'Stuck',
+        });
+    });
+
+    it('hover card offers a one-click Retry when startup is stuck or locked', async () => {
+        for (const health of ['stuck', 'locked'] as const) {
+            const root = stubEl();
+            let recovered = 0;
+            const bar = new IndexStatusBar();
+            bar.mount(root as unknown as HTMLElement, {
+                // Zero inventory: the empty-store remap must NOT hide the recovery row.
+                getStats: async () => ({ files: 0, chunks: 0, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null }),
+                getHealth: () => health,
+                onOpenSettings: () => {},
+                onRecover: () => { recovered += 1; },
+            });
+            // Drive the real hover path (mouseenter is wired in mount()).
+            root.fire('mouseenter');
+            await Promise.resolve();
+            await Promise.resolve();
+            const hover = root.querySelector('.seek-index-hover');
+            const btn = root.querySelector('.seek-index-hover-recovery-btn');
+            expect(btn?.textContent).toBe('Retry search index');
+            const blob = textOf(hover as unknown as StubEl);
+            expect(blob).toContain(health === 'locked' ? 'database is locked' : 'taking too long');
+            btn?.fire('click', { preventDefault() {}, stopPropagation() {} });
+            expect(recovered).toBe(1);
+        }
+    });
+
+    it('hover card omits the recovery action on a healthy index', async () => {
+        const root = stubEl();
+        const bar = new IndexStatusBar();
+        bar.mount(root as unknown as HTMLElement, {
+            getStats: async () => ({ files: 5, chunks: 18, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null }),
+            getHealth: () => 'ok',
+            onOpenSettings: () => {},
+            onRecover: () => {},
+        });
+        root.fire('mouseenter');
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(root.querySelector('.seek-index-hover-recovery-btn')).toBeNull();
     });
 });
