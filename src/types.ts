@@ -1624,9 +1624,15 @@ export interface BootWatchdogEntry {
     type: 'boot-watchdog';
     timestamp: string;
     elapsedMs: number;
-    reason: 'startup-not-searchable';
+    reason: 'startup-not-searchable' | 'store-read-timeout';
     storeOpen: boolean;
     hydrating: boolean;
+    /** Boot continuation reached its finalize step (the resume path ran to the end). */
+    bootContinuationDone?: boolean;
+    /** A writer holds the index mutex (a reindex/delta may be the stall). */
+    writing?: boolean;
+    /** An identity heal is mid-flight (rebuildFromSidecar / in-place stamp). */
+    identityHeal?: boolean;
 }
 
 /** Catch-up armed because Honor / excluded folders changed. */

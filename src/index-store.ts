@@ -374,6 +374,13 @@ function deleteDbWithBlockGuard(dbName: string): Promise<void> {
 // openDb directly rather than through all of open()'s post-connection setup.
 const UNKNOWN_OPEN_RETRY_MS = 500;
 const UNKNOWN_OPEN_RETRIES = 5;
+// Deadline for indexedDB.open() itself. A wedged LevelDB backing store can leave
+// open() pending FOREVER with no success/error/blocked event (the production
+// "stuck boot" — openInFlight never cleared, the store never opens, and the boot
+// continuation never runs). Bounding it turns the silent hang into a classifiable
+// error so the lock-retry ladder (which needs a rejection) engages and recovery
+// can proceed. Generous vs. a healthy open (<1s) to avoid false positives.
+const STORE_OPEN_TIMEOUT_MS = 10_000;
 
 /**
  * Attempt to clear a stale LevelDB lock by issuing a deleteDatabase.
@@ -435,12 +442,25 @@ export function openDb(
 ): Promise<IDBDatabase> {
     return new Promise((resolve, reject) => {
         const req = indexedDB.open(dbName, DB_VERSION);
+        // open() can hang indefinitely on a wedged backing store — no success, no
+        // error, no blocked. Bound it so callers get a rejection (and the lock
+        // retry/recovery path can run) instead of a silent, session-long hang.
+        let settled = false;
+        const timer = window.setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            reject(new Error(`${STORE_OP_TIMEOUT_PREFIX}: indexedDB.open(${dbName}) after ${STORE_OPEN_TIMEOUT_MS}ms`));
+        }, STORE_OPEN_TIMEOUT_MS);
         req.onerror = () => {
+            if (settled) return;
             const err = req.error;
             // Chromium "Internal error opening backing store" (UnknownError) is often
             // a brief lock after reload / another vault window. Retry without deleting.
             if (allowRecovery && err instanceof DOMException && err.name === 'UnknownError'
                 && unknownRetries > 0) {
+                // Handing off to a retry — the outer deadline must not fire and reject
+                // the (still-pending) outer promise underneath the recovery.
+                window.clearTimeout(timer);
                 window.setTimeout(() => {
                     resolve(openDb(dbName, allowRecovery, unknownRetries - 1));
                 }, UNKNOWN_OPEN_RETRY_MS);
@@ -451,15 +471,26 @@ export function openDb(
                 // triggers the normal first-run reindex. Match on .name only — never
                 // the message, which is locale/engine-dependent.
                 console.warn(`[seek] ${dbName} was built by a newer Seek — rebuilding the index`);
+                window.clearTimeout(timer);
                 deleteDbWithBlockGuard(dbName).then(
                     () => resolve(openDb(dbName, /*allowRecovery*/ false)),
                     reject,
                 );
                 return;
             }
+            settled = true;
+            window.clearTimeout(timer);
             reject(err ?? new Error(`indexedDB.open(${dbName}) failed`));
         };
         req.onsuccess = () => {
+            if (settled) {
+                // open() already timed out and rejected — don't leak a second
+                // connection that would block a later deleteDatabase.
+                req.result.close();
+                return;
+            }
+            settled = true;
+            window.clearTimeout(timer);
             const db = req.result;
             // If another window opens the DB with a higher version, the spec
             // dispatches versionchange and won't proceed until we close. The
@@ -588,6 +619,51 @@ export function openDb(
     });
 }
 
+
+// Reason string for an IDB operation that was dispatched but never settled
+// (no onsuccess/onerror/onabort) within its deadline. Distinct from the
+// backing-store UnknownError and the quota error: this is the "request went into
+// the void" shape produced by a wedged/corrupt object store in the LevelDB
+// backing store (Chromium/Electron). It is intentionally NOT transient — the
+// store is unusable until reset — so callers can surface recovery.
+export const STORE_OP_TIMEOUT_PREFIX = 'IndexedDB operation timed out';
+
+/** True when `e` is (or wraps) an IDB operation deadline timeout. */
+export function isStoreOpTimeout(e: unknown): boolean {
+    return e instanceof Error && e.message.startsWith(STORE_OP_TIMEOUT_PREFIX);
+}
+
+/**
+ * Bound a dispatched IDB operation. IndexedDB requests can hang forever with NO
+ * event firing when an object store's backing data is wedged — the request just
+ * never settles. Without a deadline the promise (and any memoized single-flight
+ * like countInFlight) wedges for the whole session: the boot gate, search, and
+ * recovery all await it and startup never reaches "searchable" (silent Stuck).
+ * A deadline converts that into a thrown, classifiable error so boot can fail
+ * fast, log the cause, and surface recovery instead of spinning.
+ */
+export function withDeadline<T>(promise: Promise<T>, context: string, timeoutMs: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+        let settled = false;
+        const timer = window.setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            reject(new Error(`${STORE_OP_TIMEOUT_PREFIX}: ${context} after ${timeoutMs}ms`));
+        }, timeoutMs);
+        promise.then(
+            v => { if (settled) return; settled = true; window.clearTimeout(timer); resolve(v); },
+            e => { if (settled) return; settled = true; window.clearTimeout(timer); reject(e); },
+        );
+    });
+}
+
+// Default deadline for the boot-gate / inventory reads. Generous enough that a
+// healthy cold load (fixture: ~5s worst case on a large or first-run store) and a
+// slow count under indexing contention are never cut off, yet short enough that a
+// WEDGED read fails well inside the 45s boot watchdog so the stuck banner carries
+// a real cause instead of a bare "startup-not-searchable".
+const STORE_READ_TIMEOUT_MS = 15_000;
+
 function awaitTx(tx: IDBTransaction): Promise<void> {
     return new Promise((resolve, reject) => {
         tx.oncomplete = () => resolve();
@@ -660,6 +736,9 @@ export class IndexStore {
     // Coalesce them onto one readonly transaction so a stalled backing store
     // cannot accumulate an unbounded graph of IDBTransaction/IDBRequest objects.
     private countInFlight: Promise<{ chunks: number; embeddings: number; binary: number; files: number }> | null = null;
+    // The store-subset the in-flight count covers (sorted join), so a full count
+    // and a boot-gate chunk-only count don't incorrectly share one memo.
+    private countInFlightStore: string | null = null;
     // Resolved per-vault DB name. Set on the first open(scope) — main.ts
     // passes the vault's appId at onload — and reused by every later
     // scope-less open() (the reset path in search.ts reindexAll).
@@ -740,6 +819,7 @@ export class IndexStore {
         this.db?.close();
         this.db = null;
         this.countInFlight = null;
+        this.countInFlightStore = null;
     }
 
     /**
@@ -800,18 +880,23 @@ export class IndexStore {
             .filter(n => names.includes(n));
         if (countNames.length > 0) {
             const tx = db.transaction(countNames, 'readonly');
-            const [chunks, embeddings, binary, files] = await Promise.all([
+            // Deadline-bounded — a wedged store must not hang the reset. Counts are
+            // only informational, so a timeout falls back to zeros.
+            const [chunks, embeddings, binary, files] = await withDeadline(Promise.all([
                 names.includes(STORE_CHUNK_META) ? awaitRequest(tx.objectStore(STORE_CHUNK_META).count()) : Promise.resolve(0),
                 names.includes(STORE_EMBEDDINGS) ? awaitRequest(tx.objectStore(STORE_EMBEDDINGS).count()) : Promise.resolve(0),
                 names.includes(STORE_BINARY) ? awaitRequest(tx.objectStore(STORE_BINARY).count()) : Promise.resolve(0),
                 names.includes(STORE_FILES) ? awaitRequest(tx.objectStore(STORE_FILES).count()) : Promise.resolve(0),
-            ]);
+            ]), 'clearAllStores pre-count', STORE_READ_TIMEOUT_MS).catch(() => [0, 0, 0, 0]);
             preCount = { chunks, embeddings, binary, files };
         }
         if (names.length > 0) {
             const clearTx = db.transaction(names, 'readwrite');
             for (const name of names) clearTx.objectStore(name).clear();
-            await awaitTx(clearTx);
+            // Deadline-bounded: a wedged readwrite transaction never settles, which
+            // both hangs recovery AND keeps the connection open (blocking the
+            // deleteDatabase fallback). Failing fast lets reset proceed and release.
+            await withDeadline(awaitTx(clearTx), 'clearAllStores', STORE_READ_TIMEOUT_MS);
         }
         return preCount;
     }
@@ -966,16 +1051,23 @@ export class IndexStore {
     async getFileRecord(notePath: string): Promise<FileRecord | undefined> {
         const db = this.requireDb();
         const tx = db.transaction(STORE_FILES, 'readonly');
-        return await awaitRequest(tx.objectStore(STORE_FILES).get(notePath)) as FileRecord | undefined;
+        return await withDeadline(
+            awaitRequest(tx.objectStore(STORE_FILES).get(notePath)) as Promise<FileRecord | undefined>,
+            `getFileRecord(${notePath})`, STORE_READ_TIMEOUT_MS,
+        );
     }
 
     // Every persisted file record, for the startup mtime-diff sweep (compare
     // each record's mtimeMs against the live TFile.stat.mtime to find what
-    // changed while Seek wasn't watching). Mirror of listAllChunks.
+    // changed while Seek wasn't watching). Mirror of listAllChunks. Deadline-
+    // bounded: a wedged `files` store must not wedge the boot mtime sweep.
     async listFileRecords(): Promise<FileRecord[]> {
         const db = this.requireDb();
         const tx = db.transaction(STORE_FILES, 'readonly');
-        return await awaitRequest(tx.objectStore(STORE_FILES).getAll()) as FileRecord[];
+        return await withDeadline(
+            awaitRequest(tx.objectStore(STORE_FILES).getAll()) as Promise<FileRecord[]>,
+            'listFileRecords', STORE_READ_TIMEOUT_MS,
+        );
     }
 
     // Just the note_paths of the FILES store — a projection that skips the
@@ -1460,23 +1552,42 @@ export class IndexStore {
     }
 
     async count(): Promise<{ chunks: number; embeddings: number; binary: number; files: number }> {
-        if (this.countInFlight) return this.countInFlight;
-        const task = (async () => {
+        return this.countStores();
+    }
+
+    /**
+     * Same four counts, but reads ONLY the named stores — the boot gate never
+     * needs `files`, and skipping it means a wedged `files` store cannot stall
+     * startup. The boot gate passes ['chunk_meta']; keep the default (all four)
+     * for callers that genuinely need the file count.
+     */
+    async countStores(
+        stores: string[] = [STORE_CHUNK_META, STORE_EMBEDDINGS, STORE_BINARY, STORE_FILES],
+    ): Promise<{ chunks: number; embeddings: number; binary: number; files: number }> {
+        const subset = stores.slice().sort().join(',');
+        if (this.countInFlightStore === subset && this.countInFlight) return this.countInFlight;
+        const task = withDeadline((async () => {
             const db = this.requireDb();
-            const tx = db.transaction([STORE_CHUNK_META, STORE_EMBEDDINGS, STORE_BINARY, STORE_FILES], 'readonly');
+            const tx = db.transaction(stores, 'readonly');
+            const read = (name: string) => stores.includes(name)
+                ? awaitRequest(tx.objectStore(name).count())
+                : Promise.resolve(0);
             const [chunks, embeddings, binary, files] = await Promise.all([
-                awaitRequest(tx.objectStore(STORE_CHUNK_META).count()),
-                awaitRequest(tx.objectStore(STORE_EMBEDDINGS).count()),
-                awaitRequest(tx.objectStore(STORE_BINARY).count()),
-                awaitRequest(tx.objectStore(STORE_FILES).count()),
+                read(STORE_CHUNK_META),
+                read(STORE_EMBEDDINGS),
+                read(STORE_BINARY),
+                read(STORE_FILES),
             ]);
             return { chunks, embeddings, binary, files };
-        })();
+        })(), `count(${subset})`, STORE_READ_TIMEOUT_MS);
         this.countInFlight = task;
+        this.countInFlightStore = subset;
         try {
             return await task;
         } finally {
-            if (this.countInFlight === task) this.countInFlight = null;
+            // Clear on BOTH settle paths so a timed-out read does not pin a rejected
+            // memo forever (every later caller would re-reject without retrying).
+            if (this.countInFlight === task) { this.countInFlight = null; this.countInFlightStore = null; }
         }
     }
 }
@@ -1504,12 +1615,15 @@ export async function nukeDatabase(dbName: string): Promise<{ chunks: number; em
         const db = await openDb(dbName, /*allowRecovery*/ false);
         try {
             const tx = db.transaction([STORE_CHUNK_META, STORE_EMBEDDINGS, STORE_BINARY, STORE_FILES], 'readonly');
-            const [chunks, embeddings, binary, files] = await Promise.all([
+            // Deadline-bounded: a wedged store (the recovery case) would otherwise
+            // hang here forever and the nuke would never run. Counts are only for the
+            // reset log, so a timeout just leaves them at zero.
+            const [chunks, embeddings, binary, files] = await withDeadline(Promise.all([
                 awaitRequest(tx.objectStore(STORE_CHUNK_META).count()),
                 awaitRequest(tx.objectStore(STORE_EMBEDDINGS).count()),
                 awaitRequest(tx.objectStore(STORE_BINARY).count()),
                 awaitRequest(tx.objectStore(STORE_FILES).count()),
-            ]);
+            ]), 'nukeDatabase pre-count', STORE_READ_TIMEOUT_MS).catch(() => [0, 0, 0, 0]);
             preCount = { chunks, embeddings, binary, files };
         } finally {
             db.close();

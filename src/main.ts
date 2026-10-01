@@ -53,7 +53,7 @@ import {
 import { sweepOrphanTmpFiles } from './sidecar';
 import type { SeekSettings, IndexCompleteEntry, LoadEntry, ModelDeliveryEntry, ScoredChunk, SearchEntry } from './types';
 import { DEFAULT_SETTINGS, migrateSettings } from './types';
-import { IndexStore, indexDbPrefix, isTransientIdbUnavailable } from './index-store';
+import { IndexStore, indexDbPrefix, isTransientIdbUnavailable, isStoreOpTimeout } from './index-store';
 import { SeekLogger, REPORT_ARTIFACTS_DIR } from './logger';
 import { openDiagnosticReport } from './diagnostic-report';
 import { Forensics } from './forensics';
@@ -513,7 +513,7 @@ export default class SeekPlugin extends Plugin {
     private statusBarHealth(): IndexStatusHealth {
         return resolveIndexUiStatus({
             storeLocked: this.indexStoreLocked,
-            stuck: this.indexBootStuck,
+            stuck: this.indexBootStuck || this.indexStoreWedged,
             booting: this.indexBootPending,
             bootDecisionPending: this.indexBootDecisionPending,
             hydrating: this.sidecarHydrating,
@@ -547,11 +547,55 @@ export default class SeekPlugin extends Plugin {
     private async touchIndexInventory(): Promise<void> {
         const gen = ++this.inventoryGen;
         try {
+            // ALL four counts for the inventory surfaces (status bar needs files
+            // AND chunks). Deadline-bounded in count(); on timeout the store is
+            // wedged and we must NOT publish a partial 0 — that would clobber a
+            // known-populated inventory via retainIndexInventory. Surface Stuck and
+            // return without writing zeros; a later successful touch corrects it.
             const c = await this.store.count();
             if (gen !== this.inventoryGen) return;
             this.publishInventory(c.files, c.chunks);
-        } catch { /* store not open yet */ }
+        } catch (e) {
+            // A timeout while a writer/index pass is active is expected contention
+            // (the write mutex starves the readonly count) — NOT a wedged store.
+            // Only flag a wedge when the store is otherwise idle and still hangs.
+            if (isStoreOpTimeout(e) && gen === this.inventoryGen && !this.isIndexBusy()) {
+                this.markStoreWedged('inventory-timeout');
+            }
+        }
         if (gen === this.inventoryGen) this.refreshIndexStatusBar();
+    }
+
+    /**
+     * A bounded IDB read timed out: the backing object store is wedged (the
+     * production `files`-store hang — a request that never settles). Flip to the
+     * Stuck state so every surface shows action-required with a real cause, and
+     * log once for forensics. This is the diagnosability guard rail: without it,
+     * a wedged read leaves startup on a silent, endless "Starting".
+     */
+    private storeWedgedLogged = false;
+    /** A bounded IDB read timed out — the backing store is wedged. Cleared only by a
+     *  full reset/reopen (recovery), NOT by the boot gate releasing, so a partial
+     *  boot can't silently flip back to "Ready" over an unreadable store. */
+    private indexStoreWedged = false;
+    private markStoreWedged(reason: string): void {
+        const firstReport = !this.storeWedgedLogged;
+        this.storeWedgedLogged = true;
+        this.indexStoreWedged = true;
+        this.indexBootStuck = true;
+        if (this.degradedReason == null) this.degradedReason = 'stuck';
+        if (firstReport) {
+            void this.logger.append({
+                type: 'boot-watchdog',
+                timestamp: new Date().toISOString(),
+                elapsedMs: Math.round(performance.now() - this.bootStartMs),
+                reason: 'store-read-timeout',
+                storeOpen: this.store.isOpen(),
+                hydrating: this.sidecarHydrating,
+            }).catch(() => {});
+        }
+        console.warn(`[seek] index store read timed out (${reason}) — the IndexedDB backing store is wedged; surfacing Stuck with recovery`);
+        this.refreshIndexStatusBar();
     }
 
     private beginIndexJob(kind: IndexJobKind, total: number, label: string): number {
@@ -1176,8 +1220,12 @@ export default class SeekPlugin extends Plugin {
                 reason: 'startup-not-searchable',
                 storeOpen: this.store.isOpen(),
                 hydrating: this.sidecarHydrating,
+                bootContinuationDone: this.bootContinuationDone,
+                writing: this.orchestrator?.isWriting() ?? false,
+                identityHeal: this.identityHealInFlight,
             }).catch(() => {});
-            console.warn(`[seek] boot watchdog fired after ${STUCK_BOOT_TIMEOUT_MS}ms — startup never became searchable; surfacing Stuck state`);
+            console.warn(`[seek] boot watchdog fired after ${STUCK_BOOT_TIMEOUT_MS}ms — startup never became searchable; surfacing Stuck state`
+                + ` (continuationDone=${this.bootContinuationDone} writing=${this.orchestrator?.isWriting() ?? false} identityHeal=${this.identityHealInFlight} hydrating=${this.sidecarHydrating})`);
             this.refreshIndexStatusBar();
         }, STUCK_BOOT_TIMEOUT_MS);
     }
@@ -1189,8 +1237,10 @@ export default class SeekPlugin extends Plugin {
         }
     }
 
-    /** Leave the Stuck state once boot work resumes or completes. */
+    /** Leave the Stuck state once boot work resumes or completes. A wedged store
+     *  (a timed-out read) is NOT a transient stall — keep Stuck until recovery. */
     private markBootStuckResolved(): void {
+        if (this.indexStoreWedged) return;
         if (!this.indexBootStuck) return;
         this.indexBootStuck = false;
         if (this.degradedReason === 'stuck') this.degradedReason = null;
@@ -1289,6 +1339,12 @@ export default class SeekPlugin extends Plugin {
                 return;
             }
             this.clearIndexStoreLocked();
+            // The nuke dropped the old (possibly wedged) database and reopened fresh —
+            // clear the wedged flag so the Stuck state can be left behind.
+            this.indexStoreWedged = false;
+            this.storeWedgedLogged = false;
+            this.markBootStuckResolved();
+            void this.touchIndexInventory();
             new Notice(`Seek: index ${result.nuked ? 'reset' : 'cleared'} — rebuilding from scratch...`, 6000);
             void this.scheduleColdBuild();
         } catch (e) {
@@ -1398,6 +1454,8 @@ export default class SeekPlugin extends Plugin {
         this.bootBuffer = null;
         this.clearBootWatchdog();
         this.indexBootStuck = false;
+        this.indexStoreWedged = false;
+        this.storeWedgedLogged = false;
         this.disposeStoreOpenRetryScheduler();
         this.indexStoreLocked = false;
         this.bootContinuationDone = false;
