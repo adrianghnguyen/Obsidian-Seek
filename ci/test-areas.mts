@@ -41,6 +41,8 @@ export const CI_TEST_AREAS = {
         'src/index-store-ensure-open.test.ts',
         'src/index-store-lock-retry.test.ts',
         'src/index-store-split.test.ts',
+        'src/index-store-timeout.test.ts',
+        'src/index-store-wedge-lock.test.ts',
         'src/index-store.test.ts',
         'src/lifecycle-sequence.test.ts',
         'src/offmutex-flush.test.ts',
