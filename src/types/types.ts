@@ -85,7 +85,7 @@ export interface ChunkMetadata {
 }
 
 // Structured filters extracted from a raw query string by parseQuery()
-// (src/query-parser.ts). A null QueryFilters means the query had no inline
+// (src/search/query-parser.ts). A null QueryFilters means the query had no inline
 // operators — a plain semantic/lexical search. Mirrors the predecessor's
 // Python SearchFilters; `tagsMatchAll` is reserved for a later version
 // (always OR in v1).

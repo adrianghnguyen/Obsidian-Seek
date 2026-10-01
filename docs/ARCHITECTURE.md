@@ -91,105 +91,119 @@ flowchart TB
 
 ## 3. Domain map (by folder / module group)
 
-Production code is mostly a **flat `src/` directory** (plus small nested harness/stub/fixture dirs for tests). Domains are expressed by file naming and imports; the tables below are a map of *roles*, not an exhaustive inventory — prefer grepping `src/` when hunting a specific symbol.
+Production code lives in **domain folders under `src/`** (plus small nested harness/stub/fixture dirs for tests). Domains are expressed by folder and file naming; the tables below are a map of *roles*, not an exhaustive inventory — prefer grepping `src/` when hunting a specific symbol.
+
+| Folder | Domain |
+|--------|--------|
+| `src/` (root) | Only `main.ts` — the `SeekPlugin` entry point |
+| `src/app/` | Plugin shell: schedulers, workflow/boot coordination, CLI handlers, open/insert targets |
+| `src/search/` | Retrieval + ranking: orchestrator, query pipeline, BM25, fusion, parsers, pool |
+| `src/index/` | Indexing + storage: chunker, IndexedDB store, coordinator, catch-up, pacer |
+| `src/embedding/` | Dense runtime: embedder, iframe runner + scripts, model registry, quant, binary |
+| `src/sidecar/` | Cross-device index sync: format, coordinator, hydration, meta |
+| `src/ui/` | Search modal, query field, status bar/notices, hotkeys |
+| `src/render/` | Result display helpers: snippet, highlight, aliases, passage, recents |
+| `src/settings/` | Settings tab |
+| `src/diagnostics/` | Logger, reports, forensics, telemetry, perf console |
+| `src/types/` | Shared types: domain model, settings, and the split `log`/`memory` modules |
 
 ### 3.1 Plugin shell & types
 
 | Files | Responsibility |
 |-------|----------------|
 | `main.ts` | Plugin lifecycle, commands, protocol handlers, model load gate (`SeekPlugin`) |
-| `types.ts` | `SeekSettings`, `Chunk`, `ScoredChunk`, query filters, log schema, `DEFAULT_SETTINGS`, migrations |
-| `settings-tab.ts` | Settings UI (Index, Relevance, Display, Model, Diagnostics, Reset) |
-| `cli-handlers.ts` | Headless CLI command bridge (`seek:search`, `seek:open`, `seek:insert-link`) |
-| `plugin-schedulers.ts` | Background debounced flushes, periodic catch-up, folder exclusion watcher, mobile memory watchdog |
-| `confirm-modal.ts` | Mobile-safe asynchronous confirmation dialog |
-| `drift-recovery-coordinator.ts` | Embed-free drift recovery state machine |
-| `diagnostic-report.ts` | Generates vault-root `seek-report.md` summary and `.seek-artifacts/seek-report.json` telemetry |
+| `types/types.ts` | `SeekSettings`, `Chunk`, `ScoredChunk`, query filters, log schema, `DEFAULT_SETTINGS`, migrations |
+| `settings/settings-tab.ts` | Settings UI (Index, Relevance, Display, Model, Diagnostics, Reset) |
+| `app/cli-handlers.ts` | Headless CLI command bridge (`seek:search`, `seek:open`, `seek:insert-link`) |
+| `app/plugin-schedulers.ts` | Background debounced flushes, periodic catch-up, folder exclusion watcher, mobile memory watchdog |
+| `app/confirm-modal.ts` | Mobile-safe asynchronous confirmation dialog |
+| `app/drift-recovery-coordinator.ts` | Embed-free drift recovery state machine |
+| `diagnostics/diagnostic-report.ts` | Generates vault-root `seek-report.md` summary and `.seek-artifacts/seek-report.json` telemetry |
 | `manifest.json` | Obsidian plugin metadata (`id: seek`) |
 
 ### 3.2 Search & ranking
 
 | Files | Responsibility |
 |-------|----------------|
-| `search.ts` | **`SearchOrchestrator`** — indexing coordinator, store facade, write mutex, sidecar exports |
-| `cache-manager.ts` | Single authority owning resident query caches (`frameCache`, `bm25Cache`, `binaryIndex`, `synonymCache`) |
-| `search-query.ts` | Multi-stage retrieval pipeline (Stage 0 ladder, Stage 1 Hamming + BM25, Stage 2 cosine, TM2C2 fusion) |
-| `frame-utils.ts` | Resident frame ops, candidate alignment, delta row helpers |
-| `coherence.ts` | Frame/BM25 drift detection, circuit breaker, and recovery decisions |
-| `bm25-persist.ts` | Persisted BM25 index identity stamps and compatibility gating |
-| `query-parser.ts` | Inline filter syntax (`#tag`, `path:`, `[key:value]`, dates, negation) |
-| `fusion.ts` | Score normalization, hybrid fusion, recency ε-tiebreaker, title boost, browse order |
-| `ranker.ts` | `rank()` — combines dense + BM25 + recency + title on candidate set |
-| `bm25.ts` | Multi-field MiniSearch BM25F (title, aliases, tags, content, properties, headings) |
-| `tokenize.ts`, `synonyms.ts`, `tag-grammar.ts` | Tokenization, synonym expansion, tag parsing |
-| `select.ts`, `pool.ts` | Top-N selection, candidate pool sizing (√N scaling) |
-| `suggest.ts` | Vault metadata dictionaries for filter autocomplete |
-| `snippet.ts`, `highlight.ts`, `result-aliases.ts` | Result display helpers |
+| `search/search.ts` | **`SearchOrchestrator`** — indexing coordinator, store facade, write mutex, sidecar exports |
+| `search/cache-manager.ts` | Single authority owning resident query caches (`frameCache`, `bm25Cache`, `binaryIndex`, `synonymCache`) |
+| `search/search-query.ts` | Multi-stage retrieval pipeline (Stage 0 ladder, Stage 1 Hamming + BM25, Stage 2 cosine, TM2C2 fusion) |
+| `search/frame-utils.ts` | Resident frame ops, candidate alignment, delta row helpers |
+| `search/coherence.ts` | Frame/BM25 drift detection, circuit breaker, and recovery decisions |
+| `search/bm25-persist.ts` | Persisted BM25 index identity stamps and compatibility gating |
+| `search/query-parser.ts` | Inline filter syntax (`#tag`, `path:`, `[key:value]`, dates, negation) |
+| `search/fusion.ts` | Score normalization, hybrid fusion, recency ε-tiebreaker, title boost, browse order |
+| `search/ranker.ts` | `rank()` — combines dense + BM25 + recency + title on candidate set |
+| `search/bm25.ts` | Multi-field MiniSearch BM25F (title, aliases, tags, content, properties, headings) |
+| `search/tokenize.ts`, `search/synonyms.ts`, `search/tag-grammar.ts` | Tokenization, synonym expansion, tag parsing |
+| `search/select.ts`, `search/pool.ts` | Top-N selection, candidate pool sizing (√N scaling) |
+| `search/suggest.ts` | Vault metadata dictionaries for filter autocomplete |
+| `render/snippet.ts`, `render/highlight.ts`, `render/result-aliases.ts` | Result display helpers |
 
 ### 3.3 Indexing & storage
 
 | Files | Responsibility |
 |-------|----------------|
-| `chunker.ts` | Heading-aware markdown chunking, frontmatter, aliases, link terms |
-| `token-budget.ts`, `atoms.ts` | Re-split oversized sections at paragraph/fence/table boundaries (≤512 tokens) |
-| `base-extractor.ts` | Obsidian Bases (`.base`) → synthetic chunks |
-| `dense-clean.ts`, `prop-normalize.ts` | Dense-channel text hygiene, property normalization |
-| `index-store.ts` | IndexedDB schema (chunks, embeddings, binary, BM25 JSON, file records) |
-| `index-coordinator.ts` | Write mutex, cache generation, delta visibility, sidecar gate |
-| `index-size.ts` | Storage accounting |
-| `catchup.ts` | Deferred embed drain when search is idle |
-| `pacer.ts` | Compositor-friendly batch pacing during indexing |
-| `identity.ts` | Index version fingerprint (model, chunker, analyzer, dim) |
+| `index/chunker.ts` | Heading-aware markdown chunking, frontmatter, aliases, link terms |
+| `index/token-budget.ts`, `index/atoms.ts` | Re-split oversized sections at paragraph/fence/table boundaries (≤512 tokens) |
+| `index/base-extractor.ts` | Obsidian Bases (`.base`) → synthetic chunks |
+| `search/dense-clean.ts`, `search/prop-normalize.ts` | Dense-channel text hygiene, property normalization |
+| `index/index-store.ts` | IndexedDB schema (chunks, embeddings, binary, BM25 JSON, file records) |
+| `index/index-coordinator.ts` | Write mutex, cache generation, delta visibility, sidecar gate |
+| `index/index-size.ts` | Storage accounting |
+| `index/catchup.ts` | Deferred embed drain when search is idle |
+| `index/pacer.ts` | Compositor-friendly batch pacing during indexing |
+| `index/identity.ts` | Index version fingerprint (model, chunker, analyzer, dim) |
 
 ### 3.4 Dense / vector retrieval
 
 | Files | Responsibility |
 |-------|----------------|
-| `embedder.ts` | Parent-side embed API, load coalescing, query LRU cache |
-| `embedder-lifecycle.ts` | Model load/unload policy (mobile idle eviction) |
-| `iframe-runner.ts` | Sandboxed transformers.js runtime (WebGPU / WASM) |
-| `model-registry.ts` | Active model spec, cache eviction, download probe |
-| `platform.ts` | Per-device backend choice (`auto` / `webgpu` / `wasm`), crash demotion |
-| `quant.ts` | Int8 quantization + scale for stored vectors |
-| `binary.ts`, `binary-scorer.ts`, `binary-worker.ts` | Sign-bit binary index for stage-1 candidate retrieval |
-| `dense-stats.ts` | Corpus background stats for display confidence (not ranking) |
+| `embedding/embedder.ts` | Parent-side embed API, load coalescing, query LRU cache |
+| `embedding/embedder-lifecycle.ts` | Model load/unload policy (mobile idle eviction) |
+| `embedding/iframe-runner.ts` | Sandboxed transformers.js runtime (WebGPU / WASM) |
+| `embedding/model-registry.ts` | Active model spec, cache eviction, download probe |
+| `embedding/platform.ts` | Per-device backend choice (`auto` / `webgpu` / `wasm`), crash demotion |
+| `embedding/quant.ts` | Int8 quantization + scale for stored vectors |
+| `embedding/binary.ts`, `embedding/binary-scorer.ts`, `embedding/binary-worker.ts` | Sign-bit binary index for stage-1 candidate retrieval |
+| `search/dense-stats.ts` | Corpus background stats for display confidence (not ranking) |
 
 ### 3.5 Sidecar (cross-device index sync)
 
 | Files | Responsibility |
 |-------|----------------|
-| `sidecar-coordinator.ts` | High-level sidecar coordinator: hydration, shard compaction, orphan sweeping, live re-chunking |
-| `sidecar.ts` | Vault-file index format (JSONL + binary shards, tombstones, CRC) |
-| `sidecar-sync.ts` | Hydration from peer device sidecars without re-embedding |
-| `sidecar-meta.ts` | Producer metadata, version acceptance gates |
+| `sidecar/sidecar-coordinator.ts` | High-level sidecar coordinator: hydration, shard compaction, orphan sweeping, live re-chunking |
+| `sidecar/sidecar.ts` | Vault-file index format (JSONL + binary shards, tombstones, CRC) |
+| `sidecar/sidecar-sync.ts` | Hydration from peer device sidecars without re-embedding |
+| `sidecar/sidecar-meta.ts` | Producer metadata, version acceptance gates |
 
 ### 3.6 UI
 
 | Files | Responsibility |
 |-------|----------------|
-| `search-modal.ts` | **`SeekSearchModal`** — results list, debounced search, keyboard model, pagination |
-| `query-field.ts` | **`PillQueryField`** — pill filters + contenteditable query, autocomplete |
-| `open-target.ts` | Pane targets (`tab`, `split`, `window`), modifier resolution |
-| `insert-link.ts` | Wikilink build + editor insertion (Alt+Enter, CLI) |
-| `index-notice.ts` | Degraded/stale index banners in modal |
+| `ui/search-modal.ts` | **`SeekSearchModal`** — results list, debounced search, keyboard model, pagination |
+| `ui/query-field.ts` | **`PillQueryField`** — pill filters + contenteditable query, autocomplete |
+| `app/open-target.ts` | Pane targets (`tab`, `split`, `window`), modifier resolution |
+| `app/insert-link.ts` | Wikilink build + editor insertion (Alt+Enter, CLI) |
+| `ui/index-notice.ts` | Degraded/stale index banners in modal |
 | `styles.css` | Modal, pills, results, footer, mobile viewport CSS |
 
 ### 3.7 Diagnostics
 
 | Files | Responsibility |
 |-------|----------------|
-| `logger.ts` | Per-device NDJSON logs, logging configuration |
-| `diagnostic-report.ts` | Diagnostic report compiling, markdown summary and JSON snapshot generation |
-| `forensics.ts` | Synchronous localStorage crash breadcrumbs |
+| `diagnostics/logger.ts` | Per-device NDJSON logs, logging configuration |
+| `diagnostics/diagnostic-report.ts` | Diagnostic report compiling, markdown summary and JSON snapshot generation |
+| `diagnostics/forensics.ts` | Synchronous localStorage crash breadcrumbs |
 
 ### 3.8 Test infrastructure
 
 | Path | Responsibility |
 |------|----------------|
-| `src/*.test.ts` | Colocated unit/integration tests |
+| `src/**/*.test.ts` | Colocated unit/integration tests (tests sit next to their module) |
 | `src/test-harness/scenario.ts` | Tier-2 composed scenarios (real orchestrator + fake IndexedDB) |
 | `src/test-stubs/` | Vitest stubs for `obsidian` API and `window` |
-| `src/fixtures/` | Realistic markdown fixtures for chunker/token tests |
+| `src/index/fixtures/` | Realistic markdown fixtures for chunker/token tests |
 | `tests/relevance-cases.json` | Illustrative relevance cases (documentation only, not CI) |
 
 ---

@@ -1,4 +1,4 @@
-// src/settings-tab.ts — Seek's Settings tab.
+// src/settings/settings-tab.ts — Seek's Settings tab.
 //
 // Redesigned 2026-06-19 (see plan "Seek — Settings Tab Redesign + Default
 // Ratification"): an opinionated, status-led tab in place of the old flat debug

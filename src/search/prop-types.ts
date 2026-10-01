@@ -1,4 +1,4 @@
-// src/prop-types.ts — read Obsidian's property-type registry.
+// src/search/prop-types.ts — read Obsidian's property-type registry.
 //
 // Obsidian records each frontmatter property's declared type (Text / Number /
 // Date / Date & time / …) in a registry that is NOT part of the public

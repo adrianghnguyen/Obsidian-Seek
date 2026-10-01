@@ -10,17 +10,17 @@
  *
  * ## Domain Submodule Architecture
  * `SearchOrchestrator` delegates specialized domains to extracted single-responsibility modules:
- * - **`CacheManager` (`src/cache-manager.ts`)**: Single authority owning all query-time RAM structures
+ * - **`CacheManager` (`src/search/cache-manager.ts`)**: Single authority owning all query-time RAM structures
  *   (`frameCache`, `bm25Cache`, `binaryIndex`, `synonymCache`). Zero dual-cache duplication.
- * - **`SearchQuery` (`src/search-query.ts`)**: Retrieval pipeline engine executing Stage 0 ladder,
+ * - **`SearchQuery` (`src/search/search-query.ts`)**: Retrieval pipeline engine executing Stage 0 ladder,
  *   Stage 1 Hamming + BM25, candidate pooling, Stage 2 dense reranking, and TM2C2 score fusion.
- * - **`SidecarCoordinator` (`src/sidecar-coordinator.ts`)**: Multi-device sync, peer chunk hydration,
+ * - **`SidecarCoordinator` (`src/sidecar/sidecar-coordinator.ts`)**: Multi-device sync, peer chunk hydration,
  *   shard compaction, and dead device directory sweeps.
- * - **`IndexCoordinator` (`src/index-coordinator.ts`)**: Concurrency authority providing the single
+ * - **`IndexCoordinator` (`src/index/index-coordinator.ts`)**: Concurrency authority providing the single
  *   write serialization mutex (`runExclusive`), generation counter, and cooperative pacer yielding.
- * - **`FrameUtils` (`src/frame-utils.ts`)**: Low-level packed sign vector and int8 row space layout.
- * - **`Coherence` (`src/coherence.ts`)**: Drift circuit breakers, generation guards, and coherence checks.
- * - **`Bm25Persist` (`src/bm25-persist.ts`)**: Disk serialization identity stamps for the BM25 index.
+ * - **`FrameUtils` (`src/search/frame-utils.ts`)**: Low-level packed sign vector and int8 row space layout.
+ * - **`Coherence` (`src/search/coherence.ts`)**: Drift circuit breakers, generation guards, and coherence checks.
+ * - **`Bm25Persist` (`src/search/bm25-persist.ts`)**: Disk serialization identity stamps for the BM25 index.
  *
  * ## Lifecycle & Order Dependencies
  * 1. **Initialization**:

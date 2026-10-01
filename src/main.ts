@@ -11,15 +11,15 @@
  *
  * ## Domain Module Coordination
  * `SeekPlugin` coordinates specialized domain managers:
- * - **`SearchOrchestrator` (`src/search.ts`)**: Primary engine for chunking, embedding, indexing, and querying.
- * - **`PluginSchedulerManager` (`src/plugin-schedulers.ts`)**: Owns debounced incremental flushes,
+ * - **`SearchOrchestrator` (`src/search/search.ts`)**: Primary engine for chunking, embedding, indexing, and querying.
+ * - **`PluginSchedulerManager` (`src/app/plugin-schedulers.ts`)**: Owns debounced incremental flushes,
  *   periodic catch-up indexing, exclusion watchers, and mobile memory idle unloader.
- * - **`CliHandlers` (`src/cli-handlers.ts`)**: Registers headless IPC commands (`seek:search`, `seek:open`,
+ * - **`CliHandlers` (`src/app/cli-handlers.ts`)**: Registers headless IPC commands (`seek:search`, `seek:open`,
  *   `seek:insert-link`) for terminal and automation scripts.
- * - **`DriftRecoveryCoordinator` (`src/drift-recovery-coordinator.ts`)**: Self-healing state machine for
+ * - **`DriftRecoveryCoordinator` (`src/app/drift-recovery-coordinator.ts`)**: Self-healing state machine for
  *   embed-free recovery when cache drift is detected.
- * - **`DiagnosticReport` (`src/diagnostic-report.ts`)**: Compiles vault-root markdown reports and JSON logs.
- * - **`ConfirmModal` (`src/confirm-modal.ts`)**: Mobile-safe asynchronous confirmation prompts.
+ * - **`DiagnosticReport` (`src/diagnostics/diagnostic-report.ts`)**: Compiles vault-root markdown reports and JSON logs.
+ * - **`ConfirmModal` (`src/app/confirm-modal.ts`)**: Mobile-safe asynchronous confirmation prompts.
  *
  * ## Startup Lifecycle & Order Dependencies
  * 1. **Session Boot & Logging**: Initializes `SeekLogger` and validates boot session generations.
