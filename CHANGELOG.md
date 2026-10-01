@@ -4,6 +4,8 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.12.2
+
 ### Fixed
 - **Wedged IndexedDB read no longer stalls startup silently.** A single `files`-store read that never settles (a corrupt LevelDB backing store) made `IndexStore.count()` hang forever, so the boot gate never released and every surface sat on an endless "Starting up…" with the embedding model never loading — the production symptom. The boot-gate inventory, the startup mtime sweep reads, the reset pre-counts, and `indexedDB.open()` itself are now deadline-bounded; a timed-out operation throws a classified error instead of hanging, so the lock-retry ladder and recovery can run.
 - **Stuck state now names a real cause and does not false-clear.** A timed-out store read flips to the Stuck state with a `store-read-timeout` `boot-watchdog` reason and persists it (a partial boot can no longer flip back to Ready over an unreadable store). Recovery (rebuild index / retry) clears it only after the database is actually reset and reopened. The watchdog entry also records `bootContinuationDone`, `writing`, and `identityHeal` so a wedged boot is diagnosable from the logging report.

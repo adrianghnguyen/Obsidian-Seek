@@ -108,7 +108,7 @@ export const INDEX_ERROR_LABEL = 'Error';
 export const INDEX_INDEXING_LABEL = 'Indexing';
 export const INDEX_UP_TO_DATE_LABEL = 'Ready';
 export const INDEX_LOCKED_TITLE = 'Index locked';
-export const INDEX_LOCKED_MSG = 'Seek cannot open the search index database. It will retry in the background — run **Retry opening the search index** from the command palette, or quit Obsidian if it stays locked.';
+export const INDEX_LOCKED_MSG = 'Seek cannot open the search index database. Run **Recover search index** in Seek settings (Retry first; rebuild if it stays locked), or quit Obsidian if it stays locked.';
 export const INDEX_LOCKED_LABEL = 'Locked';
 export const INDEX_STUCK_LABEL = 'Stuck';
 
