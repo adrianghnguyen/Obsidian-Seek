@@ -3,7 +3,7 @@ import { triageDiff, labelActionForDecision } from './e2e-triage-lib.mjs';
 
 describe('e2e-triage-lib', () => {
     it('requires E2E for hot path touch', () => {
-        const r = triageDiff({ files: ['src/search.ts'], lineCounts: { 'src/search.ts': 10 } });
+        const r = triageDiff({ files: ['src/search/search.ts'], lineCounts: { 'src/search/search.ts': 10 } });
         expect(r.decision).toBe('require');
         expect(r.matchedRules).toContain('hot-path');
     });
@@ -19,12 +19,12 @@ describe('e2e-triage-lib', () => {
     });
 
     it('honors skip-e2e label', () => {
-        const r = triageDiff({ files: ['src/search.ts'], labels: ['skip-e2e'] });
+        const r = triageDiff({ files: ['src/search/search.ts'], labels: ['skip-e2e'] });
         expect(r.decision).toBe('skip');
     });
 
     it('review on gray src touch', () => {
-        const r = triageDiff({ files: ['src/logger.ts'], lineCounts: { 'src/logger.ts': 5 } });
+        const r = triageDiff({ files: ['src/diagnostics/logger.ts'], lineCounts: { 'src/diagnostics/logger.ts': 5 } });
         expect(r.decision).toBe('review');
     });
 

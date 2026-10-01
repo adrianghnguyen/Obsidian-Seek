@@ -1,19 +1,19 @@
 import 'fake-indexeddb/auto';
 
 import type { App, DataAdapter } from 'obsidian';
-import { packSignBits } from '../../binary';
-import { IndexStore } from '../../index-store';
-import { quantizeInt8 } from '../../quant';
-import { SearchOrchestrator } from '../../search';
-import { bulkAppend, SIDECAR_FORMAT, type TierBytes } from '../../sidecar';
-import { expectationFor } from '../../sidecar-meta';
+import { packSignBits } from '../../embedding/binary';
+import { IndexStore } from '../../index/index-store';
+import { quantizeInt8 } from '../../embedding/quant';
+import { SearchOrchestrator } from '../../search/search';
+import { bulkAppend, SIDECAR_FORMAT, type TierBytes } from '../../sidecar/sidecar';
+import { expectationFor } from '../../sidecar/sidecar-meta';
 import {
     hydrateFromSidecar,
     type HydrateDeps,
     type HydrateResult,
     type ReChunkedNote,
-} from '../../sidecar-sync';
-import { DEFAULT_SETTINGS, type Chunk } from '../../types';
+} from '../../sidecar/sidecar-sync';
+import { DEFAULT_SETTINGS, type Chunk } from '../../types/types';
 import { FakeVault, fakeEmbedder, hashVec } from '../scenario';
 import { mtimeMs, type StartupNoteFixture, type StartupResponseFixture } from './fixtures';
 import { MemoryDataAdapter } from './memory-adapter';
@@ -213,7 +213,7 @@ export class StartupResponseHarness {
             deviceId: PRODUCER_ID,
             lastFullReindex: null,
         };
-        const { writeDeviceMeta } = await import('../../sidecar-meta');
+        const { writeDeviceMeta } = await import('../../sidecar/sidecar-meta');
         await writeDeviceMeta(
             this.adapter.asDataAdapter() as DataAdapter,
             INDEX_DIR,

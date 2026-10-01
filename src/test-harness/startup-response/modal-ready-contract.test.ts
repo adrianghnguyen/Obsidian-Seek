@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { ModalReadyContractHarness } from './modal-ready-contract-harness';
-import { isIndexWaitKind } from '../../index-notice';
+import { isIndexWaitKind } from '../../ui/index-notice';
 
 /**
  * Modal wiring contract — canonical uiHealth ok must win over a stale 0-chunk

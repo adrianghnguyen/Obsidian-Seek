@@ -37,12 +37,12 @@
 
 import { Notice, Plugin, TFile } from 'obsidian';
 import type { App } from 'obsidian';
-import { ConfirmModal } from './confirm-modal';
-import { LocalEmbedder, LOCAL_MODEL, LEGACY_ENGLISH_MODEL_ID, EMBEDDING_DIM } from './embedder';
-import type { WorkerProbeResult, WorkerEmbedTestResult } from './iframe-runner';
-import { activeModelSpec, resolveOverrideSpec, evictStaleModelCaches, deleteModelCaches, probeModelDownloaded } from './model-registry';
-import { pluginIdentity, identityMatches, identityFromMeta } from './identity';
-import { isLoadGenerationCurrent, isSessionWorkCurrent } from './boot-session';
+import { ConfirmModal } from './app/confirm-modal';
+import { LocalEmbedder, LOCAL_MODEL, LEGACY_ENGLISH_MODEL_ID, EMBEDDING_DIM } from './embedding/embedder';
+import type { WorkerProbeResult, WorkerEmbedTestResult } from './embedding/iframe-runner';
+import { activeModelSpec, resolveOverrideSpec, evictStaleModelCaches, deleteModelCaches, probeModelDownloaded } from './embedding/model-registry';
+import { pluginIdentity, identityMatches, identityFromMeta } from './index/identity';
+import { isLoadGenerationCurrent, isSessionWorkCurrent } from './app/boot-session';
 import {
     createStoreOpenRetryScheduler,
     isRetryIndexStoreCommandEnabled,
@@ -50,16 +50,16 @@ import {
     storeOpenRetryDelaysMs,
     storeOpenBackoffDelaysMs,
     type StoreOpenRetryScheduler,
-} from './index-store-lock';
-import { sweepOrphanTmpFiles } from './sidecar';
-import type { SeekSettings, IndexCompleteEntry, LoadEntry, ModelDeliveryEntry, ScoredChunk, SearchEntry } from './types';
-import { DEFAULT_SETTINGS, migrateSettings } from './types';
-import { IndexStore, indexDbPrefix, isTransientIdbUnavailable, isStoreOpTimeout } from './index-store';
-import { SeekLogger, REPORT_ARTIFACTS_DIR } from './logger';
-import { openDiagnosticReport } from './diagnostic-report';
-import { Forensics } from './forensics';
-import { RecentSearches } from './recents';
-import { SearchOrchestrator, driftRecoveryDecision, shouldIndexPath, type RecencyOverride } from './search';
+} from './index/index-store-lock';
+import { sweepOrphanTmpFiles } from './sidecar/sidecar';
+import type { SeekSettings, IndexCompleteEntry, LoadEntry, ModelDeliveryEntry, ScoredChunk, SearchEntry } from './types/types';
+import { DEFAULT_SETTINGS, migrateSettings } from './types/types';
+import { IndexStore, indexDbPrefix, isTransientIdbUnavailable, isStoreOpTimeout } from './index/index-store';
+import { SeekLogger, REPORT_ARTIFACTS_DIR } from './diagnostics/logger';
+import { openDiagnosticReport } from './diagnostics/diagnostic-report';
+import { Forensics } from './diagnostics/forensics';
+import { RecentSearches } from './render/recents';
+import { SearchOrchestrator, driftRecoveryDecision, shouldIndexPath, type RecencyOverride } from './search/search';
 import {
     diffExcludedPaths,
     exclusionDiffIsEmpty,
@@ -70,13 +70,13 @@ import {
     type FolderCoveragePathSets,
     type FolderCoverageSummary,
     type LiveCoverageSnapshot,
-} from './folder-coverage';
-import { SeekSearchModal, type IndexBanner } from './search-modal';
-import { parsePaneType, openFileAtTarget, openBaseAtTarget, type OpenTarget } from './open-target';
-import { SEARCH_MODAL_COMMANDS } from './search-modal-hotkeys';
-import { registerSeekCliHandlers } from './cli-handlers';
-import { DriftRecoveryCoordinator } from './drift-recovery-coordinator';
-import { WorkflowCoordinator } from './workflow-coordinator';
+} from './index/folder-coverage';
+import { SeekSearchModal, type IndexBanner } from './ui/search-modal';
+import { parsePaneType, openFileAtTarget, openBaseAtTarget, type OpenTarget } from './app/open-target';
+import { SEARCH_MODAL_COMMANDS } from './ui/search-modal-hotkeys';
+import { registerSeekCliHandlers } from './app/cli-handlers';
+import { DriftRecoveryCoordinator } from './app/drift-recovery-coordinator';
+import { WorkflowCoordinator } from './app/workflow-coordinator';
 import {
     PluginSchedulerManager,
     type PluginSchedulerHost,
@@ -86,10 +86,10 @@ import {
     IDLE_UNLOAD_MS,
     UNLOAD_CHECK_MS,
     BULK_DELTA_THRESHOLD,
-} from './plugin-schedulers';
-import { indexBannerSpec, resolveIndexLoadPhase, resolveCliSearchGate, CLI_SEARCH_WARMING, resolveIndexUiStatus, resolveSidecarWait, retainIndexInventory, INDEX_STALE_MSG, INDEX_SYNCING_MSG, INDEX_PEER_AHEAD_MSG, type DegradedReason, type IndexLoadState } from './index-notice';
-import { IndexStatusBar, extendIndexPassTotal, parseIndexedProgress, type IndexJobSpeedView } from './index-status-bar';
-import type { IndexJobKind, IndexStatusHealth, IndexStatusJob } from './index-status-card';
+} from './app/plugin-schedulers';
+import { indexBannerSpec, resolveIndexLoadPhase, resolveCliSearchGate, CLI_SEARCH_WARMING, resolveIndexUiStatus, resolveSidecarWait, retainIndexInventory, INDEX_STALE_MSG, INDEX_SYNCING_MSG, INDEX_PEER_AHEAD_MSG, type DegradedReason, type IndexLoadState } from './ui/index-notice';
+import { IndexStatusBar, extendIndexPassTotal, parseIndexedProgress, type IndexJobSpeedView } from './ui/index-status-bar';
+import type { IndexJobKind, IndexStatusHealth, IndexStatusJob } from './ui/index-status-card';
 import {
     RecentSearchRing,
     StartupBootHistory,
@@ -97,33 +97,33 @@ import {
     type RecentSearchEntry,
     type StartupTimingView,
     type StoredStartupBoot,
-} from './session-telemetry';
-import { SeekSettingTab } from './settings-tab';
-import { collectPlatformInfo, isMobilePlatform, resolveDevice, recordActiveBackend, maybeDemoteOnCrash, getStartupWarm } from './platform';
-import { CompositorPacer, cheapYield } from './pacer';
-import { shouldUnloadEmbedder, type UnloadGateState } from './embedder-lifecycle';
-import { IndexDeltaTracker, type IndexDeltaSnapshot } from './index-delta-view';
+} from './diagnostics/session-telemetry';
+import { SeekSettingTab } from './settings/settings-tab';
+import { collectPlatformInfo, isMobilePlatform, resolveDevice, recordActiveBackend, maybeDemoteOnCrash, getStartupWarm } from './embedding/platform';
+import { CompositorPacer, cheapYield } from './index/pacer';
+import { shouldUnloadEmbedder, type UnloadGateState } from './embedding/embedder-lifecycle';
+import { IndexDeltaTracker, type IndexDeltaSnapshot } from './index/index-delta-view';
 import {
     drainCatchUp,
-} from './catchup';
+} from './index/catchup';
 import {
     isKnownEmptyIndexWithNotes,
     shouldAutoDrainStartupCatchUp,
     resolveIndexBuildMode,
     catchUpBurstLimits,
     type IndexBuildMode,
-} from './startup-drain';
-import { TaskContextTracker, type TaskContext } from './task-context';
-import { seekPerf } from './perf-console';
+} from './index/startup-drain';
+import { TaskContextTracker, type TaskContext } from './app/task-context';
+import { seekPerf } from './diagnostics/perf-console';
 import {
     whenLayoutReady,
     scheduleAfterLayoutReady,
     scheduleAfterLayoutReadyBuffered,
     isIgnorableStartupConsoleError,
     type BootBufferHandle,
-} from './layout-ready';
-import { parseJsonStripBom } from './json-text';
-import type { LongTaskEntry, MemoryPressureEntry, StorageSnapshotEntry, EvictionSuspectedEntry, AppLocalFetchEntry } from './types';
+} from './app/layout-ready';
+import { parseJsonStripBom } from './diagnostics/json-text';
+import type { LongTaskEntry, MemoryPressureEntry, StorageSnapshotEntry, EvictionSuspectedEntry, AppLocalFetchEntry } from './types/types';
 
 // Long-task threshold. PerformanceObserver fires for any task ≥50 ms by spec,
 // but at that floor we'd flood the log. 250 ms is the rough threshold above
@@ -3419,7 +3419,7 @@ export default class SeekPlugin extends Plugin {
     // 5 s mobile budget. Captures the storage state at the same instant
     // so a low storageUsedMB confirms the cache was actually emptied
     // (vs. a thermal-throttle false positive). Best-effort; never throws.
-    private async emitEvictionSuspected(load: import('./types').LoadEntry): Promise<void> {
+    private async emitEvictionSuspected(load: import('./types/types').LoadEntry): Promise<void> {
         let storageUsedMB: number | null = null;
         let storageQuotaMB: number | null = null;
         let persisted: boolean | null = null;

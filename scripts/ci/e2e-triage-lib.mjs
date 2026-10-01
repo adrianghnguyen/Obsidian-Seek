@@ -4,18 +4,18 @@
 
 export const HOT_PATH_GLOBS = [
     /^src\/main\.ts$/,
-    /^src\/embedder\.ts$/,
-    /^src\/search\.ts$/,
-    /^src\/index-store\.ts$/,
-    /^src\/index-coordinator\.ts$/,
-    /^src\/cli-handlers\.ts$/,
-    /^src\/search-modal[^/]*\.ts$/,
-    /^src\/settings-tab\.ts$/,
+    /^src\/embedding\/embedder\.ts$/,
+    /^src\/search\/search\.ts$/,
+    /^src\/index\/index-store\.ts$/,
+    /^src\/index\/index-coordinator\.ts$/,
+    /^src\/app\/cli-handlers\.ts$/,
+    /^src\/ui\/search-modal[^/]*\.ts$/,
+    /^src\/settings\/settings-tab\.ts$/,
     /^styles\.css$/,
     /^manifest\.json$/,
-    /^src\/iframe-runner\.ts$/,
-    /^src\/binary-worker\.ts$/,
-    /^src\/embed-worker\.ts$/,
+    /^src\/embedding\/iframe-runner\.ts$/,
+    /^src\/embedding\/binary-worker\.ts$/,
+    /^src\/embedding\/embed-worker\.ts$/,
 ];
 
 export const FUNCTIONAL_PATH_RE =

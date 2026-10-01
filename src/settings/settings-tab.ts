@@ -1,0 +1,1734 @@
+// src/settings-tab.ts — Seek's Settings tab.
+//
+// Redesigned 2026-06-19 (see plan "Seek — Settings Tab Redesign + Default
+// Ratification"): an opinionated, status-led tab in place of the old flat debug
+// surface. Section order is intentional — Index leads (the one operational concern),
+// relevance recedes behind a disclosure fronted by a teaching pipeline diagram, and
+// the model/compute story gets a home. Section IA, top→bottom:
+//   Index → Relevance → Display → Model & performance → Reset → About
+//
+// Built native: Obsidian `Setting` rows + a few custom DOM helpers (segmented control,
+// status card, pipeline diagram, progress row), all styled from theme CSS variables in
+// styles.css so the tab absorbs the user's theme + dark mode. The validated debug knobs
+// (prefix / synonym / headings / coverage / properties / boosted-BM25 / sidecar toggle)
+// are mostly silent defaults — BM25 field weights are re-exposed under Advanced as
+// score-time sliders (bm25-boosts.ts). See DEFAULT_SETTINGS + the rev-5 migration
+// in types.ts/main.ts.
+
+import { App, PluginSettingTab, Setting, Notice, setIcon, setTooltip, TFolder } from 'obsidian';
+import type SeekPlugin from '../main';
+import type { IndexStats, ModelStatus } from '../main';
+import type { SidecarIndexLocation, SearchModalHeight, SearchModalWidth, SnippetPreview } from '../types/types';
+import { DEFAULT_SETTINGS, MATCH_STRENGTH_MIN_NOTES } from '../types/types';
+import {
+    INDEX_RECOVERY_NAME,
+    INDEX_RECOVERY_STUCK_DESC,
+    INDEX_RECOVERY_LOCKED_DESC,
+} from '../ui/index-notice';
+import {
+    BM25_FIELD_KEYS,
+    BM25_FIELD_BOOST_MIN,
+    BM25_FIELD_BOOST_MAX,
+    BM25_FIELD_BOOST_STEP,
+    clearBm25FieldBoostOverrides,
+    resolveBm25FieldBoosts,
+    setBm25FieldBoostOverride,
+    type Bm25FieldKey,
+} from '../search/bm25-boosts';
+import { DEFAULT_FIELD_BOOSTS } from '../search/bm25';
+import type { IndexStatusHealth } from '../ui/index-status-card';
+import {
+    renderRecentSearchConsole,
+    renderSettingsIndexStatusCard,
+} from '../ui/index-status-settings';
+import { formatRecentSearchLine } from '../diagnostics/session-telemetry';
+import type { SettingsTelemetrySink } from '../main';
+import { formatRoughEta, indexPercent } from '../ui/index-eta';
+import type { FolderCoverageNode, FolderCoverageSummary, FolderCoveragePathSets, CoveragePanelMessage } from '../index/folder-coverage';
+import {
+    emptyFolderCoverage,
+    resolveCoveragePanelView,
+    computeFolderCoverage,
+    coverageBarTone,
+    coverageStateCounts,
+    coverageCellClasses,
+    formatCoverageMeta,
+    formatCoveragePercent,
+    formatCoverageCountTip,
+    remainingFilesFoldLabel,
+    remainingFilesPreview,
+    ownFilesRow,
+    OWN_FILES_PATH,
+} from '../index/folder-coverage';
+import {
+    getBackendOverride, setBackendOverride, isWebgpuDemoted, clearWebgpuDemoted,
+    getStartupWarm, setStartupWarm, isMobilePlatform,
+    getWorkerEmbedRoute, setWorkerEmbedRoute,
+    type BackendChoice,
+} from '../embedding/platform';
+import { enumerateDatePropertyNames } from '../search/prop-types';
+import { FolderSuggest } from '../search/folder-suggest';
+import { isUnderExcludedFolder, normalizeExcludedFolderPath } from '../search/search';
+import {
+    clampCatchUpBurstMaxFiles,
+} from '../index/startup-drain';
+
+/** Optional About-footer URLs beyond Obsidian's base manifest schema. */
+type SeekAboutManifest = {
+    githubUrl?: string;
+    xUrl?: string;
+    docsUrl?: string;
+};
+
+function manifestField(value: string | undefined): string | null {
+    const trimmed = value?.trim();
+    return trimmed ? trimmed : null;
+}
+
+async function readAboutUrls(
+    app: App,
+    pluginDir: string | null | undefined,
+): Promise<{ docsUrl: string | null; githubUrl: string | null; xUrl: string | null }> {
+    const empty = { docsUrl: null, githubUrl: null, xUrl: null };
+    if (!pluginDir) return empty;
+    try {
+        const raw = JSON.parse(await app.vault.adapter.read(`${pluginDir}/manifest.json`)) as SeekAboutManifest;
+        return {
+            docsUrl: manifestField(raw.docsUrl),
+            githubUrl: manifestField(raw.githubUrl),
+            xUrl: manifestField(raw.xUrl),
+        };
+    } catch {
+        return empty;
+    }
+}
+
+// The X (Twitter) logo as an inline SVG path. Obsidian's bundled Lucide no longer
+// ships a `twitter`/`x` brand icon, so setIcon('twitter') rendered an empty box —
+// we draw the glyph ourselves instead (see brandLink). Filled (fill=currentColor)
+// so it inherits the icon button's colour like the Lucide icons do.
+const X_LOGO_PATH = 'M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z';
+
+// (The date-property picker enumerator moved to prop-types.ts, shared with the
+// typed-value inline filters — see enumerateDatePropertyNames import above.)
+
+// ---- segmented (pill) stages ------------------------------------------------------
+type Stage = 'Off' | 'Default' | 'High';
+
+// Title bonus maps the navTitleBoost scalar onto three stages. The eval-swept knee is
+// 0.8 (now reachable as High); the 2026-06-19 ratification ships Default=0.5 (see
+// types.ts navTitleBoost). titleStageOf() snaps any persisted/off-grid value to the
+// nearest stage so a hand-tuned legacy value still selects something sensible.
+const TITLE_VALUE: Record<Stage, number> = { Off: 0, Default: 0.5, High: 0.8 };
+function titleStageOf(v: number): Stage {
+    let best: Stage = 'Default';
+    for (const stage of ['Off', 'Default', 'High'] as Stage[]) {
+        if (Math.abs(TITLE_VALUE[stage] - v) < Math.abs(TITLE_VALUE[best] - v)) best = stage;
+    }
+    return best;
+}
+
+// Recency bonus maps {recencyEpsilon, recencyHalfLifeDays} onto three stages. Off=ε0
+// (ships Off), Default=0.04·180d, High=0.1·90d (see types.ts recencyEpsilon). ε≤0 is
+// Off; otherwise snap to the nearer of Default/High by ε.
+//
+// High's half-life SHORTENS past Default (180→90) — it does not lengthen. High shipped
+// at 270d through 2026-07-16, which made it inert at the thing it advertises: ε is the
+// budget, but the half-life decides how much of that budget is spent in the age band
+// the query actually spans. Live-vault measurement ("brian 1x1", ~40 dated siblings,
+// full-series base hybrid+title spread 0.032): the today-vs-36d recency swing is 0.0088
+// at 270d, so the newest sibling sat at rank 9 of its own series; at 90d it is 0.0242 —
+// enough for rank 3, not rank 1, since 0.0242 is still under the series spread (it only
+// has to beat the gap to each competitor, never the full range). ε was never the
+// problem; 0.1 was already enough budget.
+//
+// High IS a lean, deliberately — types.ts recencyEpsilon says so, and that is why it is
+// opt-in rather than the default. Over the competitive 0–100d band the 90d recency range
+// (~0.054) exceeds the 0.032 sibling spread, so inside a dated series date now leads
+// relevance. ranker.ts's "ε must NEVER become a lean" governs the always-on DEFAULT
+// tiebreaker (ε 0.02, now 0), not this opt-in stage. 270 making High *gentler* than
+// Default was the incoherence.
+//
+// 90 is anchored, not swept: the 06-04 click study's MEDIAN episodic click target is 83d
+// old (see types.ts recencyHalfLifeDays), so the decay's knee sits on the click mass.
+// Don't chase shorter. What a short half-life buys is how far a 0-day note outruns the
+// pool's TYPICAL AGE — against a 60d note a brand-new one gains +0.014 at 270d but +0.075
+// at 30d — so the shorter it gets, the more a fresh note overtakes a hybrid deficit it
+// never earned. (The term's total range over 0–730d is ~0.085–0.100 at EVERY half-life,
+// so that number tells you nothing; the advantage over the pool's real age mass is the
+// one that moves ranks.) Swept live on a FLAT no-opinion pool — a query nothing matches:
+// purely topical through 180d, one recent intruder at 120–60d, intruder at rank 2 by 45d,
+// and at 30d today's notes displace the topical results outright, which is the 30d-cutoff
+// bug the smooth decay replaced. A monotonic slide, not a cliff: 90 buys the dated-series
+// fix while a flat pool stays essentially topical. See [[seek-recency-halflife-high-mode]].
+const RECENCY_VALUE: Record<Stage, { eps: number; hl: number }> = {
+    Off: { eps: 0, hl: 180 },
+    Default: { eps: 0.04, hl: 180 },
+    High: { eps: 0.1, hl: 90 },
+};
+function recencyStageOf(eps: number): Stage {
+    if (eps <= 0) return 'Off';
+    return Math.abs(eps - RECENCY_VALUE.Default.eps) <= Math.abs(eps - RECENCY_VALUE.High.eps) ? 'Default' : 'High';
+}
+
+// Search strategy: Balanced (denseWeight 0.8) vs Keyword focused (0.3). Concept-focused
+// (0.9) was cut. Split at the midpoint so a legacy denseWeight still resolves a side.
+type Strategy = 'balanced' | 'keyword';
+const STRATEGY_VALUE: Record<Strategy, number> = { balanced: 0.8, keyword: 0.3 };
+function strategyOf(denseWeight: number): Strategy {
+    return denseWeight <= 0.55 ? 'keyword' : 'balanced';
+}
+
+/** Settings coverage panel backstop poll while the tab is open (indexing events drive live updates). */
+export const COVERAGE_POLL_MS = 5000;
+/** Faster backstop while files still need indexing so folder rows stay a live snapshot. */
+export const COVERAGE_LIVE_POLL_MS = 1000;
+
+export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetrySink {
+    // Async index/model snapshots, loaded once per tab open (guarded null→fetch→re-render).
+    private stats: IndexStats | null = null;
+    private modelStatus: ModelStatus | null = null;
+    private loading = false;
+    // UI state that must survive the synchronous display() re-renders triggered by
+    // segmented picks and the reindex state machine.
+    private advancedOpen = false;
+    // Independent of advancedOpen (Relevance) so the Index disclosure toggles on its own.
+    private indexAdvancedOpen = false;
+    private embedDiagOpen = false;
+    // Nested under Advanced relevance — BM25 field-weight sliders stay folded by default.
+    private bm25WeightsOpen = false;
+    private reindexPhase: 'idle' | 'confirm' = 'idle';
+    private reindexStarting = false;
+    // Recovery row (Retry / Rebuild) shown only while startup is stuck or the store is
+    // locked; two-step confirm so a rebuild (full re-embed) can't fire on one click.
+    private recoveryRebuildConfirm = false;
+    private recoveryBusy = false;
+    private progressPoll: number | null = null;
+    private jobStartedAt = 0;
+    // Live-progress DOM refs, repointed on each display() so the runFullReindex
+    // onProgress callback always paints the current node (robust to close/reopen).
+    private progressFillEl: HTMLElement | null = null;
+    private progressLabelEl: HTMLElement | null = null;
+    // Transient "downloading…" flag for the model section (no byte progress available).
+    private modelDownloading = false;
+    // Model-delete state: two-step confirm (Delete → Cancel / Delete model) so a
+    // destructive ~100 MB cache wipe can't fire on a single click, plus an in-progress
+    // flag for the "Deleting…" feedback. Both reset on hide() so reopening is clean.
+    private modelDeleteConfirm = false;
+    private modelDeleting = false;
+    private startupPoll: number | null = null;
+    private searchConsoleEl: HTMLElement | null = null;
+    private statusCardHost: HTMLElement | null = null;
+    private recoveryRowHost: HTMLElement | null = null;
+    // Per-folder coverage panel: indexing events drive live repaints; a 1s poll
+    // while work remains (5s when idle) is the backstop so vault layout changes aren't missed.
+    private coveragePoll: number | null = null;
+    private coverageHost: HTMLElement | null = null;
+    private exclusionBannerHost: HTMLElement | null = null;
+    // Session-scoped expand state for the coverage tree (survives poll repaints; resets
+    // when Settings closes). Empty = all folders collapsed to top-level only.
+    private coverageExpandedPaths = new Set<string>();
+    // Last successful coverage tree. Expand/collapse re-renders this without IDB.
+    private coverageCache: FolderCoverageSummary | null = null;
+    private coverageCacheFailed = false;
+    /** Last IDB/vault path sets — recomputed with live pendingPaths on every paint. */
+    private coveragePathSets: FolderCoveragePathSets | null = null;
+    private remainingFilesOpen = false;
+
+    onSessionTelemetryChanged(): void {
+        if (!this.containerEl.isConnected) return;
+        this.paintStatusCard();
+        this.paintSearchConsole();
+        if (this.shouldPollStartup()) this.startStartupPoll();
+        else this.stopStartupPoll();
+    }
+
+    onFolderCoverageChanged(): void {
+        if (!this.containerEl.isConnected) return;
+        void this.paintCoverage({ refresh: true });
+        this.paintExclusionBanner();
+        this.paintStatusCard();
+        if (this.shouldPollStartup()) this.startStartupPoll();
+    }
+
+    constructor(app: App, private plugin: SeekPlugin) {
+        super(app, plugin);
+    }
+
+    display(): void {
+        // Fetch the async snapshots once; re-render when they land.
+        if (!this.stats && !this.loading) void this.loadData();
+        if (this.showIndexingProgress()) this.startProgressPoll();
+        else this.stopProgressPoll();
+        if (this.shouldPollStartup()) this.startStartupPoll();
+        else this.stopStartupPoll();
+        this.startCoveragePoll();
+        this.plugin.registerSettingsTelemetrySink(this);
+
+        const { containerEl } = this;
+        containerEl.empty();
+        containerEl.addClass('seek-settings');
+
+        this.renderIndex(containerEl);
+        this.renderRelevance(containerEl);
+        this.renderDisplay(containerEl);
+        this.renderModel(containerEl);
+        this.renderReset(containerEl);
+        this.renderAbout(containerEl);
+    }
+
+    // A full display() is the simplest way to reflect cross-control dependencies (the
+    // pipeline diagram reacting to strategy, the date picker enabling with recency, the
+    // reindex state machine). But empty()+rebuild resets the scroll container to the top,
+    // which on a long tab — especially the full-screen mobile settings — yanks the user
+    // away from the control they just tapped. rerender() preserves the scroll offset
+    // across the rebuild, so every segmented pick / disclosure toggle stays put. All
+    // interaction-driven re-renders go through here; only Obsidian's initial display()
+    // (which opens at the top anyway) calls display() directly.
+    private rerender(): void {
+        const scroller = this.findScroller();
+        const top = scroller ? scroller.scrollTop : 0;
+        this.display();
+        if (scroller) scroller.scrollTop = top;
+    }
+
+    // Nearest scrollable ancestor (containerEl included). The settings scroll container
+    // differs between desktop (.vertical-tab-content) and mobile, so we detect it by
+    // overflow rather than hardcoding a selector. Null if nothing scrolls (short tab).
+    private findScroller(): HTMLElement | null {
+        let el: HTMLElement | null = this.containerEl;
+        while (el) {
+            if (el.scrollHeight > el.clientHeight + 1 && getComputedStyle(el).overflowY !== 'visible') return el;
+            el = el.parentElement;
+        }
+        return null;
+    }
+
+    // Reset the per-open snapshots so the next open re-fetches fresh counts/last-index.
+    hide(): void {
+        this.stopProgressPoll();
+        this.stopStartupPoll();
+        this.stopCoveragePoll();
+        this.plugin.registerSettingsTelemetrySink(null);
+        this.searchConsoleEl = null;
+        this.statusCardHost = null;
+        this.recoveryRowHost = null;
+        this.recoveryRebuildConfirm = false;
+        this.recoveryBusy = false;
+        this.coverageHost = null;
+        this.exclusionBannerHost = null;
+        this.stats = null;
+        this.modelStatus = null;
+        this.modelDeleteConfirm = false;
+        this.modelDeleting = false;
+        this.modelDownloading = false;
+        this.resetConfirm = false;
+        this.reindexStarting = false;
+    }
+
+    private async loadData(): Promise<void> {
+        this.loading = true;
+        try {
+            const [stats, modelStatus] = await Promise.all([
+                this.plugin.getIndexStats(),
+                this.plugin.getModelStatus(),
+            ]);
+            this.stats = stats;
+            this.modelStatus = modelStatus;
+        } finally {
+            this.loading = false;
+        }
+        this.rerender();
+    }
+
+    private get s() { return this.plugin.settings; }
+    private save = () => this.plugin.saveSettings();
+
+    // ---- Index ---------------------------------------------------------------------
+    private statusState(): IndexStatusHealth {
+        return this.plugin.indexUiHealth;
+    }
+
+    private activeFullJob() {
+        const job = this.plugin.getIndexJob();
+        return job?.kind === 'full' ? job : null;
+    }
+
+    private showIndexingProgress(): boolean {
+        return this.activeFullJob() != null || this.reindexStarting;
+    }
+
+    private startProgressPoll(): void {
+        if (this.progressPoll != null) return;
+        this.progressPoll = window.setInterval(() => this.paintProgress(), 250);
+    }
+
+    private stopProgressPoll(): void {
+        if (this.progressPoll == null) return;
+        window.clearInterval(this.progressPoll);
+        this.progressPoll = null;
+    }
+
+    private shouldPollStartup(): boolean {
+        const health = this.statusState();
+        if (health === 'starting' || health === 'restoring') return true;
+        // Keep repainting while stuck/locked so the recovery row appears and clears
+        // live without the user reopening Settings.
+        if (health === 'stuck' || health === 'locked') return true;
+        if (!this.plugin.getStartupTimingView().bootComplete) return true;
+        // Live embed rates on the status card while any index job is active.
+        const job = this.plugin.getIndexJob();
+        return job != null && job.done < job.total;
+    }
+
+    private startStartupPoll(): void {
+        if (this.startupPoll != null) return;
+        this.startupPoll = window.setInterval(() => this.paintStartupStatus(), 250);
+    }
+
+    private stopStartupPoll(): void {
+        if (this.startupPoll == null) return;
+        window.clearInterval(this.startupPoll);
+        this.startupPoll = null;
+    }
+
+    private paintStartupStatus(): void {
+        if (!this.containerEl.isConnected) return;
+        this.paintStatusCard();
+        if (!this.shouldPollStartup()) this.stopStartupPoll();
+    }
+
+    private renderIndex(containerEl: HTMLElement): void {
+        new Setting(containerEl).setName('Index').setHeading();
+
+        this.renderStatusCard(containerEl);
+
+        // Exclusion-change banner: shows while a backfill for a detected change in
+        // Obsidian's "Excluded files" is running (e.g. a folder was un-excluded).
+        this.exclusionBannerHost = containerEl.createDiv({ cls: 'seek-exclusion-banner-host' });
+        this.paintExclusionBanner();
+
+        // Per-folder embedder-pipeline coverage (which folders have been run through
+        // the embedder, and how completely). Repaints live during a backfill.
+        this.coverageHost = containerEl.createDiv({ cls: 'seek-coverage-host' });
+        if (this.coveragePathSets || this.coverageCache) this.paintCoverage({ refresh: false });
+        void this.paintCoverage({ refresh: true });
+
+        if (this.plugin.indexHealthState === 'degraded') {
+            const warn = containerEl.createDiv({ cls: 'seek-inline-warn' });
+            warn.setText('Index degraded — search still works but ranking may be off. A full reindex is recommended.');
+        }
+
+        // The reindex button + live progress bar stay outside the disclosure: it's the
+        // primary action and must be visible regardless of the advanced toggle.
+        this.renderReindexRow(containerEl);
+
+        // Advanced disclosure — what to index (Bases / excluded folders), startup warm,
+        // and where the index lives are set-once knobs, so tuck them away like Relevance's
+        // advanced section. Mirrors renderRelevance's disclosure, with its own open-state flag.
+        const disc = containerEl.createDiv({ cls: 'seek-disclosure' });
+        disc.createSpan({ cls: 'seek-disclosure-chev', text: this.indexAdvancedOpen ? '▾' : '▸' });
+        disc.createSpan({ text: 'Advanced settings' });
+        disc.onclick = () => { this.indexAdvancedOpen = !this.indexAdvancedOpen; this.rerender(); };
+
+        if (this.indexAdvancedOpen) this.renderIndexAdvanced(containerEl);
+    }
+
+    private renderIndexAdvanced(containerEl: HTMLElement): void {
+        const adv = containerEl.createDiv({ cls: 'seek-adv' });
+
+        new Setting(adv)
+            .setName('Warm caches on startup')
+            .setDesc('On this device only (not synced). After Obsidian opens, Seek loads the search index into memory so the first query is faster. Turn off for a lighter app start. Takes effect the next time Obsidian opens.')
+            .addToggle(t => t.setValue(getStartupWarm()).onChange(v => setStartupWarm(v)));
+
+        new Setting(adv)
+            .setName('Index Base files')
+            .setDesc('Include your Obsidian Bases (.base files) in the search index, so a Base shows up by its name and filters. Takes effect on the next full reindex.')
+            .addToggle(t => t.setValue(this.s.indexBases).onChange(async v => { this.s.indexBases = v; await this.save(); }));
+
+        this.renderExcludedFoldersBlock(adv);
+
+        if (!isMobilePlatform()) {
+            new Setting(adv)
+                .setName('Catch-up batch size')
+                .setDesc(`Number of notes indexed per background batch while catching up. Higher values finish backlog faster; lower values keep search more responsive during indexing. Default ${DEFAULT_SETTINGS.catchUpBurstMaxFiles}.`)
+                .addText(text => text
+                    .setPlaceholder(String(DEFAULT_SETTINGS.catchUpBurstMaxFiles))
+                    .setValue(String(this.s.catchUpBurstMaxFiles))
+                    .onChange(async v => {
+                        const n = clampCatchUpBurstMaxFiles(Number(v));
+                        this.s.catchUpBurstMaxFiles = n;
+                        text.setValue(String(n));
+                        await this.save();
+                    }));
+        }
+
+        // Live search always uses this device's IndexedDB. The toggle only controls
+        // whether Seek also writes/hydrates vault index files (sidecar) for Sync/iOS.
+        const syncIdx = new Setting(adv).setName('Sync index across devices');
+        syncIdx.descEl.createDiv({ text: 'Search always uses this device’s local index. When on, Seek also writes vault index files (~MBs) so phones and Sync can hydrate without re-embedding. When off, this device only — no vault index writes or hydrate.' });
+        syncIdx.addToggle(t => t
+            .setValue(this.s.sidecarEnabled)
+            .onChange(async v => {
+                this.s.sidecarEnabled = v;
+                await this.save();
+                if (!v) {
+                    new Notice('Seek: sync index off — stops new vault index writes and hydrate on the next ops. Existing index files are left in place.', 8000);
+                }
+                this.rerender();
+            }));
+
+        // Built as DOM (intro line · two bullets · footer) rather than a setDesc() string,
+        // which renders flat with no line breaks — the two location options read far more
+        // clearly as a short list. Only applies while Sync index across devices is on.
+        const indexLoc = new Setting(adv).setName('Index location');
+        indexLoc.descEl.createDiv({ text: this.s.sidecarEnabled
+            ? 'This is where the synced index folder lives.'
+            : 'Applies only when Sync index across devices is on.' });
+        if (this.s.sidecarEnabled) {
+            const locList = indexLoc.descEl.createEl('ul', { cls: 'seek-desc-list' });
+            const locHidden = locList.createEl('li');
+            locHidden.createEl('strong', { text: 'Hidden (default): ' });
+            // Literal '.obsidian', NOT vault.configDir: the sidecar index is pinned to
+            // the default config folder so every device resolves the SAME synced path
+            // (see main.ts sidecarConfigDir). Showing vault.configDir would misreport
+            // the index location to a renamed-config user, whose index still lives here.
+            locHidden.createSpan({ text: `inside the hidden .obsidian config folder.` });
+            const locRoot = locList.createEl('li');
+            locRoot.createEl('strong', { text: 'Vault root: ' });
+            locRoot.createSpan({ text: 'a visible "Seek Index" folder will appear in your vault. Choose this only if you use Obsidian Sync with a mobile or tablet override config folder.' });
+            indexLoc.descEl.createDiv({ text: 'Takes effect after reloading Seek.' });
+        }
+        indexLoc.addDropdown(dd => dd
+            .addOption('config', `Hidden (.obsidian, recommended)`)
+            .addOption('visible', 'Vault root (Seek Index/)')
+            .setValue(this.s.sidecarIndexLocation)
+            .setDisabled(!this.s.sidecarEnabled)
+            .onChange(async v => {
+                this.s.sidecarIndexLocation = v as SidecarIndexLocation;
+                await this.save();
+                new Notice('Seek: index location changed — reload Seek (or restart Obsidian) for it to take effect.', 8000);
+            }));
+        if (!this.s.sidecarEnabled) indexLoc.setDisabled(true);
+    }
+
+    private renderExcludedFoldersBlock(adv: HTMLElement): void {
+        const wrap = adv.createDiv({ cls: 'seek-excluded-block' });
+
+        new Setting(wrap)
+            .setName('Honor excluded folders')
+            .setDesc("Skip files in Obsidian's Settings → Files & Links → Excluded files (e.g. Archive). When you add or remove an exclusion there, Seek detects the change and backfills / soft-deletes the affected folders automatically.")
+            .addToggle(t => t.setValue(this.s.honorIgnoredFolders).onChange(async v => {
+                this.s.honorIgnoredFolders = v;
+                await this.save();
+                this.afterExclusionSettingsChanged();
+            }));
+
+        new Setting(wrap)
+            .setName('Additional excluded folders')
+            .setDesc("Folders Seek excludes from indexing, in addition to Obsidian's Excluded files (when Honor excluded folders is on). Add or remove a folder and Seek backfills or soft-deletes the affected notes automatically.");
+
+        const list = wrap.createDiv({ cls: 'seek-excluded-folders' });
+        const folders = [...(this.s.customExcludedFolders ?? [])].sort((a, b) => a.localeCompare(b));
+        if (folders.length === 0) {
+            list.createDiv({ cls: 'seek-excluded-folders-empty', text: 'No additional folders excluded.' });
+        } else {
+            for (const folder of folders) {
+                const row = list.createDiv({ cls: 'seek-excluded-folder-row' });
+                row.createSpan({ cls: 'seek-excluded-folder-path', text: folder });
+                const remove = row.createEl('button', {
+                    cls: 'clickable-icon seek-excluded-folder-remove',
+                    attr: { 'aria-label': `Remove ${folder}` },
+                });
+                setIcon(remove, 'cross');
+                remove.onclick = () => void this.removeCustomExcludedFolder(folder);
+            }
+        }
+
+        let pendingPath = '';
+        const add = list.createDiv({ cls: 'seek-excluded-folder-add-row' });
+        const input = add.createEl('input', {
+            type: 'text',
+            placeholder: 'e.g. Archive/old',
+        });
+        new FolderSuggest(this.app, input);
+        input.addEventListener('input', () => { pendingPath = input.value; });
+        input.addEventListener('keydown', (e: KeyboardEvent) => {
+            if (e.key !== 'Enter') return;
+            e.preventDefault();
+            void this.addCustomExcludedFolder(pendingPath || input.value);
+        });
+        const addBtn = add.createEl('button', { text: 'Add' });
+        addBtn.onclick = () => void this.addCustomExcludedFolder(pendingPath || input.value);
+    }
+
+    private afterExclusionSettingsChanged(): void {
+        this.plugin.requestExclusionAlign();
+        this.paintExclusionBanner();
+        this.paintStatusCard();
+        void this.paintCoverage({ refresh: true });
+        if (this.shouldPollStartup()) this.startStartupPoll();
+    }
+
+    private async addCustomExcludedFolder(raw: string): Promise<void> {
+        const path = normalizeExcludedFolderPath(raw);
+        if (!path) {
+            new Notice('Seek: choose a folder path first.', 4000);
+            return;
+        }
+        const abs = this.app.vault.getAbstractFileByPath(path);
+        if (!(abs instanceof TFolder)) {
+            new Notice(`Seek: "${path}" is not a folder in this vault.`, 5000);
+            return;
+        }
+        const list = this.s.customExcludedFolders ?? [];
+        if (list.some(f => f === path || isUnderExcludedFolder(f, path))) {
+            new Notice(`Seek: "${path}" is already covered by an excluded folder.`, 5000);
+            return;
+        }
+        // Drop children of the new parent so the list stays minimal.
+        this.s.customExcludedFolders = [
+            ...list.filter(f => !isUnderExcludedFolder(path, f)),
+            path,
+        ].sort((a, b) => a.localeCompare(b));
+        await this.save();
+        this.afterExclusionSettingsChanged();
+        this.rerender();
+    }
+
+    private async removeCustomExcludedFolder(folder: string): Promise<void> {
+        this.s.customExcludedFolders = (this.s.customExcludedFolders ?? []).filter(f => f !== folder);
+        await this.save();
+        this.afterExclusionSettingsChanged();
+        this.rerender();
+    }
+
+    private renderStatusCard(containerEl: HTMLElement): void {
+        this.statusCardHost = containerEl.createDiv({ cls: 'seek-status-card-host' });
+        this.recoveryRowHost = containerEl.createDiv({ cls: 'seek-recovery-host' });
+        this.paintStatusCard();
+    }
+
+    // Recovery row (Retry / Rebuild) is host-based so it can appear live when the health
+    // flips to stuck/locked without the user reopening Settings. Repainted alongside the
+    // status card; an in-progress rebuild/retry keeps the row mounted until it resolves.
+    private paintRecoveryRow(): void {
+        const host = this.recoveryRowHost;
+        if (!host || !host.isConnected) return;
+        const health = this.statusState();
+        const active = health === 'stuck' || health === 'locked';
+        if (!active && !this.recoveryBusy) {
+            this.recoveryRebuildConfirm = false;
+            host.empty();
+            return;
+        }
+        host.empty();
+        this.renderRecoveryRow(host);
+    }
+
+    private paintStatusCard(): void {
+        const host = this.statusCardHost;
+        if (!host || !host.isConnected) return;
+        host.empty();
+        this.paintRecoveryRow();
+        const startup = this.plugin.getStartupTimingView();
+        renderSettingsIndexStatusCard(host, {
+            health: this.statusState(),
+            stats: this.stats,
+            job: this.plugin.getIndexJob(),
+            startup,
+            liveElapsedMs: startup.bootComplete ? null : this.plugin.getStartupLiveElapsedMs(),
+            prevBoot: this.plugin.getPreviousStartupBoot(),
+            recentBoots: this.plugin.getStartupBootHistory(),
+            embedDiag: {
+                open: this.embedDiagOpen,
+                onToggle: () => {
+                    this.embedDiagOpen = !this.embedDiagOpen;
+                    this.paintStatusCard();
+                },
+                live: this.plugin.getIndexJobSpeedView(),
+                lastComplete: this.plugin.getLastIndexComplete(),
+                lastLoad: this.plugin.getLastLoadEntry(),
+            },
+        });
+    }
+
+    // ── Per-folder coverage + exclusion-change banner ────────────────────────────
+
+    private startCoveragePoll(): void {
+        if (this.coveragePoll != null) return;
+        const tick = () => {
+            if (!this.containerEl.isConnected) { this.stopCoveragePoll(); return; }
+            void this.paintCoverage({ refresh: true });
+            this.paintExclusionBanner();
+            const job = this.plugin.getIndexJob();
+            const o = this.coverageCache?.overall;
+            const live = (job != null && job.done < job.total)
+                || (o != null && (o.remaining > 0 || o.catchingUp > 0));
+            if (job != null && job.done < job.total) this.paintStatusCard();
+            this.coveragePoll = window.setTimeout(tick, live ? COVERAGE_LIVE_POLL_MS : COVERAGE_POLL_MS);
+        };
+        this.coveragePoll = window.setTimeout(tick, COVERAGE_LIVE_POLL_MS);
+    }
+
+    private stopCoveragePoll(): void {
+        if (this.coveragePoll == null) return;
+        window.clearTimeout(this.coveragePoll);
+        this.coveragePoll = null;
+    }
+
+    /** refresh:true hits IDB; refresh:false (expand) paints path-sets + live pending. */
+    private async paintCoverage(opts?: { refresh?: boolean }): Promise<void> {
+        const host = this.coverageHost;
+        if (!host || !host.isConnected) return;
+        const refresh = opts?.refresh !== false;
+        if (!refresh) {
+            this.paintCoverageFromCache(host);
+            return;
+        }
+
+        let loadFailed = false;
+        try {
+            this.coveragePathSets = await this.plugin.getFolderCoveragePathSets();
+            this.coverageCacheFailed = false;
+        } catch {
+            loadFailed = true;
+            this.coverageCacheFailed = true;
+            if (this.coveragePathSets || this.coverageCache) {
+                if (!host.isConnected || host !== this.coverageHost) return;
+                this.paintCoverageFromCache(host, true);
+                return;
+            }
+        }
+        if (!host.isConnected || host !== this.coverageHost) return;
+        const summary = this.coveragePathSets
+            ? this.liveCoverageSummary(this.coveragePathSets)
+            : emptyFolderCoverage();
+        this.coverageCache = summary;
+        this.renderCoveragePanel(host, summary, loadFailed);
+    }
+
+    private liveCoverageSummary(pathSets: FolderCoveragePathSets): FolderCoverageSummary {
+        const job = this.plugin.getIndexJob();
+        return computeFolderCoverage({
+            ...pathSets,
+            pendingPaths: this.plugin.getIndexDeltaSnapshot().pendingPaths,
+            fullJobActive: job?.kind === 'full' && job.done < job.total,
+        });
+    }
+
+    private paintCoverageFromCache(host: HTMLElement, failed = false): void {
+        if (this.coveragePathSets) {
+            const summary = this.liveCoverageSummary(this.coveragePathSets);
+            this.coverageCache = summary;
+            this.renderCoveragePanel(host, summary, failed || this.coverageCacheFailed);
+            return;
+        }
+        if (this.coverageCache) {
+            this.renderCoveragePanel(host, this.coverageCache, this.coverageCacheFailed);
+        }
+    }
+
+    private renderCoveragePanel(
+        host: HTMLElement,
+        summary: FolderCoverageSummary,
+        loadFailed: boolean,
+    ): void {
+        host.empty();
+
+        const pendingPaths = this.plugin.getIndexDeltaSnapshot().pendingPaths;
+        const job = this.plugin.getIndexJob();
+        const view = resolveCoveragePanelView({
+            summary,
+            health: this.statusState(),
+            job,
+            orchestratorReady: this.plugin.isCoverageSourceReady,
+            loadFailed,
+            aligningExclusions: !!this.plugin.getExclusionChange(),
+            pendingCount: pendingPaths.length,
+        });
+
+        const wrap = host.createDiv({ cls: 'seek-coverage-panel' });
+        const head = wrap.createDiv({ cls: 'seek-coverage-head' });
+        const titles = head.createDiv({ cls: 'seek-coverage-head-text' });
+        titles.createSpan({ cls: 'seek-coverage-title', text: 'Index coverage by folder' });
+        titles.createDiv({
+            cls: 'seek-coverage-sub',
+            text: 'Share of notes already searchable. Cells show what Seek is doing now.',
+        });
+        if (loadFailed) {
+            const warn = head.createSpan({ cls: 'seek-coverage-stale' });
+            setIcon(warn, 'alert-triangle');
+            const tip = 'Could not refresh coverage. Showing the last snapshot.';
+            warn.setAttr('aria-label', tip);
+            setTooltip(warn, tip, { delay: 300 });
+        }
+
+        if (view.statusLine) this.renderCoverageMessage(wrap, view.statusLine, 'status');
+        if (!view.showTree && view.placeholder) {
+            this.renderCoverageMessage(wrap, view.placeholder, 'placeholder');
+            return;
+        }
+        if (!view.showTree) return;
+
+        const o = view.summary.overall;
+        const overallTone = coverageBarTone(o);
+        const overallTip = formatCoverageCountTip(o);
+        const overall = wrap.createDiv({
+            cls: 'seek-coverage-overall' + (o.remaining > 0 || o.indexing > 0 ? ' is-indexing' : ''),
+        });
+        this.renderCoverageCells(overall, o);
+        const overallPctWrap = overall.createDiv({ cls: 'seek-coverage-pct-wrap' });
+        const overallPct = overallPctWrap.createSpan({
+            cls: 'seek-coverage-pct is-' + overallTone,
+            text: formatCoveragePercent(o),
+        });
+        if (o.total > 0) {
+            overallPctWrap.createSpan({ cls: 'seek-coverage-pct-caption', text: 'in the index' });
+        }
+        overallPct.setAttr('aria-label', overallTip);
+        setTooltip(overallPct, overallTip, { delay: 300 });
+        const overallMeta = overall.createSpan({
+            cls: 'seek-coverage-overall-meta',
+            text: formatCoverageMeta(o),
+        });
+        overallMeta.setAttr('aria-label', overallTip);
+        setTooltip(overallMeta, overallTip, { delay: 300 });
+
+        this.renderCoverageLegend(wrap);
+        this.renderRemainingFiles(wrap, pendingPaths, job);
+
+        const rows = wrap.createDiv({ cls: 'seek-coverage-rows' });
+        const rootOwn = view.summary.root.children.length > 0 ? ownFilesRow(view.summary.root) : null;
+        if (rootOwn) this.renderCoverageNode(rows, rootOwn, 0);
+        for (const child of view.summary.root.children) this.renderCoverageNode(rows, child, 0);
+    }
+
+    private renderCoverageCells(parent: HTMLElement, node: FolderCoverageNode): void {
+        const track = parent.createDiv({ cls: 'seek-coverage-track seek-coverage-cells' });
+        const classes = coverageCellClasses(coverageStateCounts(node));
+        if (classes.length === 0) {
+            track.addClass('is-empty');
+            return;
+        }
+        for (const cls of classes) {
+            track.createDiv({ cls: `seek-coverage-cell ${cls}` });
+        }
+    }
+
+    private renderCoverageLegend(parent: HTMLElement): void {
+        const legend = parent.createDiv({ cls: 'seek-coverage-legend' });
+        const items: Array<[string, string]> = [
+            ['healthy', 'Indexed'],
+            ['refreshing', 'Updating'],
+            ['indexing', 'Adding'],
+            ['uncovered', 'Not indexed'],
+        ];
+        for (const [kind, label] of items) {
+            const item = legend.createDiv({ cls: 'seek-coverage-legend-item' });
+            item.createDiv({ cls: `seek-coverage-cell is-${kind} is-swatch` });
+            item.createSpan({ text: label });
+        }
+    }
+
+    private renderRemainingFiles(
+        parent: HTMLElement,
+        pendingPaths: readonly string[],
+        job: ReturnType<SeekPlugin['getIndexJob']>,
+    ): void {
+        if (pendingPaths.length > 0) {
+            const fold = parent.createEl('details', { cls: 'seek-coverage-remaining' });
+            fold.open = this.remainingFilesOpen;
+            fold.addEventListener('toggle', () => { this.remainingFilesOpen = fold.open; });
+            fold.createEl('summary', {
+                cls: 'seek-coverage-remaining-summary',
+                text: remainingFilesFoldLabel(pendingPaths.length),
+            });
+            const preview = remainingFilesPreview(pendingPaths);
+            const list = fold.createEl('ul', { cls: 'seek-coverage-remaining-list' });
+            for (const label of preview.shown) {
+                list.createEl('li', { text: label });
+            }
+            if (preview.more > 0) {
+                list.createEl('li', {
+                    cls: 'seek-coverage-remaining-more',
+                    text: `and ${preview.more.toLocaleString()} more`,
+                });
+            }
+            return;
+        }
+        if (!job || job.kind !== 'full' || job.done >= job.total) return;
+        const rem = Math.max(0, job.total - job.done);
+        if (rem <= 0) return;
+        parent.createDiv({
+            cls: 'seek-coverage-remaining-count',
+            text: remainingFilesFoldLabel(rem),
+        });
+    }
+
+    private renderCoverageMessage(
+        parent: HTMLElement,
+        message: CoveragePanelMessage,
+        kind: 'status' | 'placeholder',
+    ): void {
+        const block = parent.createDiv({ cls: `seek-coverage-${kind} is-${message.tone}` });
+        block.createDiv({ cls: `seek-coverage-${kind}-title`, text: message.title });
+        block.createDiv({ cls: `seek-coverage-${kind}-detail`, text: message.detail });
+    }
+
+    // Recursively renders one folder node (and its subfolders) as an indented tree
+    // row. Each row shows the folder's OWN subtree: covered / relevant files.
+    // Children render only when this path is in coverageExpandedPaths (collapsed by default).
+    private renderCoverageNode(container: HTMLElement, node: FolderCoverageNode, depth: number): void {
+        const fullyExcluded = node.total === 0 && node.excluded > 0;
+        const hasChildren = node.children.length > 0;
+        const expanded = hasChildren && this.coverageExpandedPaths.has(node.path);
+        const tone = coverageBarTone(node);
+        const isOwnFiles = node.path === OWN_FILES_PATH || node.path.endsWith(`/${OWN_FILES_PATH}`);
+        const adding = node.remaining > 0 || node.indexing > 0;
+        const row = container.createDiv({
+            cls: 'seek-coverage-row'
+                + (fullyExcluded ? ' is-excluded' : '')
+                + (expanded ? ' is-expanded' : '')
+                + (adding ? ' is-indexing' : '')
+                + (isOwnFiles ? ' is-own-files' : ''),
+        });
+        const name = row.createDiv({
+            cls: 'seek-coverage-name' + (hasChildren ? ' is-expandable' : ''),
+        });
+        // Indent by nesting level so the hierarchy reads as a tree.
+        name.style.paddingLeft = `${depth * 14}px`;
+        if (hasChildren) {
+            name.createSpan({
+                cls: 'seek-coverage-toggle',
+                text: expanded ? '▼' : '▶',
+            });
+            name.setAttr('role', 'button');
+            name.setAttr('aria-expanded', expanded ? 'true' : 'false');
+            name.setAttr('tabindex', '0');
+            const toggle = () => {
+                if (this.coverageExpandedPaths.has(node.path)) {
+                    this.coverageExpandedPaths.delete(node.path);
+                } else {
+                    this.coverageExpandedPaths.add(node.path);
+                }
+                void this.paintCoverage({ refresh: false });
+            };
+            name.addEventListener('click', (e) => {
+                e.preventDefault();
+                toggle();
+            });
+            name.addEventListener('keydown', (e) => {
+                if (e.key !== 'Enter' && e.key !== ' ') return;
+                e.preventDefault();
+                toggle();
+            });
+        } else if (depth > 0) {
+            name.createSpan({ cls: 'seek-coverage-indent', text: '└ ' });
+        } else {
+            // Leaf at top level: spacer so names align with expandable rows' caret.
+            name.createSpan({ cls: 'seek-coverage-toggle is-leaf', text: '' });
+        }
+        name.createSpan({ cls: 'seek-coverage-label', text: node.name });
+        if (fullyExcluded) name.createSpan({ cls: 'seek-coverage-excluded-tag', text: 'excluded' });
+
+        this.renderCoverageCells(row, node);
+
+        const tip = formatCoverageCountTip(node);
+        const pctEl = row.createSpan({ cls: 'seek-coverage-pct is-' + tone, text: formatCoveragePercent(node) });
+        pctEl.setAttr('aria-label', tip);
+        setTooltip(pctEl, tip, { delay: 300 });
+        const metaEl = row.createSpan({ cls: 'seek-coverage-meta', text: formatCoverageMeta(node) });
+        metaEl.setAttr('aria-label', tip);
+        setTooltip(metaEl, tip, { delay: 300 });
+
+        if (!expanded) return;
+        const own = node.children.length > 0 ? ownFilesRow(node) : null;
+        if (own) this.renderCoverageNode(container, own, depth + 1);
+        for (const child of node.children) this.renderCoverageNode(container, child, depth + 1);
+    }
+
+    private paintExclusionBanner(): void {
+        const host = this.exclusionBannerHost;
+        if (!host || !host.isConnected) return;
+        host.empty();
+        const change = this.plugin.getExclusionChange();
+        if (!change) return;
+        const { diff, detectedAt, backfilling } = change;
+        const banner = host.createDiv({
+            cls: 'seek-exclusion-banner' + (backfilling ? ' is-backfilling' : ''),
+        });
+        const when = new Date(detectedAt).toLocaleTimeString();
+        if (diff.newlyIncludedPaths.length === 0 && diff.newlyExcludedPaths.length === 0) {
+            banner.createDiv({
+                cls: 'seek-exclusion-banner-title',
+                text: backfilling ? 'Aligning with exclusions' : 'Exclusion settings changed',
+            });
+            banner.createDiv({
+                cls: 'seek-exclusion-banner-detail',
+                text: `Reindexing to align the index with your excluded folders (${when}).`,
+            });
+        }
+        if (diff.newlyIncludedPaths.length > 0) {
+            banner.createDiv({
+                cls: 'seek-exclusion-banner-title',
+                text: backfilling ? 'Aligning with exclusions' : 'Backfill ready after your exclusion settings changed',
+            });
+            banner.createDiv({
+                cls: 'seek-exclusion-banner-detail',
+                text: `Detected a change${diff.newlyIncludedFolders.length ? ' in ' + diff.newlyIncludedFolders.join(', ') : ''} — indexing ${diff.newlyIncludedPaths.length.toLocaleString()} newly included note${diff.newlyIncludedPaths.length === 1 ? '' : 's'} (${when}).`,
+            });
+        }
+        if (diff.newlyExcludedPaths.length > 0) {
+            if (diff.newlyIncludedPaths.length === 0) {
+                banner.createDiv({
+                    cls: 'seek-exclusion-banner-title',
+                    text: backfilling ? 'Aligning with exclusions' : 'Exclusion settings changed',
+                });
+            }
+            banner.createDiv({
+                cls: 'seek-exclusion-banner-detail',
+                text: `Removing ${diff.newlyExcludedPaths.length.toLocaleString()} note${diff.newlyExcludedPaths.length === 1 ? '' : 's'} from the index${diff.newlyExcludedFolders.length ? ' in ' + diff.newlyExcludedFolders.join(', ') : ''}.`,
+            });
+        }
+    }
+
+
+    /**
+     * Recovery affordance for a wedged startup: shown ONLY when the canonical health is
+     * 'stuck' (boot watchdog fired) or 'locked' (IDB refused to open). Puts the recovery
+     * action next to the state that needs it, instead of relying on the command palette.
+     *   - Retry    → re-attempt the store open / resume boot (non-destructive).
+     *   - Rebuild  → two-step confirm, then nuke + full reindex (re-embeds everything).
+     */
+    private renderRecoveryRow(containerEl: HTMLElement): void {
+        const health = this.statusState();
+        if (health !== 'stuck' && health !== 'locked') {
+            this.recoveryRebuildConfirm = false;
+            return;
+        }
+        if (this.recoveryRebuildConfirm) {
+            new Setting(containerEl)
+                .setName('Rebuild search index')
+                .setDesc("This deletes the current index and re-indexes every note. This may take a few minutes. Search will be unavailable until it's complete.")
+                .addButton(b => b.setButtonText('Cancel').onClick(() => { this.recoveryRebuildConfirm = false; this.rerender(); }))
+                .addButton(b => b.setButtonText('Delete & rebuild').setWarning().onClick(() => {
+                    this.recoveryRebuildConfirm = false;
+                    this.recoveryBusy = true;
+                    this.rerender();
+                    void this.plugin.forceResetIndexFromSettings().finally(() => {
+                        this.recoveryBusy = false;
+                        this.stats = null;
+                        this.rerender();
+                        void this.loadData();
+                    });
+                }));
+            return;
+        }
+        new Setting(containerEl)
+            .setName(INDEX_RECOVERY_NAME)
+            .setDesc(health === 'locked' ? INDEX_RECOVERY_LOCKED_DESC : INDEX_RECOVERY_STUCK_DESC)
+            .addButton(b => b
+                .setButtonText(this.recoveryBusy ? 'Rebuilding…' : 'Rebuild index')
+                .setWarning()
+                .setDisabled(this.recoveryBusy)
+                .onClick(() => { this.recoveryRebuildConfirm = true; this.rerender(); }))
+            .addButton(b => b
+                .setButtonText(this.recoveryBusy ? 'Retrying…' : 'Retry')
+                .setCta()
+                .setDisabled(this.recoveryBusy)
+                .onClick(() => {
+                    this.recoveryBusy = true;
+                    this.rerender();
+                    void this.plugin.recoverIndexFromSettings().finally(() => {
+                        this.recoveryBusy = false;
+                        this.rerender();
+                        void this.loadData();
+                    });
+                }));
+    }
+
+    private renderReindexRow(containerEl: HTMLElement): void {
+        if (this.showIndexingProgress()) {
+            const row = containerEl.createDiv({ cls: 'seek-progress-row' });
+            const head = row.createDiv({ cls: 'seek-progress-head' });
+            head.createDiv({ cls: 'setting-item-name', text: 'Indexing…' });
+            this.progressLabelEl = head.createDiv({ cls: 'seek-progress-count' });
+            const bar = row.createDiv({ cls: 'seek-progress-track' });
+            this.progressFillEl = bar.createDiv({ cls: 'seek-progress-fill' });
+            this.paintProgress();
+            return;
+        }
+        this.progressFillEl = null;
+        this.progressLabelEl = null;
+
+        if (this.reindexPhase === 'confirm') {
+            new Setting(containerEl)
+                .setName('Full reindex')
+                .setDesc("This deletes the current index and re-indexes every note. This may take a few minutes, depending on the size of your vault. Search keeps working on the old index until it's complete.")
+                .addButton(b => b.setButtonText('Cancel').onClick(() => { this.reindexPhase = 'idle'; this.rerender(); }))
+                .addButton(b => b.setButtonText('Delete & reindex').setWarning().onClick(() => this.startReindex()));
+            this.renderReindexNote(containerEl);
+            return;
+        }
+
+        // No index yet (fresh install / post-reset): there's nothing to delete, so the
+        // destructive "Delete & reindex" double-confirm is just friction. Offer a single
+        // non-warning click that builds the index straight away.
+        if (this.statusState() === 'none') {
+            new Setting(containerEl)
+                .setName('Build index')
+                .setDesc('Index every note so Seek can search your vault. This may take a few minutes on a large vault.')
+                .addButton(b => b.setButtonText('Build index').setCta().onClick(() => this.startReindex()));
+            this.renderReindexNote(containerEl);
+            return;
+        }
+
+        new Setting(containerEl)
+            .setName('Full reindex')
+            .setDesc('Rebuild the whole search index from scratch.')
+            .addButton(b => b.setButtonText('Reindex…').setWarning().onClick(() => { this.reindexPhase = 'confirm'; this.rerender(); }));
+        this.renderReindexNote(containerEl);
+    }
+
+    // Building/reindexing re-embeds every note — the heaviest thing Seek does. On a
+    // mobile phone that pass can be interrupted by the OS under memory pressure, so we
+    // surface a standing note: run it on a computer and the phone syncs the finished
+    // index embed-free. Shown on every device (it documents the limitation); tablets
+    // are NOT called out — they handle the build fine.
+    private renderReindexNote(containerEl: HTMLElement): void {
+        containerEl.createDiv({
+            cls: 'seek-hint',
+            text: 'Building the index re-embeds every note and isn’t recommended on a mobile phone. Run it on a computer, and your phone will sync the finished index automatically.',
+        });
+    }
+
+    private startReindex(): void {
+        this.reindexStarting = true;
+        this.jobStartedAt = performance.now();
+        this.rerender();
+
+        void this.plugin.runFullReindex({ skipConfirm: true }).then(() => {
+            this.reindexStarting = false;
+            this.stats = null;
+            this.rerender();
+            void this.loadData();
+        }).catch(() => {
+            this.reindexStarting = false;
+            this.rerender();
+        });
+    }
+
+    private paintProgress(): void {
+        const job = this.activeFullJob();
+        if (!job) {
+            if (!this.reindexStarting) {
+                this.stopProgressPoll();
+                this.rerender();
+                return;
+            }
+            if (this.progressLabelEl) this.progressLabelEl.setText('…');
+            if (this.progressFillEl) this.progressFillEl.style.width = '0%';
+            return;
+        }
+        if (this.jobStartedAt === 0) this.jobStartedAt = performance.now();
+        const pct = indexPercent(job.done, job.total);
+        const eta = formatRoughEta(job.done, job.total, performance.now() - this.jobStartedAt);
+        if (this.progressFillEl) this.progressFillEl.style.width = `${pct}%`;
+        if (this.progressLabelEl) {
+            const line = `${job.done.toLocaleString()} / ${job.total.toLocaleString()} notes · ${pct}%`;
+            this.progressLabelEl.setText(eta ? `${line} · ${eta} left` : line);
+        }
+        if (job.done >= job.total) {
+            this.reindexStarting = false;
+            this.stopProgressPoll();
+            this.rerender();
+        }
+    }
+
+    // ---- Relevance -----------------------------------------------------------------
+    private renderRelevance(containerEl: HTMLElement): void {
+        new Setting(containerEl).setName('Relevance').setHeading();
+
+        const intro = containerEl.createDiv({ cls: 'seek-rel-intro' });
+        intro.createDiv({ cls: 'seek-rel-title', text: 'How Seek ranks' });
+        intro.createDiv({
+            cls: 'setting-item-description',
+            text: 'Seek blends conceptual meaning with exact keywords, and can optionally apply bonuses for recency and exact title matching. It is strongly recommended to leave Seek in the default Balanced mode.',
+        });
+
+        this.renderPipeline(containerEl);
+
+        // Progressive pipeline ladder: the search modal footer mirrors this
+        // ladder during an active search (Name match → Lexical BM25 →
+        // Hybrid semantic), progressively bolding the active stage as each
+        // promise-ordered step completes.
+        this.renderProgressive(containerEl);
+
+        containerEl.createDiv({ cls: 'seek-hint', text: 'Relevance changes apply to your next search.' });
+
+        // Advanced disclosure
+        const disc = containerEl.createDiv({ cls: 'seek-disclosure' });
+        disc.createSpan({ cls: 'seek-disclosure-chev', text: this.advancedOpen ? '▾' : '▸' });
+        disc.createSpan({ text: 'Advanced relevance settings' });
+        disc.onclick = () => { this.advancedOpen = !this.advancedOpen; this.rerender(); };
+
+        if (this.advancedOpen) this.renderAdvanced(containerEl);
+    }
+
+    private renderPipeline(containerEl: HTMLElement): void {
+        const strategy = strategyOf(this.s.denseWeight);
+        const recStage = recencyStageOf(this.s.recencyEpsilon);
+        const titleStage = titleStageOf(this.s.navTitleBoost);
+
+        const pipe = containerEl.createDiv({ cls: 'seek-pipe' });
+        const box = (text: string, cls = '') => pipe.createDiv({ cls: `seek-pipe-box ${cls}`.trim(), text });
+        const arrow = () => pipe.createSpan({ cls: 'seek-pipe-arrow', text: '→' });
+
+        box('Notes');
+        arrow();
+        // In Balanced both branches are neutral; only Keyword-focused elevates Keyword.
+        const branch = pipe.createDiv({ cls: 'seek-pipe-branch' });
+        branch.createDiv({ cls: 'seek-pipe-box seek-pipe-dense', text: 'Conceptual meaning' });
+        branch.createDiv({ cls: `seek-pipe-box seek-pipe-kw${strategy === 'keyword' ? ' is-elevated' : ''}`, text: 'Keyword' });
+        arrow();
+        box('Fusion', 'seek-pipe-fuse');
+        arrow();
+        // Bonuses with recency·title sub-labels: dim+strike when Off, bold when on, bolder at High.
+        const bonus = pipe.createDiv({ cls: 'seek-pipe-box seek-pipe-bonus' });
+        bonus.createSpan({ text: 'Bonuses' });
+        const subs = bonus.createDiv({ cls: 'seek-pipe-subs' });
+        const subLabel = (text: string, stage: Stage) => {
+            const cls = stage === 'Off' ? 'is-off' : stage === 'High' ? 'is-high' : 'is-on';
+            subs.createSpan({ cls: `seek-pipe-sub ${cls}`, text });
+        };
+        subLabel('recency', recStage);
+        subs.createSpan({ text: ' · ' });
+        subLabel('title', titleStage);
+        arrow();
+        box('Results');
+    }
+
+    // Progressive pipeline ladder explainer — shows the streaming stages the
+    // search modal footer mirrors during an active search. Not configurable;
+    // purely informational transparency so the user understands the stage labels.
+    private renderProgressive(containerEl: HTMLElement): void {
+        const block = containerEl.createDiv({ cls: 'seek-progressive-pipe' });
+        block.createDiv({ cls: 'seek-progressive-title', text: 'Search stages' });
+        const row = block.createDiv({ cls: 'seek-progressive-row' });
+        const labels = ['Name match', '→', 'Lexical BM25', '→', 'Hybrid semantic'];
+        for (const l of labels) {
+            const el = row.createSpan({ cls: 'seek-progressive-label' });
+            if (l === '→') el.setText(l);
+            else el.createSpan({ text: l });
+        }
+        block.createDiv({
+            cls: 'seek-progressive-desc',
+            text: 'Seek streams results through these stages as they become available. When "Search progression stages" is enabled under Display settings, all three stages are shown in the search modal footer and highlight progressively as each step completes. Each stage replaces the previous one in-place, so you always see the best results so far. On a fresh start, name match and lexical BM25 read your notes on disk — they do not wait for the search-index cache — and semantic ranking joins once the model and caches are ready. BM25 field weights (Advanced) tune which parts of a note keyword matching prefers — title, aliases, tags, body, properties, and headings. When you use exact-text shorthands in the search bar ("…", +word, /…/, optional ~ for case-sensitive), the footer shows Name match → Exact text instead and semantic ranking is skipped for that query.',
+        });
+        const exactBlock = containerEl.createDiv({ cls: 'seek-exact-syntax' });
+        exactBlock.createDiv({ cls: 'seek-progressive-title', text: 'Exact text syntax' });
+        exactBlock.createDiv({
+            cls: 'seek-progressive-desc',
+            text: 'In the search modal free-text area (alongside filter pills): "phrase" matches that exact substring; multiple quoted parts or +word terms must all appear ("a" "b" or +a +b); /pattern/ runs a regex on note bodies; prefix ~ for case-sensitive matching. Hover the info icon on the query row for the same list. A badge shows the active mode. These queries scan indexed note text only — no embedding step.',
+        });
+    }
+
+    private renderAdvanced(containerEl: HTMLElement): void {
+        const adv = containerEl.createDiv({ cls: 'seek-adv' });
+
+        // Search strategy (denseWeight)
+        const strat = new Setting(adv)
+            .setName('Search strategy')
+            .setDesc('Balanced suits nearly everyone. Only switch to Keyword focused if you have exact terms which Balanced mode does not rank appropriately.');
+        this.addSegmented(strat, ['Balanced', 'Keyword focused'],
+            strategyOf(this.s.denseWeight) === 'keyword' ? 'Keyword focused' : 'Balanced',
+            (pick) => {
+                void (async () => {
+                    this.s.denseWeight = STRATEGY_VALUE[pick === 'Keyword focused' ? 'keyword' : 'balanced'];
+                    await this.save();
+                    this.rerender(); // re-weight the pipeline diagram
+                })();
+            });
+
+        // Fuzzy matching
+        new Setting(adv)
+            .setName('Fuzzy matching')
+            .setDesc('Keywords will still return results even with small spelling mistakes.')
+            .addToggle(t => t.setValue(this.s.fuzzyEnabled).onChange(async v => { this.s.fuzzyEnabled = v; await this.save(); }));
+
+        // Recency bonus (3-stage) + date picker
+        const recStage = recencyStageOf(this.s.recencyEpsilon);
+        const rec = new Setting(adv)
+            .setName('Recency bonus')
+            .setDesc('Gives a score bonus to newer notes based on a selected date type property, or file modified date. This is recommended if you have episodic notes which occur regularly around the same topics, like meetings or classes.');
+        this.addSegmented(rec, ['Off', 'Default', 'High'], recStage, (pick) => {
+            void (async () => {
+                const v = RECENCY_VALUE[pick as Stage];
+                this.s.recencyEpsilon = v.eps;
+                this.s.recencyHalfLifeDays = v.hl;
+                await this.save();
+                this.rerender(); // re-bold the pipeline "recency" sub-label + enable/disable the date picker
+            })();
+        });
+        // Date-property picker, dimmed/disabled until a stage other than Off is chosen.
+        const dateProps = enumerateDatePropertyNames(this.app);
+        if (this.s.recencyKey === 'created' && !dateProps.includes(this.s.createdProp)) dateProps.unshift(this.s.createdProp);
+        rec.addDropdown(dd => {
+            for (const p of dateProps) dd.addOption(`prop:${p}`, `Property: ${p}`);
+            dd.addOption('mtime', 'File modified time');
+            dd.setValue(this.s.recencyKey === 'modified' ? 'mtime' : `prop:${this.s.createdProp}`);
+            dd.onChange(async v => {
+                if (v === 'mtime') { this.s.recencyKey = 'modified'; }
+                else { this.s.recencyKey = 'created'; this.s.createdProp = v.slice('prop:'.length); }
+                await this.save();
+            });
+            dd.selectEl.disabled = recStage === 'Off';
+            if (recStage === 'Off') dd.selectEl.addClass('seek-dimmed');
+        });
+
+        // Title bonus (3-stage)
+        const title = new Setting(adv)
+            .setName('Title bonus')
+            .setDesc("Gives a score bonus to notes which have matching terms in their title. This can help a note that represents an entity or topic outrank pages that merely mention it.");
+        this.addSegmented(title, ['Off', 'Default', 'High'], titleStageOf(this.s.navTitleBoost), (pick) => {
+            void (async () => {
+                this.s.navTitleBoost = TITLE_VALUE[pick as Stage];
+                await this.save();
+                this.rerender(); // re-bold the pipeline "title" sub-label
+            })();
+        });
+
+        this.renderBm25FieldWeights(adv);
+    }
+
+    private renderBm25FieldWeights(adv: HTMLElement): void {
+        const labels: Record<Bm25FieldKey, string> = {
+            title: 'Note title',
+            aliases: 'Aliases',
+            tags: 'Tags',
+            content: 'Body',
+            properties: 'Properties',
+            headings: 'Headings',
+        };
+        const effective = resolveBm25FieldBoosts(this.s);
+        const hasCustom = !!this.s.bm25FieldBoostOverrides
+            && Object.keys(this.s.bm25FieldBoostOverrides).length > 0;
+
+        const block = adv.createDiv({ cls: 'seek-bm25-weights' });
+        const disc = block.createDiv({ cls: 'seek-disclosure' });
+        disc.createSpan({ cls: 'seek-disclosure-chev', text: this.bm25WeightsOpen ? '▾' : '▸' });
+        disc.createSpan({ text: 'BM25 field weights' });
+        if (hasCustom && !this.bm25WeightsOpen) {
+            disc.createSpan({ cls: 'seek-disclosure-hint', text: ' (custom)' });
+        }
+        disc.onclick = () => { this.bm25WeightsOpen = !this.bm25WeightsOpen; this.rerender(); };
+
+        if (!this.bm25WeightsOpen) return;
+
+        block.createDiv({
+            cls: 'setting-item-description seek-bm25-weights-desc',
+            text: 'Power-user lexical tuning for keyword matching (Name match → Lexical BM25 stages, and Keyword-focused strategy). Defaults are eval-tuned for Balanced hybrid search — most users should leave them alone. Changes apply on the next search; no embedding rebuild.',
+        });
+
+        for (const key of BM25_FIELD_KEYS) {
+            const recommended = DEFAULT_FIELD_BOOSTS[key];
+            new Setting(block)
+                .setName(labels[key])
+                .setDesc(`Recommended ${recommended}×`)
+                .addSlider(slider => slider
+                    .setLimits(BM25_FIELD_BOOST_MIN, BM25_FIELD_BOOST_MAX, BM25_FIELD_BOOST_STEP)
+                    .setValue(effective[key])
+                    .setDynamicTooltip()
+                    .onChange(async (v: number) => {
+                        setBm25FieldBoostOverride(this.s, key, v);
+                        await this.save();
+                    }));
+        }
+
+        new Setting(block)
+            .setName('Restore recommended defaults')
+            .setDesc('Clear custom field weights and return to the shipped BM25 boosts.')
+            .addButton(btn => btn
+                .setButtonText('Restore defaults')
+                .onClick(async () => {
+                    clearBm25FieldBoostOverrides(this.s);
+                    await this.save();
+                    this.rerender();
+                }));
+    }
+
+    // ---- Display -------------------------------------------------------------------
+    private renderDisplay(containerEl: HTMLElement): void {
+        new Setting(containerEl).setName('Display').setHeading();
+
+        // Per-result score line. Match strength only exists on a calibrated corpus
+        // (≥ MATCH_STRENGTH_MIN_NOTES notes AND a completed full-index pass that
+        // produced dense background stats), so the toggle is shown always — for
+        // discoverability — but disabled with a reason until scoring is possible.
+        const noteCount = this.app.vault.getMarkdownFiles().length;
+        const scoringReady = noteCount >= MATCH_STRENGTH_MIN_NOTES && (this.stats?.calibrated ?? false);
+        const scoresDesc = scoringReady
+            ? 'Shows each result’s Matching %, recency, and title boost on the result row.'
+            : noteCount < MATCH_STRENGTH_MIN_NOTES
+                ? `Shows each result’s Matching %, recency, and title boost. Needs at least ${MATCH_STRENGTH_MIN_NOTES} indexed notes before scores can be calibrated.`
+                : 'Shows each result’s Matching %, recency, and title boost. Available once the index finishes its first full calibration pass.';
+        new Setting(containerEl)
+            .setName('Display scores')
+            .setDesc(scoresDesc)
+            .addToggle(t => t
+                .setValue(this.s.showScores)
+                .setDisabled(!scoringReady)
+                .onChange(async v => { this.s.showScores = v; await this.save(); }));
+
+        new Setting(containerEl)
+            .setName('Keyboard hints bar')
+            .setDesc('Displays keyboard hints in the search modal (footer bar, query-bar Tab hint, selected-row keycaps). Hints reflect bindings active while the modal is focused; remap under Settings → Hotkeys.')
+            .addToggle(t => t.setValue(this.s.showHotkeyHints).onChange(async v => { this.s.showHotkeyHints = v; await this.save(); }));
+
+        new Setting(containerEl)
+            .setName('Search progression stages')
+            .setDesc('Shows the search pipeline in the modal footer (Name → Lexical BM25 → Hybrid semantic, or Name → Exact text when you use "…", +word, or /regex/).')
+            .addToggle(t => t.setValue(this.s.showSearchStages).onChange(async v => { this.s.showSearchStages = v; await this.save(); }));
+
+        new Setting(containerEl)
+            .setName('Keep search open when opening in new tab or split')
+            .setDesc('When ON, opening a result in a new tab, split, or window leaves the search modal open so you can open more results. When OFF (default), the modal closes after any open, like Quick Switcher.')
+            .addToggle(t => t.setValue(this.s.keepSearchOpenOnTabSplit).onChange(async v => { this.s.keepSearchOpenOnTabSplit = v; await this.save(); }));
+
+        const widthLabels: Record<SearchModalWidth, string> = {
+            default: 'Default (640px)',
+            wide: 'Wide (800px)',
+            'extra-wide': 'Extra wide (960px)',
+        };
+        new Setting(containerEl)
+            .setName('Search modal width')
+            .setDesc('Width of the search panel on desktop and tablet. Takes effect the next time you open search.')
+            .addDropdown(dd => dd
+                .addOptions(widthLabels)
+                .setValue(this.s.searchModalWidth)
+                .onChange(async v => {
+                    this.s.searchModalWidth = v as SearchModalWidth;
+                    await this.save();
+                }));
+
+        const heightLabels: Record<SearchModalHeight, string> = {
+            default: 'Default',
+            tall: 'Tall',
+            'extra-tall': 'Extra tall',
+        };
+        new Setting(containerEl)
+            .setName('Search modal height')
+            .setDesc('Height of the search panel on desktop. Mobile uses the available screen above the keyboard.')
+            .addDropdown(dd => dd
+                .addOptions(heightLabels)
+                .setValue(this.s.searchModalHeight)
+                .onChange(async v => {
+                    this.s.searchModalHeight = v as SearchModalHeight;
+                    await this.save();
+                }));
+
+        const snippetLineLabels: Record<SnippetPreview, string> = {
+            compact: 'Compact (1 line)',
+            standard: 'Standard (3 lines)',
+            expanded: 'Expanded (6 lines)',
+        };
+
+        new Setting(containerEl)
+            .setName('Result snippet preview')
+            .setDesc('How much surrounding text to show per result (200 / 400 / 800 characters). Remap “Search: Expand snippet” under Settings → Hotkeys (default Ctrl/Cmd+Shift+E) to toggle the expanded preset while search is open.')
+            .addDropdown(dd => dd
+                .addOptions(snippetLineLabels)
+                .setValue(this.s.snippetPreview)
+                .onChange(async v => {
+                    this.s.snippetPreview = v as SnippetPreview;
+                    await this.save();
+                }));
+
+        const aliasLimitLabels: Record<string, number> = {
+            '1': 1, '2': 2, '3': 3, '5': 5, '10': 10, All: 0,
+        };
+        const aliasLimitLabel = (n: number) => (n === 0 ? 'All' : String(n));
+
+        new Setting(containerEl)
+            .setName('Show aliases in results')
+            .setDesc('Displays frontmatter aliases on each search result row. Use the limit below to truncate long alias lists.')
+            .addToggle(t => t.setValue(this.s.showResultAliases).onChange(async v => {
+                this.s.showResultAliases = v;
+                await this.save();
+                this.rerender();
+            }));
+
+        const aliasLimit = new Setting(containerEl)
+            .setName('Alias display limit')
+            .setDesc('How many aliases to show per result before a "+N more" control. All shows every alias with no truncation.')
+            .addDropdown(dd => dd
+                .addOptions({ '1': '1', '2': '2', '3': '3', '5': '5', '10': '10', All: 'All' })
+                .setValue(aliasLimitLabel(this.s.resultAliasLimit))
+                .onChange(async v => {
+                    this.s.resultAliasLimit = aliasLimitLabels[v] ?? 3;
+                    await this.save();
+                }));
+        aliasLimit.settingEl.toggleClass('is-disabled', !this.s.showResultAliases);
+        aliasLimit.components.forEach(c => { (c as { disabled?: boolean }).disabled = !this.s.showResultAliases; });
+
+        new Setting(containerEl)
+            .setName('Insert link includes section heading')
+            .setDesc('When ON, insert-link actions (Settings → Hotkeys; defaults Alt+Enter / Alt+Shift+Enter) link to the matched heading ([[Note#Section]]). When OFF (default), links to the note only ([[Note]]).')
+            .addToggle(t => t.setValue(this.s.insertLinkIncludeHeading).onChange(async v => { this.s.insertLinkIncludeHeading = v; await this.save(); }));
+    }
+
+    // ---- Model & performance -------------------------------------------------------
+    private renderModel(containerEl: HTMLElement): void {
+        new Setting(containerEl).setName('Model & performance').setHeading();
+
+        // Compute backend — PER-DEVICE (localStorage), never synced. Auto / Force CPU /
+        // Force WebGPU map to the platform.ts override values auto / wasm / webgpu.
+        const computeLabel: Record<BackendChoice, string> = { auto: 'Auto', wasm: 'Force CPU', webgpu: 'Force WebGPU' };
+        const labelToChoice: Record<string, BackendChoice> = { Auto: 'auto', 'Force CPU': 'wasm', 'Force WebGPU': 'webgpu' };
+        const compute = new Setting(containerEl)
+            .setName('Compute')
+            .setDesc('How the embedding model runs on this device (this option is not synced to other devices). Auto uses WebGPU when available and falls back to CPU. Changing this setting is not recommended.');
+        this.addSegmented(compute, ['Auto', 'Force CPU', 'Force WebGPU'], computeLabel[getBackendOverride()], (pick) => {
+            setBackendOverride(labelToChoice[pick]);
+            this.rerender(); // forcing WebGPU clears a prior sticky demote; reflect it
+        });
+
+        // T8 — per-device worker route (desktop experiment). Query embeds run
+        // in a dedicated Web Worker nested inside Seek's sandboxed iframe, off
+        // the renderer main thread; the iframe pipeline stays as automatic
+        // fallback. Per-device like Compute (worker viability is a property of
+        // the runtime, not the vault), so it lives in localStorage, not
+        // data.json. The embedder reads the flag per call, so this takes
+        // effect immediately.
+        if (!isMobilePlatform()) {
+            new Setting(containerEl)
+                .setName('Run queries in background worker')
+                .setDesc('EXPERIMENTAL. Runs the embedding model for queries in a separate background thread instead of Obsidian\'s UI thread, so indexing should feel smoother. Your regular search pipeline is kept as a backup and takes over automatically if the worker fails. Applies to new searches immediately.')
+                .addToggle(t => t.setValue(getWorkerEmbedRoute()).onChange(async v => {
+                    setWorkerEmbedRoute(v);
+                    new Notice(v
+                        ? 'Seek: queries now embed in the background worker. The standard pipeline takes over automatically if it fails.'
+                        : 'Seek: queries embed in the standard pipeline again.', 6000);
+                }));
+        }
+
+        if (isWebgpuDemoted()) {
+            new Setting(containerEl)
+                .setName('WebGPU disabled after a crash on this device')
+                .setDesc('Seek detected this device was killed by the OS during a WebGPU reindex and fell back to CPU. Reset to let Auto try WebGPU again (e.g. after an OS update).')
+                .addButton(b => b.setButtonText('Reset & retry WebGPU').setWarning().onClick(() => {
+                    clearWebgpuDemoted();
+                    new Notice('Seek: WebGPU re-enabled on this device. Takes effect on the next model load.', 6000);
+                    this.rerender();
+                }));
+        }
+
+        this.renderModelStatus(containerEl);
+    }
+
+    private renderModelStatus(containerEl: HTMLElement): void {
+        const ms = this.modelStatus;
+        const row = new Setting(containerEl).setName('Embedding model');
+
+        if (this.modelDownloading) {
+            const desc = row.descEl;
+            desc.createSpan({ cls: 'seek-spinner' });
+            desc.createSpan({ text: ' Downloading… (≈100 MB — keep Obsidian open)' });
+            return;
+        }
+
+        if (this.modelDeleting) {
+            const desc = row.descEl;
+            desc.createSpan({ cls: 'seek-spinner' });
+            desc.createSpan({ text: ' Deleting model…' });
+            return;
+        }
+
+        const downloaded = ms?.downloaded ?? false;
+        const desc = row.descEl;
+        const dot = desc.createSpan({ cls: `seek-dot seek-dot-${downloaded ? 'good' : 'mid'}` });
+        dot.setCssStyles({ marginRight: '6px' });
+        if (downloaded) {
+            // Model on-disk size (Cache API bytes), relocated here from the index status card.
+            // null on platforms that don't expose the usageDetails split (e.g. iOS) — omit it
+            // there rather than render a bare dash.
+            const modelMB = this.stats?.modelMB;
+            const sizeText = modelMB != null ? ` · ${Math.round(modelMB)} MB` : '';
+            desc.createSpan({ text: `Downloaded${sizeText} · Stored on disk.` });
+            // Model id + dim on its own line below the status (a block div, not an inline
+            // span) so the long repo name no longer wraps mid-sentence after "permanently.".
+            if (ms) desc.createDiv({ cls: 'seek-faint seek-model-id', text: `${ms.name} · ${ms.dim}-dim` });
+            // The only downloaded-state action is destructive — it frees the ~100 MB and
+            // forces a re-download on the next search — so it's a red, two-step Delete
+            // (Delete → Cancel / Delete model), never a single click. To re-acquire the
+            // model afterward, the resting "Not downloaded" state offers Download now.
+            if (this.modelDeleteConfirm) {
+                row.addButton(b => b.setButtonText('Cancel').onClick(() => { this.modelDeleteConfirm = false; this.rerender(); }));
+                row.addButton(b => b.setButtonText('Delete model').setWarning().onClick(() => this.deleteModel()));
+            } else {
+                row.addButton(b => b.setButtonText('Delete').setWarning().onClick(() => { this.modelDeleteConfirm = true; this.rerender(); }));
+            }
+        } else {
+            desc.createSpan({ text: 'Not downloaded · the first search fetches ≈100 MB.' });
+            row.addButton(b => b.setButtonText('Download now').setCta().onClick(() => this.downloadModel()));
+        }
+    }
+
+    private downloadModel(): void {
+        this.modelDownloading = true;
+        this.rerender();
+        void this.plugin.prewarmModel()
+            .then(() => { new Notice('Seek: embedding model downloaded.', 4000); })
+            .catch((e) => {
+                new Notice(`Seek: model download failed — ${e instanceof Error ? e.message : String(e)}`, 8000);
+            })
+            .finally(() => {
+            this.modelDownloading = false;
+            this.modelStatus = null;
+            this.rerender();
+            void this.loadData(); // refresh downloaded status
+        });
+    }
+
+    private deleteModel(): void {
+        this.modelDeleteConfirm = false;
+        this.modelDeleting = true;
+        this.rerender();
+        void this.plugin.deleteModel().then(() => {
+            new Notice('Seek: embedding model deleted. The next search re-downloads it (≈100 MB).', 6000);
+        }).catch((e) => {
+            new Notice(`Seek: model delete failed — ${e instanceof Error ? e.message : String(e)}`, 8000);
+        }).finally(() => {
+            this.modelDeleting = false;
+            this.modelStatus = null;
+            this.rerender();
+            void this.loadData(); // refresh status → now "Not downloaded"
+        });
+    }
+
+    // ---- Diagnostics + Reset --------------------------------------------------------
+    private renderReset(containerEl: HTMLElement): void {
+        // Diagnostics first, under its own heading, and rendered BEFORE the
+        // reset-confirm early-return below so the report button is always visible
+        // (it replaces the removed "Generate logging report" command). openLoggingReport
+        // renders the per-device NDJSON logs into seek-report.md and opens it.
+        new Setting(containerEl).setName('Diagnostics').setHeading();
+        new Setting(containerEl)
+            .setName('Logging report')
+            .setDesc('Write a diagnostic report (seek-report.md) of indexing, searches, model loads, and any errors — generate and share it when reporting an issue. Never includes note contents.')
+            .addButton(b => b.setButtonText('Generate logging report').onClick(() => void this.plugin.openLoggingReport()));
+
+        new Setting(containerEl)
+            .setName('Recent search latency')
+            .setDesc('Last five searches from the Seek modal this session — time until results were ready to open or insert. Select and copy the lines below for notes or issue reports.');
+        const consoleHost = containerEl.createDiv({ cls: 'seek-search-console-host' });
+        this.searchConsoleEl = consoleHost;
+        this.paintSearchConsole();
+
+        // Placed directly under the button that produces the file it governs, so
+        // the choice is in front of the user at the moment it applies.
+        new Setting(containerEl)
+            .setName('Redact report')
+            .setDesc('Replace note paths, titles, and query text in the report with anonymous tokens. The same note keeps the same token, so timings and errors still make sense. Turn this off only when reporting a search-relevance problem, where the actual query and results are the evidence.')
+            .addToggle(t => t.setValue(this.s.redactReport).onChange(async v => {
+                this.s.redactReport = v;
+                await this.save();
+            }));
+
+        new Setting(containerEl).setName('Reset').setHeading();
+        if (this.resetConfirm) {
+            new Setting(containerEl)
+                .setName('Reset to defaults')
+                .setDesc('Restores the default configuration for all Seek settings. Your index will not be rebuilt.')
+                .addButton(b => b.setButtonText('Cancel').onClick(() => { this.resetConfirm = false; this.rerender(); }))
+                .addButton(b => b.setButtonText('Reset settings').setWarning().onClick(async () => {
+                    // Restore every persisted (synced) setting. Compute and startup-warm
+                    // are per-device localStorage, not part of data.json, so they are
+                    // deliberately untouched.
+                    Object.assign(this.s, DEFAULT_SETTINGS);
+                    await this.save();
+                    this.resetConfirm = false;
+                    new Notice('Seek: settings restored to defaults. Your index was not rebuilt.', 6000);
+                    this.rerender();
+                }));
+            return;
+        }
+        new Setting(containerEl)
+            .setName('Reset to defaults')
+            .setDesc('Restore all Seek settings to their original values. Your index will not be rebuilt.')
+            .addButton(b => b.setButtonText('Reset…').onClick(() => { this.resetConfirm = true; this.rerender(); }));
+    }
+    private resetConfirm = false;
+
+    private paintSearchConsole(): void {
+        const host = this.searchConsoleEl;
+        if (!host || !host.isConnected) return;
+        host.empty();
+        const lines = this.plugin.getRecentSearchEntries().map(formatRecentSearchLine);
+        renderRecentSearchConsole(host, lines);
+    }
+
+    // ---- About ---------------------------------------------------------------------
+    private renderAbout(containerEl: HTMLElement): void {
+        const manifest = this.plugin.manifest;
+        const about = containerEl.createDiv({ cls: 'seek-about' });
+        const left = about.createDiv({ cls: 'seek-about-left' });
+        const name = manifestField(manifest.name);
+        if (name) left.createSpan({ cls: 'seek-about-name', text: name });
+        const version = manifestField(manifest.version);
+        if (version) left.createSpan({ cls: 'seek-about-ver', text: `v${version}` });
+        const author = manifestField(manifest.author);
+        if (author) left.createSpan({ cls: 'seek-about-by', text: `by ${author}` });
+
+        const linksHost = about.createDiv({ cls: 'seek-about-links' });
+        void this.paintAboutLinks(linksHost);
+    }
+
+    // Obsidian's runtime manifest omits custom keys — read manifest.json from disk
+    // so optional githubUrl / docsUrl / xUrl fields (including "") control icons.
+    private async paintAboutLinks(host: HTMLElement): Promise<void> {
+        const { docsUrl, githubUrl, xUrl } = await readAboutUrls(this.app, this.plugin.manifest.dir);
+        if (!host.isConnected) return;
+        host.empty();
+        if (!docsUrl && !githubUrl && !xUrl) {
+            host.remove();
+            return;
+        }
+        const link = (href: string, icon: string, label: string) => {
+            const a = host.createEl('a', { cls: 'seek-about-ic', href, attr: { 'aria-label': label, title: label } });
+            setIcon(a, icon);
+        };
+        if (docsUrl) link(docsUrl, 'book-open', 'Seek Documentation');
+        if (githubUrl) link(githubUrl, 'github', 'Repository on GitHub');
+        if (xUrl) this.brandLink(host, xUrl, X_LOGO_PATH, '0 0 24 24', 'On X');
+    }
+
+    // An icon-button link whose glyph is an inline SVG path rather than a Lucide
+    // icon — for brand logos Obsidian's bundled Lucide doesn't (any longer) ship.
+    // Built via createElementNS (SVG namespace) so it's a real <svg> the
+    // `.seek-about-ic svg` rule sizes, with fill=currentColor so it tints like the
+    // setIcon glyphs beside it.
+    private brandLink(parent: HTMLElement, href: string, pathD: string, viewBox: string, label: string): void {
+        const a = parent.createEl('a', { cls: 'seek-about-ic', href, attr: { 'aria-label': label, title: label } });
+        const ns = 'http://www.w3.org/2000/svg';
+        const svg = activeDocument.createElementNS(ns, 'svg');
+        svg.setAttribute('viewBox', viewBox);
+        svg.setAttribute('fill', 'currentColor');
+        const path = activeDocument.createElementNS(ns, 'path');
+        path.setAttribute('d', pathD);
+        svg.appendChild(path);
+        a.appendChild(svg);
+    }
+
+    // ---- shared: segmented (pill) control ------------------------------------------
+    private addSegmented(setting: Setting, opts: string[], selected: string, onPick: (o: string) => void): void {
+        const seg = setting.controlEl.createDiv({ cls: 'seek-seg' });
+        for (const o of opts) {
+            const b = seg.createEl('button', { cls: 'seek-seg-opt', text: o });
+            if (o === selected) b.addClass('is-active');
+            b.onclick = () => onPick(o);
+        }
+    }
+}

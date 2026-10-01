@@ -1,5 +1,5 @@
 import type { QueryCase } from '../functional-telemetry/types';
-import type { ScoredChunk } from '../../types';
+import type { ScoredChunk } from '../../types/types';
 
 export type SearchOutcome = {
     results: ScoredChunk[];

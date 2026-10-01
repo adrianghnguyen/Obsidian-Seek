@@ -1,9 +1,9 @@
 import type { App } from 'obsidian';
-import type { SeekLogger } from '../../logger';
-import type { SearchOrchestrator } from '../../search';
-import { SeekSearchModal } from '../../search-modal';
-import { DEFAULT_SETTINGS, type ScoredChunk } from '../../types';
-import type { IndexLoadState } from '../../index-notice';
+import type { SeekLogger } from '../../diagnostics/logger';
+import type { SearchOrchestrator } from '../../search/search';
+import { SeekSearchModal } from '../../ui/search-modal';
+import { DEFAULT_SETTINGS, type ScoredChunk } from '../../types/types';
+import type { IndexLoadState } from '../../ui/index-notice';
 
 interface ModalInternals {
     lastQuery: string;
