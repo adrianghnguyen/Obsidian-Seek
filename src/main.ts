@@ -123,13 +123,20 @@ import {
     type BootBufferHandle,
 } from './app/layout-ready';
 import { parseJsonStripBom } from './diagnostics/json-text';
+import {
+    wireGlobalErrorHandlers as wireGlobalErrorObservers,
+    wireLongTaskObserver as wireLongTaskObservers,
+    wireMemoryPressureHandlers as wireMemoryPressureObservers,
+    disposeObservers,
+    type ObserverHost,
+    type ObserverHandles,
+} from './app/observers';
 import type { LongTaskEntry, MemoryPressureEntry, StorageSnapshotEntry, EvictionSuspectedEntry, AppLocalFetchEntry } from './types/types';
 
 // Long-task threshold. PerformanceObserver fires for any task ≥50 ms by spec,
 // but at that floor we'd flood the log. 250 ms is the rough threshold above
 // which the user perceives a stutter and is also the design-doc latency
 // budget for search.
-const LONG_TASK_THRESHOLD_MS = 250;
 
 // Boot buffer: after onLayoutReady, wait this long before the first IndexedDB
 // work (store open, hydrate, reconcile) so other plugins' startup I/O gets the
@@ -225,7 +232,7 @@ export default class SeekPlugin extends Plugin {
     // explicitly tear down on unload. Without cleanup these leak into the
     // next plugin reload and we end up with duplicate logging on every hot
     // reload during development.
-    private longTaskObserver: PerformanceObserver | null = null;
+    private observerHandles: ObserverHandles = {};
     // Task contexts as SPANS, not a scalar (audit R2 #9 kept the overlap
     // tolerance; issue #5 forced the span upgrade): contexts overlap — opening
     // the search modal during a running reindex used to stomp the scalar back
@@ -245,15 +252,8 @@ export default class SeekPlugin extends Plugin {
     private popTaskContext(c: TaskContext): void {
         this.taskCtx.pop(c);
     }
-    private onError: ((e: ErrorEvent) => void) | null = null;
-    private onUnhandledRejection: ((e: PromiseRejectionEvent) => void) | null = null;
-    private onVisibilityChange: (() => void) | null = null;
-    private onPageHide: (() => void) | null = null;
-    // The document the visibilitychange listener is bound to, captured at add-time.
-    // activeDocument tracks the focused window, which can change to a popout between
-    // load and unload — so removing against a fresh activeDocument would target the
-    // wrong document and leak the main-window listener. Bind + unbind via this ref.
-    private visibilityDoc: Document | null = null;
+    // Live handles for the global observers (see app/observers.ts) so onunload
+    // removes each against the SAME document it was bound to.
     // Crash forensics (see forensics.ts). Created in onload once the vault
     // scope (appId) is known; null only during the first lines of onload.
     private forensics: Forensics | null = null;
@@ -1540,14 +1540,8 @@ export default class SeekPlugin extends Plugin {
         this.embedder.teardown();
         this.orchestrator?.dispose();
         this.store.close();
-        if (this.longTaskObserver) {
-            try { this.longTaskObserver.disconnect(); } catch { /* swallow */ }
-            this.longTaskObserver = null;
-        }
-        if (this.onError) window.removeEventListener('error', this.onError);
-        if (this.onUnhandledRejection) window.removeEventListener('unhandledrejection', this.onUnhandledRejection);
-        if (this.onVisibilityChange && this.visibilityDoc) this.visibilityDoc.removeEventListener('visibilitychange', this.onVisibilityChange);
-        if (this.onPageHide) window.removeEventListener('pagehide', this.onPageHide);
+        disposeObservers(this.observerHandles);
+        this.observerHandles = {};
         this.schedulers.dispose();
         // vault/workspace events and the window 'blur' DOM event are registered
         // via registerEvent/registerDomEvent, so Obsidian tears them down for us.
@@ -3270,149 +3264,36 @@ export default class SeekPlugin extends Plugin {
 
     // Catch errors that escape the explicit try/catch sites. Without these,
     // async errors in event handlers / iframe message processing vanish.
-    private wireGlobalErrorHandlers(): void {
-        this.onError = (e: ErrorEvent) => {
-            if (this.unloading) return;
-            // Only log if the error originates from our code. The renderer
-            // process gets a lot of unrelated cross-plugin noise, and we
-            // don't want to claim other plugins' errors as ours.
-            const src = (e.filename ?? '') + ' ' + (e.message ?? '');
-            if (isIgnorableStartupConsoleError(e.message ?? '')) return;
-            if (!/seek|transformers|webgpu/i.test(src)) return;
-            this.logger.appendError('window.onerror', e.error ?? new Error(e.message)).catch(() => {});
-        };
-        this.onUnhandledRejection = (e: PromiseRejectionEvent) => {
-            if (this.unloading) return;
-            const reason = e.reason instanceof Error ? e.reason : new Error(String(e.reason));
-            const stackStr = reason.stack ?? '';
-            if (isIgnorableStartupConsoleError(reason.message) || isIgnorableStartupConsoleError(stackStr)) return;
-            // Same filter as above. False negatives are fine; false positives
-            // (logging other plugins' errors as Seek's) are worse.
-            if (!/seek|transformers|webgpu/i.test(stackStr) && !/seek|transformers|webgpu/i.test(reason.message)) return;
-            this.logger.appendError('unhandledrejection', reason).catch(() => {});
-        };
-        window.addEventListener('error', this.onError);
-        window.addEventListener('unhandledrejection', this.onUnhandledRejection);
-    }
-
     // PerformanceObserver for longtask entries. On iOS WKWebView this API
     // is supported as of iOS 16 — if absent, we silently skip (no harm).
     // Each longtask >= LONG_TASK_THRESHOLD_MS becomes a log entry tagged
     // with currentTaskContext so the report can group jank by what we
     // were doing at the time.
-    private wireLongTaskObserver(): void {
-        interface PolyfillObserver {
-            new(cb: (list: { getEntries(): PerformanceEntry[] }) => void): PerformanceObserver;
-        }
-        const Ctor = (window as unknown as { PerformanceObserver?: PolyfillObserver }).PerformanceObserver;
-        if (!Ctor) return;
-        try {
-            this.longTaskObserver = new Ctor(list => {
-                for (const entry of list.getEntries()) {
-                    if (entry.duration < LONG_TASK_THRESHOLD_MS) continue;
-                    // `attribution[0].name` is spec'd to the constant 'unknown' —
-                    // it was the only frame field we recorded, and it answered
-                    // nothing (issue #5: a whole report of hourly 14 s stalls, every
-                    // one reading 'unknown'). The useful pair is one level up:
-                    // `entry.name` says WHICH FRAME ('self' vs a descendant iframe),
-                    // and TaskAttributionTiming's container* fields name that frame.
-                    const attrSrc = entry as unknown as {
-                        attribution?: Array<{
-                            name?: string; containerType?: string;
-                            containerId?: string; containerName?: string; containerSrc?: string;
-                        }>;
-                    };
-                    const attr = attrSrc.attribution?.[0];
-                    const logEntry: LongTaskEntry = {
-                        type: 'long-task',
-                        timestamp: new Date().toISOString(),
-                        durationMs: parseFloat(entry.duration.toFixed(2)),
-                        startTimeMs: parseFloat(entry.startTime.toFixed(2)),
-                        attribution: attr?.name ?? null,
-                        culprit: entry.name || null,
-                        containerType: attr?.containerType || null,
-                        containerId: attr?.containerId || null,
-                        containerName: attr?.containerName || null,
-                        // Cap: an iframe src can be a multi-KB data: URL, and this
-                        // row is written on every stall. The prefix is enough to
-                        // identify the frame. Redacted like any other string when
-                        // the report's privacy toggle is on — a vault-local
-                        // app://local/… src carries the vault path.
-                        containerSrc: attr?.containerSrc?.slice(0, 120) || null,
-                        // Attribute by span overlap at TASK time, not delivery
-                        // time — the observer fires only after the task ends,
-                        // so a top-of-stack read here mislabels every task
-                        // whose phase popped before delivery (issue #5).
-                        context: this.taskCtx.attribute(entry.startTime, entry.duration),
-                    };
-                    seekPerf.recordLongTask(logEntry);
-                    this.logger.append(logEntry).catch(() => {});
-                }
-            });
-            this.longTaskObserver.observe({ entryTypes: ['longtask'] });
-        } catch (e) {
-            // entryType 'longtask' isn't supported everywhere — Safari pre-16.
-            // Silently skip; the report will just have an empty long-task section.
-            console.warn('[seek] longtask observer unavailable:', e);
-        }
-    }
-
     // visibilitychange + pagehide. On iOS, the WebView can be jetsam-killed
     // while backgrounded — recording state at the moment we lose foreground
     // lets us correlate "session ended abruptly" with "heap was at 240 MB".
+    private observerHost(): ObserverHost {
+        return {
+            isUnloading: () => this.unloading,
+            logger: this.logger,
+            taskCtx: this.taskCtx,
+            forensics: this.forensics,
+            flushOnBackground: () => this.flushOnBackground(),
+            runCatchUp: () => this.runCatchUp(),
+            runDriftRecovery: () => this.runDriftRecovery(),
+        };
+    }
+
+    private wireGlobalErrorHandlers(): void {
+        Object.assign(this.observerHandles, wireGlobalErrorObservers(this.observerHost()));
+    }
+
+    private wireLongTaskObserver(): void {
+        this.observerHandles.longTaskObserver = wireLongTaskObservers(this.observerHost());
+    }
+
     private wireMemoryPressureHandlers(): void {
-        const emit = async (event: MemoryPressureEntry['event']) => {
-            const heap = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
-            const heapMB = heap ? heap.usedJSHeapSize / 1e6 : null;
-            let storageMB: number | null = null;
-            let persisted = false;
-            if (navigator.storage?.estimate) {
-                try {
-                    const est = await navigator.storage.estimate();
-                    storageMB = est.usage != null ? est.usage / 1e6 : null;
-                } catch { /* swallow */ }
-            }
-            if (navigator.storage?.persisted) {
-                try { persisted = await navigator.storage.persisted(); } catch { /* swallow */ }
-            }
-            const entry: MemoryPressureEntry = {
-                type: 'memory-pressure',
-                timestamp: new Date().toISOString(),
-                event,
-                heapMB,
-                storageMB,
-                persisted,
-            };
-            await this.logger.append(entry);
-        };
-        this.onVisibilityChange = () => {
-            if (this.visibilityDoc?.visibilityState === 'hidden') {
-                // Forensics beat FIRST and synchronously — the async emit below
-                // can be lost to a background kill; the breadcrumb can't.
-                this.forensics?.beat('visibility-hidden');
-                emit('visibility-hidden').catch(() => {});
-                // Backgrounding is the last safe write window on iOS (the WebView
-                // can be jetsam-killed). Capture the note being edited and flush
-                // now, bypassing the 5-min idle debounce.
-                this.flushOnBackground();
-            }
-            else if (this.visibilityDoc?.visibilityState === 'visible') {
-                this.forensics?.beat('visibility-visible');
-                emit('visibility-visible').catch(() => {});
-                this.runCatchUp();
-                this.runDriftRecovery();
-            }
-        };
-        this.onPageHide = () => {
-            this.forensics?.beat('pagehide');
-            emit('pagehide').catch(() => {});
-            this.flushOnBackground();
-        };
-        // Bind to the active document and remember it, so unload removes against the
-        // SAME document (see visibilityDoc field).
-        this.visibilityDoc = activeDocument;
-        this.visibilityDoc.addEventListener('visibilitychange', this.onVisibilityChange);
-        window.addEventListener('pagehide', this.onPageHide);
+        Object.assign(this.observerHandles, wireMemoryPressureObservers(this.observerHost()));
     }
 
     // Emits an eviction-suspected event when cold-start exceeded the
