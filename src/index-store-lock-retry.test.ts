@@ -3,6 +3,7 @@ import {
     storeOpenRetryDelaysMs,
     storeOpenBackoffDelaysMs,
     isRetryIndexStoreCommandEnabled,
+    resolveStoreRecoveryMode,
     createStoreOpenRetryScheduler,
 } from './index-store-lock';
 
@@ -22,6 +23,22 @@ describe('isRetryIndexStoreCommandEnabled', () => {
     it('is enabled only while the store is locked', () => {
         expect(isRetryIndexStoreCommandEnabled(true)).toBe(true);
         expect(isRetryIndexStoreCommandEnabled(false)).toBe(false);
+    });
+});
+
+describe('resolveStoreRecoveryMode', () => {
+    it('routes a wedged store to the reconnect-then-rebuild playbook', () => {
+        expect(resolveStoreRecoveryMode({ wedged: true, locked: false })).toBe('wedged');
+        // A wedged store also flips the locked flag in some orderings — wedged wins.
+        expect(resolveStoreRecoveryMode({ wedged: true, locked: true })).toBe('wedged');
+    });
+
+    it('routes a locked (never-opened) store to the open-retry ladder', () => {
+        expect(resolveStoreRecoveryMode({ wedged: false, locked: true })).toBe('locked');
+    });
+
+    it('is a no-op when the store is healthy', () => {
+        expect(resolveStoreRecoveryMode({ wedged: false, locked: false })).toBe('none');
     });
 });
 

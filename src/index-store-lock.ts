@@ -18,6 +18,26 @@ export function isRetryIndexStoreCommandEnabled(locked: boolean): boolean {
     return locked;
 }
 
+/**
+ * The recovery playbook the manual "Retry opening the search index" entry point
+ * must run, given which failure the store is in:
+ *   - 'wedged'  — the store reports open but every read hangs (a bounded read/open
+ *                 timed out). A plain reconnect-only retry is a no-op here, so the
+ *                 path first drops + reopens the connection, then rebuilds if reads
+ *                 still hang. This is the production boot-stuck failure mode.
+ *   - 'locked'  — the store never opened (LevelDB lock). The retry scheduler / open
+ *                 ladder owns it.
+ *   - 'none'    — nothing wrong; the manual action is a no-op.
+ * Pure so the routing is unit-testable without a SearchOrchestrator harness.
+ */
+export type StoreRecoveryMode = 'wedged' | 'locked' | 'none';
+
+export function resolveStoreRecoveryMode(input: { wedged: boolean; locked: boolean }): StoreRecoveryMode {
+    if (input.wedged) return 'wedged';
+    if (input.locked) return 'locked';
+    return 'none';
+}
+
 export interface StoreOpenRetrySchedulerDeps {
     delaysMs: number[];
     backoffDelaysMs: number[];
