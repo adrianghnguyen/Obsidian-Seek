@@ -461,7 +461,8 @@ describe('Lifecycle Sequence & Ordering Verification', () => {
             // Final state assertions
             expect(h.plugin['unloading']).toBe(true);
             expect(h.plugin['bootBuffer']).toBeNull();
-            expect(h.plugin['longTaskObserver']).toBeNull();
+            // Observers are torn down and the handle bag cleared (see app/observers.ts).
+            expect(h.plugin['observerHandles']).toEqual({});
         });
 
         it('cancels pending boot buffer if onunload is called before layout ready expires', async () => {
