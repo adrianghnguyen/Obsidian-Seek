@@ -19,6 +19,7 @@ const pluginVersion = JSON.parse(readFileSync('manifest.json', 'utf8')).version;
 // forces a refit, keeping a loaded index relevance-identical to a fresh fit.
 const analyzerVersion = createHash('sha256')
     .update(readFileSync('src/search/bm25.ts'))
+    .update(readFileSync('src/search/bm25-text.ts'))
     .update(readFileSync('src/search/tokenize.ts'))
     .update(readFileSync('src/search/prop-normalize.ts'))
     .update(JSON.parse(readFileSync('node_modules/minisearch/package.json', 'utf8')).version)
