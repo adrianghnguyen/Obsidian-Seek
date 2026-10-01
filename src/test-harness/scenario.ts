@@ -21,11 +21,11 @@
 // assignment. So the real orchestrator constructs with no source seam needed.
 import 'fake-indexeddb/auto';            // installs a W3C-faithful indexedDB global
 import { TFile } from 'obsidian';        // the test-stub TFile, so `instanceof TFile` holds in the index path
-import { IndexStore } from '../index-store';
-import { SearchOrchestrator } from '../search';
-import { DEFAULT_SETTINGS } from '../types';
+import { IndexStore } from '../index/index-store';
+import { SearchOrchestrator } from '../search/search';
+import { DEFAULT_SETTINGS } from '../types/types';
 import type { App } from 'obsidian';
-import type { LocalEmbedder } from '../embedder';
+import type { LocalEmbedder } from '../embedding/embedder';
 
 // ── fake Vault: an in-memory map is the entire Obsidian surface the index path reads ──
 // search.ts touches exactly: getMarkdownFiles / getFiles / getAbstractFileByPath /

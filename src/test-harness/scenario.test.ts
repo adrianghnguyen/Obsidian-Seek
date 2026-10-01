@@ -3,8 +3,8 @@
 // ORDERING bugs that single-decision unit tests miss by construction. See
 // scenario.ts and [[Seek Testing Strategy]].
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { drainCatchUp } from '../catchup';
-import { cyrb53Hex } from '../chunker';
+import { drainCatchUp } from '../index/catchup';
+import { cyrb53Hex } from '../index/chunker';
 import { Scenario } from './scenario';
 
 describe('Tier-2 scenario harness', () => {

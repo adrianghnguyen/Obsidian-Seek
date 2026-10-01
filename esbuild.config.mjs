@@ -18,9 +18,10 @@ const pluginVersion = JSON.parse(readFileSync('manifest.json', 'utf8')).version;
 // bm25.ts ANALYZER_VERSION): a changed analyzer auto-invalidates old blobs and
 // forces a refit, keeping a loaded index relevance-identical to a fresh fit.
 const analyzerVersion = createHash('sha256')
-    .update(readFileSync('src/bm25.ts'))
-    .update(readFileSync('src/tokenize.ts'))
-    .update(readFileSync('src/prop-normalize.ts'))
+    .update(readFileSync('src/search/bm25.ts'))
+    .update(readFileSync('src/search/bm25-text.ts'))
+    .update(readFileSync('src/search/tokenize.ts'))
+    .update(readFileSync('src/search/prop-normalize.ts'))
     .update(JSON.parse(readFileSync('node_modules/minisearch/package.json', 'utf8')).version)
     .digest('hex')
     .slice(0, 16);
@@ -31,7 +32,7 @@ const analyzerVersion = createHash('sha256')
 // file to load, so the worker source rides inline. It pulls in only the pure
 // compute (binary.ts + select.ts), so it stays tiny and obsidian-free.
 const workerBuild = await esbuild.build({
-    entryPoints: ['src/binary-worker.ts'],
+    entryPoints: ['src/embedding/binary-worker.ts'],
     bundle: true,
     format: 'iife',
     target: 'es2022',

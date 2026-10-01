@@ -1,8 +1,8 @@
 # SearchOrchestrator decomposition guide
 
-`src/search.ts` is ~5,300 lines and owns indexing, sidecar hydration, in-memory caches, and the full search pipeline. It is the highest-churn module in the repo. This document records **how to split it safely** — lessons from a 2026-08/09 refactor attempt (`refactor/decompose-search`) and the follow-up PR that landed only the merge-ready slice.
+`src/search/search.ts` is ~5,300 lines and owns indexing, sidecar hydration, in-memory caches, and the full search pipeline. It is the highest-churn module in the repo. This document records **how to split it safely** — lessons from a 2026-08/09 refactor attempt (`refactor/decompose-search`) and the follow-up PR that landed only the merge-ready slice.
 
-**Related:** [ARCHITECTURE.md §6 Search pipeline](./ARCHITECTURE.md#6-search-pipeline), `src/search-integration.test.ts` (full-pipeline contract tests), `src/test-harness/scenario.ts` (Tier-2 harness).
+**Related:** [ARCHITECTURE.md §6 Search pipeline](./ARCHITECTURE.md#6-search-pipeline), `src/search/search-integration.test.ts` (full-pipeline contract tests), `src/test-harness/scenario.ts` (Tier-2 harness).
 
 ---
 
@@ -40,7 +40,7 @@ PR [#25](https://github.com/adrianghnguyen/Obsidian-Seek/pull/25) (`refactor/sea
 `search-integration.test.ts` (27 tests, I/Q/P/T/F series) exercises the real `SearchOrchestrator` + `IndexStore` + fake embedder. Run it after every extraction step:
 
 ```bash
-npm test -- src/search-integration.test.ts
+npm test -- src/search/search-integration.test.ts
 ```
 
 It catches regressions that unit tests on isolated helpers miss (delta apply + search, progressive partial ordering, filter-only browse, telemetry fields).

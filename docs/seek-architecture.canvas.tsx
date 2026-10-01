@@ -91,49 +91,49 @@ const SYSTEM_NODES: { id: string; label: string; file: string; detail: string }[
   {
     id: "modal",
     label: "Search modal",
-    file: "src/search-modal.ts",
+    file: "src/ui/search-modal.ts",
     detail: "Custom Modal (not SuggestModal): pill query field, debounced search, keyboard open/insert, infinite scroll.",
   },
   {
     id: "tab",
     label: "Settings",
-    file: "src/settings-tab.ts",
+    file: "src/settings/settings-tab.ts",
     detail: "Index, relevance, display, model, and diagnostics. Live settings object is shared with the orchestrator.",
   },
   {
     id: "orch",
     label: "Orchestrator",
-    file: "src/search.ts",
+    file: "src/search/search.ts",
     detail: "Owns chunk → embed → store → search. Exposes search(), reindexAll(), reindexDelta(), sidecar hydrate, and the in-memory frame.",
   },
   {
     id: "embed",
     label: "Embedder",
-    file: "src/embedder.ts",
+    file: "src/embedding/embedder.ts",
     detail: "Parent-side embed API. Coalesces loads, caches query vectors, and talks to the sandboxed model iframe.",
   },
   {
     id: "store",
     label: "IndexStore",
-    file: "src/index-store.ts",
+    file: "src/index/index-store.ts",
     detail: "Per-vault IndexedDB: chunk meta/body, int8 embeddings, packed sign bits, BM25 JSON, file records, identity meta.",
   },
   {
     id: "iframe",
     label: "Model iframe",
-    file: "src/iframe-runner.ts",
+    file: "src/embedding/iframe-runner.ts",
     detail: "Sandboxed srcdoc iframe runs transformers.js (WebGPU or WASM) because Obsidian CSP blocks remote import() in the plugin.",
   },
   {
     id: "sidecar",
     label: "Sidecar",
-    file: "src/sidecar.ts",
+    file: "src/sidecar/sidecar.ts",
     detail: "Vault-file index (JSONL + binary shards). Lets another device hydrate IndexedDB without re-embedding.",
   },
   {
     id: "notes",
     label: "Vault notes",
-    file: "src/chunker.ts",
+    file: "src/index/chunker.ts",
     detail: "Markdown notes always; .base files when indexBases is on. Chunker splits at headings and extracts tags, aliases, properties.",
   },
 ];
@@ -170,7 +170,7 @@ const INDEX_STEPS: PipelineStep[] = [
   {
     id: "chunk",
     title: "Chunk at headings",
-    file: "src/chunker.ts",
+    file: "src/index/chunker.ts",
     body: "Fence-aware H1–H6 split. Titles are hierarchical (`Note | alias > H1 > H2`). Frontmatter tags, aliases, properties, and dates are extracted; inline `#tags` union into the same tag set. Empty notes still get a title-only lexicalOnly chunk so they remain findable by name.",
     facts: [
       ["CHUNKER_VERSION", "10 — bump invalidates sidecar ids"],
@@ -181,7 +181,7 @@ const INDEX_STEPS: PipelineStep[] = [
   {
     id: "budget",
     title: "Enforce token budget",
-    file: "src/token-budget.ts",
+    file: "src/index/token-budget.ts",
     body: "Whole sections emit from the chunker; splitting happens once, at atom boundaries (paragraphs, fences, tables, callouts). Nothing exceeds the 512-token embed window. Hydration reproduces the same ids by running this step with the tokenizer only — not the ~100 MB model — so iPhone can restore an index without loading weights.",
     facts: [
       ["Cap", "512 tokens per chunk"],
@@ -192,7 +192,7 @@ const INDEX_STEPS: PipelineStep[] = [
   {
     id: "embed",
     title: "Embed in length buckets",
-    file: "src/embedder.ts",
+    file: "src/embedding/embedder.ts",
     body: "Chunks go into rolling buffers keyed by their exact token-count bucket. A buffer flushes when it hits rollingBatchFor(bucket) = clamp(round(512 / bucket), 1..8). Same-length batches mean almost no padding. CompositorPacer yields between dispatches. Full reindex pauses between files while search is active (250 ms poll, 2 min cap).",
     facts: [
       ["Model", "IBM Granite 97m multilingual, 384-d, q4"],
@@ -203,7 +203,7 @@ const INDEX_STEPS: PipelineStep[] = [
   {
     id: "quant",
     title: "Quantize + pack",
-    file: "src/quant.ts",
+    file: "src/embedding/quant.ts",
     body: "Stored vectors are unit-L2. Each becomes int8 + a per-vector max-abs scale (388 B vs 1536 B fp32, ≤0.003 nDCG@10 cost). Sign bits are packed separately for the cheap stage-1 scan. Query vectors stay fp32; both binary and cosine scoring are asymmetric.",
     facts: [
       ["Rerank tier", "int8 + scale (quant.ts)"],
@@ -214,7 +214,7 @@ const INDEX_STEPS: PipelineStep[] = [
   {
     id: "idb",
     title: "Write IndexedDB",
-    file: "src/index-store.ts",
+    file: "src/index/index-store.ts",
     body: "putBatch writes meta, body, embeddings, binary, and the file record (mtime, content hash, chunk id list) together. IndexCoordinator.runExclusive() serializes all mutations. A delta sets currentDelta so ensureFrame waits for the fully applied result; a full reindex does not — it is meant to be queryable as it fills.",
     facts: [
       ["Mutex", "FIFO async lock; two writers never overlap"],
@@ -225,7 +225,7 @@ const INDEX_STEPS: PipelineStep[] = [
   {
     id: "bm25",
     title: "Fit BM25 + sidecar",
-    file: "src/bm25.ts",
+    file: "src/search/bm25.ts",
     body: "Multi-field MiniSearch (title 10, aliases 6, tags 3, content 3, properties 2, headings 3). Full reindex fits from scratch; a delta applyDelta()s the frame. Sidecar bulkAppend writes JSONL + 4 MB embedding shards so a peer can hydrate without re-embed. BM25 .gz emit is desktop-only.",
     facts: [
       ["Analyzer", "ANALYZER_VERSION stamps the blob; mismatch refits from bodies, no nuke"],
@@ -239,7 +239,7 @@ const SEARCH_STEPS: PipelineStep[] = [
   {
     id: "parse",
     title: "Parse filters + text",
-    file: "src/query-parser.ts",
+    file: "src/search/query-parser.ts",
     body: "Inline operators are stripped into QueryFilters. The residual cleanedQuery is what gets embedded and BM25-scored. FilterContext (Number-typed props, recency date field) is shared by parse and match so they cannot disagree. Filter-only queries (pills, no free text) skip embedding entirely and sort via browseOrder().",
     facts: [
       ["Tags", "#tag, tag:x, hierarchical #parent/child"],
@@ -250,7 +250,7 @@ const SEARCH_STEPS: PipelineStep[] = [
   {
     id: "frame",
     title: "Ensure resident frame",
-    file: "src/search.ts",
+    file: "src/search/search.ts",
     body: "The frame is the corpus in binary-index order: metadata, packed sign bits, optional resident int8 block, tombstone mask. Cached by IndexCoordinator.generation. A warm keystroke is zero IDB traffic — that cache removed ~55% of old warm latency (per-query listAllChunks). In-flight deltas block; a filling full reindex does not.",
     facts: [
       ["Order", "One index i for binary, BM25, recency, and cosine"],
@@ -261,7 +261,7 @@ const SEARCH_STEPS: PipelineStep[] = [
   {
     id: "s1",
     title: "Stage 1 candidate union",
-    file: "src/binary.ts",
+    file: "src/embedding/binary.ts",
     body: "Three cheap arms, then union. Binary is an O(N) asymmetric sign-bit scan (desktop: BinaryScorerWorker). BM25 is multi-field with fuzzy, prefix-last-token, synonyms, and coverage². Recency is a fixed top-50 of newest notes so they are always reachable. Filters apply as a match-mask over the full indexes — the frame stays cache-valid.",
     facts: [
       ["Floors (N≤5k)", "binary 200 · BM25 100 · recency 50"],
@@ -272,7 +272,7 @@ const SEARCH_STEPS: PipelineStep[] = [
   {
     id: "s2",
     title: "Stage 2 cosine",
-    file: "src/ranker.ts",
+    file: "src/search/ranker.ts",
     body: "Dequantize int8 → cosine against the fp32 query, only on the union (typically a few hundred rows, never the corpus). This is the expensive step the pool caps exist to bound. On mobile each union member is one IDB embedding read, which is why ceilings exist.",
     facts: [
       ["Query", "fp32, LRU-cached on the parent embedder"],
@@ -283,7 +283,7 @@ const SEARCH_STEPS: PipelineStep[] = [
   {
     id: "rank",
     title: "Hybrid rank",
-    file: "src/fusion.ts",
+    file: "src/search/fusion.ts",
     body: "TM2C2 theoretical norms, not per-query min-max (min-max manufactured a fake 1.0 dense winner on out-of-vocabulary queries). dense_norm = (cos+1)/2; bm25_norm = raw / theoretical query bound. hybrid = α·dense + (1−α)·bm25. Recency is an additive ε-tiebreaker (ships Off). Title boost rewards query terms that are a subset of the note title.",
     facts: [
       ["α denseWeight", "0.85 default, live from settings, no reindex"],
@@ -294,7 +294,7 @@ const SEARCH_STEPS: PipelineStep[] = [
   {
     id: "hydrate",
     title: "Dedup + snippets",
-    file: "src/snippet.ts",
+    file: "src/render/snippet.ts",
     body: "Note-level dedup keeps the best chunk per path. Bodies are fetched only for the top-K that will render. Modal shows 10 rows, fetches 50, infinite-scrolls. Enter opens; modifiers pick tab/split; Alt+Enter inserts a wikilink.",
     facts: [
       ["Debounce", "200 ms desktop / 400 ms mobile"],
@@ -333,7 +333,7 @@ const MODULE_GROUPS: {
   {
     title: "Search and ranking",
     color: "purple",
-    file: "src/search.ts",
+    file: "src/search/search.ts",
     items: [
       { name: "search.ts", role: "SearchOrchestrator — the hub" },
       { name: "query-parser.ts", role: "Inline filter syntax" },
@@ -344,7 +344,7 @@ const MODULE_GROUPS: {
   {
     title: "Indexing and storage",
     color: "green",
-    file: "src/index-store.ts",
+    file: "src/index/index-store.ts",
     items: [
       { name: "chunker.ts / token-budget.ts / atoms.ts", role: "Heading split, 512-token cap" },
       { name: "index-store.ts / index-coordinator.ts", role: "IndexedDB + write mutex" },
@@ -355,7 +355,7 @@ const MODULE_GROUPS: {
   {
     title: "Dense retrieval",
     color: "orange",
-    file: "src/embedder.ts",
+    file: "src/embedding/embedder.ts",
     items: [
       { name: "embedder.ts / iframe-runner.ts", role: "Parent API + sandboxed transformers.js" },
       { name: "platform.ts / model-registry.ts", role: "WebGPU vs WASM, Granite 97m spec" },
@@ -365,7 +365,7 @@ const MODULE_GROUPS: {
   {
     title: "Sidecar sync",
     color: "cyan",
-    file: "src/sidecar.ts",
+    file: "src/sidecar/sidecar.ts",
     items: [
       { name: "sidecar.ts", role: "JSONL + binary shards, CRC, tombstones" },
       { name: "sidecar-sync.ts", role: "Hydrate IDB from a peer without re-embed" },
@@ -375,7 +375,7 @@ const MODULE_GROUPS: {
   {
     title: "UI",
     color: "yellow",
-    file: "src/search-modal.ts",
+    file: "src/ui/search-modal.ts",
     items: [
       { name: "search-modal.ts / query-field.ts", role: "Modal, pills, autocomplete" },
       { name: "open-target.ts / insert-link.ts", role: "Pane targets and wikilink insert" },
@@ -636,7 +636,7 @@ function SystemView({ onOpen }: { onOpen: (id: ViewId) => void }) {
   return (
     <Stack gap={16}>
       <Text>
-        Seek is an Obsidian plugin that does on-device hybrid search: dense embeddings plus BM25, fused at query time. There is no API and no local server. `SearchOrchestrator` in `src/search.ts` is the hub; `SeekPlugin` in `src/main.ts` is the wiring.
+        Seek is an Obsidian plugin that does on-device hybrid search: dense embeddings plus BM25, fused at query time. There is no API and no local server. `SearchOrchestrator` in `src/search/search.ts` is the hub; `SeekPlugin` in `src/main.ts` is the wiring.
       </Text>
       <Row gap={8} wrap>
         <Button variant="secondary" onClick={() => onOpen("index")}>
@@ -716,8 +716,8 @@ function IndexView() {
             Shared state, not a base class. writeLock is a FIFO async mutex. currentDelta is set only around incremental mutations. generation is the cache key for BM25, packed binary, and the resident frame. isWriting() tells the reconcile poll not to identity-heal a 7-minute reindex out from under itself.
           </Text>
           <Row gap={8}>
-            <FileButton path="src/index-coordinator.ts" />
-            <FileButton path="src/catchup.ts" />
+            <FileButton path="src/index/index-coordinator.ts" />
+            <FileButton path="src/index/catchup.ts" />
           </Row>
         </Stack>
       )}
@@ -744,9 +744,9 @@ function IndexView() {
             A bump changes chunk bytes and/or ids. Local identityMatches() then demands re-embed or re-hydrate. Peers whose sidecar is one version behind are refused until they reindex.
           </Callout>
           <Row gap={8}>
-            <FileButton path="src/chunker.ts" />
-            <FileButton path="src/token-budget.ts" />
-            <FileButton path="src/atoms.ts" />
+            <FileButton path="src/index/chunker.ts" />
+            <FileButton path="src/index/token-budget.ts" />
+            <FileButton path="src/index/atoms.ts" />
           </Row>
         </Stack>
       )}
@@ -773,9 +773,9 @@ function IndexView() {
             striped
           />
           <Row gap={8}>
-            <FileButton path="src/embedder.ts" />
-            <FileButton path="src/iframe-runner.ts" />
-            <FileButton path="src/pacer.ts" />
+            <FileButton path="src/embedding/embedder.ts" />
+            <FileButton path="src/embedding/iframe-runner.ts" />
+            <FileButton path="src/index/pacer.ts" />
           </Row>
         </Stack>
       )}
@@ -830,9 +830,9 @@ function SearchView() {
             Filters compile to a boolean mask over the full frame. Indexes stay cache-valid across filtered queries. Tombstones are excluded in the same mask, including the browse path.
           </Text>
           <Row gap={8}>
-            <FileButton path="src/pool.ts" />
-            <FileButton path="src/binary.ts" />
-            <FileButton path="src/binary-scorer.ts" />
+            <FileButton path="src/search/pool.ts" />
+            <FileButton path="src/embedding/binary.ts" />
+            <FileButton path="src/embedding/binary-scorer.ts" />
           </Row>
         </Stack>
       )}
@@ -876,9 +876,9 @@ function SearchView() {
             Recency is a vault-global definition (created property → YYYY-MM-DD in the filename → mtime), never per-query. A click study showed 50% of episodic clicks target notes older than 90 days, so ε is sized below real score gaps. It ships Off; the Default settings stage is ε=0.04 with a 180-day half-life.
           </Text>
           <Row gap={8}>
-            <FileButton path="src/fusion.ts" />
-            <FileButton path="src/ranker.ts" />
-            <FileButton path="src/bm25.ts" />
+            <FileButton path="src/search/fusion.ts" />
+            <FileButton path="src/search/ranker.ts" />
+            <FileButton path="src/search/bm25.ts" />
           </Row>
         </Stack>
       )}
@@ -909,9 +909,9 @@ function SearchView() {
             Filter-only queries skip the embedder and sort with browseOrder() (recency + title). SuggestEngine autocompletes from vault tags, paths, and property keys.
           </Text>
           <Row gap={8}>
-            <FileButton path="src/query-parser.ts" />
-            <FileButton path="src/query-field.ts" />
-            <FileButton path="src/suggest.ts" />
+            <FileButton path="src/search/query-parser.ts" />
+            <FileButton path="src/ui/query-field.ts" />
+            <FileButton path="src/search/suggest.ts" />
           </Row>
         </Stack>
       )}
@@ -936,7 +936,7 @@ function PersistView() {
         <Stack gap={16}>
           <Grid columns={2} gap={16}>
             <Card>
-              <CardHeader trailing={<FileButton path="src/index-store.ts" />}>
+              <CardHeader trailing={<FileButton path="src/index/index-store.ts" />}>
                 IndexedDB (per device)
               </CardHeader>
               <CardBody>
@@ -949,7 +949,7 @@ function PersistView() {
               </CardBody>
             </Card>
             <Card>
-              <CardHeader trailing={<FileButton path="src/sidecar.ts" />}>
+              <CardHeader trailing={<FileButton path="src/sidecar/sidecar.ts" />}>
                 Sidecar (synced vault files)
               </CardHeader>
               <CardBody>
@@ -996,7 +996,7 @@ function PersistView() {
           <Text size="small" tone="secondary">
             Tombstoned rows stay in the frame until compaction so a mid-delta reader never sees a hole in binary-index order. The selection mask drops them everywhere, including browse.
           </Text>
-          <FileButton path="src/index-store.ts" />
+          <FileButton path="src/index/index-store.ts" />
         </Stack>
       )}
 
@@ -1027,9 +1027,9 @@ function PersistView() {
             peerAhead is true when a refused producer has a higher chunkerVersion than this build. The modal shows a banner; mobile skips a futile local re-embed. Compaction coalesces small shards and retries incomplete-rechunk at most 3 times per session.
           </Text>
           <Row gap={8}>
-            <FileButton path="src/sidecar-sync.ts" />
-            <FileButton path="src/sidecar.ts" />
-            <FileButton path="src/sidecar-meta.ts" />
+            <FileButton path="src/sidecar/sidecar-sync.ts" />
+            <FileButton path="src/sidecar/sidecar.ts" />
+            <FileButton path="src/sidecar/sidecar-meta.ts" />
           </Row>
         </Stack>
       )}
@@ -1060,7 +1060,7 @@ function PersistView() {
             <Stat value="11" label="DB_VERSION" />
             <Stat value="3" label="SIDECAR_FORMAT" />
           </Grid>
-          <FileButton path="src/identity.ts" />
+          <FileButton path="src/index/identity.ts" />
         </Stack>
       )}
     </Stack>
@@ -1071,7 +1071,7 @@ function ModulesView() {
   return (
     <Stack gap={4}>
       <Text>
-        Production code is a flat `src/` (~55 modules). Domains are file names, not folders. Tests are colocated `*.test.ts`.
+        Production code lives in domain folders (`src/app`, `src/search`, `src/index`, `src/embedding`, `src/sidecar`, `src/ui`, `src/render`, `src/settings`, `src/diagnostics`, `src/types`). Only `src/main.ts` sits at the root. Tests are colocated `*.test.ts`.
       </Text>
       {MODULE_GROUPS.map((group) => (
         <div key={group.title}>

@@ -1,0 +1,2089 @@
+// Seek search modal. A plain Modal (not SuggestModal) with a debounced query,
+// manual result rendering, and a keyboard model layered on top. Result actions
+// (navigate results / open / open in new tab / open in split pane / insert link /
+// expand snippet / close / fill autosuggest) are Obsidian commands — defaults
+// match the historical chords, and users remap them in Settings → Hotkeys. The
+// query field matches the live hotkey map so remaps work while the contenteditable
+// is focused.
+// serializes committed operator pills + free text back to the inline-filter
+// query string the search pipeline already parses.
+
+import { App, Modal, Notice, Platform, TFile, MarkdownView, MarkdownRenderer, Component, setIcon } from 'obsidian';
+import type { ScoredChunk, SearchEntry, ClickEntry, SeekSettings } from '../types/types';
+import { MATCH_STRENGTH_MIN_NOTES } from '../types/types';
+import { makeSnippet, sanitizeSnippet, SNIPPET_PREVIEW_LIMITS } from '../render/snippet';
+import type { SearchOrchestrator } from '../search/search';
+import type { SeekLogger } from '../diagnostics/logger';
+import { ENGLISH_STOPWORDS } from '../search/bm25';
+import { buildHighlightRanges } from '../render/highlight';
+import { buildPassageTerms, markPattern } from '../render/passage';
+import { parseQuery } from '../search/query-parser';
+import { parseTextSearchMode, literalMarkPattern, literalPassageTerms } from '../search/text-search-mode';
+import { matchStrength } from '../search/dense-stats';
+import { SuggestEngine } from '../search/suggest';
+import { PillQueryField } from './query-field';
+import { openBaseAtTarget, openFileAtTarget, resolveOpenTarget, shouldKeepModalOpen, type OpenTarget } from '../app/open-target';
+import {
+    buildNoteLink,
+    insertLinkInEditor,
+    isInsertableMarkdownFile,
+    resolveInsertLinkAliasForMode,
+    resolveInsertLinkSubpath,
+    type InsertLinkMode,
+} from '../app/insert-link';
+import { applySearchModalSize } from './search-modal-size';
+import { matchTitleAlias, matchNamePrefix } from '../search/fusion';
+import type { SearchPartial } from '../types/types';
+import { dedupeAliasesAgainstBasename, sliceResultAliases } from '../render/result-aliases';
+import type { RecentSearches } from '../render/recents';
+import { indexLoadSpec, indexFooterStatus, isIndexWaitKind, type IndexLoadKind, type IndexLoadState } from './index-notice';
+import {
+    renderIndexStatusCard,
+    renderIndexStatusBadge,
+    indexWaitCardModel,
+    jobRemaining,
+    type IndexStatusHealth,
+} from './index-status-card';
+import {
+    nextPipelineStage,
+    initialPipelineStageState,
+    PIPELINE_STAGE_ORDER,
+    type PipelineStageId,
+    type PipelineStagePhase,
+} from '../search/pipeline-stage';
+import type { PipelineStages, PipelineStageEvent } from '../search/pipeline-stage';
+import {
+    canInsertLinkFromModal,
+    insertLinkAliasTabHintKeys,
+    isBareTabKey,
+    isSeekChromeFocused,
+    resolveSearchModalKeyAction,
+    searchModalFooterHints,
+    searchModalFooterLabel,
+    searchModalCloseHintKeys,
+    SEARCH_MODAL_COMMANDS,
+    type SearchModalAction,
+} from './search-modal-hotkeys';
+
+// Search debounce. Mobile gets a longer window: the query embed runs on the
+// render thread (iframe = same event loop) and on iOS the stage-1 binary scan is
+// synchronous too, so every fired search is costly. A wider debounce drops the
+// count of wasted in-flight embeds while the user is still typing.
+const DEBOUNCE_MS = Platform.isMobile ? 400 : 200;
+const INDEX_LOAD_POLL_MS = 750;
+
+// How long after the last keystroke (with results showing) we consider the query
+// "settled" and signal the plugin to drain catch-up indexing — the safest mobile
+// window: modal open, app provably foreground, user reading rather than typing.
+// Longer than DEBOUNCE_MS so a settle only fires once the search itself has run.
+const CATCHUP_SETTLE_MS = 1500;
+
+// Pagination. The orchestrator does ALL its scoring/fusion work over the full
+// candidate union regardless of topK (topK only caps the final dedup + a single
+// batched body read), so fetching deep is ~free — we ask for MAX_RESULTS once.
+// Rendering, however, is the jank source (one markdown render per snippet row),
+// so rows are revealed a PAGE_SIZE window at a time via infinite scroll, never
+// all at once. PAGE_SIZE matches the historical 10 so the first paint is
+// unchanged; subsequent pages append as the user scrolls (or arrows past the
+// window edge).
+const PAGE_SIZE = 10;
+const MAX_RESULTS = 50;
+// Reveal the next page this far (px) before the sentinel scrolls fully into
+// view, so the rows are already painted by the time the user reaches them.
+const REVEAL_MARGIN_PX = 300;
+
+// Title-nav gate shared with tests / headless paths. Coverage recovers the raw
+// [0,1] title match from the weighted contribution in ranking_signals.
+export const TITLE_NAV_COVERAGE_MIN = 0.5;
+
+export function titleNavCoverage(r: ScoredChunk, navTitleBoost: number): number {
+    return navTitleBoost > 0 ? r.ranking_signals.title_boost / navTitleBoost : 0;
+}
+
+// (sanitizeSnippet lives in ./snippet, and maskNonBodyText / escapeRegExp / the
+// word-boundary range builder in ./highlight, so they can be unit-tested without
+// Obsidian — see buildMatchHighlight + the snippet render in applyRow.)
+
+// "2026-05-19" from a created date. ISO is rendered deliberately rather than a
+// localized string: it matches the frontmatter shape and is unambiguous in every
+// locale (no Jun/giugno/6月 drift, no DD/MM vs MM/DD ambiguity). The word
+// "created" is added by the caller so the date can't be mistaken for a modified
+// date. Returns '' for a missing/unparseable value so the meta line drops the
+// segment.
+//
+// The VALUE is still parsed in the user's LOCAL zone: extractDate() normalizes
+// most created values to a date-only string, which we build into a local-midnight
+// Date — a bare `new Date('2026-06-19')` would be UTC midnight and roll back a day
+// west of UTC (PDT → "2026-06-18"); a full timestamp falls through to native
+// parsing and resolves to its local calendar day. We emit the LOCAL Y-M-D and
+// never Date.toISOString(), which re-projects to UTC and would roll the day back
+// for ahead-of-UTC users (JST → prior day).
+function fmtCreated(iso: string | null): string {
+    if (!iso) return '';
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+    const d = m
+        ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+        : new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    const y = d.getFullYear();
+    const mo = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${mo}-${day}`;
+}
+
+// The note's display title: the file basename without extension. Deliberately
+// NOT chunk.title — that's the hierarchical "Note > H1 > H2" embed string (with
+// aliases appended); the heading part is shown separately as the breadcrumb.
+function noteTitle(notePath: string): string {
+    const base = notePath.split('/').pop() ?? notePath;
+    return base.replace(/\.md$/i, '');
+}
+
+// Wrap passage-term hits in <mark> after MarkdownRenderer runs. `re` matches
+// over LOWERCASED text (markPattern contract); offsets transfer back because
+// toLowerCase is length-preserving for vault scripts (same bet as highlight.ts).
+function decorateSnippetMarks(root: HTMLElement, re: RegExp): void {
+    const doc = root.ownerDocument;
+    const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const textNodes: Text[] = [];
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) textNodes.push(n as Text);
+    for (const node of textNodes) {
+        const s = node.nodeValue ?? '';
+        const lower = s.toLowerCase();
+        re.lastIndex = 0;
+        let m: RegExpExecArray | null;
+        let last = 0;
+        let frag: DocumentFragment | null = null;
+        while ((m = re.exec(lower)) !== null) {
+            frag ??= doc.createDocumentFragment();
+            if (m.index > last) frag.appendChild(doc.createTextNode(s.slice(last, m.index)));
+            const mark = doc.createElement('mark');
+            mark.className = 'seek-snippet-mark';
+            mark.textContent = s.slice(m.index, m.index + m[0].length);
+            frag.appendChild(mark);
+            last = m.index + m[0].length;
+        }
+        if (frag) {
+            if (last < s.length) frag.appendChild(doc.createTextNode(s.slice(last)));
+            node.parentNode?.replaceChild(frag, node);
+        }
+    }
+}
+
+// Status of the embedder model at the time the modal opens. `ready=true` is
+// the warm path (model already in memory from a prior open) and we skip all
+// "loading…" UI. `ready=false` means the caller kicked off
+// `ensureModelLoaded()` without awaiting and handed us the promise so the
+// modal can render + accept input *during* the ~3–10 s cold start, then
+// fire the pending query the moment the model resolves.
+export interface ModelStatus {
+    ready: boolean;
+    promise: Promise<void>;
+}
+
+// A reused result row. We hold the leaf elements so reconciliation can update
+// text without recreating the node, the live `data`/`rank` the row's single
+// click handler reads (so the closure never goes stale), and `lastSnippet` —
+// the markdown source last rendered into `snippetEl`, so an unchanged snippet
+// skips the (async, comparatively expensive) markdown re-render entirely.
+interface SeekResultRow {
+    el: HTMLElement;
+    titleEl: HTMLElement;
+    aliasHintEl: HTMLElement;
+    breadcrumbEl: HTMLElement;
+    snippetEl: HTMLElement;
+    metaEl: HTMLElement;
+    scoreEl: HTMLElement;
+    keycapsEl: HTMLElement;
+    enterKeycapEl: HTMLElement;
+    tabKeycapEl: HTMLElement;
+    data: ScoredChunk;
+    rank: number;
+    lastSnippet: string;
+    // The breadcrumb markdown source last rendered into `breadcrumbEl` — so an
+    // unchanged heading path skips the (async) markdown re-render, mirroring
+    // `lastSnippet`.
+    lastCrumb: string;
+    aliasesExpanded: boolean;
+    lastAliasSig: string;
+}
+
+// The index-state banner the modal renders between the query field and the results.
+// The plugin supplies the copy + tone (index-notice.ts policy); the modal owns the
+// "Open settings" action (where the reindex affordance lives), shown only when the spec
+// asks for it (showAction) — the syncing/info state needs no button. A twin of
+// IndexBannerSpec (index-notice.ts), kept separate so the UI module owns no policy.
+export interface IndexBanner {
+    message: string;
+    tone: 'info' | 'warn';
+    showAction: boolean;
+}
+
+export class SeekSearchModal extends Modal {
+    private orchestrator: SearchOrchestrator;
+    private logger: SeekLogger;
+    // The token/pill query field (Component 1). Owns the contenteditable, the
+    // committed operator pills, ghost autocomplete, and the suggestion dropdown;
+    // emits the serialized query string back to us on every change.
+    private field: PillQueryField | null = null;
+    // Holds the vault's distinct-value dictionaries (built once on open) that
+    // back the field's value suggestions.
+    private suggester: SuggestEngine | null = null;
+    private resultsEl: HTMLElement | null = null;
+    // Fixed-position container for the version-stale banner, between the field and the
+    // results. Rendered into (empty + refill) so re-renders keep their place; collapses
+    // to nothing via `.seek-banner-slot:empty { display: none }` when there's no banner.
+    private bannerSlot: HTMLElement | null = null;
+    // Reusable result rows, reconciled in place across searches so only the
+    // text that actually changed repaints — no full teardown means no flicker
+    // and no scroll-reset. Indexed positionally: rows[0] is always rank 1.
+    private rows: SeekResultRow[] = [];
+    // Owns the lifecycle of anything MarkdownRenderer spawns while rendering
+    // snippets (embeds, child renderers). Loaded in onOpen, unloaded in onClose.
+    private markdownComponent: Component = new Component();
+    // Snapshot of the vault's tag set (lowercased, no `#`), taken once on open
+    // so a `tag:` pill can be flagged when it binds to no real vault tag.
+    private vaultTagSet: Set<string> = new Set();
+    private timer: number | null = null;
+    private currentSearch = 0;
+    // Cleaned query for alias highlight while an early name-page is showing
+    // (latestSearchEntry is still the previous search until fusion returns).
+    private earlyCleanedQuery = '';
+    // Progressive pipeline stage tracker — advances on each promise-ordered
+    // onPartial event. Reset on a new query, cleared on close/error.
+    private pipelineStages: PipelineStages = initialPipelineStageState();
+    private pipeStageEl: HTMLElement | null = null;
+    private pipeStageEls: Map<PipelineStageId, HTMLElement> = new Map();
+    private pipeStageArrowEls: HTMLElement[] = [];
+    /** Footer shows Name → Exact text instead of BM25 → Hybrid when true. */
+    private exactPipelineLayout = false;
+    private exactStagePhase: PipelineStagePhase = 'pending';
+    // The currently displayed, ordered results — the array the keyboard model
+    // indexes into via `selectedIndex`.
+    private currentResults: ScoredChunk[] = [];
+    // The highlighted row the keyboard model acts on. Driven by ↑/↓ (from the
+    // field) and by mouse hover; clamped to the result count on every render.
+    private selectedIndex = 0;
+    // When the modal is resting on recent searches (no results), ↑/↓ move this
+    // index instead. -1 = none selected.
+    private selectedRecentIndex = -1;
+    private recentRows: HTMLElement[] = [];
+    private recentQueries: string[] = [];
+    // Infinite-scroll window: `currentResults` holds up to MAX_RESULTS fetched
+    // rows, but only the first `shownCount` are materialized as DOM rows. A
+    // sentinel at the list's tail, watched by `revealObserver`, grows the window
+    // a page at a time as it scrolls into view. selectedIndex never exceeds
+    // shownCount-1 (moveSelection reveals before crossing the edge).
+    private shownCount = 0;
+    // Expanded snippet lines for the open session (remappable; default Mod+Shift+E).
+    private snippetExpanded = false;
+    // Cached mark matcher for the current query (see snippetMarkRe).
+    private snippetMarkCache: { query: string; re: RegExp | null } | null = null;
+    private sentinelEl: HTMLElement | null = null;
+    private revealObserver: IntersectionObserver | null = null;
+    // Set true at the top of onClose, before any teardown. A fresh modal
+    // instance is constructed on every open, so this never needs resetting —
+    // it just gives in-flight async work (a query embed, checkIndexState, the
+    // model-load promise) a way to recognize "the modal I'd paint into is
+    // already gone" and no-op instead of writing into detached DOM, rendering
+    // into the now-unloaded markdownComponent, or (via renderResults →
+    // updateSentinel) constructing a fresh IntersectionObserver that nothing
+    // will ever disconnect.
+    private closed = false;
+
+    /** True after onClose — remappable commands' checkCallbacks consult this. */
+    get isClosed(): boolean { return this.closed; }
+
+    /** True when keyboard focus is inside this modal's chrome (field, results, footer). */
+    isChromeFocused(): boolean {
+        return isSeekChromeFocused(this.modalEl);
+    }
+
+    private modalKeyHandler: ((e: KeyboardEvent) => void) | null = null;
+    // The latest SearchEntry returned by the orchestrator. Click events
+    // reference its searchId so offline analysis can correlate the click back
+    // to the originating query and the alternatives the user passed over.
+    private latestSearchEntry: SearchEntry | null = null;
+    private latestResultsShown: ScoredChunk[] = [];
+    private latestSearchCompletedAt = 0;
+    private searchLatencyStartMs = 0;
+    private searchLatencyRecordedFor = 0;
+
+    // Cold-start onboarding flag: set true once checkIndexState() (run on open)
+    // confirms zero indexed chunks. Drives renderNoIndex() in place of the generic
+    // "Type to search…" / "No notes match." copy, so a brand-new user is told to
+    // build the index rather than facing a silent dead end. Stays false on an
+    // unreadable store, so a still-warming index is never mislabeled "not indexed".
+    private indexEmpty = false;
+    private lastChunkCount: number | null = null;
+    private loadKind: IndexLoadKind = 'resting';
+    private lastJobRemaining: number | null = null;
+    private loadPoll: number | null = null;
+    // Prevent the 750 ms index poll from retrying the same empty query repeatedly.
+    // A new chunk count or a wait→searchable phase transition creates a new key.
+    private lastAutoRetryKey: string | null = null;
+    private lastFrameReady = false;
+    // Footer index-status cluster (always present, left of esc). Null until
+    // buildFooter; cleared in onClose so a late poll can't paint detached DOM.
+    private footStatusEl: HTMLElement | null = null;
+    private footStatusIconEl: HTMLElement | null = null;
+    private footStatusLabelEl: HTMLElement | null = null;
+
+    // Model-load decoupling. When `modelReady` is false, `runSearch` awaits
+    // `modelReadyPromise` before calling the orchestrator.
+    private modelReady: boolean;
+    private modelReadyPromise: Promise<void>;
+    private modelLoadError: Error | null = null;
+    // Latest-query-wins cancellation. The currentSearch counter prevents stale
+    // paints; this controller also stops superseded work before it reaches the
+    // serialized iframe queue, so rapid typing cannot build query debt.
+    private activeSearchAbort: AbortController | null = null;
+
+    // Teardown for the mobile visualViewport listeners (keyboard-aware sizing).
+    // Null on desktop / when visualViewport is unavailable.
+    private detachViewport: (() => void) | null = null;
+
+    // Fires (active) on open + each keystroke and (inactive) on query-settle +
+    // close. The plugin uses it to pause/trigger the catch-up drain so foreground
+    // indexing never competes with the live query. Optional (absent in tests).
+    private onSearchActivity?: (active: boolean) => void;
+
+    // Reports the hard "a query embed is actually running" edge to the plugin —
+    // distinct from onSearchActivity, which is keystroke-timed. Lets indexing wait
+    // for the query to COMPLETE, not merely for typing to pause. Optional (absent
+    // in tests). Ref-counted via `inFlight` so overlapping cold-path searches emit
+    // one clean true/false pair rather than flapping.
+    private onQueryInFlight?: (inFlight: boolean) => void;
+    private inFlight = 0;
+
+    // Debounce for the post-query "settled" signal (separate from the 200 ms search
+    // debounce). Reset on every keystroke; fires onSearchActivity(false) on idle.
+    private settleTimer: number | null = null;
+
+    constructor(
+        app: App,
+        orchestrator: SearchOrchestrator,
+        logger: SeekLogger,
+        modelStatus: ModelStatus,
+        private settings: SeekSettings,
+        onSearchActivity?: (active: boolean) => void,
+        onQueryInFlight?: (inFlight: boolean) => void,
+        // Live thunk for the version-stale banner — null when the index is current.
+        // Re-evaluated on open and after the Reindex action, so a heal that landed
+        // between opens clears the banner. Optional (absent in tests / headless).
+        private getIndexNotice?: () => IndexBanner | null,
+        private getIndexLoadState?: () => IndexLoadState,
+        // Optional seed from a deep link (obsidian://seek?query=…). Empty for the
+        // palette command. Applied in onOpen once the field exists.
+        private initialQuery = '',
+        // Recent-searches store (per-device localStorage; see recents.ts).
+        // Optional (absent in tests / headless) — null disables both capture
+        // and the resting-state rows.
+        private recents: RecentSearches | null = null,
+        // Modal search latency for Settings → Diagnostics console (optional).
+        private onSearchLatency?: (query: string, ms: number) => void,
+        // Plugin id for command/hotkey lookup (defaults to 'seek').
+        private pluginId = 'seek',
+        // Notifies the plugin when this modal becomes the active search surface
+        // (so remappable commands' checkCallbacks can target it).
+        private onActiveChange?: (active: boolean) => void,
+    ) {
+        super(app);
+        this.orchestrator = orchestrator;
+        this.logger = logger;
+        this.modelReady = modelStatus.ready;
+        this.modelReadyPromise = modelStatus.promise;
+        this.onSearchActivity = onSearchActivity;
+        this.onQueryInFlight = onQueryInFlight;
+    }
+
+    // Arm/reset the "query settled" debounce: CATCHUP_SETTLE_MS after the last
+    // keystroke (modal still open, foreground) we tell the plugin the session is
+    // idle so it can drain catch-up in the safest window.
+    private armSettle(): void {
+        if (this.settleTimer != null) window.clearTimeout(this.settleTimer);
+        this.settleTimer = window.setTimeout(() => {
+            this.settleTimer = null;
+            this.onSearchActivity?.(false);
+        }, CATCHUP_SETTLE_MS);
+    }
+
+    onOpen(): void {
+        this.modalEl.addClass('seek-modal');
+        // Pin the modal high + narrow (quick-switcher feel) via the container.
+        this.containerEl.addClass('seek-modal-container');
+        // Mobile gets a distinct shell (full-width, keyboard-aware height) and the
+        // touch gesture to dismiss the soft keyboard — see setupMobile() and the
+        // `.seek-mobile` rules in styles.css. Gated so desktop is untouched.
+        if (Platform.isMobile) this.modalEl.addClass('seek-mobile');
+        // Tablets (iPad / Android tablet) are Platform.isMobile too, so they pick
+        // up the full-bleed `.seek-mobile` shell — but edge-to-edge result rows run
+        // the snippets uncomfortably wide on a big screen. `.seek-tablet` caps the
+        // width back to a centred reading column (see styles.css). Same surface
+        // distinction capabilityDefault() uses for the WebGPU allowlist.
+        if (Platform.isTablet) this.modalEl.addClass('seek-tablet');
+        applySearchModalSize(
+            this.modalEl,
+            this.settings.searchModalWidth,
+            this.settings.searchModalHeight,
+            { isPhone: Platform.isMobile && !Platform.isTablet, isTablet: Platform.isTablet },
+        );
+        // Activate the component now so MarkdownRenderer can register snippet
+        // child-renderers against a loaded parent.
+        this.markdownComponent.load();
+        const { contentEl } = this;
+        contentEl.empty();
+
+        // Build the suggestion dictionaries once (one in-memory cache pass) and
+        // the tag set used to flag non-binding `tag:` pills.
+        this.suggester = new SuggestEngine().build(this.app, this.settings);
+        this.vaultTagSet = this.collectVaultTags();
+
+        // Component 1 — the token/pill query field. The 4th arg gates after:/before:
+        // date filters on Recency being ON (a date field exists to key off — D4);
+        // numeric-key validation (the red error pill) routes through the shared
+        // suggester (SuggestEngine.isNumericKey), so no extra callback is needed.
+        // Name of the date field after:/before: compare — the user's Recency
+        // selection (their chosen frontmatter property, or file-modified time),
+        // mirroring the Settings → Recency picker. Drives the suggestion hint so
+        // it labels the real field instead of a hardcoded `created`.
+        const dateFieldLabel = this.settings.recencyKey === 'modified' ? 'modified' : this.settings.createdProp;
+        this.field = new PillQueryField(contentEl, this.app, this.pluginId, this.suggester, {
+            onQueryChange: q => this.scheduleSearch(q),
+            onAction: action => this.runAction(action),
+            canInsertLinkWithAliasOnTab: () => this.canInsertLinkWithAliasOnTab(),
+            validateTag: tag => this.tagBinds(tag),
+        }, this.settings.recencyEpsilon > 0, dateFieldLabel);
+        this.field.focus();
+        this.onActiveChange?.(true);
+
+        // Seed from a deep link (obsidian://seek?query=…). setQuery emits the
+        // field's onQueryChange, which routes through scheduleSearch — the exact
+        // path a keystroke takes, so cold-start gating and inline filters behave
+        // identically to typing it by hand.
+        if (this.initialQuery.trim()) this.field.setQuery(this.initialQuery);
+
+        // Version-stale banner slot, fixed between the field and the results. Empty (and
+        // CSS-collapsed) unless the index was built under an older Seek version.
+        this.bannerSlot = contentEl.createDiv({ cls: 'seek-banner-slot' });
+        this.renderIndexBanner();
+
+        this.resultsEl = contentEl.createDiv({ cls: 'seek-results' });
+        this.resultsEl.tabIndex = -1;
+        this.snippetExpanded = false;
+        this.applySnippetLineStyle();
+        this.renderEmpty();
+
+        // Mobile-only wiring: keyboard-aware modal height + touch-to-dismiss.
+        if (Platform.isMobile) this.setupMobile();
+
+        // Component 3 — the footer. Hint groups are gated on showHotkeyHints;
+        // the index-status + esc cluster is always present.
+        this.buildFooter(contentEl);
+
+        this.modalKeyHandler = (e: KeyboardEvent) => this.handleModalKeyDown(e);
+        this.modalEl.addEventListener('keydown', this.modalKeyHandler, { capture: true });
+
+        // Observe the in-flight model load (no-op on the warm path). On the cold
+        // path: when the model resolves, refresh the empty-state copy so the
+        // resting UI doesn't lie. We deliberately don't auto-trigger a search —
+        // the user's keystrokes already fired a runSearch awaiting the same
+        // promise, so it proceeds on its own.
+        // Ambient model-state affordance (replaces the old "model loaded"
+        // toast): the search glyph rests dimmed and brightens once the embedder
+        // is ready. Warm opens set it on now (synchronous → no animation); cold
+        // opens fade it in when the promise resolves. Input stays live throughout.
+        this.field.setModelReady(this.modelReady);
+        this.syncFooterStatus();
+        if (!this.modelReady) {
+            this.modelReadyPromise.then(() => {
+                // The modal may have closed while the model was still loading
+                // (e.g. the user dismissed it before the cold start finished) —
+                // don't touch the (unloaded) field or paint into detached DOM.
+                if (this.closed) return;
+                this.modelReady = true;
+                this.field?.setModelReady(true);
+                this.syncFooterStatus();
+                if (!this.lastQuery.trim()) this.renderEmpty();
+            }).catch(err => {
+                if (this.closed) return;
+                this.modelLoadError = err instanceof Error ? err : new Error(String(err));
+                // Leave the glyph dimmed — it honestly reflects "never loaded";
+                // the failure itself is surfaced as status text / a Notice.
+                if (!this.lastQuery.trim()) {
+                    this.renderStatus(`Model load failed: ${this.modelLoadError.message}`);
+                }
+            });
+        }
+
+        // Warm the search frame + BM25 the moment the modal opens, so the cold
+        // IDB/frame/BM25 build overlaps the model load and the user's first
+        // keystrokes instead of blocking the first query (the cold selectFetchMs /
+        // binary-scan / BM25-fit cost). See warmIndex().
+        this.warmIndex();
+
+        // Cold-start onboarding: probe the store off the critical path. If nothing is
+        // indexed, swap the resting copy for "your vault isn't indexed yet" guidance.
+        void this.checkIndexState();
+        this.loadPoll = window.setInterval(() => void this.checkIndexState(), INDEX_LOAD_POLL_MS);
+
+        // A live query session is now fully set up — pause any in-flight catch-up
+        // drain so the foreground embed never competes with what the user is about
+        // to type. Placed at the END of onOpen so a throw mid-setup can't leave the
+        // flag stuck true (which would silently block all later catch-up).
+        this.onSearchActivity?.(true);
+    }
+
+    // Prime the index caches off the critical path. On mobile warmCaches bails
+    // until the embedder is loaded (a memory-spike guard while the ~250 MB model
+    // is mid-load — see search.ts), so on the cold path we warm once the model
+    // resolves; on the warm path (model already resident — the common desktop
+    // case) we warm immediately. One call on every platform: the platform-specific
+    // deferral lives in warmCaches, which self-guards and is a no-op once the
+    // frame matches the live generation, so a redundant open never costs anything.
+    private warmIndex(): void {
+        const warm = () => { void this.orchestrator.warmCaches('modal-open'); };
+        if (this.modelReady) warm();
+        else this.modelReadyPromise.then(warm).catch(() => { /* model-load failure already surfaced */ });
+    }
+
+    onClose(): void {
+        // Flip first, before any other teardown: everything below (and every
+        // guard this flag feeds) assumes "closed" is already visible to any
+        // async completion that races this call.
+        this.closed = true;
+        this.onActiveChange?.(false);
+        if (this.modalKeyHandler) {
+            this.modalEl.removeEventListener('keydown', this.modalKeyHandler, { capture: true });
+            this.modalKeyHandler = null;
+        }
+        this.advancePipeline({ type: 'clear' });
+        if (this.loadPoll != null) { window.clearInterval(this.loadPoll); this.loadPoll = null; }
+        // Closing with results showing counts as a committed search (see captureRecent).
+        if (this.currentResults.length > 0) this.captureRecent();
+        if (this.timer != null) window.clearTimeout(this.timer);
+        if (this.settleTimer != null) { window.clearTimeout(this.settleTimer); this.settleTimer = null; }
+        this.activeSearchAbort?.abort();
+        this.activeSearchAbort = null;
+        // Session ended — trigger the catch-up drain (the backup window to the
+        // settle timer). The plugin no-ops if the app is hidden / nothing pending.
+        this.onSearchActivity?.(false);
+        // A modal closed mid-query (tap a result before it paints) would otherwise
+        // leave the plugin's in-flight count latched > 0 and block indexing forever.
+        // Force the false edge; runSearch's finally is guarded against a double end.
+        if (this.inFlight !== 0) { this.inFlight = 0; this.onQueryInFlight?.(false); }
+        this.detachViewport?.();
+        this.detachViewport = null;
+        this.markdownComponent.unload();
+        this.revealObserver?.disconnect();
+        this.revealObserver = null;
+        this.sentinelEl = null;
+        this.shownCount = 0;
+        this.rows = [];
+        // Drop the banner slot ref before empty() detaches it — defensive hygiene so any
+        // stray renderIndexBanner call can never touch an orphaned node. (The banner is a
+        // pure signpost now; it's only painted in onOpen, so this is belt-and-suspenders.)
+        this.bannerSlot = null;
+        this.footStatusEl = null;
+        this.footStatusIconEl = null;
+        this.footStatusLabelEl = null;
+        this.contentEl.empty();
+    }
+
+    // Mobile-only behaviour, wired once on open. Two problems desktop never has:
+    //
+    //  1. The soft keyboard occludes the lower half of a `vh`-sized modal (vh is
+    //     measured against the FULL screen, ignoring the keyboard), hiding the
+    //     scrollable results and the footer behind it. We bind the modal's height
+    //     to window.visualViewport — the area NOT covered by the keyboard — via a
+    //     --seek-vvh custom property the `.seek-mobile` CSS consumes, so the
+    //     footer sits just above the keyboard and the result list scrolls in the
+    //     gap. The listener updates it as the keyboard shows/hides/resizes.
+    //
+    //  2. There's no way to dismiss the keyboard. The canonical gesture is "drag
+    //     the result list to scroll → keyboard drops" (iOS UIScrollView's
+    //     .onDrag). The hard part is WHEN to blur, because blurring resizes the
+    //     visual viewport and the resulting reflow (via #1's listener) is a
+    //     gesture-killer mid-touch: iOS cancels an in-flight overflow scroll the
+    //     instant its container's geometry changes underneath it, and suppresses
+    //     a click whose target moved. So blurring on `touchstart` ate the first
+    //     TAP, and blurring on `touchmove` ate the first DRAG (it only dismissed;
+    //     scrolling needed a second drag once geometry settled). The fix is to
+    //     never blur DURING the gesture: the list is already sized to the
+    //     above-keyboard gap (--seek-vvh), so it scrolls fine with the keyboard
+    //     up; we just record that a drag happened (`touchmove`) and blur on
+    //     `touchend`. The post-gesture reflow then grows the modal with nothing
+    //     in flight to cancel. A stationary tap never sets `dragged`, so it opens
+    //     a result first-try. Passive throughout — we never block the scroll.
+    private setupMobile(): void {
+        let dragged = false;
+        this.resultsEl?.addEventListener('touchmove', () => { dragged = true; }, { passive: true });
+        this.resultsEl?.addEventListener('touchend', () => {
+            if (dragged) {
+                this.field?.blur();
+                this.resultsEl?.focus({ preventScroll: true });
+            }
+            dragged = false;
+        }, { passive: true });
+
+        const vv = window.visualViewport;
+        if (!vv) return;
+        const apply = () => this.modalEl.style.setProperty('--seek-vvh', `${Math.round(vv.height)}px`);
+        apply();
+        vv.addEventListener('resize', apply);
+        vv.addEventListener('scroll', apply);
+        this.detachViewport = () => {
+            vv.removeEventListener('resize', apply);
+            vv.removeEventListener('scroll', apply);
+        };
+    }
+
+    // The footer legend: keyboard hints on the left (gated on showHotkeyHints),
+    // index status + close on the right. Hint glyphs come from the live Hotkeys
+    // map (Settings → Hotkeys), not hard-coded chords. Status is always built
+    // so a hints-off modal still shows whether the index is ready.
+    private buildFooter(parent: HTMLElement): void {
+        const foot = parent.createDiv({ cls: 'seek-foot' });
+        const kbd = (g: HTMLElement, key: string) => g.createEl('kbd', { text: key });
+        if (this.settings.showSearchStages) {
+            this.pipeStageEl = foot.createSpan({ cls: 'seek-pipe-run' });
+            this.buildPipelineStages();
+            this.syncPipelineStages();
+        }
+        if (this.settings.showHotkeyHints) {
+            const hints = foot.createDiv({ cls: 'seek-foot-hints' });
+            const grp = (build: (g: HTMLElement) => void): void => {
+                const g = hints.createSpan({ cls: 'seek-foot-grp' });
+                build(g);
+            };
+            for (const hint of searchModalFooterHints(this.app, this.pluginId)) {
+                grp(g => {
+                    if (hint.shedClass) g.addClass(hint.shedClass);
+                    for (const key of hint.keys) kbd(g, key);
+                    g.createSpan({ text: ` ${hint.label}` });
+                });
+            }
+            grp(g => {
+                const link = g.createEl('a', { cls: 'seek-foot-link', text: '⧉ copy link' });
+                link.setAttr('role', 'button');
+                link.addEventListener('click', () => void this.copySearchLink());
+            });
+        }
+        const closeGrp = foot.createSpan({ cls: 'seek-foot-grp seek-foot-close' });
+        this.footStatusEl = closeGrp.createSpan({ cls: 'seek-foot-status' });
+        this.footStatusEl.setAttr('role', 'status');
+        this.footStatusIconEl = this.footStatusEl.createSpan({ cls: 'seek-foot-status-icon' });
+        this.footStatusLabelEl = this.footStatusEl.createSpan({ cls: 'seek-foot-status-label' });
+        for (const key of searchModalCloseHintKeys(this.app, this.pluginId)) kbd(closeGrp, key);
+        closeGrp.createSpan({ text: ' close' });
+    }
+
+    // Build the persistent pipeline stage labels and arrows in the footer once.
+    // The three progressive stages remain permanently rendered in the DOM so
+    // there is zero layout flicker when searching.
+    private buildPipelineStages(): void {
+        if (!this.pipeStageEl) return;
+        this.pipeStageEl.empty();
+        this.pipeStageEls.clear();
+        this.pipeStageArrowEls = [];
+        const labelMap: Record<PipelineStageId, string> = this.exactPipelineLayout
+            ? { name: 'Name match', lexical: 'Exact text', hybrid: 'Exact text' }
+            : { name: 'Name match', lexical: 'Lexical BM25', hybrid: 'Hybrid semantic' };
+        const order: PipelineStageId[] = this.exactPipelineLayout
+            ? ['name', 'lexical']
+            : [...PIPELINE_STAGE_ORDER];
+        for (let i = 0; i < order.length; i++) {
+            const id = order[i]!;
+            const span = this.pipeStageEl.createSpan({ cls: 'seek-pipe-stage', text: labelMap[id] });
+            this.pipeStageEls.set(id, span);
+            if (i < order.length - 1) {
+                const arrow = this.pipeStageEl.createSpan({ cls: 'seek-pipe-stage-arrow', text: '→' });
+                this.pipeStageArrowEls.push(arrow);
+            }
+        }
+    }
+
+    // Paint the pipeline stage states into the footer. Each stage shows as a
+    // short text label; active is bold + accent, done is muted, pending/idle is
+    // faint. All three progressive stages remain permanently visible so the
+    // bar stays stable with no jarring pop-in or pop-out.
+    private syncPipelineStages(): void {
+        if (!this.pipeStageEl) return;
+        if (this.pipeStageEls.size === 0) {
+            this.buildPipelineStages();
+        }
+        const st = this.pipelineStages;
+        const idle = st.name === 'pending' && st.lexical === 'pending' && st.hybrid === 'pending';
+        const order: PipelineStageId[] = this.exactPipelineLayout
+            ? ['name', 'lexical']
+            : [...PIPELINE_STAGE_ORDER];
+
+        for (let i = 0; i < order.length; i++) {
+            const id = order[i]!;
+            const span = this.pipeStageEls.get(id);
+            if (!span) continue;
+            let phase = st[id];
+            if (this.exactPipelineLayout && id === 'lexical') {
+                phase = this.exactStagePhase;
+            }
+            span.className = 'seek-pipe-stage';
+            if (idle) {
+                span.addClass('is-idle');
+            } else if (phase === 'active') {
+                span.addClass('is-active');
+            } else if (phase === 'done') {
+                span.addClass('is-done');
+            } else {
+                span.addClass('is-pending');
+            }
+        }
+
+        for (let i = 0; i < this.pipeStageArrowEls.length; i++) {
+            const arrow = this.pipeStageArrowEls[i];
+            arrow.className = 'seek-pipe-stage-arrow';
+            if (idle) {
+                arrow.addClass('is-idle');
+            } else {
+                const prevId = order[i]!;
+                let prevDone = st[prevId] === 'done';
+                if (this.exactPipelineLayout && prevId === 'lexical') {
+                    prevDone = this.exactStagePhase === 'done';
+                }
+                if (prevDone) {
+                    arrow.addClass('is-done');
+                } else {
+                    arrow.addClass('is-pending');
+                }
+            }
+        }
+    }
+
+    private updateExactPipelineLayout(query: string): void {
+        const { cleanedQuery } = parseQuery(query);
+        const next = parseTextSearchMode(cleanedQuery).mode.kind !== 'hybrid';
+        if (next === this.exactPipelineLayout) return;
+        this.exactPipelineLayout = next;
+        if (this.pipeStageEl) {
+            this.buildPipelineStages();
+            this.syncPipelineStages();
+        }
+    }
+
+    // Map from the orchestrator's SearchPartial.source to the pipeline stage
+    // machine event type. The modal passes this to advancePipeline inside the
+    // onPartial callback so stage advancement is driven by the actual promise-
+    // ordered search result stream. Currently the orchestrator fires only
+    // 'name' and 'lexical' onPartial — the hybrid results arrive via return
+    // and trigger the 'final' event separately.
+    private static partialSourceEvent(source: SearchPartial['source']): PipelineStageEvent['type'] {
+        switch (source) {
+            case 'name': return 'name-done';
+            case 'lexical': return 'lexical-done';
+            case 'exact': return 'lexical-done';
+            case 'hybrid': return 'final'; // safety-valve if a future orchestrator emits 'hybrid'
+        }
+    }
+
+    // Advance the pipeline state machine by one event and re-render the stage
+    // labels. Idempotent — does nothing when the event would not change state
+    // (e.g. a duplicate name-done from the cold-start double pass).
+    private advancePipeline(event: PipelineStageEvent): void {
+        if (this.exactPipelineLayout) {
+            if (event.type === 'query') {
+                this.pipelineStages = { name: 'active', lexical: 'pending', hybrid: 'pending' };
+                this.exactStagePhase = 'pending';
+            } else if (event.type === 'name-done') {
+                this.pipelineStages = { name: 'done', lexical: 'pending', hybrid: 'pending' };
+                this.exactStagePhase = 'active';
+            } else if (event.type === 'lexical-done' || event.type === 'final') {
+                this.pipelineStages = { name: 'done', lexical: 'done', hybrid: 'done' };
+                this.exactStagePhase = 'done';
+            } else if (event.type === 'clear') {
+                this.pipelineStages = initialPipelineStageState();
+                this.exactStagePhase = 'pending';
+            }
+            this.syncPipelineStages();
+            return;
+        }
+        const next = nextPipelineStage(this.pipelineStages, event);
+        if (next === this.pipelineStages) return;
+        this.pipelineStages = next;
+        this.syncPipelineStages();
+    }
+
+    private syncFooterStatus(): void {
+        if (!this.footStatusEl || !this.footStatusIconEl || !this.footStatusLabelEl) return;
+        const load = this.getIndexLoadState?.() ?? { phase: 'idle' as const };
+        const spec = indexFooterStatus({
+            kind: this.currentLoadSpec().kind,
+            modelReady: this.modelReady,
+            phase: load.phase,
+            health: load.health,
+            reason: load.reason,
+            peerSyncPending: load.peerSyncPending,
+            waitingForSidecar: load.waitingForSidecar,
+            job: load.job,
+            uiHealth: load.uiHealth,
+        });
+        this.footStatusEl.className = `seek-foot-status is-${spec.tone}`;
+        this.footStatusLabelEl.setText(spec.label);
+        this.footStatusIconEl.empty();
+        if (spec.kind === 'indexing') {
+            renderIndexStatusBadge(this.footStatusIconEl, {
+                health: 'indexing',
+                remaining: spec.badgeCount ?? jobRemaining(load.job),
+            });
+        } else {
+            setIcon(this.footStatusIconEl, spec.icon);
+        }
+    }
+
+    // Build + copy an obsidian://seek deep-link for the current query. `vault` is
+    // included so the link reopens THIS vault; the query is percent-encoded so a
+    // `#tag`/`[k:v]` filter survives the URL fragment delimiter (the handler in
+    // main.ts receives it decoded). No query yet → nudge instead of a dead link.
+    private async copySearchLink(): Promise<void> {
+        const query = this.lastQuery.trim();
+        if (!query) { new Notice('Seek: type a search first'); return; }
+        const url = `obsidian://seek?vault=${encodeURIComponent(this.app.vault.getName())}&query=${encodeURIComponent(query)}`;
+        try {
+            await navigator.clipboard.writeText(url);
+            new Notice('Seek: search link copied');
+        } catch {
+            // Clipboard can reject (no user gesture / locked clipboard). Surface
+            // the URL so the action never silently no-ops — copy it by hand.
+            new Notice(url, 8000);
+        }
+    }
+
+    // The last query string emitted by the field — used by the cold-start
+    // handler to tell whether a search is already pending.
+    private lastQuery = '';
+
+    private scheduleSearch(query: string, immediate = false): void {
+        // A CHANGED query invalidates the keyboard selection: hover/arrows set
+        // selectedIndex against the old result set, and carrying a mid-list
+        // index into the new set would make Enter open whatever happens to sit
+        // at the old rank (and skew click-log rank telemetry). Same-query
+        // re-renders keep the selection (the clamp in renderResults handles a
+        // shrunken result count).
+        if (query !== this.lastQuery) {
+            this.selectedIndex = 0;
+            this.selectedRecentIndex = -1;
+            this.lastAutoRetryKey = null;
+            this.activeSearchAbort?.abort();
+        }
+        this.lastQuery = query;
+        this.updateExactPipelineLayout(query);
+        // The user is typing → still an active session; (re)arm the settle debounce
+        // so catch-up only drains once they pause. Covers both real and cleared
+        // queries (clear-then-walk-away should still eventually settle + drain).
+        this.onSearchActivity?.(true);
+        this.armSettle();
+        if (this.timer != null) window.clearTimeout(this.timer);
+        if (!query.trim()) {
+            // Invalidate any in-flight search, not just the debounce timer:
+            // runSearch's stale check is `id !== currentSearch`, so without the
+            // bump a search dispatched 200 ms ago would paint results over the
+            // empty state the user just cleared to. Drop the search context too
+            // so a click/capture can't reference results that aren't shown.
+            this.currentSearch++;
+            this.latestSearchEntry = null;
+            this.earlyCleanedQuery = '';
+            this.advancePipeline({ type: 'clear' });
+            this.renderEmpty();
+            return;
+        }
+        const run = () => { void this.runSearch(query.trim()); };
+        if (immediate) run();
+        else this.timer = window.setTimeout(run, DEBOUNCE_MS);
+    }
+
+    private async runSearch(query: string): Promise<void> {
+        const id = ++this.currentSearch;
+
+        // Abort previous query before the lexical cold path so cancelled
+        // keystrokes don't keep running MiniSearch/hydrate while the model loads.
+        const controller = new AbortController();
+        this.activeSearchAbort?.abort();
+        this.activeSearchAbort = controller;
+
+        // Reset the pipeline stage machine — the search id check below guards
+        // against stale advancement from a superseded search.
+        this.advancePipeline({ type: 'query' });
+
+        try {
+            // Cold-start gate: emit BM25 lexical results immediately if the BM25
+            // cache is available, then upgrade to hybrid results when the model loads.
+            // This provides useful results even before the embedding model is ready.
+            if (!this.modelReady) {
+                if (this.modelLoadError) {
+                    this.renderStatus(`Model load failed: ${this.modelLoadError.message}`);
+                    return;
+                }
+
+                // Serve lexical results while the model loads. searchLexicalOnly
+                // builds the frame + BM25 lazily on first use, so this works even
+                // when the startup cache warm hasn't landed yet — during catch-up
+                // ensureFrame serves a briefly-stale frame, which is exactly the
+                // useful-early-results trade the progressive ladder is for.
+                // Warming may also be skipped by an active full rebuild — the
+                // footer already shows Indexing, and the modal's 750 ms poll
+                // re-runs the query when coverage arrives.
+                try {
+                    const lexOut = await this.orchestrator.searchLexicalOnly(
+                        query,
+                        MAX_RESULTS,
+                        (partial: SearchPartial) => {
+                            if (id !== this.currentSearch || this.closed) return;
+                            this.earlyCleanedQuery = partial.cleanedQuery;
+                            this.latestResultsShown = partial.results;
+                            this.renderResults(partial.results);
+                            // Lexical rows on the cold path are provisional — explain
+                            // that above the list until the hybrid upgrade replaces them.
+                            if (partial.results.length > 0) this.paintWarmupHint();
+                            this.advancePipeline({ type: SeekSearchModal.partialSourceEvent(partial.source) });
+                        },
+                        controller.signal,
+                    );
+                    if (id !== this.currentSearch || this.closed) return;
+                    if (lexOut.results.length > 0 && this.currentResults.length === 0) {
+                        this.latestResultsShown = lexOut.results;
+                        this.renderResults(lexOut.results);
+                        this.paintWarmupHint();
+                    }
+                } catch (e) {
+                    if (e instanceof Error && e.name === 'AbortError') return;
+                    throw e;
+                }
+                if (id !== this.currentSearch || this.closed) return;
+                // Empty lexical page + no model yet: the index itself is still
+                // warming (cold build / restoring). A wait state keeps its
+                // informative card; otherwise say the model is loading instead of
+                // leaving "No notes match." while hybrid search is still ahead.
+                if (this.currentResults.length === 0 && !this.latestSearchEntry
+                    && !isIndexWaitKind(this.currentLoadSpec().kind)) {
+                    this.renderStatus('Loading model… your query will run as soon as it’s ready.');
+                }
+                try {
+                    await this.modelReadyPromise;
+                } catch (e) {
+                    if (id !== this.currentSearch || this.closed) return;
+                    this.renderStatus(`Model load failed: ${e instanceof Error ? e.message : String(e)}`);
+                    return;
+                }
+                // Bail if a newer query superseded us during load OR the modal was
+                // closed while we waited — either way there's nothing left to paint.
+                if (id !== this.currentSearch || this.closed) return;
+                this.modelReady = true;
+            }
+
+            this.beginInFlight();
+            this.searchLatencyStartMs = performance.now();
+            this.searchLatencyRecordedFor = 0;
+            try {
+                this.setSearching();
+                this.earlyCleanedQuery = '';
+                const { results, entry } = await this.orchestrator.search(
+                    query,
+                    MAX_RESULTS,
+                    undefined,
+                    (partial: SearchPartial) => {
+                        if (id !== this.currentSearch || this.closed) return;
+                        this.earlyCleanedQuery = partial.cleanedQuery;
+                        this.latestResultsShown = partial.results;
+                        this.renderResults(partial.results);
+                        this.advancePipeline({ type: SeekSearchModal.partialSourceEvent(partial.source) });
+                        this.maybeRecordSearchLatency(id, query, partial.results);
+                    },
+                    controller.signal,
+                );
+                // Stale (a newer query landed) or the modal closed mid-search — in
+                // the closed case `renderResults` would otherwise paint into
+                // detached DOM and (via updateSentinel) spin up a fresh
+                // IntersectionObserver that onClose already ran and will never
+                // disconnect.
+                if (id !== this.currentSearch || this.closed) return;
+                this.earlyCleanedQuery = '';
+                this.latestSearchEntry = entry;
+                this.latestResultsShown = results;
+                this.latestSearchCompletedAt = performance.now();
+                if (entry.textSearchRegexInvalid) {
+                    this.renderStatus('Invalid regular expression — fix the /…/ pattern and try again.');
+                    this.advancePipeline({ type: 'final' });
+                    return;
+                }
+                this.renderResults(results);
+                this.advancePipeline({ type: 'final' });
+                this.maybeRecordSearchLatency(id, query, results);
+            } catch (e) {
+                if (e instanceof Error && e.name === 'AbortError') return;
+                if (id !== this.currentSearch || this.closed) return;
+                this.renderStatus(`Error: ${e instanceof Error ? e.message : String(e)}`);
+            } finally {
+                this.endInFlight();
+            }
+        } finally {
+            if (this.activeSearchAbort === controller) this.activeSearchAbort = null;
+        }
+    }
+
+    // Ref-counted "a query embed is in flight" reporting. begin before the embed/
+    // search await, end in its finally; the 0↔1 edges drive onQueryInFlight so the
+    // plugin holds indexing until the query genuinely completes. Counted (not a
+    // bool) so a cold-path search overlapping a newer one emits one clean pair.
+    private beginInFlight(): void {
+        if (this.inFlight++ === 0) this.onQueryInFlight?.(true);
+    }
+    private endInFlight(): void {
+        if (this.inFlight > 0 && --this.inFlight === 0) this.onQueryInFlight?.(false);
+    }
+
+    /** First results paint per search id — time until the modal list is usable (incl. empty). */
+    private maybeRecordSearchLatency(searchId: number, query: string, _results: ScoredChunk[]): void {
+        if (!this.onSearchLatency) return;
+        if (this.searchLatencyRecordedFor === searchId) return;
+        if (this.searchLatencyStartMs <= 0) return;
+        this.searchLatencyRecordedFor = searchId;
+        this.onSearchLatency(query, Math.round(performance.now() - this.searchLatencyStartMs));
+    }
+
+    private renderEmpty(): void {
+        const spec = this.currentLoadSpec();
+        if (spec.kind === 'onboarding') { this.renderNoIndex(); return; }
+        if (isIndexWaitKind(spec.kind)) { this.renderIndexWait(spec); return; }
+        this.renderResting();
+    }
+
+    private modalIndexHealth(kind: IndexLoadKind, load: IndexLoadState): IndexStatusHealth {
+        if (load.uiHealth) return load.uiHealth;
+        if (kind === 'locked') return 'locked';
+        if (kind === 'restoring' || load.waitingForSidecar || load.peerSyncPending) return 'restoring';
+        if (kind === 'starting' || load.phase === 'hydrating') return 'starting';
+        if (kind === 'indexing' || load.phase === 'indexing') return 'indexing';
+        if (load.health === 'degraded') return 'error';
+        if (kind === 'onboarding') return 'none';
+        return 'ok';
+    }
+
+    private paintIndexWaitCard(parent: HTMLElement, kind: IndexLoadKind): void {
+        const load = this.getIndexLoadState?.() ?? { phase: 'idle' as const };
+        const model = indexWaitCardModel({
+            health: this.modalIndexHealth(kind, load),
+            job: load.job,
+            stats: null,
+        });
+        renderIndexStatusCard(parent, model);
+    }
+
+    private currentLoadSpec() {
+        const load = this.getIndexLoadState?.() ?? { phase: 'idle' as const };
+        return indexLoadSpec({
+            chunks: this.lastChunkCount,
+            phase: load.phase,
+            catchUpPending: load.catchUpPending,
+            waitingForSidecar: load.waitingForSidecar,
+            jobKind: load.job?.kind ?? null,
+            uiHealth: load.uiHealth,
+            inventoryChunks: load.inventoryChunks,
+        });
+    }
+
+    // Empty the results body without painting a status line — the modal collapses to the
+    // query field (and the banner slot, which self-collapses when empty). clearRows()
+    // already empties the container + resets the row pool; we just drop the loading dim
+    // and the cached result list so a later click can't reference a stale set.
+    private renderResting(): void {
+        if (!this.resultsEl) return;
+        this.clearRows();
+        this.currentResults = [];
+        this.resultsEl.removeClass('is-loading');
+        const load = this.getIndexLoadState?.() ?? { phase: 'idle' as const };
+        const health = this.modalIndexHealth(this.currentLoadSpec().kind, load);
+        // Populated recents: Starting/Restoring may still flash a wait card.
+        // Indexing belongs in the footer — a reload+open catch-up pause is not "building index".
+        if (health === 'starting' || health === 'restoring') {
+            this.paintIndexWaitCard(this.resultsEl, this.currentLoadSpec().kind);
+        }
+        this.renderRecents();
+    }
+
+    // Recent searches, painted only into the resting state (an active query's
+    // clearRows/renderSkeleton wipes them, so they never sit under results).
+    private renderRecents(): void {
+        const items = this.recents?.list() ?? [];
+        this.recentRows = [];
+        this.recentQueries = items;
+        if (this.selectedRecentIndex >= items.length) {
+            this.selectedRecentIndex = items.length > 0 ? items.length - 1 : -1;
+        }
+        if (!this.resultsEl || items.length === 0) return;
+        const box = this.resultsEl.createDiv({ cls: 'seek-recents' });
+        for (let i = 0; i < items.length; i++) {
+            const q = items[i];
+            const row = box.createDiv({ cls: 'seek-recent' });
+            if (i === this.selectedRecentIndex) row.addClass('is-selected');
+            setIcon(row.createSpan({ cls: 'seek-recent-icon' }), 'history');
+            row.createSpan({ cls: 'seek-recent-text', text: q });
+            const remove = row.createSpan({ cls: 'seek-recent-remove' });
+            setIcon(remove, 'x');
+            remove.setAttr('aria-label', 'Remove from recent searches');
+            remove.addEventListener('click', e => {
+                e.stopPropagation();
+                this.recents?.remove(q);
+                this.selectedRecentIndex = -1;
+                this.renderResting();
+                this.field?.focus();
+            });
+            // Mirror result-row hover: CSS :hover alone leaves selectedRecentIndex
+            // at -1, so Enter (open) is a no-op while the field stays empty.
+            row.addEventListener('mousemove', () => {
+                if (i !== this.selectedRecentIndex) this.selectRecent(i);
+            });
+            row.addEventListener('click', () => {
+                this.selectedRecentIndex = -1;
+                this.field?.focus();
+                this.field?.setQuery(q);
+            });
+            this.recentRows.push(row);
+        }
+    }
+
+    // Full-replace the results area with a single status line. Resets the row
+    // pool + count and clears any lingering loading dim.
+    private renderStatus(msg: string): void {
+        if (!this.resultsEl) return;
+        this.clearRows();
+        this.currentResults = [];
+        this.resultsEl.removeClass('is-loading');
+        this.resultsEl.createDiv({ cls: 'seek-empty', text: msg });
+    }
+
+    // Off-critical-path probe of "is anything indexed". Run once on open and re-run
+    // whenever we'd otherwise show the empty-index onboarding screen, so a background
+    // build that populates a freshly opened (still-empty) index self-clears the screen
+    // without a reopen. Re-runnable + idempotent. A null count (store unreadable
+    // mid-init) leaves the flag untouched. An active query that previously returned
+    // empty is retried once per new coverage/phase state.
+    private async checkIndexState(): Promise<void> {
+        const chunks = await this.orchestrator.indexedChunkCount();
+        if (this.closed) return;
+        const previousChunkCount = this.lastChunkCount;
+        const prevKind = this.loadKind;
+        if (chunks != null) this.lastChunkCount = chunks;
+        const spec = this.currentLoadSpec();
+        const remaining = jobRemaining(this.getIndexLoadState?.()?.job);
+        const remainingChanged = remaining !== this.lastJobRemaining;
+        this.loadKind = spec.kind;
+        this.lastJobRemaining = remaining;
+        this.indexEmpty = spec.kind === 'onboarding';
+        this.syncFooterStatus();
+
+        // A query can legitimately return empty while greedy hydrate has no
+        // searchable chunks yet. Re-run it when the poll observes new coverage
+        // or the startup wait clears; otherwise the user must type again even
+        // though the requested note just became searchable in the background.
+        const chunksGrew = chunks != null && chunks > 0
+            && (previousChunkCount == null || chunks > previousChunkCount);
+        const waitCleared = isIndexWaitKind(prevKind) && !isIndexWaitKind(spec.kind);
+        const frameReady = this.orchestrator.hasSearchableFrame();
+        const frameJustReady = frameReady && !this.lastFrameReady;
+        this.lastFrameReady = frameReady;
+        const retryKey = `${this.lastQuery}\u0000${chunks ?? 'unknown'}\u0000${spec.kind}\u0000${frameReady ? 'frame' : 'noframe'}`;
+        if (
+            this.lastQuery.trim()
+            && this.inFlight === 0
+            && retryKey !== this.lastAutoRetryKey
+            && (
+                frameJustReady
+                || (this.currentResults.length === 0 && (chunksGrew || waitCleared))
+            )
+        ) {
+            this.lastAutoRetryKey = retryKey;
+            this.scheduleSearch(this.lastQuery, true);
+            return;
+        }
+
+        if (spec.kind === prevKind && !remainingChanged) return;
+        if (!this.lastQuery.trim()) this.renderEmpty();
+        else if (this.currentResults.length === 0) this.renderEmptyQuery(spec.kind);
+    }
+
+    // Cold-start onboarding state: the index is empty (fresh install, or an evicted /
+    // never-synced index), so no query can return anything. Point the user at the
+    // settings reindex instead of a bare "Type to search…" / "No notes match.".
+    private renderNoIndex(): void {
+        if (!this.resultsEl) return;
+        this.clearRows();
+        this.currentResults = [];
+        this.resultsEl.removeClass('is-loading');
+        const spec = this.currentLoadSpec();
+        const box = this.resultsEl.createDiv({ cls: 'seek-empty seek-noindex' });
+        box.createDiv({ cls: 'seek-noindex-title', text: spec.title ?? 'No index yet' });
+        box.createDiv({
+            cls: 'seek-empty-sub',
+            text: spec.message ?? 'This vault has not been indexed. Build an index in Seek settings to search.',
+        });
+        if (!this.getIndexNotice?.()) {
+            box.createEl('button', { cls: 'seek-noindex-btn mod-cta', text: 'Open Seek settings to index' })
+                .addEventListener('click', () => this.openSeekSettings());
+        }
+    }
+
+    private renderIndexWait(spec: { kind: IndexLoadKind; title?: string; message?: string }): void {
+        if (!this.resultsEl) return;
+        this.clearRows();
+        this.currentResults = [];
+        this.resultsEl.removeClass('is-loading');
+        const box = this.resultsEl.createDiv({ cls: 'seek-empty seek-noindex' });
+        this.paintIndexWaitCard(box, spec.kind);
+        if (spec.message) box.createDiv({ cls: 'seek-empty-sub', text: spec.message });
+    }
+
+    private renderEmptyQuery(kind: IndexLoadKind): void {
+        if (kind === 'onboarding') { this.renderNoIndex(); return; }
+        if (isIndexWaitKind(kind)) {
+            this.renderIndexWait(this.currentLoadSpec());
+            return;
+        }
+        if (!this.resultsEl) return;
+        this.clearRows();
+        const empty = this.resultsEl.createDiv({ cls: 'seek-empty' });
+        empty.createDiv({ text: 'No notes match.' });
+        empty.createDiv({ cls: 'seek-empty-sub', text: 'Try removing a filter.' });
+    }
+
+    // Open Obsidian's settings straight to the Seek tab. `app.setting` isn't in the
+    // public typings but is a stable runtime API (same access pattern as the
+    // metadataCache.getTags() call in collectVaultTags). Close the modal first so the
+    // two overlays don't stack.
+    private openSeekSettings(): void {
+        this.close();
+        const setting = (this.app as unknown as {
+            setting?: { open(): void; openTabById(id: string): void };
+        }).setting;
+        setting?.open();
+        setting?.openTabById('seek');
+    }
+
+    // Paint (or clear) the version-stale banner from the live thunk. Empties the slot
+    // first so it's idempotent: re-evaluated on each open, it shows while the index is
+    // version-stale and is gone once a reindex (from Settings) heals it. CSS hides an
+    // empty slot, so the common (current-index) case adds no visible chrome. The button
+    // opens Seek settings (which closes this modal) — the reindex itself lives there.
+    private renderIndexBanner(): void {
+        if (!this.bannerSlot) return;
+        this.bannerSlot.empty();
+        const notice = this.getIndexNotice?.();
+        if (!notice) return;
+        const banner = this.bannerSlot.createDiv({ cls: 'seek-index-banner' });
+        // Calm (info) variant for the "syncing from another device" state; the default
+        // warning style for the stale/action-needed state.
+        banner.toggleClass('is-info', notice.tone === 'info');
+        banner.createSpan({ cls: 'seek-index-banner-msg', text: notice.message });
+        // Only the action-needed banner carries the reindex affordance; the syncing
+        // banner has nothing for the user to do, so it shows no button.
+        if (notice.showAction) {
+            banner.createEl('button', { cls: 'seek-index-banner-btn mod-cta', text: 'Open settings' })
+                .addEventListener('click', () => this.openSeekSettings());
+        }
+    }
+
+    // Loading feedback that does NOT destroy what's on screen: dim the existing
+    // results in place while the next set is fetched, so a fast warm search
+    // shows no flash. Only a cold search with nothing to preserve falls back to
+    // a text status.
+    private setSearching(): void {
+        if (!this.resultsEl) return;
+        if (this.rows.length > 0) this.resultsEl.addClass('is-loading');
+        else this.renderSkeleton();
+    }
+
+    // Cold-search loading state: placeholder rows with a CSS shimmer, shown when
+    // there are no existing results to dim. The shimmer sweep animates `transform`
+    // (styles.css), so it runs on the compositor thread and keeps moving even while
+    // the JS main thread is blocked by a cold index build — the freeze a static
+    // "Searching…" line couldn't hide. Same treatment on every platform. Rows carry
+    // `.seek-result` for layout parity (so results swap in with no height jump);
+    // pointer-events are killed in CSS so the placeholders aren't hoverable.
+    private renderSkeleton(): void {
+        if (!this.resultsEl) return;
+        this.clearRows();
+        this.currentResults = [];
+        this.resultsEl.removeClass('is-loading');
+        const PLACEHOLDER_ROWS = 5;
+        for (let i = 0; i < PLACEHOLDER_ROWS; i++) {
+            const row = this.resultsEl.createDiv({ cls: 'seek-result seek-skeleton' });
+            row.createDiv({ cls: 'seek-skeleton-line seek-skeleton-title' });
+            row.createDiv({ cls: 'seek-skeleton-line seek-skeleton-path' });
+        }
+    }
+
+    private clearRows(): void {
+        this.rows = [];
+        this.shownCount = 0;
+        // empty() will drop the sentinel node too; unobserve + forget it first so
+        // the observer isn't left holding a detached element.
+        if (this.sentinelEl) this.revealObserver?.unobserve(this.sentinelEl);
+        this.sentinelEl = null;
+        this.resultsEl?.empty();
+    }
+
+    // Snapshot all vault tags (lowercased, leading `#` stripped). metadataCache
+    // .getTags() isn't in the public typings but is a stable runtime API.
+    private collectVaultTags(): Set<string> {
+        const cache = this.app.metadataCache as unknown as { getTags?: () => Record<string, number> };
+        const raw = cache.getTags?.() ?? {};
+        return new Set(Object.keys(raw).map(t => t.replace(/^#/, '').toLowerCase()));
+    }
+
+    // Does a `tag:` filter match any real vault tag, using the SAME hierarchical
+    // rule the matcher applies (exact OR a `parent/` prefix)? `meetings/1x1`
+    // matches `meetings/1x1` and `meetings/1x1/child`, but NOT the sibling
+    // `meetings/1x1s` — so this predicts whether the pill will bind to anything.
+    private tagBinds(filterTag: string): boolean {
+        const ft = filterTag.replace(/^#/, '').toLowerCase();
+        for (const vt of this.vaultTagSet) {
+            if (vt === ft || vt.startsWith(ft + '/')) return true;
+        }
+        return false;
+    }
+
+    // Reconcile the row pool against the new result set in place. Each slot is
+    // reused: only changed text repaints, and only changed snippet markdown
+    // re-renders. The orchestrator already deduped to one-per-note upstream.
+    // Small notice above the result rows while results are lexical-only during
+    // warm-up (model loading / index caches still hydrating). Painted once and
+    // removed by the next full render — renderResults and the hybrid upgrade
+    // both drop it, so it can never survive onto final results.
+    private paintWarmupHint(): void {
+        if (!this.resultsEl) return;
+        this.clearWarmupHint();
+        const hint = this.resultsEl.createDiv({ cls: 'seek-warmup-hint' });
+        const icon = hint.createSpan({ cls: 'seek-warmup-icon' });
+        setIcon(icon, 'refresh-cw');
+        hint.createSpan({
+            text: 'Seek is warming up — showing quick lexical results; semantic ranking follows.',
+        });
+        this.resultsEl.prepend(hint);
+    }
+
+    private clearWarmupHint(): void {
+        this.resultsEl?.querySelectorAll(':scope > .seek-warmup-hint').forEach(el => el.remove());
+    }
+
+    private renderResults(results: ScoredChunk[]): void {
+        const container = this.resultsEl;
+        if (!container) return;
+        container.removeClass('is-loading');
+        // Drop any cold-start skeleton placeholders before reusing/creating real
+        // rows — ensureRow appends to the container, so leftover skeletons would
+        // sit above the results. (The empty-results path's clearRows() wipes them
+        // too; this covers the non-empty reuse path.)
+        container.querySelectorAll(':scope > .seek-skeleton').forEach(el => el.remove());
+        this.currentResults = results;
+
+        if (results.length === 0) {
+            this.clearRows();
+            const spec = this.currentLoadSpec();
+            if (spec.kind !== 'resting') {
+                this.renderEmptyQuery(spec.kind);
+                void this.checkIndexState();
+                return;
+            }
+            const empty = container.createDiv({ cls: 'seek-empty' });
+            empty.createDiv({ text: 'No notes match.' });
+            empty.createDiv({ cls: 'seek-empty-sub', text: 'Try removing a filter.' });
+            return;
+        }
+        this.indexEmpty = false;
+        this.loadKind = 'resting';
+        if (this.lastChunkCount === 0) this.lastChunkCount = results.length;
+
+        // Drop a status/empty placeholder (coming from a cold search) without
+        // disturbing real rows we may be about to reuse.
+        container.querySelectorAll(':scope > .seek-empty').forEach(el => el.remove());
+        // The warm-up hint lives only above lexical-only rows; final results
+        // (and any non-warmup caller) always clear it.
+        this.clearWarmupHint();
+
+        // Only the first page is painted now; the rest reveal on scroll. Rows are
+        // reused in place by index, so re-running a query that still has ≥PAGE_SIZE
+        // hits repaints those slots rather than flashing.
+        this.shownCount = Math.min(PAGE_SIZE, results.length);
+        for (let i = 0; i < this.shownCount; i++) {
+            this.applyRow(this.ensureRow(i), results[i], i + 1);
+        }
+        while (this.rows.length > this.shownCount) {
+            this.rows.pop()?.el.remove();
+        }
+
+        // Keep the selection in range (clamp toward the top), then paint it.
+        this.selectedIndex = Math.min(Math.max(0, this.selectedIndex), this.shownCount - 1);
+        this.applySelection();
+        this.updateSentinel();
+    }
+
+    // Grow the rendered window. Each call appends at least one PAGE_SIZE batch
+    // (more if `target` demands it, e.g. a keyboard jump), capped at the fetched
+    // result count. New rows append after the sentinel; updateSentinel then moves
+    // the sentinel back to the tail — all synchronous, so no intermediate paint.
+    private revealMore(target = 0): void {
+        if (this.shownCount >= this.currentResults.length) return;
+        const next = Math.min(
+            Math.max(target, this.shownCount + PAGE_SIZE),
+            this.currentResults.length,
+        );
+        for (let i = this.shownCount; i < next; i++) {
+            this.applyRow(this.ensureRow(i), this.currentResults[i], i + 1);
+        }
+        this.shownCount = next;
+        this.updateSentinel();
+    }
+
+    // Maintain the tail sentinel that drives infinite scroll. When more rows
+    // remain, ensure a sentinel exists, sits last, and is observed; when the
+    // window has reached the full result set, retire it so the observer goes
+    // quiet. IntersectionObserver.observe is idempotent, so re-observing the
+    // same node after a re-append is a no-op.
+    private updateSentinel(): void {
+        const container = this.resultsEl;
+        if (!container) return;
+        if (this.shownCount >= this.currentResults.length) {
+            if (this.sentinelEl) {
+                this.revealObserver?.unobserve(this.sentinelEl);
+                this.sentinelEl.remove();
+                this.sentinelEl = null;
+            }
+            return;
+        }
+        if (!this.sentinelEl) {
+            this.sentinelEl = container.createDiv({ cls: 'seek-load-sentinel' });
+        } else {
+            container.appendChild(this.sentinelEl); // keep last, after freshly appended rows
+        }
+        this.ensureRevealObserver();
+        this.revealObserver?.observe(this.sentinelEl);
+    }
+
+    private ensureRevealObserver(): void {
+        if (this.revealObserver || !this.resultsEl) return;
+        // root = the scrolling results list; the bottom margin pre-loads the next
+        // page before the sentinel is actually on screen. Callbacks fire async
+        // (next frame), so a cascade of reveals is naturally paced one page/frame
+        // until the sentinel is pushed out of the margin band — never a sync loop.
+        this.revealObserver = new IntersectionObserver(
+            entries => { if (entries.some(e => e.isIntersecting)) this.revealMore(); },
+            { root: this.resultsEl, rootMargin: `0px 0px ${REVEAL_MARGIN_PX}px 0px` },
+        );
+    }
+
+    // Return the row at slot `i`, creating its DOM scaffold on first use. The
+    // click handler is bound once and reads the row's live `data`/`rank`. Hover
+    // moves the selection. Clicks on a rendered link inside the snippet fall
+    // through to Obsidian's own link handler.
+    private ensureRow(i: number): SeekResultRow {
+        const existing = this.rows[i];
+        if (existing) return existing;
+
+        const el = this.resultsEl!.createDiv({ cls: 'seek-result' });
+        const top = el.createDiv({ cls: 'seek-result-top' });
+        const row: SeekResultRow = {
+            el,
+            titleEl: top.createDiv({ cls: 'seek-result-title' }),
+            aliasHintEl: top.createSpan({ cls: 'seek-result-alias-hint' }),
+            // Breadcrumb is parented to `el` (not `top`) so it drops onto its own
+            // line below the title instead of competing for the title's horizontal
+            // space and forcing a truncating ellipsis. Created after `top` → sits
+            // directly under the title, above the snippet.
+            breadcrumbEl: el.createDiv({ cls: 'seek-result-path' }),
+            snippetEl: el.createDiv({ cls: 'seek-result-snippet' }),
+            metaEl: el.createDiv({ cls: 'seek-result-meta' }),
+            scoreEl: el.createDiv({ cls: 'seek-result-score' }),
+            keycapsEl: el.createDiv({ cls: 'seek-result-kbds' }),
+            enterKeycapEl: undefined as unknown as HTMLElement,
+            tabKeycapEl: undefined as unknown as HTMLElement,
+            data: null as unknown as ScoredChunk,
+            rank: i + 1,
+            lastSnippet: '\0', // sentinel ≠ any real snippet so first apply renders
+            lastCrumb: '\0',   // same sentinel for the breadcrumb
+            aliasesExpanded: false,
+            lastAliasSig: '\0',
+        };
+        row.enterKeycapEl = row.keycapsEl.createEl('kbd', { cls: 'seek-result-kbd', text: '↵' });
+        row.tabKeycapEl = row.keycapsEl.createEl('kbd', { cls: 'seek-result-kbd', text: 'tab' });
+        row.tabKeycapEl.hide();
+        row.keycapsEl.hide();
+        row.aliasHintEl.hide();
+        el.addEventListener('click', e => {
+            if ((e.target as HTMLElement).closest('a, .seek-meta-alias-more')) return;
+            void this.openResult(row.data, this.rows.indexOf(row) + 1, resolveOpenTarget(e));
+        });
+        el.addEventListener('mousemove', () => {
+            const idx = this.rows.indexOf(row);
+            // Hover paints the selection but must NOT scroll: applySelection's
+            // scroll-into-view would shift content under the stationary cursor,
+            // firing a synthetic mousemove on the next row → scroll → repeat,
+            // an edge-parked feedback loop that looks like the list creeping on
+            // its own. Keyboard nav still scrolls (it can target off-screen).
+            if (idx !== this.selectedIndex) { this.selectedIndex = idx; this.applySelection(false); }
+        });
+        this.rows[i] = row;
+        return row;
+    }
+
+    // Update one row's contents to a result, repainting only what changed.
+    private applyRow(row: SeekResultRow, r: ScoredChunk, rank: number): void {
+        row.data = r;
+        row.rank = rank;
+
+        const title = noteTitle(r.note_path);
+        if (row.titleEl.textContent !== title) row.titleEl.setText(title);
+
+        const showAliases = this.settings.showResultAliases;
+        const cleanedQuery = (this.latestSearchEntry?.cleanedQuery ?? this.earlyCleanedQuery ?? '').trim();
+        const hasTextQuery = cleanedQuery.length > 0;
+
+        const aliasSig = r.note_path + '\x1e' + (r.metadata?.aliases ?? []).join('\x1e');
+        if (aliasSig !== row.lastAliasSig) {
+            row.aliasesExpanded = false;
+            row.lastAliasSig = aliasSig;
+        }
+
+        let matchedAlias: string | null = null;
+        let aliasCoverage = 0;
+        let basenameCoverage = 0;
+        if (showAliases && hasTextQuery) {
+            const m = matchTitleAlias(cleanedQuery, title, r.metadata?.aliases ?? []);
+            basenameCoverage = m.basenameCoverage;
+            aliasCoverage = m.aliasCoverage;
+            matchedAlias = m.aliasCoverage > 0 ? m.bestAlias : null;
+            if (!matchedAlias) {
+                const prefix = matchNamePrefix(cleanedQuery, title, r.metadata?.aliases ?? []);
+                if (prefix.bestAlias) {
+                    matchedAlias = prefix.bestAlias;
+                    aliasCoverage = prefix.aliasScore;
+                }
+                if (prefix.basenameScore > basenameCoverage) basenameCoverage = prefix.basenameScore;
+            }
+        }
+
+        const allAliases = showAliases
+            ? dedupeAliasesAgainstBasename(r.metadata?.aliases ?? [], title)
+            : [];
+        const aliasLimit = this.settings.resultAliasLimit;
+        const canTruncate = showAliases && aliasLimit > 0 && allAliases.length > aliasLimit;
+        const aliasSlice = showAliases
+            ? sliceResultAliases(r.metadata?.aliases ?? [], title, aliasLimit, row.aliasesExpanded, matchedAlias)
+            : { visible: [], hiddenCount: 0, matchedAlias: null };
+
+        if (showAliases && matchedAlias && aliasCoverage > basenameCoverage) {
+            if (row.aliasHintEl.textContent !== matchedAlias) row.aliasHintEl.setText(matchedAlias);
+            row.aliasHintEl.show();
+        } else {
+            row.aliasHintEl.hide();
+        }
+
+        // Heading-path breadcrumb: `› Agenda › Intern pgm` (empty for a
+        // whole-note / pre-heading chunk). Rendered as MARKDOWN, not plain text,
+        // so a heading that is itself a link — an external `[Review…](https://…)`
+        // or a `[[wikilink]]` — shows as a real Obsidian link with the box glyph +
+        // underline the user's appearance settings define, exactly as on the page
+        // (a bare setText left the `[text](url)` source showing). The per-segment
+        // `› ` prefix doubles as a guard against a heading that starts with block
+        // markdown (`1.`, `#`) being parsed as a list/heading. Skipped when the
+        // path is unchanged (async render is comparatively costly).
+        const crumb = (r.heading_path ?? []).map(s => `› ${s}`).join(' ');
+        if (crumb !== row.lastCrumb) {
+            row.lastCrumb = crumb;
+            row.breadcrumbEl.empty();
+            if (crumb) {
+                // Fresh wrapper (as the snippet does) so a late async append from a
+                // superseded row lands on a detached node, never another row's line.
+                const wrap = row.breadcrumbEl.createDiv();
+                MarkdownRenderer.render(this.app, crumb, wrap, r.note_path, this.markdownComponent)
+                    .catch(() => wrap.setText(crumb));
+            }
+        }
+        row.breadcrumbEl.toggle(crumb.length > 0);
+
+        // Meta line: `created <date> · aka alias · #tag`. Rebuilt only when it changes.
+        const created = fmtCreated(r.metadata?.created ?? null);
+        const tags = r.metadata?.tags ?? [];
+        const metaSig = [
+            created,
+            tags.join(','),
+            aliasSlice.visible.join(','),
+            aliasSlice.hiddenCount,
+            row.aliasesExpanded ? '1' : '0',
+            matchedAlias ?? '',
+            showAliases ? '1' : '0',
+        ].join('|');
+        if (row.metaEl.dataset.sig !== metaSig) {
+            row.metaEl.dataset.sig = metaSig;
+            row.metaEl.empty();
+
+            const appendDot = () => {
+                if (row.metaEl.childElementCount > 0) {
+                    row.metaEl.createSpan({ cls: 'seek-meta-dot', text: '·' });
+                }
+            };
+
+            if (created) {
+                const c = row.metaEl.createSpan({ cls: 'seek-meta-created' });
+                c.createSpan({ cls: 'seek-meta-lbl', text: 'created ' });
+                c.appendText(created);
+            }
+
+            if (showAliases && aliasSlice.visible.length > 0) {
+                appendDot();
+                const akaSeg = row.metaEl.createSpan({ cls: 'seek-meta-aka-seg' });
+                akaSeg.createSpan({ cls: 'seek-meta-lbl', text: 'aka' });
+                for (let ai = 0; ai < aliasSlice.visible.length; ai++) {
+                    const isMatched = hasTextQuery && matchedAlias != null && aliasSlice.visible[ai] === matchedAlias;
+                    akaSeg.createSpan({
+                        cls: isMatched ? 'seek-meta-alias-pill is-matched' : 'seek-meta-alias-pill',
+                        text: aliasSlice.visible[ai],
+                    });
+                }
+                if (!row.aliasesExpanded && aliasSlice.hiddenCount > 0) {
+                    const more = akaSeg.createSpan({ cls: 'seek-meta-alias-more', text: `+${aliasSlice.hiddenCount} more` });
+                    more.addEventListener('click', e => {
+                        e.stopPropagation();
+                        row.aliasesExpanded = true;
+                        this.applyRow(row, r, rank);
+                    });
+                } else if (row.aliasesExpanded && canTruncate) {
+                    const less = akaSeg.createSpan({ cls: 'seek-meta-alias-more', text: 'less' });
+                    less.addEventListener('click', e => {
+                        e.stopPropagation();
+                        row.aliasesExpanded = false;
+                        this.applyRow(row, r, rank);
+                    });
+                }
+            }
+
+            if (tags.length > 0) {
+                appendDot();
+                for (const t of tags) row.metaEl.createSpan({ cls: 'seek-meta-tag', text: `#${t}` });
+            }
+
+            row.metaEl.toggle(created.length > 0 || tags.length > 0 || aliasSlice.visible.length > 0);
+        }
+
+        // Score line, gated on the Display scores setting. Shows the calibrated
+        // "Matching %" (the headline relevance read) plus the two ranking bonuses
+        // it EXCLUDES — recency and title boost — so a rank-vs-strength divergence
+        // stays legible at a glance.
+        const conf = r.ranking_signals.confidence;
+        const strength = matchStrength(
+            conf, r.ranking_signals.bm25, this.settings.denseWeight, r.lexicalOnly);
+        // A filter-only / browse query (no free text) has nothing to "match"
+        // against — suppress the score entirely rather than score a non-match.
+        const scoresMeaningful = this.app.vault.getMarkdownFiles().length >= MATCH_STRENGTH_MIN_NOTES;
+        const exactTextSearch = (this.latestSearchEntry?.textSearchKind ?? 'hybrid') !== 'hybrid';
+        if (this.settings.showScores && scoresMeaningful && hasTextQuery && exactTextSearch) {
+            const label = 'Literal match';
+            if (row.scoreEl.textContent !== label) row.scoreEl.setText(label);
+            row.scoreEl.show();
+        } else if (this.settings.showScores && scoresMeaningful && hasTextQuery && strength != null) {
+            // Title shown as a normalized [0,1] match strength (1 = full known-item
+            // title match), mirroring how recency renders its raw signal rather than
+            // the weighted contribution that enters `final`. title_boost is
+            // navTitleBoost·coverage (fusion.ts), so divide the configured weight
+            // back out to recover coverage; the Off stage (weight 0) zeroes the
+            // contribution and coverage isn't recoverable, so it reads 0.00.
+            const titleWeight = this.settings.navTitleBoost;
+            const titleStrength = titleWeight > 0
+                ? r.ranking_signals.title_boost / titleWeight
+                : 0;
+            const label = `Matching ${Math.round(strength * 100)}%`
+                + ` · recency ${r.ranking_signals.recency.toFixed(2)}`
+                + ` · title ${titleStrength.toFixed(2)}`;
+            if (row.scoreEl.textContent !== label) row.scoreEl.setText(label);
+            row.scoreEl.show();
+        } else {
+            row.scoreEl.hide();
+        }
+
+        const limits = this.effectiveSnippetLimits();
+        const passageTerms = hasTextQuery
+            ? (exactTextSearch
+                ? literalPassageTerms(parseTextSearchMode(cleanedQuery).mode)
+                : buildPassageTerms(cleanedQuery, () => 0))
+            : [];
+        const rawSnippet = hasTextQuery
+            ? makeSnippet(r.content, passageTerms, limits.chars)
+            : makeSnippet(r.content, '', limits.chars);
+        const snippet = sanitizeSnippet(rawSnippet);
+        const snippetKey = `${limits.lines}\x1e${limits.chars}\x1e${snippet}`;
+        if (snippetKey === row.lastSnippet) return; // unchanged — skip the markdown re-render
+        row.lastSnippet = snippetKey;
+        row.snippetEl.empty();
+        row.snippetEl.toggle(snippet.length > 0);
+        if (!snippet) return;
+
+        // Render into a fresh wrapper rather than snippetEl directly: if a later
+        // search supersedes this row and empty()s snippetEl, this (now detached)
+        // wrapper absorbs any late async append, so results never interleave.
+        const wrapper = row.snippetEl.createDiv();
+        MarkdownRenderer.render(this.app, snippet, wrapper, r.note_path, this.markdownComponent)
+            .then(() => {
+                const re = this.snippetMarkRe();
+                if (re) decorateSnippetMarks(wrapper, re);
+            })
+            .catch(() => wrapper.setText(snippet));
+    }
+
+    // The mark matcher for the current query (see snippetMarkCache).
+    private snippetMarkRe(): RegExp | null {
+        const query = this.latestSearchEntry?.cleanedQuery ?? '';
+        const kind = this.latestSearchEntry?.textSearchKind ?? 'hybrid';
+        if (this.snippetMarkCache?.query !== query) {
+            let re: RegExp | null = null;
+            if (query.trim()) {
+                if (kind !== 'hybrid') {
+                    re = literalMarkPattern(parseTextSearchMode(query).mode);
+                } else {
+                    re = markPattern(buildPassageTerms(query, () => 0));
+                }
+            }
+            this.snippetMarkCache = { query, re };
+        }
+        return this.snippetMarkCache.re;
+    }
+
+    private toggleSnippetExpand(): void {
+        this.snippetExpanded = !this.snippetExpanded;
+        this.applySnippetLineStyle();
+        for (let i = 0; i < this.shownCount; i++) {
+            const row = this.rows[i];
+            if (!row?.data) continue;
+            row.lastSnippet = '\0';
+            this.applyRow(row, row.data, row.rank);
+        }
+        this.applySelection();
+    }
+
+    private effectiveSnippetLimits(): { lines: number; chars: number } {
+        if (this.snippetExpanded) return SNIPPET_PREVIEW_LIMITS.expanded;
+        return SNIPPET_PREVIEW_LIMITS[this.settings.snippetPreview];
+    }
+
+    private applySnippetLineStyle(): void {
+        const { lines } = this.effectiveSnippetLimits();
+        this.resultsEl?.style.setProperty('--seek-snippet-lines', String(lines));
+        this.modalEl.toggleClass('seek-snippet-expanded', this.snippetExpanded);
+    }
+
+    // ---- keyboard selection model ----
+
+    /** Capture-phase dispatch when focus is in modal chrome but outside the query field. */
+    private handleModalKeyDown(e: KeyboardEvent): void {
+        if (this.closed || !this.isChromeFocused()) return;
+        if (e.isComposing || e.keyCode === 229) return;
+        if (this.field?.isEditFocused()) return;
+
+        const action = resolveSearchModalKeyAction(this.app, this.pluginId, e);
+        if (!action) return;
+
+        if (action === 'fill-autosuggest' || (action === 'insert-link-alias' && isBareTabKey(e))) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (this.field?.fillAutosuggest()) return;
+            if (this.canInsertLinkWithAliasOnTab()) this.runAction('insert-link-alias');
+            return;
+        }
+
+        e.preventDefault();
+        e.stopPropagation();
+        this.runAction(action);
+    }
+
+    private canInsertLinkWithAliasOnTab(): boolean {
+        if (Platform.isMobile) return false;
+        if (!canInsertLinkFromModal(this.app)) return false;
+        if (this.currentResults.length === 0) return false;
+        return this.selectedIndex >= 0 && this.selectedIndex < this.currentResults.length;
+    }
+
+    private refreshInsertLinkTabHints(): void {
+        const showTab = this.settings.showHotkeyHints && this.canInsertLinkWithAliasOnTab();
+        const tabKeys = insertLinkAliasTabHintKeys(this.app, this.pluginId);
+        const aliasSpec = SEARCH_MODAL_COMMANDS.find(c => c.action === 'insert-link-alias');
+        const label = aliasSpec ? searchModalFooterLabel(aliasSpec) : 'insert link with alias';
+        this.field?.setQueryActionHint(tabKeys, label, showTab && tabKeys.length > 0);
+        const showRowTab = showTab && tabKeys.length > 0;
+        this.rows.forEach((row, i) => {
+            const sel = i === this.selectedIndex;
+            row.keycapsEl.toggle(sel);
+            row.enterKeycapEl.toggle(sel);
+            row.tabKeycapEl.toggle(sel && showRowTab);
+        });
+    }
+
+    /** Dispatch a remappable search-modal action (commands + query-field chords). */
+    runAction(action: SearchModalAction): void {
+        switch (action) {
+            case 'navigate-up': this.moveSelection(-1); break;
+            case 'navigate-down': this.moveSelection(1); break;
+            case 'open': this.openSelected(false); break;
+            case 'open-tab': this.openSelected('tab'); break;
+            case 'open-split': this.openSelected('split'); break;
+            case 'insert-link':
+                if (!canInsertLinkFromModal(this.app)) return;
+                this.insertSelectedLink('plain');
+                break;
+            case 'insert-link-alias':
+                if (!canInsertLinkFromModal(this.app)) return;
+                this.insertSelectedLink('searchAlias');
+                break;
+            case 'expand-snippet': this.toggleSnippetExpand(); break;
+            case 'fill-autosuggest': this.field?.fillAutosuggest(); break;
+            case 'close': this.close(); break;
+        }
+    }
+
+    moveSelection(dir: 1 | -1): void {
+        if (this.currentResults.length === 0) {
+            this.moveRecentSelection(dir);
+            return;
+        }
+        this.selectedRecentIndex = -1;
+        const next = Math.min(Math.max(0, this.selectedIndex + dir), this.currentResults.length - 1);
+        if (next === this.selectedIndex) return;
+        // Arrowing into the not-yet-rendered window pulls the next page in first,
+        // so keyboard users reach all MAX_RESULTS rows without touching the mouse.
+        if (next >= this.shownCount) this.revealMore(next + 1);
+        this.selectedIndex = next;
+        this.applySelection();
+    }
+
+    private moveRecentSelection(dir: 1 | -1): void {
+        const n = this.recentQueries.length;
+        if (n === 0) return;
+        if (this.selectedRecentIndex < 0) {
+            this.selectRecent(dir > 0 ? 0 : n - 1);
+        } else {
+            this.selectRecent(Math.min(Math.max(0, this.selectedRecentIndex + dir), n - 1));
+        }
+    }
+
+    /** Highlight a resting recent-search row (keyboard nav or hover). */
+    private selectRecent(i: number): void {
+        this.selectedRecentIndex = i;
+        this.applyRecentSelection();
+    }
+
+    private applyRecentSelection(): void {
+        this.recentRows.forEach((row, i) => {
+            row.toggleClass('is-selected', i === this.selectedRecentIndex);
+        });
+    }
+
+    // Paint the selected row (class + ↵ keycap) and, when `scroll`, keep it in
+    // view. Manual scroll math against the list's scrollTop/clientHeight, NOT
+    // scrollIntoView (which would also scroll the whole modal/page). Hover passes
+    // scroll=false to avoid a mousemove↔scroll feedback loop (see the row's
+    // mousemove handler); keyboard nav leaves it on to chase off-screen rows.
+    private applySelection(scroll = true): void {
+        this.rows.forEach((row, i) => {
+            row.el.toggleClass('is-selected', i === this.selectedIndex);
+        });
+        this.refreshInsertLinkTabHints();
+        if (!scroll) return;
+        const list = this.resultsEl;
+        const row = this.rows[this.selectedIndex];
+        if (!list || !row) return;
+        const rt = row.el.offsetTop;
+        const rb = rt + row.el.offsetHeight;
+        if (rt < list.scrollTop) list.scrollTop = rt - 6;
+        else if (rb > list.scrollTop + list.clientHeight) list.scrollTop = rb - list.clientHeight + 6;
+    }
+
+    private openSelected(target: OpenTarget): void {
+        // Resting recent-search highlight: plain open reapplies the query (same
+        // as click). Tab/split/insert-link are no-ops with no result selected.
+        if (this.currentResults.length === 0 && this.selectedRecentIndex >= 0) {
+            if (target !== false) return;
+            const q = this.recentQueries[this.selectedRecentIndex];
+            if (!q) return;
+            this.selectedRecentIndex = -1;
+            this.field?.focus();
+            this.field?.setQuery(q);
+            return;
+        }
+        const r = this.currentResults[this.selectedIndex];
+        if (r) void this.openResult(r, this.selectedIndex + 1, target);
+    }
+
+    private insertSelectedLink(mode: InsertLinkMode): void {
+        const r = this.currentResults[this.selectedIndex];
+        if (!r) return;
+
+        const file = this.app.vault.getAbstractFileByPath(r.note_path);
+        if (!(file instanceof TFile) || !isInsertableMarkdownFile(file)) {
+            new Notice('Seek: cannot insert a link to this result');
+            return;
+        }
+
+        const alias = resolveInsertLinkAliasForMode(mode, this.field?.getFreeText() ?? null);
+
+        const link = buildNoteLink(this.app, file, {
+            subpath: resolveInsertLinkSubpath(r.heading_path, this.settings),
+            alias,
+        });
+
+        const result = insertLinkInEditor(this.app, link);
+        if (!result.ok) {
+            new Notice('Seek: no active editor');
+            return;
+        }
+        this.close();
+    }
+
+    private async openResult(r: ScoredChunk, rank: number, target: OpenTarget): Promise<void> {
+        // Emit click event BEFORE opening the file — the file-open switches
+        // workspace state and might cancel pending work. We don't await the
+        // logger write so click latency stays imperceptible.
+        const titleNav = this.titleCoverage(r) >= TITLE_NAV_COVERAGE_MIN;
+        this.emitClick(r, rank, titleNav);
+        this.captureRecent();
+
+        const file = this.app.vault.getAbstractFileByPath(r.note_path);
+        if (!(file instanceof TFile)) return;
+
+        // Default: dismiss after any open (Quick Switcher-like). Opt-in Display
+        // setting keepSearchOpenOnTabSplit restores fan-out (background leaf +
+        // refocus query). Plain Enter/click always dismisses.
+        const keepOpen = shouldKeepModalOpen(target, this.settings.keepSearchOpenOnTabSplit);
+
+        // A .base is a saved query/view, not editable text. Skip the markdown
+        // highlight + scroll path (buildMatchHighlight/scrollLeafToChunk assume a
+        // text editor) and drive the Bases view directly: the matched view name
+        // rides in heading_path (chunkBase puts it there), so we land on that exact
+        // view. A base-level chunk (empty heading_path) has no viewName, so the
+        // Bases view opens its default/last-used view.
+        if (file.extension === 'base') {
+            const viewName = r.heading_path?.[r.heading_path.length - 1];
+            const state: Record<string, unknown> = viewName ? { file: file.path, viewName } : { file: file.path };
+            await openBaseAtTarget(this.app, file, target, state, { background: keepOpen });
+            if (keepOpen) this.field?.focus();
+            else this.close();
+            return;
+        }
+
+        // Native search-style highlight of the matched terms (same transient
+        // flash core Search uses), passed via ephemeral state on the open call.
+        // Title-nav hits open at the top — skip chunk highlight/scroll.
+        const eState = titleNav ? undefined : await this.buildMatchHighlight(file, r);
+
+        const leaf = await openFileAtTarget(this.app, file, target, { eState, background: keepOpen });
+        if (titleNav) this.scrollLeafToTop(leaf);
+        else this.scrollLeafToChunk(leaf, r);
+        if (keepOpen) this.field?.focus();
+        else this.close();
+    }
+
+    // Build the ephemeral-state `match` payload Obsidian's view layer uses to
+    // paint the transient search highlight. `match.matches` are [from,to] char
+    // offsets into `match.content` (the full note text) — the same contract
+    // core Search and heading-link navigation rely on (untyped in the public
+    // API, hence the `Record<string,unknown>` return). Returns undefined when
+    // there's nothing to highlight so the open call falls back to plain nav.
+    //
+    // Chunks store only start_line (no char offset), so we resolve the chunk's
+    // first-line offset here and search the chunk window for the query tokens —
+    // the same "earliest matching token in the chunk" logic makeSnippet uses,
+    // so the highlight lands on the text the snippet already showed.
+    private async buildMatchHighlight(file: TFile, r: ScoredChunk): Promise<Record<string, unknown> | undefined> {
+        if (r.start_line <= 0) return undefined;
+        const tokens = (this.latestSearchEntry?.cleanedQuery ?? '')
+            .toLowerCase().split(/\s+/).filter(Boolean);
+        if (tokens.length === 0) return undefined;
+
+        const content = await this.app.vault.cachedRead(file);
+
+        // Walk to the char offset of the chunk's first line (start_line is 1-based).
+        let lineStart = 0;
+        for (let i = 0; i < r.start_line - 1; i++) {
+            const nl = content.indexOf('\n', lineStart);
+            if (nl === -1) { lineStart = content.length; break; }
+            lineStart = nl + 1;
+        }
+        // Bound the search to the chunk body (+slack for snippet trailing context)
+        // so we never highlight a same-token hit elsewhere in the note.
+        const windowEnd = Math.min(content.length, lineStart + r.content.length + 200);
+
+        // Find + order the highlight ranges over a markup-masked view of the note
+        // (word-boundary match per query token, stopwords/single-chars skipped via
+        // the SAME ENGLISH_STOPWORDS set BM25 uses; see ./highlight). buildHighlight-
+        // Ranges returns them sorted ascending & disjoint — required because eState's
+        // CodeMirror RangeSet mis-paints out-of-order ranges, which is exactly what
+        // happens when a later query token matches EARLIER in the note than an
+        // earlier token (a term that also appears in the title or an intro line).
+        const matches = buildHighlightRanges(content, tokens, lineStart, windowEnd, ENGLISH_STOPWORDS);
+        if (matches.length === 0) return undefined;
+        return { match: { content, matches } };
+    }
+
+    // Move the leaf's editor cursor to the matched chunk's start line and scroll
+    // it into view. Works on a background (active: false) leaf too, so a fanned-
+    // out new tab still lands on the right chunk.
+    private scrollLeafToTop(leaf: { view: unknown }): void {
+        const view = leaf.view;
+        if (view instanceof MarkdownView) {
+            const editor = view.editor;
+            editor.setCursor({ line: 0, ch: 0 });
+            editor.scrollIntoView({ from: { line: 0, ch: 0 }, to: { line: 0, ch: 0 } }, true);
+        }
+    }
+
+    private scrollLeafToChunk(leaf: { view: unknown }, r: ScoredChunk): void {
+        const view = leaf.view;
+        if (view instanceof MarkdownView && r.start_line > 0) {
+            const editor = view.editor;
+            editor.setCursor({ line: Math.max(0, r.start_line - 1), ch: 0 });
+            editor.scrollIntoView({
+                from: { line: r.start_line - 1, ch: 0 },
+                to: { line: r.end_line, ch: 0 },
+            }, true);
+        }
+    }
+
+    private captureRecent(): void {
+        const q = this.lastQuery.trim();
+        if (q) this.recents?.push(q);
+    }
+
+    private titleCoverage(r: ScoredChunk): number {
+        return titleNavCoverage(r, this.settings.navTitleBoost);
+    }
+
+    private emitClick(r: ScoredChunk, rank: number, titleNavOpen: boolean): void {
+        const entry = this.latestSearchEntry;
+        if (!entry) return; // stale render or no search context — drop
+        const dwellMs = this.latestSearchCompletedAt > 0
+            ? performance.now() - this.latestSearchCompletedAt
+            : 0;
+        const click: ClickEntry = {
+            type: 'click',
+            timestamp: new Date().toISOString(),
+            searchId: entry.searchId,
+            query: entry.query,
+            chunk_id: r.chunk_id,
+            note_path: r.note_path,
+            rank,
+            score: r.score,
+            dense: r.ranking_signals.dense,
+            bm25: r.ranking_signals.bm25,
+            recency: r.ranking_signals.recency,
+            title_boost: r.ranking_signals.title_boost,
+            titleNavOpen,
+            dwellMs: parseFloat(dwellMs.toFixed(0)),
+            shownTop10: this.latestResultsShown.slice(0, 10).map(c => c.chunk_id),
+        };
+        // Fire-and-forget; click latency matters more than a guaranteed write.
+        this.logger.append(click).catch(e => console.error('[seek] click log failed:', e));
+    }
+}
