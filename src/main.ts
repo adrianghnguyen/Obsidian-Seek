@@ -46,6 +46,7 @@ import { isLoadGenerationCurrent, isSessionWorkCurrent } from './boot-session';
 import {
     createStoreOpenRetryScheduler,
     isRetryIndexStoreCommandEnabled,
+    resolveStoreRecoveryMode,
     storeOpenRetryDelaysMs,
     storeOpenBackoffDelaysMs,
     type StoreOpenRetryScheduler,
@@ -1354,6 +1355,14 @@ export default class SeekPlugin extends Plugin {
     }
 
     private async retryIndexStoreOpen(): Promise<void> {
+        // A WEDGED backing store (a bounded read/open timed out) is not the same
+        // failure as a locked open: the store may report open while every read
+        // hangs, and bootContinuationDone is already true — so the plain path below
+        // would no-op and falsely report success. Run the wedged playbook instead.
+        if (resolveStoreRecoveryMode({ wedged: this.indexStoreWedged, locked: this.indexStoreLocked }) === 'wedged') {
+            await this.recoverWedgedStore();
+            return;
+        }
         this.markBootStuckResolved();
         if (this.storeOpenRetryScheduler) {
             // Use retryNow to bypass pending backoff timers.
@@ -1376,6 +1385,57 @@ export default class SeekPlugin extends Plugin {
         this.clearIndexStoreLocked();
         new Notice('Seek: search index opened.', 4000);
         await this.resumeBootAfterStoreOpen(bootGen);
+    }
+
+    /**
+     * Recovery playbook for a WEDGED IndexedDB backing store (a bounded read or
+     * open that never settled). The store can report open while every read hangs,
+     * so a plain retry is a no-op — this ladder actually recovers:
+     *
+     *   1. Non-destructive: close + reopen the connection, then probe with a
+     *      bounded read. A connection-level wedge clears without losing the index.
+     *   2. Destructive fallback: if reads still hang, the store is unrecoverable —
+     *      delete + rebuild (same as the Settings "Rebuild index" action).
+     *
+     * Invoked by the Settings recovery row and the command-palette retry, so the
+     * user always has a manual trigger for this failure mode.
+     */
+    private async recoverWedgedStore(): Promise<void> {
+        const bootGen = this.loadGeneration;
+        new Notice('Seek: index store is unresponsive — reconnecting…', 4000);
+        try {
+            this.store.close();
+        } catch { /* already closed */ }
+        try {
+            await this.ensureStoreReady();
+        } catch (e) {
+            if (!isTransientIdbUnavailable(e)) {
+                this.appendErrorIfCurrent('recover-wedged-reconnect', e, bootGen);
+            }
+        }
+        if (this.store.isOpen()) {
+            try {
+                const c = await this.store.count();
+                // Reconnect cleared the wedge — release every Stuck surface.
+                this.indexStoreWedged = false;
+                this.storeWedgedLogged = false;
+                this.indexBootStuck = false;
+                if (this.degradedReason === 'stuck') this.degradedReason = null;
+                this.publishInventory(c.files, c.chunks, true);
+                if (!this.indexGoodEnough) this.markIndexGoodEnough();
+                else this.refreshIndexStatusBar();
+                // The boot continuation already ran (and may have skipped while wedged),
+                // so make sure pending catch-up work is rescheduled against the reopened store.
+                this.catchUpPending = true;
+                this.scheduleStartupCatchUp();
+                new Notice('Seek: search index recovered.', 4000);
+                return;
+            } catch {
+                // Still wedged after a reconnect — fall through to the full reset.
+            }
+        }
+        new Notice('Seek: index store is still unresponsive — rebuilding the index…', 6000);
+        await this.forceResetAndReindex(bootGen);
     }
 
     /**
