@@ -66,6 +66,12 @@ import {
     getWorkerEmbedRoute, setWorkerEmbedRoute,
     type BackendChoice,
 } from '../embedding/platform';
+import {
+    EMBEDDING_MODEL_CHOICES,
+    ML97_GBQ4,
+    MODEL_REGISTRY,
+    activeModelSpec,
+} from '../embedding/model-registry';
 import { enumerateDatePropertyNames } from '../search/prop-types';
 import { FolderSuggest } from '../search/folder-suggest';
 import { isUnderExcludedFolder, normalizeExcludedFolderPath } from '../search/search';
@@ -1525,17 +1531,66 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                 }));
         }
 
+        const modelOptions: Record<string, string> = {};
+        for (const choice of EMBEDDING_MODEL_CHOICES) modelOptions[choice.key] = choice.label;
+        const selectedKey = MODEL_REGISTRY[this.s.embeddingModelKey]
+            ? this.s.embeddingModelKey
+            : ML97_GBQ4.key;
+        const selected = MODEL_REGISTRY[selectedKey];
+        new Setting(containerEl)
+            .setName('Embedding model')
+            .setDesc('Turns notes into meaning for semantic search. Changing the model asks you to reindex; keyword search keeps working until you do.')
+            .addDropdown(dd => dd
+                .addOptions(modelOptions)
+                .setValue(selectedKey)
+                .onChange(async v => {
+                    this.s.embeddingModelKey = v;
+                    await this.save();
+                    this.modelStatus = null;
+                    this.modelDeleteConfirm = false;
+                    void this.loadData();
+                }));
+
+        if (selected.mrlDims) {
+            const dimOptions: Record<string, string> = {};
+            for (const dim of selected.mrlDims) {
+                dimOptions[String(dim)] = dim === selected.nativeDim
+                    ? `${dim} (full)`
+                    : String(dim);
+            }
+            const shownDim = selected.mrlDims.includes(this.s.embeddingOutputDim)
+                ? this.s.embeddingOutputDim
+                : selected.nativeDim;
+            new Setting(containerEl)
+                .setName('Vector size')
+                .setDesc('768 is the full vector. 512 and 256 stay close in quality and use less disk. 128 is the smallest. Changing this asks you to reindex.')
+                .addDropdown(dd => dd
+                    .addOptions(dimOptions)
+                    .setValue(String(shownDim))
+                    .onChange(async v => {
+                        this.s.embeddingOutputDim = Number(v);
+                        await this.save();
+                        this.modelStatus = null;
+                        void this.loadData();
+                    }));
+            containerEl.createDiv({
+                cls: 'seek-hint',
+                text: `Text weights only (about ${selected.approxDownloadMB} MB). Seek adds the model's search instructions to queries and notes automatically.`,
+            });
+        }
+
         this.renderModelStatus(containerEl);
     }
 
     private renderModelStatus(containerEl: HTMLElement): void {
         const ms = this.modelStatus;
-        const row = new Setting(containerEl).setName('Embedding model');
+        const approxMB = activeModelSpec(this.s).approxDownloadMB;
+        const row = new Setting(containerEl).setName('Model files');
 
         if (this.modelDownloading) {
             const desc = row.descEl;
             desc.createSpan({ cls: 'seek-spinner' });
-            desc.createSpan({ text: ' Downloading… (≈100 MB — keep Obsidian open)' });
+            desc.createSpan({ text: ` Downloading… (≈${approxMB} MB — keep Obsidian open)` });
             return;
         }
 
@@ -1571,7 +1626,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                 row.addButton(b => b.setButtonText('Delete').setWarning().onClick(() => { this.modelDeleteConfirm = true; this.rerender(); }));
             }
         } else {
-            desc.createSpan({ text: 'Not downloaded · the first search fetches ≈100 MB.' });
+            desc.createSpan({ text: `Not downloaded · the first search fetches ≈${approxMB} MB.` });
             row.addButton(b => b.setButtonText('Download now').setCta().onClick(() => this.downloadModel()));
         }
     }
@@ -1597,7 +1652,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         this.modelDeleting = true;
         this.rerender();
         void this.plugin.deleteModel().then(() => {
-            new Notice('Seek: embedding model deleted. The next search re-downloads it (≈100 MB).', 6000);
+            new Notice(`Seek: embedding model deleted. The next search re-downloads it (≈${activeModelSpec(this.s).approxDownloadMB} MB).`, 6000);
         }).catch((e) => {
             new Notice(`Seek: model delete failed — ${e instanceof Error ? e.message : String(e)}`, 8000);
         }).finally(() => {

@@ -53,7 +53,7 @@ import type { FileCacheLite, VaultLexIndex } from './vault-lex';
 import { IndexStore, classifyFileDelta, findOrphanChunkIds, isStoreClosedError, isQuotaError, stripContent, META_SCHEMA_VERSION, type MetaConfig, type FileRecord } from '../index/index-store';
 import { computeFolderCoverage, type FolderCoveragePathSets, type FolderCoverageSummary } from '../index/folder-coverage';
 import { INDEX_QUOTA_MSG } from '../ui/index-notice';
-import { LocalEmbedder, EMBEDDING_DIM, LEGACY_ENGLISH_MODEL_ID, MODEL_ID, PLUGIN_VERSION } from '../embedding/embedder';
+import { LocalEmbedder, LEGACY_ENGLISH_MODEL_ID, PLUGIN_VERSION } from '../embedding/embedder';
 import { SeekLogger } from '../diagnostics/logger';
 import { seekPerf } from '../diagnostics/perf-console';
 import { Forensics } from '../diagnostics/forensics';
@@ -566,7 +566,7 @@ export class SearchOrchestrator {
         const resetStart = performance.now();
         const pre = await this.store.clearAllStores();
         await this.store.setMeta({
-            embeddingDim: EMBEDDING_DIM,
+            embeddingDim: pluginIdentity().dim,
             lastIndexedAt: null,
             schemaVersion: META_SCHEMA_VERSION,
             modelId: this.embedder.modelId,
@@ -743,7 +743,7 @@ export class SearchOrchestrator {
         // pass leaves these at zero and carries the prior values forward at
         // setMeta below. bgSum is the running Σ vᵢ (→ exact closed-form μ);
         // reservoir is a uniform sample of vectors for the σ estimate.
-        const bgSum = new Float64Array(EMBEDDING_DIM);
+        const bgSum = new Float64Array(pluginIdentity().dim);
         let bgN = 0;
         const reservoir = new VecReservoir(BG_RESERVOIR);
         // Sidecar accumulator: derived (int8 + sign-bit) tiers for every committed
@@ -1404,7 +1404,7 @@ export class SearchOrchestrator {
         // the packaged sidecar flush, so both stores agree)
         const commitFinalStart = performance.now();
         await this.store.setMeta({
-            embeddingDim: EMBEDDING_DIM,
+            embeddingDim: pluginIdentity().dim,
             lastIndexedAt: new Date().toISOString(),
             schemaVersion: META_SCHEMA_VERSION,
             modelId: this.embedder.modelId,
@@ -1507,7 +1507,7 @@ export class SearchOrchestrator {
             timestamp: new Date().toISOString(),
             mode,
             dtype: this.embedder.dtype,
-            embeddingDim: EMBEDDING_DIM,
+            embeddingDim: pluginIdentity().dim,
             // processedFiles, not files.length: a budgeted incremental burst may
             // have started fewer than it was handed (the rest are filesDeferred).
             // Identical to files.length on a full reindex (never budget-broken).
@@ -1697,7 +1697,7 @@ export class SearchOrchestrator {
         // stamp at hydrateSidecar.
         await this.coord.runExclusive(async () => {
             const { vecs } = await this.store.listAllEmbeddings();
-            const bgSum = new Float64Array(EMBEDDING_DIM);
+            const bgSum = new Float64Array(pluginIdentity().dim);
             let bgN = 0;
             const reservoir = new VecReservoir(BG_RESERVOIR);
             for (const qv of vecs) {
@@ -1711,8 +1711,8 @@ export class SearchOrchestrator {
             const m = await this.store.getMeta();
             await this.store.setMeta({
                 ...m,
-                embeddingDim: EMBEDDING_DIM,
-                modelId: m.modelId ?? MODEL_ID,
+                embeddingDim: pluginIdentity().dim,
+                modelId: m.modelId ?? pluginIdentity().modelId,
                 chunkerVersion: id.chunkerVersion,
                 analyzerVersion: id.analyzerVersion,
                 revision: id.revision,
@@ -2022,7 +2022,7 @@ export class SearchOrchestrator {
                     // first-build (empty store) is its only stamp-live case.
                     const live = shouldStampLiveIdentity('incremental', storeWasEmpty) ? pluginIdentity() : null;
                     await this.store.setMeta({
-                        embeddingDim: EMBEDDING_DIM,
+                        embeddingDim: pluginIdentity().dim,
                         lastIndexedAt: new Date().toISOString(),
                         schemaVersion: META_SCHEMA_VERSION,
                         // Prefer the existing modelId (embed path set it); fall back to

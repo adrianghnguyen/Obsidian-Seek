@@ -38,9 +38,9 @@
 import { Notice, Plugin, TFile } from 'obsidian';
 import type { App } from 'obsidian';
 import { ConfirmModal } from './app/confirm-modal';
-import { LocalEmbedder, LOCAL_MODEL, LEGACY_ENGLISH_MODEL_ID, EMBEDDING_DIM } from './embedding/embedder';
+import { LocalEmbedder, LOCAL_MODEL, LEGACY_ENGLISH_MODEL_ID } from './embedding/embedder';
 import type { WorkerProbeResult, WorkerEmbedTestResult } from './embedding/iframe-runner';
-import { activeModelSpec, resolveOverrideSpec, evictStaleModelCaches, deleteModelCaches, probeModelDownloaded } from './embedding/model-registry';
+import { activeModelSpec, bindLiveModel, currentModelSpec, resolveOverrideSpec, evictStaleModelCaches, deleteModelCaches, probeModelDownloaded } from './embedding/model-registry';
 import { pluginIdentity, identityMatches, identityFromMeta } from './index/identity';
 import { isLoadGenerationCurrent, isSessionWorkCurrent } from './app/boot-session';
 import {
@@ -754,6 +754,10 @@ export default class SeekPlugin extends Plugin {
         // migrated values win over the persisted ones rather than being overridden.
         migrateSettings(raw);
         Object.assign(this.settings, DEFAULT_SETTINGS, raw);
+        // Identity, sidecar stride, and the iframe script all read the live spec.
+        // Bind before the boot identity check so a saved EmbeddingGemma choice is
+        // the model this process actually compares the index against.
+        bindLiveModel(this.settings);
         // New array settings may be absent from older data.json; keep a real array
         // so Settings UI and shouldIndexPath never see undefined.
         if (!Array.isArray(this.settings.customExcludedFolders)) {
@@ -1712,17 +1716,10 @@ export default class SeekPlugin extends Plugin {
                     await this.logger.appendError('local-model', new Error('getResourcePath unavailable; using remote MODEL_ID'));
                 }
                 // Active model from the registry (debug override wins, else the
-                // shipped default). spec.repo is the CDN-streamed load base on the
-                // remote path; spec.key is the index drift-identity. EMBEDDING_DIM
-                // now DERIVES from ACTIVE_MODEL_SPEC.dim (the single source), so a
-                // shipped-model swap can't trip this. It only fires for a debug
-                // model OVERRIDE whose real width differs from the build dim —
-                // loud-log it (mis-indexing into the wrong-dim store is worse).
+                // settings choice, else Granite). spec.repo is the CDN load base;
+                // spec.dim is the live sidecar stride, so a wider model is not an
+                // error — a mismatch with the stored index is the identity banner.
                 const spec = activeModelSpec(this.settings);
-                if (spec.dim !== EMBEDDING_DIM) {
-                    await this.logger.appendError('model-registry', new Error(
-                        `override model ${spec.key} dim ${spec.dim} != build dim ${EMBEDDING_DIM}; a model override needs a matching-dim build (registry dim is the single source — bump DB_VERSION when changing the shipped model)`));
-                }
                 // Device selection is per-DEVICE (platform.ts resolveDevice),
                 // not a synced setting — see the NOTE in types.ts for why a
                 // data.json toggle would leak across iCloud-synced devices.
@@ -1821,7 +1818,26 @@ export default class SeekPlugin extends Plugin {
     }
 
     async saveSettings(): Promise<void> {
+        const before = currentModelSpec();
+        const after = bindLiveModel(this.settings);
         await this.saveData(this.settings);
+        const modelChanged = before.repo !== after.repo
+            || before.revision !== after.revision
+            || before.dim !== after.dim
+            || before.pooling !== after.pooling;
+        if (!modelChanged) return;
+        // The loaded session was built for the previous width and pooling.
+        // Drop it so the next search rebuilds the iframe script from the new spec.
+        this.releaseEmbedder();
+        let chunks = 0;
+        try { chunks = (await this.store.count()).chunks; }
+        catch { return; }
+        // An empty index is not stale — the next build uses the new model.
+        if (chunks === 0) return;
+        const handled = await this.enforceIndexIdentity();
+        // Sidecar-on mismatch already shows INDEX_STALE_MSG inside the gate.
+        // Sidecar-off returns immediately, so ask here or the change stays silent.
+        if (!handled && !this.settings.sidecarEnabled) new Notice(INDEX_STALE_MSG, 0);
     }
 
     // Model ↔ index drift check, run after every successful model load. The
@@ -1840,16 +1856,18 @@ export default class SeekPlugin extends Plugin {
     // peer (embed-free, both platforms) → else desktop auto full-reindex / mobile wait
     // (mobile never bulk-embeds = no jetsam; the 5-min poll retries until a desktop
     // publishes a current sidecar). Returns true when it took over the index (the
-    // caller then skips the normal catch-up). Runs off pluginIdentity() (compiled
-    // constants), so it needs no model load and can gate a cold mobile boot.
+    // caller then skips the normal catch-up). Runs off pluginIdentity(), which
+    // follows the model bound at load and on settings save, so it needs no model
+    // load and can gate a cold mobile boot.
     private async enforceIndexIdentity(): Promise<boolean> {
         // The cascade self-heals via cross-device sidecar hydration (+ desktop reindex
         // fallback), so it only applies with the sidecar on. Sidecar-off keeps the
         // legacy warn-only check (warnOnModelIndexDrift, fired at model-load time).
         if (!this.settings.sidecarEnabled) return false;
-        // A debug model override (testing arbitrary repos) keys the loaded model off
-        // the override while the sidecar/identity machinery keys off the shipped
-        // MODEL_ID — running the cascade would loop. Defer to the warn-only check.
+        // A debug model override loads an arbitrary repo. The identity cascade
+        // would treat the vault index as stale against that repo and offer a
+        // reindex onto an unvalidated model. Leave that to the warn-only check
+        // at model load.
         if (resolveOverrideSpec(this.settings)) return false;
         // A heal is already running — don't stack a second when the 5-min poll fires
         // mid-reindex. Report "handled" so the caller still skips the normal catch-up.
@@ -3210,7 +3228,8 @@ export default class SeekPlugin extends Plugin {
                     const entries = await this.logger.readAll();
                     for (let i = entries.length - 1; i >= 0; i--) {
                         if (entries[i].type === 'model-delivery') {
-                            if ((entries[i] as ModelDeliveryEntry).cacheSeen > 0) downloaded = true;
+                            const delivery = entries[i] as ModelDeliveryEntry;
+                            if (delivery.repo === spec.repo && delivery.cacheSeen > 0) downloaded = true;
                             break;
                         }
                     }

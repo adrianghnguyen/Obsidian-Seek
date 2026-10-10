@@ -21,7 +21,8 @@ import { DB_VERSION, type MetaConfig } from './index-store';
 import { CHUNKER_VERSION } from './chunker';
 import { ANALYZER_VERSION } from '../search/bm25';
 import { SIDECAR_FORMAT } from '../sidecar/sidecar';
-import { MODEL_ID, MODEL_REVISION, EMBEDDING_DIM, LEGACY_ENGLISH_MODEL_ID } from '../embedding/embedder';
+import { LEGACY_ENGLISH_MODEL_ID } from '../embedding/embedder';
+import { currentModelSpec } from '../embedding/model-registry';
 
 export interface IndexIdentity {
     dbVersion: number; // IndexedDB schema (index-store.ts) — enforced natively by IDB's onupgradeneeded
@@ -37,14 +38,17 @@ export interface IndexIdentity {
 // index-store ↔ identity import cycle stays TDZ-safe: every constant is resolved
 // by the time any runtime code invokes this.
 export function pluginIdentity(): IndexIdentity {
+    // Live spec, not the compile-time Granite constants: a settings change of
+    // model or Matryoshka width must fail identityMatches and ask for a reindex.
+    const spec = currentModelSpec();
     return {
         dbVersion: DB_VERSION,
         chunkerVersion: CHUNKER_VERSION,
         analyzerVersion: ANALYZER_VERSION,
         sidecarFormat: SIDECAR_FORMAT,
-        modelId: MODEL_ID,
-        revision: MODEL_REVISION,
-        dim: EMBEDDING_DIM,
+        modelId: spec.repo,
+        revision: spec.revision,
+        dim: spec.dim,
     };
 }
 
@@ -139,7 +143,7 @@ export function shouldStampLiveIdentity(mode: 'full' | 'incremental', storeWasEm
 //                stale, never wrong). The caller then proves the files are unchanged.
 export function identityHealEligibility(
     meta: Pick<MetaConfig, 'chunkerVersion' | 'modelId' | 'embeddingDim'>,
-    live: { modelId: string; dim: number } = { modelId: MODEL_ID, dim: EMBEDDING_DIM },
+    live: { modelId: string; dim: number } = { modelId: currentModelSpec().repo, dim: currentModelSpec().dim },
 ): 'stale' | 'eligible' {
     if (meta.chunkerVersion !== undefined) return 'stale';                 // present, differing → genuinely old
     if (meta.modelId !== live.modelId || meta.embeddingDim !== live.dim) return 'stale'; // cross-model guard

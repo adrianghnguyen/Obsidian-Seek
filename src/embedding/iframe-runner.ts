@@ -11,7 +11,7 @@
 //     embedder.ts header — the QAT workstream is killed).
 
 import type { Device, RequestedDevice, Dtype } from '../types/types';
-import { ACTIVE_MODEL_SPEC } from './model-registry';
+import { currentModelSpec } from './model-registry';
 import { buildChildScript } from './iframe-scripts';
 
 declare const __BUILD_TS__: string;
@@ -42,7 +42,10 @@ declare const __BUILD_TS__: string;
 // already asyncify, and still rewrites the plain pin if a WebGPU attempt
 // lands on older WKWebView. webInitChain still has no rejection handler in
 // 4.3.0 — keep the fragment-suffixed freshTransformers() workaround.
-export const TRANSFORMERS_VERSION = '4.3.0';
+// 2026-10-07: bumped 4.3.0 -> 4.3.1 for the EmbeddingGemma 2 architecture
+// (embedding_gemma2). Patch release on the same ORT-Web generation; Granite
+// stays on the q4 feature-extraction path.
+export const TRANSFORMERS_VERSION = '4.3.1';
 const CDN_URL = `https://cdn.jsdelivr.net/npm/@huggingface/transformers@${TRANSFORMERS_VERSION}`;
 
 // Warmup grid constants — exported so the parent can compose a fingerprint
@@ -441,7 +444,13 @@ export class IframeRunner {
             // fetch out of the iframe (e.g. parent requestUrl → resource URL).
             window.document.body.appendChild(this.iframe);
 
-            const childScript = buildChildScript(CDN_URL, ACTIVE_MODEL_SPEC.dim);
+            const spec = currentModelSpec();
+            const childScript = buildChildScript(CDN_URL, spec.dim, {
+                repo: spec.repo,
+                revision: spec.revision,
+                pooling: spec.pooling,
+                textOnly: spec.textOnly,
+            });
             this.iframe.srcdoc =
                 `<!DOCTYPE html><html><body><script type="module">${childScript}</script></body></html>`;
         });

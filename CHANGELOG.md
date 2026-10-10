@@ -4,6 +4,9 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Added
+- **EmbeddingGemma 2.** Settings → Model & performance → Embedding model can switch from Granite multilingual (default, 384 dimensions) to EmbeddingGemma 2. Vector size offers 768, 512, 256, or 128. Seek loads the text weights only (about 175 MB) and adds the model's search instructions to queries and notes. Changing the model or vector size asks you to reindex; keyword search keeps working until you do.
+
 ## 1.12.2
 
 ### Fixed
