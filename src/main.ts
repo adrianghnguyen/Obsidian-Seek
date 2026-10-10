@@ -306,6 +306,11 @@ export default class SeekPlugin extends Plugin {
     private catchUpPending = false;              // cold-mobile deferred an embed
     private catchUpRunning = false;              // runCatchUp re-entrancy guard
     private coldBuildScheduled = false;          // scheduleColdBuild single-flight
+    // Set synchronously at the start of runFullReindex, before model load.
+    // isWriting() stays false until reindexAll acquires the mutex, so a second
+    // full reindex (cold build + a manual kick) can otherwise pass the guard,
+    // steal the status-bar job, and queue a wipe behind the pass that is running.
+    private fullReindexInFlight = false;
     private persistCacheRestoredThisBoot = false; // restorePersistedCachesBeforeReconcile once
     /** Live catch-up pass shown on the status bar — survives burst pauses and self-chains. */
     private catchUpJob: { id: number; passTotal: number; committed: number; chunksCommitted: number; tokensCommitted: number } | null = null;
@@ -2920,7 +2925,9 @@ export default class SeekPlugin extends Plugin {
             this.catchUpPending = false;
             const ok = await this.runFullReindex({ skipConfirm: true });
             if (!this.isSessionWorkCurrent(workGen)) return;
-            if (!ok && !this.orchestrator.isWriting()) {
+            // Another full reindex already owns the pass (manual kick during
+            // model load). That is not a failed cold build — do not start catch-up.
+            if (!ok && !this.orchestrator.isWriting() && !this.fullReindexInFlight) {
                 await this.touchIndexInventory();
                 // A failed wipe must not kick a whole-vault catch-up while the
                 // existing index is still on disk (that froze the main vault).
@@ -3070,9 +3077,10 @@ export default class SeekPlugin extends Plugin {
         // vault again the moment the first releases) — pure waste, and on a large
         // vault the second's nuke is exactly the deleteDatabase that fired versionchange
         // at an in-flight pass. The identity heal also routes through here, so this
-        // doubles as a guard against a heal stacking on a manual reindex (Fix B). The
-        // catch-up cold build runs under the same mutex (isWriting covers it too).
-        if (this.orchestrator.isWriting()) {
+        // doubles as a guard against a heal stacking on a manual reindex (Fix B).
+        // isWriting() stays false while the model is loading, so fullReindexInFlight
+        // covers that gap; the mutex still covers a writer that has already acquired it.
+        if (this.fullReindexInFlight || this.orchestrator.isWriting()) {
             new Notice('Seek: a reindex is already running.', 4000);
             return false;
         }
@@ -3082,12 +3090,16 @@ export default class SeekPlugin extends Plugin {
             // Re-check: the confirm dialog awaits user input, so a reindex (e.g. the
             // identity heal, or another caller of this same method) could have started
             // in that window. Without this, both would proceed past the mutex.
-            if (this.orchestrator.isWriting()) {
+            if (this.fullReindexInFlight || this.orchestrator.isWriting()) {
                 new Notice('Seek: a reindex is already running.', 4000);
                 return false;
             }
         }
 
+        // Before any await. Model load is not isWriting(), and the mutex is
+        // acquired only inside reindexAll — a second caller in that gap used
+        // to begin a new status-bar job and queue another nuke.
+        this.fullReindexInFlight = true;
         const jobId = this.beginIndexJob('full', this.indexableNoteCount(), 'Seek: indexing…');
         this.pushTaskContext('indexing');
         try {
@@ -3128,6 +3140,7 @@ export default class SeekPlugin extends Plugin {
             new Notice('Seek reindex: ❌ failed — see the logging report (Settings → Seek).', 10000);
             return false;
         } finally {
+            this.fullReindexInFlight = false;
             this.popTaskContext('indexing');
             this.indexProgress.hide(jobId);
             this.clearIndexDelta();

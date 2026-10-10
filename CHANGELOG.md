@@ -4,6 +4,11 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Fixed
+- **EmbeddingGemma 2 load no longer waits out the whole model timeout on a stuck proxy worker.** The ORT proxy worker can sit idle on this model's external-data graph and never reject, so the in-page CPU session never started and a full reindex failed at 180s. That attempt is now bounded and the load continues on the in-page path.
+- **A second full reindex no longer queues behind one that is still loading the model.** The running check used to ignore that window, so a cold build and a manual rebuild could both start, the status bar stuck at 0 files, and the second pass wiped the index when the first finished.
+- **Status bar progress from an older indexing job is ignored.** Chunk counts from that job no longer land on the job the bar is showing.
+
 ### Added
 - **EmbeddingGemma 2.** Settings → Model & performance → Embedding model can switch from Granite multilingual (default, 384 dimensions) to EmbeddingGemma 2. Vector size offers 768, 512, 256, or 128. Seek loads the text weights only (about 175 MB) and adds the model's search instructions to queries and notes. Changing the model or vector size asks you to reindex; keyword search keeps working until you do.
 

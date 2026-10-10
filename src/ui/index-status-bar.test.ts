@@ -191,6 +191,22 @@ describe('IndexStatusBar', () => {
         expect(bar.jobSpeedView()?.chunksDone).toBe(25);
     });
 
+    it('ignores a progress line aimed at a job the bar no longer shows', () => {
+        const root = stubEl();
+        const bar = new IndexStatusBar();
+        bar.mount(root as unknown as HTMLElement, hooks);
+        bar.show(216, 'Seek: indexing…', { id: 2, kind: 'full' });
+        bar.updateFromProgress('Indexed 34 files · 34 chunks · 62081 tokens', 1);
+        expect(bar.job()?.done).toBe(0);
+        expect(bar.jobSpeedView()?.chunksDone).toBe(0);
+        expect(bar.jobSpeedView()?.tokensDone).toBe(0);
+        bar.updateFromProgress('Indexed 34 files · 34 chunks · 62081 tokens', 2);
+        expect(bar.job()?.done).toBe(34);
+        expect(bar.jobSpeedView()?.chunksDone).toBe(34);
+        expect(bar.jobSpeedView()?.tokensDone).toBe(62081);
+        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe('34/216');
+    });
+
     it('accepts explicit chunk counts without an Indexed progress line', () => {
         const root = stubEl();
         const bar = new IndexStatusBar();
