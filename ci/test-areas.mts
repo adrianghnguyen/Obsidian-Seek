@@ -13,6 +13,7 @@ export const CI_TEST_AREAS = {
     'index-store': [
         'src/app/boot-session.test.ts',
         'src/app/catchup-scheduling.test.ts',
+        'src/app/full-reindex-guard.test.ts',
         'src/app/drift-recovery-coordinator.test.ts',
         'src/app/idb-lifecycle-lock.test.ts',
         'src/app/lifecycle-sequence.test.ts',
