@@ -606,6 +606,18 @@ async function withTextOnly(mod, modelId, revision, opts) {
     return opts;
 }
 
+// A proxy-worker session that never settles must not consume the whole load
+// budget. EmbeddingGemma's external-data graph has been observed to leave the
+// ORT proxy worker idle with no error, so the in-page wasm path never ran.
+function withTimeout(promise, ms, label) {
+    return new Promise(function (resolve, reject) {
+        const timer = setTimeout(function () {
+            reject(new Error(label + ' timed out after ' + ms + 'ms'));
+        }, ms);
+        promise.then(function (v) { clearTimeout(timer); resolve(v); }, function (e) { clearTimeout(timer); reject(e); });
+    });
+}
+
 // Tokenizer-only load (no ONNX session) for the sidecar hydrate. Reuses
 // freshTransformers' env wiring (CDN/local + browser cache) so the tokenizer
 // files resolve identically to a full load. No webInitChain risk: AutoTokenizer
@@ -866,7 +878,9 @@ async function loadModel(modelId, requestedDevice, requestedDtype, skipWarmup, r
             env.backends.onnx.wasm.proxy = true;
             const proxyOpts = { device: 'wasm', dtype: requestedDtype, ...(revision ? { revision } : {}) };
             await withTextOnly(loaded, modelId, revision, proxyOpts);
-            pipeline = await createPipeline('feature-extraction', modelId, proxyOpts);
+            // 45s, not the parent's 180s: a stuck proxy worker never rejects, and
+            // the in-page session below is the path that has to be allowed to run.
+            pipeline = await withTimeout(createPipeline('feature-extraction', modelId, proxyOpts), 45000, 'wasm proxy session');
             return {
                 device: 'wasm', dtype: requestedDtype,
                 coldStartMs: performance.now() - t0,

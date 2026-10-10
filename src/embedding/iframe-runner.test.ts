@@ -349,6 +349,12 @@ describe('iframe child text-only load', () => {
         expect(script).toContain('const POOLING = "cls"');
         expect(script).toContain('const TEXT_ONLY = false');
     });
+
+    it('bounds the wasm proxy attempt so a stuck worker falls through', () => {
+        const script = buildChildScript('https://example.com/cdn', 384);
+        expect(script).toContain('wasm proxy session');
+        expect(script).toContain('function withTimeout');
+    });
 });
 
 describe('iframe child WebGPU path — Safari glue override (4.3.0 #1700)', () => {
