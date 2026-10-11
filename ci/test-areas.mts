@@ -28,6 +28,7 @@ export const CI_TEST_AREAS = {
         'src/index/chunker.test.ts',
         'src/index/db-upgrade.test.ts',
         'src/index/embed-pipeline.test.ts',
+        'src/index/embed-auto-caps.test.ts',
         'src/index/identity.test.ts',
         'src/index/index-coordinator.test.ts',
         'src/index/index-delta-view.test.ts',
