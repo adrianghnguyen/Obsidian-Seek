@@ -24,28 +24,53 @@
 
 import type { Dtype, SeekSettings } from '../types/types';
 
+// How the feature-extraction pipeline reduces token vectors to one embedding.
+// Granite is CLS. EmbeddingGemma 2 is mean (then L2-normalized).
+export type EmbeddingPooling = 'cls' | 'mean';
+
 export interface ModelSpec {
     // Stable identity for the index drift-stamp + storage namespacing. For shipped
     // models this equals `repo`, so MODEL_ID === repo === identity and a switch
     // needs no special drift handling.
     key: string;
+    // Short label for Settings. The repo id stays the index identity.
+    label: string;
     // HF hub id (or a full base URL). The string handed to embedder.load() as the
     // load base on the remote path → transformers.js streams it from the CDN.
     repo: string;
-    // Pinned commit sha/tag. Metadata for now (eviction + future URL pinning); not
-    // yet passed to transformers.js, which resolves `main`. null = track main.
+    // Pinned commit sha/tag. Threaded into the transformers.js fetch so a moving
+    // `main` cannot mix vector spaces. null = track main.
     revision: string | null;
-    // Relative paths transformers.js requests under the repo root. Documentation +
-    // future integrity checking; the iframe derives the actual list from dtype.
+    // Relative paths transformers.js requests under the repo root. The download
+    // probe treats an `.onnx_data` entry (when present) as the weight canary.
     files: string[];
+    // Effective stored width. For a Matryoshka model this is the truncated width
+    // the user picked; otherwise the model's native width.
     dim: number;
+    // Width the ONNX graph emits before Matryoshka truncation. Equals `dim` when
+    // the model is not truncatable.
+    nativeDim: number;
+    // Recommended truncation widths, longest first. null = do not truncate.
+    mrlDims: readonly number[] | null;
     dtype: Dtype;
+    pooling: EmbeddingPooling;
+    // Prepended to queries / indexed note text. Empty for models trained without
+    // task instructions (Granite). Applied in the embedder, not as a user toggle:
+    // a wrong prefix silently degrades ranking.
+    queryPrefix: string;
+    documentPrefix: string;
+    // When true, the load nulls vision_config and audio_config so transformers.js
+    // does not fetch those encoders. Seek indexes note text.
+    textOnly: boolean;
+    // Approximate weight download, for the settings status line.
+    approxDownloadMB: number;
 }
 
 // The ml97 GBQ-int4 model shipped today (mirrors the legacy embedder.MODEL_ID
 // string exactly, so deriving MODEL_ID from this is a no-op for the index identity).
 export const ML97_GBQ4: ModelSpec = {
     key: 'tooape/granite-embedding-97m-multilingual-r2-GBQ4-ONNX',
+    label: 'Granite multilingual',
     repo: 'tooape/granite-embedding-97m-multilingual-r2-GBQ4-ONNX',
     // Pinned to an immutable commit sha (F10): transformers.js fetches resolve/<sha>
     // and the sidecar gate refuses cross-revision hydration, so two devices can't mix
@@ -61,12 +86,56 @@ export const ML97_GBQ4: ModelSpec = {
         'onnx/model_q4.onnx',
     ],
     dim: 384,
+    nativeDim: 384,
+    mrlDims: null,
     dtype: 'q4',
+    pooling: 'cls',
+    queryPrefix: '',
+    documentPrefix: '',
+    textOnly: false,
+    approxDownloadMB: 100,
+};
+
+// EmbeddingGemma 2 (Oct 2026). Text path is the ONNX community export that
+// transformers.js 4.3.1 loads as feature-extraction. Native output is 768-d
+// mean-pooled; Matryoshka keeps the leading 512 / 256 / 128 dims (re-normalized
+// in the iframe). Vision and audio encoders stay unloaded — Seek embeds notes.
+// q4 only: the model card says float16 activations overflow to NaN, and q4f16
+// is already off Seek's dtype ladder.
+export const EMBEDDINGGEMMA_2: ModelSpec = {
+    key: 'onnx-community/embeddinggemma-2-ONNX',
+    label: 'EmbeddingGemma 2',
+    repo: 'onnx-community/embeddinggemma-2-ONNX',
+    revision: 'daa72c51243991dfcaf9f9137d2c573d8f7790c0',
+    files: [
+        'config.json',
+        'tokenizer.json',
+        'tokenizer_config.json',
+        'onnx/model_q4.onnx',
+        'onnx/model_q4.onnx_data',
+    ],
+    dim: 768,
+    nativeDim: 768,
+    mrlDims: [768, 512, 256, 128],
+    dtype: 'q4',
+    pooling: 'mean',
+    queryPrefix: 'task: search result | query: ',
+    documentPrefix: 'title: none | text: ',
+    textOnly: true,
+    approxDownloadMB: 175,
 };
 
 export const MODEL_REGISTRY: Record<string, ModelSpec> = {
     [ML97_GBQ4.key]: ML97_GBQ4,
+    [EMBEDDINGGEMMA_2.key]: EMBEDDINGGEMMA_2,
 };
+
+// Settings dropdown order. The empty-key default resolves to Granite so an
+// older data.json (no embeddingModelKey) stays on the index it already built.
+export const EMBEDDING_MODEL_CHOICES: readonly { key: string; label: string }[] = [
+    { key: ML97_GBQ4.key, label: `${ML97_GBQ4.label} · 384 dimensions` },
+    { key: EMBEDDINGGEMMA_2.key, label: `${EMBEDDINGGEMMA_2.label} · text` },
+];
 
 // The model Seek ships with by default. A code-level model switch = point this at
 // a different registered key (and add its ModelSpec) — MODEL_ID follows, and the
@@ -85,17 +154,66 @@ export function resolveOverrideSpec(settings: SeekSettings): ModelSpec | null {
     if (!repo) return null;
     return {
         key: repo,
+        label: repo,
         repo,
         revision: settings.modelRevisionOverride?.trim() || null,
         files: ML97_GBQ4.files, // assume the standard transformers.js repo layout
         dim: ML97_GBQ4.dim,
+        nativeDim: ML97_GBQ4.nativeDim,
+        mrlDims: null,
         dtype: ML97_GBQ4.dtype,
+        pooling: ML97_GBQ4.pooling,
+        queryPrefix: '',
+        documentPrefix: '',
+        textOnly: false,
+        approxDownloadMB: ML97_GBQ4.approxDownloadMB,
     };
 }
 
-// The model to load right now: debug override wins, else the shipped default.
+// Honor a Matryoshka width only when this model lists it. 0 / missing / unknown
+// keeps the spec's own dim (native, for EmbeddingGemma 2).
+export function withOutputDim(spec: ModelSpec, requested: number | undefined): ModelSpec {
+    if (!spec.mrlDims || requested == null || requested === 0) return spec;
+    if (!spec.mrlDims.includes(requested) || requested === spec.dim) return spec;
+    return { ...spec, dim: requested };
+}
+
+// The model to load right now: debug override wins, else the settings choice,
+// else the shipped default. The settings choice is a registry key; an empty or
+// unknown key stays on the default so a typo cannot point the index at nothing.
 export function activeModelSpec(settings: SeekSettings): ModelSpec {
-    return resolveOverrideSpec(settings) ?? ACTIVE_MODEL_SPEC;
+    const override = resolveOverrideSpec(settings);
+    if (override) return override;
+    const key = settings.embeddingModelKey?.trim() ?? '';
+    const base = (key && MODEL_REGISTRY[key]) ? MODEL_REGISTRY[key] : ACTIVE_MODEL_SPEC;
+    return withOutputDim(base, settings.embeddingOutputDim);
+}
+
+// Bound at plugin load and on every settings save. Identity, the sidecar stride,
+// and the iframe script read this so a model change is one place. Defaults to
+// the shipped spec so module init (and tests that never bind) stay on Granite.
+let boundModelSpec: ModelSpec = ACTIVE_MODEL_SPEC;
+
+export function bindLiveModel(settings: SeekSettings): ModelSpec {
+    boundModelSpec = activeModelSpec(settings);
+    return boundModelSpec;
+}
+
+export function currentModelSpec(): ModelSpec {
+    return boundModelSpec;
+}
+
+// Task prefixes. Idempotent so a recycle retry cannot stack them.
+export function formatQueryText(text: string, spec: ModelSpec = currentModelSpec()): string {
+    const prefix = spec.queryPrefix;
+    if (!prefix || text.startsWith(prefix)) return text;
+    return prefix + text;
+}
+
+export function formatDocumentText(text: string, spec: ModelSpec = currentModelSpec()): string {
+    const prefix = spec.documentPrefix;
+    if (!prefix || text.startsWith(prefix)) return text;
+    return prefix + text;
 }
 
 // ---- Cache-API eviction (parent-side; orchestrated from main.ts) --------------
@@ -213,7 +331,12 @@ export async function probeModelDownloaded(
         // The largest file is the ONNX weights; its presence is the download canary
         // (the small JSON configs alone = a partial/aborted fetch). Fall back to the
         // last declared file if a spec ever ships without an .onnx entry.
-        const weightFile = spec.files.find(f => f.endsWith('.onnx')) ?? spec.files[spec.files.length - 1];
+        // External-data ONNX (EmbeddingGemma 2) keeps the graph in a small .onnx
+        // and the weights in .onnx_data. The data file is the download canary;
+        // a spec without one (Granite) falls back to the .onnx graph.
+        const weightFile = spec.files.find(f => f.endsWith('.onnx_data'))
+            ?? spec.files.find(f => f.endsWith('.onnx'))
+            ?? spec.files[spec.files.length - 1];
         const weightName = weightFile.split('/').pop() ?? weightFile;
         const downloaded = reqs.some(r => {
             if (!r.url.includes(`/${spec.repo}/resolve/`)) return false;

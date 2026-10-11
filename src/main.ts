@@ -38,9 +38,9 @@
 import { Notice, Plugin, TFile } from 'obsidian';
 import type { App } from 'obsidian';
 import { ConfirmModal } from './app/confirm-modal';
-import { LocalEmbedder, LOCAL_MODEL, LEGACY_ENGLISH_MODEL_ID, EMBEDDING_DIM } from './embedding/embedder';
+import { LocalEmbedder, LOCAL_MODEL, LEGACY_ENGLISH_MODEL_ID } from './embedding/embedder';
 import type { WorkerProbeResult, WorkerEmbedTestResult } from './embedding/iframe-runner';
-import { activeModelSpec, resolveOverrideSpec, evictStaleModelCaches, deleteModelCaches, probeModelDownloaded } from './embedding/model-registry';
+import { activeModelSpec, bindLiveModel, currentModelSpec, resolveOverrideSpec, evictStaleModelCaches, deleteModelCaches, probeModelDownloaded } from './embedding/model-registry';
 import { pluginIdentity, identityMatches, identityFromMeta } from './index/identity';
 import { isLoadGenerationCurrent, isSessionWorkCurrent } from './app/boot-session';
 import {
@@ -306,6 +306,11 @@ export default class SeekPlugin extends Plugin {
     private catchUpPending = false;              // cold-mobile deferred an embed
     private catchUpRunning = false;              // runCatchUp re-entrancy guard
     private coldBuildScheduled = false;          // scheduleColdBuild single-flight
+    // Set synchronously at the start of runFullReindex, before model load.
+    // isWriting() stays false until reindexAll acquires the mutex, so a second
+    // full reindex (cold build + a manual kick) can otherwise pass the guard,
+    // steal the status-bar job, and queue a wipe behind the pass that is running.
+    private fullReindexInFlight = false;
     private persistCacheRestoredThisBoot = false; // restorePersistedCachesBeforeReconcile once
     /** Live catch-up pass shown on the status bar — survives burst pauses and self-chains. */
     private catchUpJob: { id: number; passTotal: number; committed: number; chunksCommitted: number; tokensCommitted: number } | null = null;
@@ -754,6 +759,10 @@ export default class SeekPlugin extends Plugin {
         // migrated values win over the persisted ones rather than being overridden.
         migrateSettings(raw);
         Object.assign(this.settings, DEFAULT_SETTINGS, raw);
+        // Identity, sidecar stride, and the iframe script all read the live spec.
+        // Bind before the boot identity check so a saved EmbeddingGemma choice is
+        // the model this process actually compares the index against.
+        bindLiveModel(this.settings);
         // New array settings may be absent from older data.json; keep a real array
         // so Settings UI and shouldIndexPath never see undefined.
         if (!Array.isArray(this.settings.customExcludedFolders)) {
@@ -1712,17 +1721,10 @@ export default class SeekPlugin extends Plugin {
                     await this.logger.appendError('local-model', new Error('getResourcePath unavailable; using remote MODEL_ID'));
                 }
                 // Active model from the registry (debug override wins, else the
-                // shipped default). spec.repo is the CDN-streamed load base on the
-                // remote path; spec.key is the index drift-identity. EMBEDDING_DIM
-                // now DERIVES from ACTIVE_MODEL_SPEC.dim (the single source), so a
-                // shipped-model swap can't trip this. It only fires for a debug
-                // model OVERRIDE whose real width differs from the build dim —
-                // loud-log it (mis-indexing into the wrong-dim store is worse).
+                // settings choice, else Granite). spec.repo is the CDN load base;
+                // spec.dim is the live sidecar stride, so a wider model is not an
+                // error — a mismatch with the stored index is the identity banner.
                 const spec = activeModelSpec(this.settings);
-                if (spec.dim !== EMBEDDING_DIM) {
-                    await this.logger.appendError('model-registry', new Error(
-                        `override model ${spec.key} dim ${spec.dim} != build dim ${EMBEDDING_DIM}; a model override needs a matching-dim build (registry dim is the single source — bump DB_VERSION when changing the shipped model)`));
-                }
                 // Device selection is per-DEVICE (platform.ts resolveDevice),
                 // not a synced setting — see the NOTE in types.ts for why a
                 // data.json toggle would leak across iCloud-synced devices.
@@ -1821,7 +1823,26 @@ export default class SeekPlugin extends Plugin {
     }
 
     async saveSettings(): Promise<void> {
+        const before = currentModelSpec();
+        const after = bindLiveModel(this.settings);
         await this.saveData(this.settings);
+        const modelChanged = before.repo !== after.repo
+            || before.revision !== after.revision
+            || before.dim !== after.dim
+            || before.pooling !== after.pooling;
+        if (!modelChanged) return;
+        // The loaded session was built for the previous width and pooling.
+        // Drop it so the next search rebuilds the iframe script from the new spec.
+        this.releaseEmbedder();
+        let chunks = 0;
+        try { chunks = (await this.store.count()).chunks; }
+        catch { return; }
+        // An empty index is not stale — the next build uses the new model.
+        if (chunks === 0) return;
+        const handled = await this.enforceIndexIdentity();
+        // Sidecar-on mismatch already shows INDEX_STALE_MSG inside the gate.
+        // Sidecar-off returns immediately, so ask here or the change stays silent.
+        if (!handled && !this.settings.sidecarEnabled) new Notice(INDEX_STALE_MSG, 0);
     }
 
     // Model ↔ index drift check, run after every successful model load. The
@@ -1840,16 +1861,18 @@ export default class SeekPlugin extends Plugin {
     // peer (embed-free, both platforms) → else desktop auto full-reindex / mobile wait
     // (mobile never bulk-embeds = no jetsam; the 5-min poll retries until a desktop
     // publishes a current sidecar). Returns true when it took over the index (the
-    // caller then skips the normal catch-up). Runs off pluginIdentity() (compiled
-    // constants), so it needs no model load and can gate a cold mobile boot.
+    // caller then skips the normal catch-up). Runs off pluginIdentity(), which
+    // follows the model bound at load and on settings save, so it needs no model
+    // load and can gate a cold mobile boot.
     private async enforceIndexIdentity(): Promise<boolean> {
         // The cascade self-heals via cross-device sidecar hydration (+ desktop reindex
         // fallback), so it only applies with the sidecar on. Sidecar-off keeps the
         // legacy warn-only check (warnOnModelIndexDrift, fired at model-load time).
         if (!this.settings.sidecarEnabled) return false;
-        // A debug model override (testing arbitrary repos) keys the loaded model off
-        // the override while the sidecar/identity machinery keys off the shipped
-        // MODEL_ID — running the cascade would loop. Defer to the warn-only check.
+        // A debug model override loads an arbitrary repo. The identity cascade
+        // would treat the vault index as stale against that repo and offer a
+        // reindex onto an unvalidated model. Leave that to the warn-only check
+        // at model load.
         if (resolveOverrideSpec(this.settings)) return false;
         // A heal is already running — don't stack a second when the 5-min poll fires
         // mid-reindex. Report "handled" so the caller still skips the normal catch-up.
@@ -2902,7 +2925,9 @@ export default class SeekPlugin extends Plugin {
             this.catchUpPending = false;
             const ok = await this.runFullReindex({ skipConfirm: true });
             if (!this.isSessionWorkCurrent(workGen)) return;
-            if (!ok && !this.orchestrator.isWriting()) {
+            // Another full reindex already owns the pass (manual kick during
+            // model load). That is not a failed cold build — do not start catch-up.
+            if (!ok && !this.orchestrator.isWriting() && !this.fullReindexInFlight) {
                 await this.touchIndexInventory();
                 // A failed wipe must not kick a whole-vault catch-up while the
                 // existing index is still on disk (that froze the main vault).
@@ -3052,9 +3077,10 @@ export default class SeekPlugin extends Plugin {
         // vault again the moment the first releases) — pure waste, and on a large
         // vault the second's nuke is exactly the deleteDatabase that fired versionchange
         // at an in-flight pass. The identity heal also routes through here, so this
-        // doubles as a guard against a heal stacking on a manual reindex (Fix B). The
-        // catch-up cold build runs under the same mutex (isWriting covers it too).
-        if (this.orchestrator.isWriting()) {
+        // doubles as a guard against a heal stacking on a manual reindex (Fix B).
+        // isWriting() stays false while the model is loading, so fullReindexInFlight
+        // covers that gap; the mutex still covers a writer that has already acquired it.
+        if (this.fullReindexInFlight || this.orchestrator.isWriting()) {
             new Notice('Seek: a reindex is already running.', 4000);
             return false;
         }
@@ -3064,12 +3090,16 @@ export default class SeekPlugin extends Plugin {
             // Re-check: the confirm dialog awaits user input, so a reindex (e.g. the
             // identity heal, or another caller of this same method) could have started
             // in that window. Without this, both would proceed past the mutex.
-            if (this.orchestrator.isWriting()) {
+            if (this.fullReindexInFlight || this.orchestrator.isWriting()) {
                 new Notice('Seek: a reindex is already running.', 4000);
                 return false;
             }
         }
 
+        // Before any await. Model load is not isWriting(), and the mutex is
+        // acquired only inside reindexAll — a second caller in that gap used
+        // to begin a new status-bar job and queue another nuke.
+        this.fullReindexInFlight = true;
         const jobId = this.beginIndexJob('full', this.indexableNoteCount(), 'Seek: indexing…');
         this.pushTaskContext('indexing');
         try {
@@ -3110,6 +3140,7 @@ export default class SeekPlugin extends Plugin {
             new Notice('Seek reindex: ❌ failed — see the logging report (Settings → Seek).', 10000);
             return false;
         } finally {
+            this.fullReindexInFlight = false;
             this.popTaskContext('indexing');
             this.indexProgress.hide(jobId);
             this.clearIndexDelta();
@@ -3210,7 +3241,8 @@ export default class SeekPlugin extends Plugin {
                     const entries = await this.logger.readAll();
                     for (let i = entries.length - 1; i >= 0; i--) {
                         if (entries[i].type === 'model-delivery') {
-                            if ((entries[i] as ModelDeliveryEntry).cacheSeen > 0) downloaded = true;
+                            const delivery = entries[i] as ModelDeliveryEntry;
+                            if (delivery.repo === spec.repo && delivery.cacheSeen > 0) downloaded = true;
                             break;
                         }
                     }

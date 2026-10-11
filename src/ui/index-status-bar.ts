@@ -164,6 +164,10 @@ export class IndexStatusBar {
     }
 
     updateFromProgress(msg: string, id?: number): void {
+        // Job id is checked before any field write. A stale pass (the bar was
+        // stolen by a later beginIndexJob) must not paint its chunk counts onto
+        // the new job while leaving the file counter at 0.
+        if (id != null && this.jobId !== id) return;
         const parsed = parseIndexedProgress(msg);
         if (parsed) {
             if (parsed.chunks != null) this.chunksDone = parsed.chunks;

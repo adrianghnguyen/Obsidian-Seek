@@ -7,8 +7,11 @@ import { describe, it, expect } from 'vitest';
 import type { SeekSettings } from '../types/types';
 import {
     ACTIVE_MODEL_SPEC,
+    EMBEDDINGGEMMA_2,
     ML97_GBQ4,
     activeModelSpec,
+    formatDocumentText,
+    formatQueryText,
     resolveOverrideSpec,
     shouldEvictCacheUrl,
     evictStaleModelCaches,
@@ -48,6 +51,44 @@ describe('activeModelSpec / resolveOverrideSpec', () => {
         expect(resolveOverrideSpec(settings({ modelRepoOverride: 'a/b' }))!.revision).toBeNull();
         expect(resolveOverrideSpec(settings({ modelRepoOverride: 'a/b', modelRevisionOverride: 'deadbeef' }))!.revision)
             .toBe('deadbeef');
+    });
+
+    it('empty or unknown model key stays on Granite', () => {
+        expect(activeModelSpec(settings({ embeddingModelKey: '', embeddingOutputDim: 0 }))).toBe(ACTIVE_MODEL_SPEC);
+        expect(activeModelSpec(settings({ embeddingModelKey: 'nope' }))).toBe(ACTIVE_MODEL_SPEC);
+    });
+
+    it('EmbeddingGemma 2 is selectable and truncates only on a listed width', () => {
+        const native = activeModelSpec(settings({ embeddingModelKey: EMBEDDINGGEMMA_2.key, embeddingOutputDim: 0 }));
+        expect(native.repo).toBe(EMBEDDINGGEMMA_2.repo);
+        expect(native.dim).toBe(768);
+        expect(native.pooling).toBe('mean');
+        expect(native.textOnly).toBe(true);
+        expect(activeModelSpec(settings({ embeddingModelKey: EMBEDDINGGEMMA_2.key, embeddingOutputDim: 256 })).dim).toBe(256);
+        expect(activeModelSpec(settings({ embeddingModelKey: EMBEDDINGGEMMA_2.key, embeddingOutputDim: 384 })).dim).toBe(768);
+        expect(activeModelSpec(settings({ embeddingModelKey: EMBEDDINGGEMMA_2.key, embeddingOutputDim: 999 })).dim).toBe(768);
+    });
+
+    it('a debug override still wins and keeps the Granite layout', () => {
+        const s = activeModelSpec(settings({
+            modelRepoOverride: 'acme/x',
+            embeddingModelKey: EMBEDDINGGEMMA_2.key,
+            embeddingOutputDim: 256,
+        }));
+        expect(s.repo).toBe('acme/x');
+        expect(s.dim).toBe(384);
+        expect(s.pooling).toBe('cls');
+        expect(s.queryPrefix).toBe('');
+        expect(s.textOnly).toBe(false);
+    });
+
+    it('task prefixes apply once', () => {
+        const q = EMBEDDINGGEMMA_2.queryPrefix + 'hello';
+        expect(formatQueryText('hello', EMBEDDINGGEMMA_2)).toBe(q);
+        expect(formatQueryText(q, EMBEDDINGGEMMA_2)).toBe(q);
+        expect(formatDocumentText('note', EMBEDDINGGEMMA_2)).toBe(EMBEDDINGGEMMA_2.documentPrefix + 'note');
+        expect(formatQueryText('hello', ML97_GBQ4)).toBe('hello');
+        expect(formatDocumentText('note', ML97_GBQ4)).toBe('note');
     });
 });
 
@@ -184,5 +225,13 @@ describe('probeModelDownloaded', () => {
     it('no-ops cleanly when the transformers cache is absent', async () => {
         const f = fakeCaches([], false);
         expect(await probeModelDownloaded(f.cs, ML97_GBQ4)).toEqual({ downloaded: false, persisted: null });
+    });
+
+    it('treats onnx_data as the EmbeddingGemma weight canary', async () => {
+        const repo = EMBEDDINGGEMMA_2.repo;
+        const graphOnly = fakeCaches([hfUrl(repo, 'onnx/model_q4.onnx')]);
+        expect((await probeModelDownloaded(graphOnly.cs, EMBEDDINGGEMMA_2)).downloaded).toBe(false);
+        const weights = fakeCaches([hfUrl(repo, 'onnx/model_q4.onnx_data')]);
+        expect((await probeModelDownloaded(weights.cs, EMBEDDINGGEMMA_2)).downloaded).toBe(true);
     });
 });

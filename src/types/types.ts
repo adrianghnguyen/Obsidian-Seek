@@ -635,6 +635,16 @@ export interface SeekSettings {
     // switching it routes to a full reindex exactly like a real model swap.
     modelRepoOverride?: string;
     modelRevisionOverride?: string;
+
+    // Registry key of the embedding model (model-registry.ts). Empty or unknown
+    // stays on the shipped Granite default so existing vaults do not reindex.
+    // EmbeddingGemma 2 is `onnx-community/embeddinggemma-2-ONNX`. Synced: every
+    // device that shares a sidecar must embed with the same model.
+    embeddingModelKey: string;
+    // Matryoshka stored width for models that list mrlDims. 0 = that model's
+    // native width. Ignored for Granite (fixed 384). Changing it changes index
+    // identity (dim) and asks for a reindex.
+    embeddingOutputDim: number;
 }
 
 // Vault-global definition of "recent" — see SeekSettings.recencyKey above and
@@ -695,6 +705,8 @@ export const DEFAULT_SETTINGS: SeekSettings = {
     sidecarEnabled: true,      // ON by default; user-facing under Index advanced → Sync index across devices; vault-file index for iOS-eviction survival + Sync hydrate; OFF = this device only — see field comment
     sidecarIndexLocation: 'config', // hidden literal '.obsidian/plugins/seek/index'; 'visible' = vault-root 'Seek Index/' for split-config Obsidian Sync; see field comment
     settingsRev: 9,            // current schema rev; bump alongside a migration in main.ts onload (rev 9 = 2026-07-16 Recency High half-life 270→90)
+    embeddingModelKey: '',     // '' = shipped Granite. A registry key selects EmbeddingGemma 2. No migration: absent data.json falls through to this default.
+    embeddingOutputDim: 0,     // 0 = the selected model's native width. EmbeddingGemma 2 accepts 768, 512, 256, 128.
 };
 
 // One-time settings migrations, keyed on the persisted settingsRev. Applied to the

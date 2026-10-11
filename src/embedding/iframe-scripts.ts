@@ -9,7 +9,7 @@
 // warmup-grid constants from iframe-runner.ts is cycle-safe.
 
 import { WARMUP_BATCH_SIZES, SEQ_BUCKETS, QUERY_SEQ_BUCKETS } from './iframe-runner';
-import { ACTIVE_MODEL_SPEC } from './model-registry';
+import { ACTIVE_MODEL_SPEC, type EmbeddingPooling } from './model-registry';
 
 const WEBGPU_POWER_PREFERENCE_WARN_FILTER = [
     '// Chromium on Windows warns when requestAdapter is passed powerPreference',
@@ -204,6 +204,8 @@ const EMBED_WORKER_BODY = [
     "const REVISION = " + "'__REVISION__'" + ";",
     "const DTYPE = 'q4';",
     "const EMBED_DIM = " + "'__DIM__'" + ";",
+    "const POOLING = " + "'__POOLING__'" + ";",
+    "const TEXT_ONLY = __TEXT_ONLY__;",
     "const SEQ_CAP = 128;",
     // ── ORT/transformers node-branch shim (evidence from runWorkerProbe) ──
     // process.type is flipped PERSISTENTLY (ORT's glue re-checks it at
@@ -245,7 +247,7 @@ const EMBED_WORKER_BODY = [
     "        } finally {",
     "            restore();",
     "        }",
-    "        const { pipeline: createPipeline, env } = tx;",
+        "        const { pipeline: createPipeline, env, AutoConfig } = tx;",
     "        env.allowLocalModels = false;",
     "        env.allowRemoteModels = true;",
     "        env.useBrowserCache = true;",
@@ -257,11 +259,18 @@ const EMBED_WORKER_BODY = [
     "        };",
     "        setFlags(onnx ? onnx.wasm : null);",
     "        setFlags(onnx && onnx.env ? onnx.env.wasm : null);",
-    "        pipe = await createPipeline('feature-extraction', MODEL_ID, {",
+    "        const opts = {",
     "            device: 'webgpu',",
     "            dtype: DTYPE,",
     "            ...(REVISION ? { revision: REVISION } : {}),",
-    "        });",
+    "        };",
+    "        if (TEXT_ONLY && AutoConfig) {",
+    "            const cfg = await AutoConfig.from_pretrained(MODEL_ID, REVISION ? { revision: REVISION } : {});",
+    "            cfg.vision_config = null;",
+    "            cfg.audio_config = null;",
+    "            opts.config = cfg;",
+    "        }",
+    "        pipe = await createPipeline('feature-extraction', MODEL_ID, opts);",
     "        return pipe;",
     "    })();",
     "    try { await loadingPromise; }",
@@ -280,7 +289,7 @@ const EMBED_WORKER_BODY = [
     "async function embedOne(text) {",
     "    await ensurePipeline();",
     "    const out = await pipe(text, {",
-    "        pooling: 'cls', normalize: true,",
+    "        pooling: POOLING, normalize: true,",
     "        padding: 'max_length', truncation: true, max_length: SEQ_CAP,",
     "    });",
     "    const d = out.dims;",
@@ -331,18 +340,38 @@ const EMBED_WORKER_BODY = [
 
 // Exported for testing only — same rationale as buildChildScript. dim rides
 // along so tests can assert the contract without importing the registry.
-export function buildEmbedWorkerScript(cdnUrl: string, modelId: string, revision: string | null, dim: number): string {
+export function buildEmbedWorkerScript(
+    cdnUrl: string,
+    modelId: string,
+    revision: string | null,
+    dim: number,
+    pooling: EmbeddingPooling = 'cls',
+    textOnly = false,
+): string {
     return EMBED_WORKER_BODY
         .replace("'__CDN_URL__'", JSON.stringify(cdnUrl))
         .replace("'__MODEL_ID__'", JSON.stringify(modelId))
         .replace("'__REVISION__'", JSON.stringify(revision ?? ''))
-        .replace("'__DIM__'", JSON.stringify(dim));
+        .replace("'__DIM__'", JSON.stringify(dim))
+        .replace("'__POOLING__'", JSON.stringify(pooling))
+        .replace('__TEXT_ONLY__', textOnly ? 'true' : 'false');
 }
 
 // Exported for testing only — the string content of the RPC dispatch handler
 // (e.g. the source-origin check) can't be exercised via a real srcdoc iframe
 // in the node test env, so tests assert on the emitted script text instead.
-export function buildChildScript(cdnUrl: string, outputDim: number): string {
+export interface ChildEmbedProfile {
+    repo: string;
+    revision: string | null;
+    pooling: EmbeddingPooling;
+    textOnly: boolean;
+}
+
+export function buildChildScript(cdnUrl: string, outputDim: number, profile?: Partial<ChildEmbedProfile>): string {
+    const repo = profile?.repo ?? ACTIVE_MODEL_SPEC.repo;
+    const revision = profile?.revision !== undefined ? profile.revision : ACTIVE_MODEL_SPEC.revision;
+    const pooling = profile?.pooling ?? 'cls';
+    const textOnly = profile?.textOnly ?? false;
     // Script body runs INSIDE the iframe. It imports transformers.js from CDN,
     // owns pipeline state, and responds to postMessage RPCs from the parent.
     // The ${...} substitutions below pin the warmup grid AND the output dimension
@@ -359,7 +388,7 @@ const QUERY_SEQ_BUCKETS = ${JSON.stringify(QUERY_SEQ_BUCKETS)};
 // T8 spike — the REAL embed worker's full source (from buildEmbedWorkerScript),
 // inlined at build time so the child can spawn it from a blob without a
 // network fetch. JSON.stringify makes it a safe JS string literal.
-const __EMBED_WORKER_SOURCE__ = ${JSON.stringify(buildEmbedWorkerScript(cdnUrl, ACTIVE_MODEL_SPEC.repo, ACTIVE_MODEL_SPEC.revision, outputDim))};
+const __EMBED_WORKER_SOURCE__ = ${JSON.stringify(buildEmbedWorkerScript(cdnUrl, repo, revision, outputDim, pooling, textOnly))};
 let pipeline = null;
 // Standalone tokenizer (no model weights) for the sidecar hydrate's chunk-id
 // reproduction. Independent of pipeline — survives recycle.
@@ -466,6 +495,8 @@ if (navigator.gpu && typeof GPUAdapter !== 'undefined') {
 // to it. The embed guards below fail loud if the model's real width < OUTPUT_DIM
 // (sliceAndRenormalize would otherwise silently emit a too-short vector).
 const OUTPUT_DIM = ${JSON.stringify(outputDim)};
+const POOLING = ${JSON.stringify(pooling)};
+const TEXT_ONLY = ${textOnly ? 'true' : 'false'};
 
 // Dtype ladder for WebGPU. tryWebgpu walks this in order and accepts the
 // first dtype whose shaders compile.
@@ -549,7 +580,7 @@ let importGen = 0;
 async function freshTransformers(modelId) {
     importGen++;
     const mod = await import(CDN_URL + (importGen > 1 ? '#seek-gen-' + importGen : ''));
-    const { pipeline: createPipeline, env, AutoTokenizer } = mod;
+    const { pipeline: createPipeline, env, AutoTokenizer, AutoConfig } = mod;
     // Phase-5 local-model override: a model id with a URL scheme
     // (app://local/..., capacitor://..., http(s)://) that isn't the HF
     // hub means load LOCAL weights. transformers.js then path-joins the
@@ -559,7 +590,32 @@ async function freshTransformers(modelId) {
     env.allowLocalModels = isLocalBase;
     env.allowRemoteModels = !isLocalBase;
     env.useBrowserCache = !isLocalBase;
-    return { createPipeline, env, AutoTokenizer };
+    return { createPipeline, env, AutoTokenizer, AutoConfig };
+}
+
+// EmbeddingGemma 2 ships vision and audio encoders in the same ONNX repo.
+// Nulling those configs keeps feature-extraction on the text tower so the
+// ~109 MB vision and ~189 MB audio q4 weights are never fetched. Granite
+// has neither config; TEXT_ONLY stays false and this is a no-op.
+async function withTextOnly(mod, modelId, revision, opts) {
+    if (!TEXT_ONLY || !mod.AutoConfig) return opts;
+    const cfg = await mod.AutoConfig.from_pretrained(modelId, revision ? { revision } : {});
+    cfg.vision_config = null;
+    cfg.audio_config = null;
+    opts.config = cfg;
+    return opts;
+}
+
+// A proxy-worker session that never settles must not consume the whole load
+// budget. EmbeddingGemma's external-data graph has been observed to leave the
+// ORT proxy worker idle with no error, so the in-page wasm path never ran.
+function withTimeout(promise, ms, label) {
+    return new Promise(function (resolve, reject) {
+        const timer = setTimeout(function () {
+            reject(new Error(label + ' timed out after ' + ms + 'ms'));
+        }, ms);
+        promise.then(function (v) { clearTimeout(timer); resolve(v); }, function (e) { clearTimeout(timer); reject(e); });
+    });
 }
 
 // Tokenizer-only load (no ONNX session) for the sidecar hydrate. Reuses
@@ -633,7 +689,8 @@ async function tryWebgpu(modelId, preferredDtype, revision) {
         // model_no_gather_q4 variant doesn't exist (and isn't needed). Load the
         // stock onnx-community file per dtype: model_q4.onnx / model.onnx (fp32).
         try {
-            const { createPipeline, env } = await freshTransformers(modelId);
+            const loaded = await freshTransformers(modelId);
+            const { createPipeline, env } = loaded;
             const glue = overrideWebkitGlueForWebgpu(env);
             try {
                 // storageBufferCacheMode (2026-06-14, proven reachable via
@@ -659,6 +716,7 @@ async function tryWebgpu(modelId, preferredDtype, revision) {
                     ? { device: 'webgpu', dtype: d, session_options: { extra: { 'ep.webgpuExecutionProvider.storageBufferCacheMode': 'lazyRelease' } } }
                     : { device: 'webgpu', dtype: d };
                 if (revision) opts.revision = revision;   // F10: pin the model commit
+                await withTextOnly(loaded, modelId, revision, opts);
                 const p = await createPipeline('feature-extraction', modelId, opts);
                 // glue is non-null only when the WebKit override rewrote the
                 // Safari plain pin (jspi/asyncify) — i.e. exactly the iOS path
@@ -727,7 +785,7 @@ async function loadModel(modelId, requestedDevice, requestedDtype, skipWarmup, r
                                 for (const bucket of SEQ_BUCKETS) {
                                     try {
                                         await pipeline(batch, {
-                                            pooling: 'cls', normalize: true,
+                                            pooling: POOLING, normalize: true,
                                             padding: 'max_length', truncation: true, max_length: bucket,
                                         });
                                     } catch (_) { /* non-fatal — live call compiles on first use */ }
@@ -740,7 +798,7 @@ async function loadModel(modelId, requestedDevice, requestedDtype, skipWarmup, r
                                 if (SEQ_BUCKETS.includes(bucket)) continue;
                                 try {
                                     await pipeline(['warmup'], {
-                                        pooling: 'cls', normalize: true,
+                                        pooling: POOLING, normalize: true,
                                         padding: 'max_length', truncation: true, max_length: bucket,
                                     });
                                 } catch (_) { /* non-fatal — live call compiles on first use */ }
@@ -814,10 +872,15 @@ async function loadModel(modelId, requestedDevice, requestedDtype, skipWarmup, r
     if (typeof Worker === 'function') {
         proxyAttempted = true;
         try {
-            const { createPipeline, env } = await freshTransformers(modelId);
+            const loaded = await freshTransformers(modelId);
+            const { createPipeline, env } = loaded;
             wasmGlue = overrideGlueForWasm(env);
             env.backends.onnx.wasm.proxy = true;
-            pipeline = await createPipeline('feature-extraction', modelId, { device: 'wasm', dtype: requestedDtype, ...(revision ? { revision } : {}) });
+            const proxyOpts = { device: 'wasm', dtype: requestedDtype, ...(revision ? { revision } : {}) };
+            await withTextOnly(loaded, modelId, revision, proxyOpts);
+            // 45s, not the parent's 180s: a stuck proxy worker never rejects, and
+            // the in-page session below is the path that has to be allowed to run.
+            pipeline = await withTimeout(createPipeline('feature-extraction', modelId, proxyOpts), 45000, 'wasm proxy session');
             return {
                 device: 'wasm', dtype: requestedDtype,
                 coldStartMs: performance.now() - t0,
@@ -838,17 +901,23 @@ async function loadModel(modelId, requestedDevice, requestedDtype, skipWarmup, r
     // + multithread explicitly disabled (the conservative path the runtime
     // would have picked if detection had worked).
     try {
-        const { createPipeline, env } = await freshTransformers(modelId);
+        const loaded = await freshTransformers(modelId);
+        const { createPipeline, env } = loaded;
         wasmGlue = overrideGlueForWasm(env);
-        pipeline = await createPipeline('feature-extraction', modelId, { device: 'wasm', dtype: requestedDtype, ...(revision ? { revision } : {}) });
+        const wasmOpts = { device: 'wasm', dtype: requestedDtype, ...(revision ? { revision } : {}) };
+        await withTextOnly(loaded, modelId, revision, wasmOpts);
+        pipeline = await createPipeline('feature-extraction', modelId, wasmOpts);
     } catch (e) {
         if (!String(e).includes('no available backend')) throw wasmFail(e);
         try {
-            const { createPipeline, env } = await freshTransformers(modelId);
+            const loaded = await freshTransformers(modelId);
+            const { createPipeline, env } = loaded;
             wasmGlue = overrideGlueForWasm(env);
             env.backends.onnx.wasm.simd = false;
             env.backends.onnx.wasm.numThreads = 1;
-            pipeline = await createPipeline('feature-extraction', modelId, { device: 'wasm', dtype: requestedDtype, ...(revision ? { revision } : {}) });
+            const simdOpts = { device: 'wasm', dtype: requestedDtype, ...(revision ? { revision } : {}) };
+            await withTextOnly(loaded, modelId, revision, simdOpts);
+            pipeline = await createPipeline('feature-extraction', modelId, simdOpts);
         } catch (e2) {
             throw wasmFail(e2);
         }
@@ -890,7 +959,7 @@ async function embedText(text) {
     // bucket survives only as the truncation safety cap. webgpu: pad to the
     // warmed bucket shape as always.
     const output = await pipeline(text, {
-        pooling: 'cls', normalize: true,
+        pooling: POOLING, normalize: true,
         padding: currentDevice === 'wasm' ? true : 'max_length',
         truncation: true, max_length: bucket,
     });
@@ -928,7 +997,7 @@ async function embedBatch(texts, explicitBucket) {
     // webgpu: 'max_length' (= the bucket) is load-bearing — Dawn's shader
     // cache and the SafeInt discipline are keyed to the warmed shape set.
     const output = await pipeline(texts, {
-        pooling: 'cls', normalize: true,
+        pooling: POOLING, normalize: true,
         padding: currentDevice === 'wasm' ? true : 'max_length',
         truncation: true, max_length: bucket,
     });
@@ -1202,7 +1271,7 @@ async function profileRuntime(batchSizes, seqBuckets, reps) {
         for (const bucket of seqBuckets) {
             const texts = Array(bs).fill(makeProfileText(bucket));
             const opts = {
-                pooling: 'cls', normalize: true,
+                pooling: POOLING, normalize: true,
                 padding: 'max_length', truncation: true, max_length: bucket,
             };
             const tokOpts = { padding: 'max_length', truncation: true, max_length: bucket };

@@ -28,7 +28,7 @@
 // (sidecar-sync.ts) is the orchestration.
 
 import type { DataAdapter } from 'obsidian';
-import { ACTIVE_MODEL_SPEC } from '../embedding/model-registry';
+import { ACTIVE_MODEL_SPEC, currentModelSpec } from '../embedding/model-registry';
 
 // ---- record layout (matches IndexStore DB v6 persisted tiers) ----
 
@@ -49,6 +49,18 @@ export const CRC_BYTES = 4; // CRC-32 over [q|s|sign] — detects in-range sync 
 export const RECORD_PAYLOAD_BYTES = Q_BYTES + S_BYTES + SIGN_BYTES; // 440 — the CRC covers exactly this prefix
 export const VEC_BYTES = RECORD_PAYLOAD_BYTES + CRC_BYTES; // 444 — fixed per-record stride
 export const DIM = Q_BYTES; // logical embedding dimension
+
+// Codec functions read the LIVE model width (settings), not the exported
+// constants above. Those constants stay the shipped Granite width so a default
+// install and the dim-consistency tests keep a single snapshot. A settings
+// change to EmbeddingGemma 2 resizes records written after bindLiveModel();
+// a record whose dim does not match the live width is refused, never mis-sliced.
+function liveLayout(): { q: number; sign: number; payload: number; vec: number } {
+    const q = currentModelSpec().dim;
+    const sign = (q + 7) >> 3;
+    const payload = q + S_BYTES + sign;
+    return { q, sign, payload, vec: payload + CRC_BYTES };
+}
 
 // Per-shard cap. Obsidian Sync's default per-file limit is 5 MB; staying at 4 MB
 // keeps headroom and bounds iCloud whole-file re-upload cost on each append.
@@ -150,14 +162,15 @@ function crc32(bytes: Uint8Array, start: number, end: number): number {
 
 // Pack one chunk's tiers into a 444 B record: [q:384 | s:f64LE:8 | sign:48 | crc:u32LE:4].
 export function encodeRecord(t: TierBytes): Uint8Array {
-    if (t.q.length !== Q_BYTES) throw new Error(`encodeRecord: q length ${t.q.length} != ${Q_BYTES}`);
-    if (t.sign.length !== SIGN_BYTES) throw new Error(`encodeRecord: sign length ${t.sign.length} != ${SIGN_BYTES}`);
-    const out = new Uint8Array(VEC_BYTES);
-    out.set(new Uint8Array(t.q.buffer, t.q.byteOffset, Q_BYTES), 0); // int8 bytes reinterpreted as u8 — same bytes
-    new DataView(out.buffer).setFloat64(Q_BYTES, t.s, true); // little-endian scale, full IDB precision
-    out.set(t.sign, Q_BYTES + S_BYTES);
+    const L = liveLayout();
+    if (t.q.length !== L.q) throw new Error(`encodeRecord: q length ${t.q.length} != ${L.q}`);
+    if (t.sign.length !== L.sign) throw new Error(`encodeRecord: sign length ${t.sign.length} != ${L.sign}`);
+    const out = new Uint8Array(L.vec);
+    out.set(new Uint8Array(t.q.buffer, t.q.byteOffset, L.q), 0); // int8 bytes reinterpreted as u8 — same bytes
+    new DataView(out.buffer).setFloat64(L.q, t.s, true); // little-endian scale, full IDB precision
+    out.set(t.sign, L.q + S_BYTES);
     // Trailing CRC-32 over [q|s|sign], little-endian (GAP-1).
-    new DataView(out.buffer).setUint32(RECORD_PAYLOAD_BYTES, crc32(out, 0, RECORD_PAYLOAD_BYTES), true);
+    new DataView(out.buffer).setUint32(L.payload, crc32(out, 0, L.payload), true);
     return out;
 }
 
@@ -165,22 +178,23 @@ export function encodeRecord(t: TierBytes): Uint8Array {
 // have validated isOffsetInRange first (or accept a throw on a short buffer).
 // Throws on a CRC mismatch (corrupt record) or a dim≠DIM stride mismatch — both
 // are "skip this record" conditions the hydrate callers catch and treat as null.
-export function decodeRecord(buf: ArrayBuffer, off: number, expectedDim: number = DIM): TierBytes {
-    if (expectedDim !== DIM) {
-        throw new Error(`decodeRecord: record dim ${expectedDim} != ${DIM} — stride mismatch, refusing to mis-slice`);
+export function decodeRecord(buf: ArrayBuffer, off: number, expectedDim: number = currentModelSpec().dim): TierBytes {
+    const L = liveLayout();
+    if (expectedDim !== L.q) {
+        throw new Error(`decodeRecord: record dim ${expectedDim} != ${L.q} — stride mismatch, refusing to mis-slice`);
     }
     if (!isOffsetInRange(buf.byteLength, off)) {
-        throw new Error(`decodeRecord: off ${off} + ${VEC_BYTES} exceeds buffer ${buf.byteLength}`);
+        throw new Error(`decodeRecord: off ${off} + ${L.vec} exceeds buffer ${buf.byteLength}`);
     }
     const bytes = new Uint8Array(buf);
-    const stored = new DataView(buf).getUint32(off + RECORD_PAYLOAD_BYTES, true);
-    const computed = crc32(bytes, off, off + RECORD_PAYLOAD_BYTES);
+    const stored = new DataView(buf).getUint32(off + L.payload, true);
+    const computed = crc32(bytes, off, off + L.payload);
     if (stored !== computed) {
         throw new Error(`decodeRecord: CRC mismatch at off ${off} (stored ${stored}, computed ${computed}) — corrupt record`);
     }
-    const q = new Int8Array(buf.slice(off, off + Q_BYTES));
-    const s = new DataView(buf).getFloat64(off + Q_BYTES, true);
-    const sign = new Uint8Array(buf.slice(off + Q_BYTES + S_BYTES, off + RECORD_PAYLOAD_BYTES));
+    const q = new Int8Array(buf.slice(off, off + L.q));
+    const s = new DataView(buf).getFloat64(off + L.q, true);
+    const sign = new Uint8Array(buf.slice(off + L.q + S_BYTES, off + L.payload));
     return { q, s, sign };
 }
 
@@ -188,7 +202,7 @@ export function decodeRecord(buf: ArrayBuffer, off: number, expectedDim: number 
 // point past the synced length. Out-of-range → "not yet available", skip this
 // pass, picked up on the next reconcile. Never an error.
 export function isOffsetInRange(binSize: number, off: number): boolean {
-    return off >= 0 && off + VEC_BYTES <= binSize;
+    return off >= 0 && off + liveLayout().vec <= binSize;
 }
 
 // ---- path helpers ----
@@ -740,15 +754,17 @@ export async function bulkAppend(
         const lines: string[] = [];
         let cursor = 0;
         while (cursor < records.length) {
-            const take = Math.min(MAX_VECTORS_PER_SHARD, records.length - cursor);
-            const buf = new Uint8Array(take * VEC_BYTES);
+            const stride = liveLayout().vec;
+            const maxPer = Math.max(1, Math.floor(SHARD_CAP_BYTES / stride));
+            const take = Math.min(maxPer, records.length - cursor);
+            const buf = new Uint8Array(take * stride);
             let off = 0;
             for (let i = 0; i < take; i++) {
                 const { id, tiers, mtime } = records[cursor + i];
                 buf.set(encodeRecord(tiers), off);
                 refs.push({ seq: nextSeq, off });
-                lines.push(JSON.stringify({ id, dim: DIM, shard: deviceId, seq: nextSeq, off, mtime }));
-                off += VEC_BYTES;
+                lines.push(JSON.stringify({ id, dim: liveLayout().q, shard: deviceId, seq: nextSeq, off, mtime }));
+                off += stride;
             }
             await writeBinaryAtomic(adapter, shardPathFor(indexDir, deviceId, nextSeq), buf.buffer);
             nextSeq++;
@@ -960,10 +976,11 @@ export async function compactDevice(
                 // operation — any non-zero is an own-shard corruption breadcrumb.
                 if (!srcBuf || !isOffsetInRange(srcBuf.byteLength, e.off)) { shed++; continue; }
                 try { decodeRecord(srcBuf, e.off, e.dim); } catch { shed++; continue; }
-                if (destLen + VEC_BYTES > SHARD_CAP_BYTES) await flushDest();
-                destBuf.set(new Uint8Array(srcBuf, e.off, VEC_BYTES), destLen);
+                const stride = liveLayout().vec;
+                if (destLen + stride > SHARD_CAP_BYTES) await flushDest();
+                destBuf.set(new Uint8Array(srcBuf, e.off, stride), destLen);
                 newLines.push(JSON.stringify({ id: e.id, dim: e.dim, shard: deviceId, seq: destSeq, off: destLen, mtime: e.mtime }));
-                destLen += VEC_BYTES;
+                destLen += stride;
             }
             await flushDest();
         } catch (err) {
@@ -991,7 +1008,7 @@ export async function compactDevice(
         // Reclaim: delete the OLD shards (seq ≤ maxSeq); fresh shards (> maxSeq) stay.
         for (const s of shardsBefore) await adapter.remove(s.path).catch(() => {});
 
-        return { compacted: true, reason: 'done', recordsBefore, recordsAfter: newLines.length, bytesBefore, bytesAfter: newLines.length * VEC_BYTES, shed, shardsBefore: shardCount, shardsAfter: newShardPaths.length };
+        return { compacted: true, reason: 'done', recordsBefore, recordsAfter: newLines.length, bytesBefore, bytesAfter: newLines.length * liveLayout().vec, shed, shardsBefore: shardCount, shardsAfter: newShardPaths.length };
     });
 }
 
@@ -1082,7 +1099,7 @@ export async function coalesceSmallShards(
         // 4 MB allocation every 5-minute trigger is real pressure inside an iOS
         // WKWebView — the environment whose eviction the sidecar exists to survive.
         let copied = 0; // move entries consumed (moved or shed) — sizes the next buffer
-        const nextBuf = () => new Uint8Array(Math.min((move.length - copied) * VEC_BYTES, SHARD_CAP_BYTES));
+        const nextBuf = () => new Uint8Array(Math.min((move.length - copied) * liveLayout().vec, SHARD_CAP_BYTES));
         let destBuf = nextBuf();
         let destLen = 0;
         let srcSeq = -1;
@@ -1107,11 +1124,12 @@ export async function coalesceSmallShards(
                 // its line costs nothing; non-zero shed is a corruption breadcrumb.
                 if (!srcBuf || !isOffsetInRange(srcBuf.byteLength, e.off)) { shed++; copied++; continue; }
                 try { decodeRecord(srcBuf, e.off, e.dim); } catch { shed++; copied++; continue; }
-                if (destLen + VEC_BYTES > destBuf.length) await flushDest();
-                destBuf.set(new Uint8Array(srcBuf, e.off, VEC_BYTES), destLen);
+                const stride = liveLayout().vec;
+                if (destLen + stride > destBuf.length) await flushDest();
+                destBuf.set(new Uint8Array(srcBuf, e.off, stride), destLen);
                 newLines.push(JSON.stringify({ id: e.id, dim: e.dim, shard: deviceId, seq: destSeq, off: destLen, mtime: e.mtime }));
-                destLen += VEC_BYTES;
-                bytesMoved += VEC_BYTES;
+                destLen += stride;
+                bytesMoved += stride;
                 copied++;
             }
             await flushDest();

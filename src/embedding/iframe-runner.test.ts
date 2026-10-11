@@ -317,14 +317,43 @@ describe('iframe child message handler — source check', () => {
 });
 
 describe('TRANSFORMERS_VERSION pin', () => {
-    it('ships transformers.js 4.3.0 from jsDelivr (ORT-Web 1.31-dev)', () => {
-        expect(TRANSFORMERS_VERSION).toBe('4.3.0');
+    it('ships transformers.js 4.3.1 from jsDelivr (embedding_gemma2)', () => {
+        expect(TRANSFORMERS_VERSION).toBe('4.3.1');
         const script = buildChildScript(
             `https://cdn.jsdelivr.net/npm/@huggingface/transformers@${TRANSFORMERS_VERSION}`,
             384,
         );
-        expect(script).toContain('@huggingface/transformers@4.3.0');
-        expect(script).not.toContain('@huggingface/transformers@4.2.0');
+        expect(script).toContain('@huggingface/transformers@4.3.1');
+        expect(script).not.toContain('@huggingface/transformers@4.3.0');
+    });
+});
+
+describe('iframe child text-only load', () => {
+    it('nulls vision and audio configs before every createPipeline when the spec asks', () => {
+        const script = buildChildScript('https://example.com/cdn', 768, {
+            repo: 'onnx-community/embeddinggemma-2-ONNX',
+            revision: 'daa72c51243991dfcaf9f9137d2c573d8f7790c0',
+            pooling: 'mean',
+            textOnly: true,
+        });
+        expect(script).toContain('const POOLING = "mean"');
+        expect(script).toContain('const TEXT_ONLY = true');
+        expect(script).toContain('cfg.vision_config = null');
+        expect(script).toContain('cfg.audio_config = null');
+        const calls = script.split('await withTextOnly(').length - 1;
+        expect(calls).toBe(4);
+    });
+
+    it('leaves Granite on CLS with text-only off', () => {
+        const script = buildChildScript('https://example.com/cdn', 384);
+        expect(script).toContain('const POOLING = "cls"');
+        expect(script).toContain('const TEXT_ONLY = false');
+    });
+
+    it('bounds the wasm proxy attempt so a stuck worker falls through', () => {
+        const script = buildChildScript('https://example.com/cdn', 384);
+        expect(script).toContain('wasm proxy session');
+        expect(script).toContain('function withTimeout');
     });
 });
 
@@ -517,7 +546,9 @@ describe('embed worker script (buildEmbedWorkerScript)', () => {
 
     it('produces CLS-pooled normalized vectors and transfers them back', () => {
         const script = buildEmbedWorkerScript('https://cdn.example.com/tx', MODEL, REV, 384);
-        expect(script).toContain("pooling: 'cls'");
+        expect(script).toContain('const POOLING = "cls"');
+        expect(script).toContain('pooling: POOLING');
+        expect(script).toContain('const TEXT_ONLY = false');
         expect(script).toMatch(/truncation: true, max_length: SEQ_CAP/);
         expect(script).toContain('function norm(v)');
         // Zero-copy reply + the __embedWorkerReply contract the child routes on.

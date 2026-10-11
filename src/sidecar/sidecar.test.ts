@@ -5,8 +5,9 @@
 // tombstone scoping, partial-arrival self-heal, conflict-copy ignore, version
 // gate, and the 4 MB shard-roll boundary.
 
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect } from 'vitest';
 import type { DataAdapter } from 'obsidian';
+import { EMBEDDINGGEMMA_2, bindLiveModel } from '../embedding/model-registry';
 import { quantizeInt8 } from '../embedding/quant';
 import { packSignBits } from '../embedding/binary';
 import {
@@ -154,6 +155,10 @@ async function appendOne(a: DataAdapter, dir: string, dev: string, id: string, t
 // ---- codec ----
 
 describe('record codec', () => {
+    afterEach(() => {
+        bindLiveModel({ embeddingModelKey: '', embeddingOutputDim: 0 } as never);
+    });
+
     it('encode → decode round-trips byte-exact (including f64 scale)', () => {
         const t = tiers(42);
         const enc = encodeRecord(t);
@@ -186,6 +191,21 @@ describe('record codec', () => {
         const enc = encodeRecord(tiers(7));
         expect(() => decodeRecord(enc.buffer as ArrayBuffer, 0)).not.toThrow();        // default dim round-trips
         expect(() => decodeRecord(enc.buffer as ArrayBuffer, 0, 768)).toThrow(/dim/);  // wrong stride → refuse to mis-slice
+    });
+
+    it('round-trips a 768-d record while EmbeddingGemma is bound', () => {
+        bindLiveModel({ embeddingModelKey: EMBEDDINGGEMMA_2.key, embeddingOutputDim: 0 } as never);
+        const q = new Int8Array(768);
+        for (let i = 0; i < q.length; i++) q[i] = ((i * 3) % 255) - 127;
+        const sign = new Uint8Array(96);
+        sign[0] = 0xab;
+        const enc = encodeRecord({ q, s: 1.25, sign });
+        expect(enc.byteLength).not.toBe(VEC_BYTES);
+        const dec = decodeRecord(enc.buffer as ArrayBuffer, 0);
+        expect(dec.q.length).toBe(768);
+        expect(dec.s).toBe(1.25);
+        expect(dec.sign[0]).toBe(0xab);
+        expect(() => decodeRecord(enc.buffer as ArrayBuffer, 0, 384)).toThrow(/dim/);
     });
 
     it('decodeRecord rejects a CRC-corrupt record (GAP-1)', () => {

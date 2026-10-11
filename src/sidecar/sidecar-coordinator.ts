@@ -39,11 +39,10 @@ import {
     type FileRecord,
 } from '../index/index-store';
 import type { LocalEmbedder } from '../embedding/embedder';
-import { MODEL_ID, EMBEDDING_DIM } from '../embedding/embedder';
+import { pluginIdentity } from '../index/identity';
 import type { SeekLogger } from '../diagnostics/logger';
 import type { Forensics } from '../diagnostics/forensics';
 import type { SeekSettings, Chunk, ChunkMeta } from '../types/types';
-import { pluginIdentity } from '../index/identity';
 import { chunkMetaEqual, pushDeltaAdds, type DeltaAdd } from '../search/frame-utils';
 import { frameBm25Coherent } from '../search/coherence';
 import { enforceTokenBudget, createBatchedTokenCounter, TOKEN_COUNTS_BATCH } from '../index/token-budget';
@@ -184,7 +183,7 @@ export class SidecarCoordinator {
             const m = await this.store.getMeta();
             await this.store.setMeta({
                 ...m,
-                modelId: m.modelId ?? MODEL_ID,
+                modelId: m.modelId ?? pluginIdentity().modelId,
                 chunkerVersion: id.chunkerVersion,
                 analyzerVersion: id.analyzerVersion,
                 revision: id.revision,
@@ -239,10 +238,10 @@ export class SidecarCoordinator {
             await this.store.clearAllStores();
             const id = pluginIdentity();
             await this.store.setMeta({
-                embeddingDim: EMBEDDING_DIM,
+                embeddingDim: pluginIdentity().dim,
                 lastIndexedAt: null,
                 schemaVersion: META_SCHEMA_VERSION,
-                modelId: MODEL_ID,
+                modelId: pluginIdentity().modelId,
                 chunkerVersion: id.chunkerVersion,
                 analyzerVersion: id.analyzerVersion,
                 revision: id.revision,

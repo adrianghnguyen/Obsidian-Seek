@@ -18,7 +18,7 @@
 import type { Device, RequestedDevice, Dtype, LoadEntry, InitEntry } from '../types/types';
 import { snapshotMemory, memoryDelta, LOG_SCHEMA_VERSION } from '../types/types';
 import { getWorkerEmbedRoute } from './platform';
-import { ACTIVE_MODEL_SPEC } from './model-registry';
+import { ACTIVE_MODEL_SPEC, currentModelSpec, formatDocumentText, formatQueryText } from './model-registry';
 import {
     IframeRunner,
     TRANSFORMERS_VERSION,
@@ -398,7 +398,7 @@ export class LocalEmbedder {
             requestedDevice: requested,
             actualDevice: result.device,
             dtype: result.dtype,
-            embeddingDim: EMBEDDING_DIM,
+            embeddingDim: currentModelSpec().dim,
             coldStartMs,
             warmupMs: result.warmupMs != null
                 ? parseFloat(result.warmupMs.toFixed(2))
@@ -432,6 +432,7 @@ export class LocalEmbedder {
         // LRU hit short-circuits BEFORE route selection: a cached vector is
         // route-independent (same model either way), so no need to pay a
         // worker round trip for a repeat query.
+        const modelText = formatQueryText(text);
         const hit = this.queryEmbedCache.get(text);
         if (hit !== undefined) {
             this.queryEmbedCache.delete(text);     // re-insert at tail → most-recent
@@ -445,7 +446,7 @@ export class LocalEmbedder {
         if (getWorkerEmbedRoute() && !this.workerRouteDisabled) {
             try {
                 throwIfAborted();
-                const w = await this.runner.workerEmbed(text, signal);
+                const w = await this.runner.workerEmbed(modelText, signal);
                 throwIfAborted();
                 if (w.vector.every(Number.isFinite)) {
                     this.queryEmbedCache.set(text, w.vector);
@@ -477,7 +478,7 @@ export class LocalEmbedder {
             if (!this._loaded) throw new Error('Model not loaded.');
         }
         throwIfAborted();
-        const r = await this.runner.embed(text, signal);
+        const r = await this.runner.embed(modelText, signal);
         // embed() may return even after the query was superseded (iframe
         // ignores a late abort). Do not insert into the LRU — a cached hit
         // would outlive the cancelled search.
@@ -585,7 +586,7 @@ export class LocalEmbedder {
     // stay on the iframe pipeline; only query embeds route to the worker.
     async embedBatch(texts: string[], bucket?: number): Promise<EmbedBatchTimed> {
         if (!this._loaded) throw new Error('Model not loaded.');
-        const r = await this.runner.embedBatch(texts, bucket);
+        const r = await this.runner.embedBatch(texts.map(t => formatDocumentText(t)), bucket);
         return { vectors: r.vectors, iframeLatencyMs: r.latencyMs };
     }
 
@@ -595,7 +596,7 @@ export class LocalEmbedder {
     // enforcement + bucket routing in search.ts.
     async tokenCounts(texts: string[]): Promise<number[]> {
         if (!this._loaded && !this._tokenizerLoaded) throw new Error('Neither model nor tokenizer loaded.');
-        return this.runner.tokenCounts(texts);
+        return this.runner.tokenCounts(texts.map(t => formatDocumentText(t)));
     }
 
     // Tokenizer-only load for the sidecar hydrate's chunk-id reproduction. A
@@ -658,6 +659,7 @@ export class LocalEmbedder {
 
     teardown(): void {
         this._loaded = false;
+        this.queryEmbedCache.clear();
         // The tokenizer lives in the disposed iframe; the fresh runner has none.
         // Without this reset, ensureTokenizer() short-circuits forever and every
         // tokenCounts() hits a tokenizer-less iframe until plugin reload.
