@@ -70,6 +70,9 @@ import { pluginIdentity, shouldStampLiveIdentity, identityHealEligibility, type 
 import { gzipString, gunzipToString, gzipAvailable } from '../sidecar/gzip';
 import { IndexCoordinator } from '../index/index-coordinator';
 import { CompositorPacer, yieldAfterEmbedDispatch } from '../index/pacer';
+import { rollingBatchFor, clampRollingBatchMax, clampRollingTokenBudget } from '../index/rolling-batch';
+import { InFlightSemaphore, createExclusiveChain, clampEmbedInFlightMax, gpuOccupancyPct, effectiveBatchSize } from '../index/embed-pipeline';
+import { beginLongTaskPass } from '../app/observers';
 import { isMobilePlatform, residentInt8Enabled } from '../embedding/platform';
 import { CacheManager } from './cache-manager';
 import { SearchQuery, type RecencyOverride, dedupByPath, topKByScore } from './search-query';
@@ -127,31 +130,14 @@ import {
 // non-preemptible once on Metal's queue, so the worst-case stall = the largest
 // dispatch's forward time. ModernBERT's global-attention layers are ~O(seq²),
 // so a full batch in the 512 bucket is the longest stall by far (measured p95
-// 587 ms at a flat batch of 8, 2026-06-04). So we DON'T use a flat size — we
-// hold batch×seq roughly constant at a token BUDGET: big buckets flush at a
-// small batch (512→3), small buckets at the cap (8). This caps the worst stall
-// while leaving the cheap short-bucket dispatches full. Per-chunk compute is
-// unchanged (each chunk is one independent sequence); we trade a few extra
-// dispatches in the rare long buckets for shorter individual stalls. pace()
-// still runs between every flush, so duty cycle stays idle-gated.
+// 587 ms at a flat batch of 8, 2026-06-04). Interactive catch-up therefore
+// holds batch×seq roughly constant at a token BUDGET: big buckets flush at a
+// small batch (512→3), small buckets at the cap (8). A full vault reindex
+// skips that stall cap and dispatches at ROLLING_MAX across every bucket.
 //
-// ROLLING_BUDGET ≈ target batch×seq per dispatch. Live 1536 → {512:3, 384:4, 256:6,
-// ≤192:8}. Every resulting size is in WARMUP_BATCH_SIZES [1..8]. ROLLING_MAX is
-// the warmed ceiling (also mobile's thermal-friendly flush size). Lower the
-// budget to cut the p95 further (more dispatches); raise it for throughput.
-const ROLLING_BUDGET = 1536;
-const ROLLING_MAX = 8;
-// WASM batch experiment CLOSED (2026-06-11): a flat batch of 4 on the CPU EP
-// measured a WASH against this token-budget sizing (3.60 vs 3.83 files/s on
-// the same 365-file steady segment, iPhone 15 Pro) — per-call overhead is not
-// the bottleneck, and neither is padding (exact-length cut padded tokens 13%
-// at identical wall time; see iframe embedBatch). Single-thread CPU forward
-// is at a floor only threads (COOP/COEP, Obsidian-core) would move. Reverted
-// to one shared sizing: on wasm the budget also caps the synchronous
-// main-thread stall per dispatch, which batch=4 made ~4× worse for nothing.
-function rollingBatchFor(bucket: number): number {
-    return Math.max(1, Math.min(ROLLING_MAX, Math.round(ROLLING_BUDGET / bucket)));
-}
+// ROLLING_BUDGET ≈ target batch×seq per dispatch on the interactive path.
+// Live 1536 → {512:3, 384:4, 256:6, ≤192:8}. Full reindex bypasses the budget
+// and flushes at ROLLING_MAX (8) on every bucket — see rolling-batch.ts.
 
 // How often to emit a progress entry during indexing (every N committed files).
 const PROGRESS_EVERY = 25;
@@ -792,6 +778,7 @@ export class SearchOrchestrator {
         let fDispatches = 0;
         let fPaddedTokens = 0;
         this.forensics?.beat('index-start', { mode, filesTotal: files.length });
+        const longTaskPass = beginLongTaskPass();
 
         const perFileWallMs: number[] = [];
         const chunksPerFile: number[] = [];
@@ -842,6 +829,17 @@ export class SearchOrchestrator {
         // dispatches: consecutive fast flushes can share a single idle window
         // instead of each paying a full yield (pacer.ts / PR #1).
         const pacer = new CompositorPacer();
+        // GPU RPC is still single-flight (iframe rpcBusy). Persist of batch N
+        // overlaps the next embed: semaphore caps unwritten batches in RAM.
+        const rollingOpts = {
+            rollingBatchMax: clampRollingBatchMax(this.settings.rollingBatchMax),
+            rollingTokenBudget: clampRollingTokenBudget(this.settings.rollingTokenBudget),
+        };
+        const inflight = new InFlightSemaphore(clampEmbedInFlightMax(this.settings.embedInFlightMax));
+        const persistChain = createExclusiveChain();
+        const persistJobs: Promise<void>[] = [];
+        let persistFatal: unknown = null;
+        const isDisposedErr = (e: unknown): boolean => (e as { code?: string } | null)?.code === 'DISPOSED';
 
         // Forensics suffix for embed-failure log contexts: enough to separate a
         // content-shaped failure (which token counts?) from an environment one
@@ -1040,42 +1038,61 @@ export class SearchOrchestrator {
             }
         };
 
-        // Flush up to rollingBatchFor(bucket) chunks from a bucket as one dispatch.
+        // Flush up to rollingBatchFor(bucket, mode) chunks as one GPU dispatch.
+        // Persist is enqueued on the exclusive chain and does not block the next
+        // embed — inflight (max 2) pauses dispatch if disk falls behind.
         // On dispatch failure (after embedOneBatch's recycle+retry rethrows),
         // isolate each chunk with a solo embed so one genuinely-bad chunk skips
         // only its own file instead of poisoning the whole batch's files.
         const flushBucket = async (bucket: number): Promise<void> => {
             const buf = buffers.get(bucket);
             if (!buf || buf.length === 0) return;
-            const batch = buf.splice(0, rollingBatchFor(bucket));
+            if (persistFatal) { longTaskPass.stop(); throw persistFatal; }
+            const batch = buf.splice(0, rollingBatchFor(bucket, mode, rollingOpts));
+            await inflight.acquire();
+            let persistOwnsSlot = false;
             const embedStart = performance.now();
-            let vectors: Float32Array[] | null = null;
             try {
-                vectors = await embedOneBatch(batch.map(p => p.input), bucket, `b${bucket}`, batch.map(p => p.tokens));
-            } catch (e) {
-                // Intentional teardown must unwind the whole pass, never reach the
-                // solo/quarantine path — a DISPOSED batch's chunks would otherwise
-                // all solo-fail DISPOSED too and quarantine healthy files against
-                // a store that is about to close. Mirrors embedOneBatch's own
-                // DISPOSED contract.
-                if ((e as { code?: string } | null)?.code === 'DISPOSED') throw e;
-                await this.logger.appendError(`flushBucket:${bucket}${dispatchInfo(batch.map(p => p.input), bucket, batch.map(p => p.tokens))}`, e);
-            }
-            if (vectors) {
-                for (let i = 0; i < batch.length; i++) await resolveChunk(batch[i], vectors[i]);
-            } else {
+                let vectors: Float32Array[] | null = null;
+                try {
+                    vectors = await embedOneBatch(batch.map(p => p.input), bucket, `b${bucket}`, batch.map(p => p.tokens));
+                } catch (e) {
+                    // Intentional teardown must unwind the whole pass, never reach the
+                    // solo/quarantine path — a DISPOSED batch's chunks would otherwise
+                    // all solo-fail DISPOSED too and quarantine healthy files against
+                    // a store that is about to close. Mirrors embedOneBatch's own
+                    // DISPOSED contract.
+                    if (isDisposedErr(e)) throw e;
+                    await this.logger.appendError(`flushBucket:${bucket}${dispatchInfo(batch.map(p => p.input), bucket, batch.map(p => p.tokens))}`, e);
+                }
+                if (vectors) {
+                    persistOwnsSlot = true;
+                    const committed = vectors;
+                    const job = persistChain.run(async () => {
+                        for (let i = 0; i < batch.length; i++) await resolveChunk(batch[i], committed[i]);
+                    }).catch((e: unknown) => {
+                        persistFatal ??= e;
+                        throw e;
+                    }).finally(() => inflight.release());
+                    persistJobs.push(job.then(() => undefined, () => undefined));
+                    embedMs += performance.now() - embedStart;
+                    return;
+                }
+                // Solo retries stay on the GPU path (they are embed RPCs). Rare.
                 for (const p of batch) {
                     try {
                         const v = await embedOneBatch([p.input], bucket, `b${bucket}-solo`, [p.tokens]);
                         await resolveChunk(p, v[0]);
                     } catch (se) {
-                        if ((se as { code?: string } | null)?.code === 'DISPOSED') throw se;
+                        if (isDisposedErr(se)) throw se;
                         await this.logger.appendError(`soloChunk:${p.fs.file.path}${dispatchInfo([p.input], bucket, [p.tokens])}`, se);
                         await resolveChunk(p, null);
                     }
                 }
+                embedMs += performance.now() - embedStart;
+            } finally {
+                if (!persistOwnsSlot) inflight.release();
             }
-            embedMs += performance.now() - embedStart;
         };
 
         for (const file of files) {
@@ -1085,6 +1102,7 @@ export class SearchOrchestrator {
             // Any meta stamped for the partial index is still CORRECT (Fix A: current
             // identity, merely incomplete), and the next load's catch-up finishes it.
             if (this.disposed) break;
+            if (persistFatal) { longTaskPass.stop(); throw persistFatal; }
             // Per-burst budget (incremental catch-up only): stop STARTING new files
             // once the wall-clock ceiling is spent or the app went hidden / search
             // resumed (shouldContinue→false). (The file-count cap is upstream — the
@@ -1276,7 +1294,7 @@ export class SearchOrchestrator {
                 let buf = buffers.get(bucket);
                 if (!buf) { buf = []; buffers.set(bucket, buf); }
                 buf.push({ fs, slot, input, tokens: embedCounts[slot] });
-                if (buf.length >= rollingBatchFor(bucket)) await flushBucket(bucket);
+                if (buf.length >= rollingBatchFor(bucket, mode, rollingOpts)) await flushBucket(bucket);
             }
 
             // UI progress: every newly committed file (status bar + Settings).
@@ -1300,6 +1318,9 @@ export class SearchOrchestrator {
         if (!this.disposed) for (const bucket of buffers.keys()) {
             while ((buffers.get(bucket)?.length ?? 0) > 0) await flushBucket(bucket);
         }
+        await Promise.all(persistJobs);
+        await persistChain.idle();
+        if (persistFatal) { longTaskPass.stop(); throw persistFatal; }
 
         // Mass-failure gate: solo-retry evidence can't distinguish a poisoned
         // chunk from a wedged ENVIRONMENT (device-lost storm, app backgrounded
@@ -1444,8 +1465,15 @@ export class SearchOrchestrator {
         // sat at ~2.2 (p50=1 chunk/file); per-bucket rolling should approach the
         // budget-weighted mean flush size. The measurement that says it worked.
         const embedDispatches = embedBatchLatencyMs.length;
-        const effectiveBatch = embedDispatches > 0 ? totalVectors / embedDispatches : 0;
-        checks.push(`ℹ️ embed: ${embedDispatches} dispatches, effective batch ≈ ${effectiveBatch.toFixed(1)} (budget ${ROLLING_BUDGET}, max ${ROLLING_MAX})`);
+        const effectiveBatch = effectiveBatchSize(totalVectors, embedDispatches);
+        const gpuBusyMs = embedBatchLatencyMs.reduce((s, x) => s + x, 0);
+        const persistWaitMs = inflight.waitMs;
+        const inflightCap = clampEmbedInFlightMax(this.settings.embedInFlightMax);
+        const occupancy = gpuOccupancyPct(gpuBusyMs, totalMs);
+        const longTaskRollup = longTaskPass.stop();
+        checks.push(`ℹ️ embed: ${embedDispatches} dispatches, effective batch ≈ ${effectiveBatch.toFixed(1)} (${mode === 'full' ? `full reindex batch ${rollingOpts.rollingBatchMax}` : `budget ${rollingOpts.rollingTokenBudget}, max ${rollingOpts.rollingBatchMax}`}, in-flight ${inflightCap})`);
+        checks.push(`ℹ️ pipeline: GPU busy ${occupancy.toFixed(0)}% of wall (${gpuBusyMs.toFixed(0)} ms), persist wait ${persistWaitMs.toFixed(0)} ms, in-flight high-water ${inflight.highWater}/${inflightCap}`);
+        checks.push(`ℹ️ renderer: ${longTaskRollup.count} long task(s) ≥250 ms totaling ${longTaskRollup.ms.toFixed(0)} ms (${((longTaskRollup.ms / Math.max(totalMs, 1)) * 100).toFixed(0)}% of wall)`);
         if (mode === 'full') {
             checks.push(bgStats
                 ? `ℹ️ dense background: μ=${bgStats.mean.toFixed(4)} σ=${bgStats.std.toFixed(4)} (${bgN} vecs, calibration on)`
@@ -1541,6 +1569,14 @@ export class SearchOrchestrator {
             chunksPerFile: distributionStats(chunksPerFile),
             embedBatchLatencyMs: distributionStats(embedBatchLatencyMs),
             paceWaitMs: parseFloat(paceWaitMs.toFixed(2)),
+            gpuBusyMs: parseFloat(gpuBusyMs.toFixed(2)),
+            persistWaitMs: parseFloat(persistWaitMs.toFixed(2)),
+            inflightHighWater: inflight.highWater,
+            embedInFlightMax: inflightCap,
+            rollingBatchMax: rollingOpts.rollingBatchMax,
+            effectiveBatch: parseFloat(effectiveBatch.toFixed(2)),
+            longTaskCount: longTaskRollup.count,
+            longTaskMs: parseFloat(longTaskRollup.ms.toFixed(2)),
             pass: (totalChunks > 0 || chunksReconciled > 0) && skipRate <= SKIP_RATE_FAIL,
             checks,
         };

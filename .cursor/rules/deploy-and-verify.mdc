@@ -12,6 +12,7 @@ A feature task is **not done** until the plugin is deployed to the **sandbox vau
 | CLI vault name | Path | Seek plugin path | Role |
 |----------------|------|------------------|------|
 | `plugin-sandbox-Obsidian` | `C:\plugin-sandbox-Obsidian` | `C:\plugin-sandbox-Obsidian\.obsidian\plugins\seek\` | **Default** — routine deploy, reload, CLI verify, playbooks, cold-start at scale |
+| `seek-index-lab-500` | `C:\seek-index-lab-500` | `C:\seek-index-lab-500\.obsidian\plugins\seek\` | **Index lab** — ~500 notes; full-reindex throughput / GPU saturation / queue-batch sets. Skill `seek-index-lab-vault`. Not production. |
 | `Obsidian` | `C:\Obsidian` | `C:\Obsidian\.obsidian\plugins\seek\` | **Production** — deploy **only** on promotion |
 
 **Do not** copy `main.js`, `manifest.json`, or `styles.css` to production during feature branches, PR review, or sandbox testing.

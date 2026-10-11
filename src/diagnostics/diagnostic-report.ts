@@ -264,6 +264,19 @@ export function summarizeReport(d: ReportData): string {
         lines.push(`- Last model load: ${lastLoad.actualDevice} (dtype=${lastLoad.dtype})${lastLoad.glue ? ` · glue ${lastLoad.glue}` : ''}${proxyNote}${webgpuNote}`);
     }
     lines.push(`- Searches ${searches.length} · index runs ${indexes.length} · errors ${errors.length} · crashes ${crashes.length}`);
+    const lastFull = [...indexes].reverse().find(x => x.mode === 'full') ?? indexes.at(-1);
+    if (lastFull) {
+        const occ = lastFull.gpuBusyMs != null
+            ? `${((lastFull.gpuBusyMs / Math.max(lastFull.totalDurationMs, 1)) * 100).toFixed(0)}% GPU busy`
+            : null;
+        const persist = lastFull.persistWaitMs != null ? `${lastFull.persistWaitMs.toFixed(0)} ms persist wait` : null;
+        const batch = lastFull.effectiveBatch != null ? `avg batch ${lastFull.effectiveBatch.toFixed(1)}` : null;
+        const stalls = lastFull.longTaskCount != null
+            ? `${lastFull.longTaskCount} renderer stall(s)`
+            : null;
+        const extra = [occ, persist, batch, stalls].filter(Boolean).join(' · ');
+        lines.push(`- Last ${lastFull.mode} index: ${lastFull.filesIndexed} files in ${(lastFull.totalDurationMs / 1000).toFixed(1)} s (${lastFull.filesPerSec.toFixed(1)} files/s)${extra ? ` · ${extra}` : ''}`);
+    }
     // Main-thread stall rollup by phase (issue #5): the question every jank
     // triage starts with — WHAT was Seek doing during the stalls — answered
     // in the summary instead of via hand-grepping the JSON. 'idle' here

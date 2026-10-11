@@ -390,20 +390,22 @@ Embedding is the slow part of indexing: each chunk goes through the on-device mo
 | Knob | Role |
 |------|------|
 | **Max batch size** (`ROLLING_MAX`) | Hard ceiling on how many chunks may share one forward |
-| **Token budget** (`ROLLING_BUDGET`) | Target `batch × seq` work per dispatch — long buckets flush smaller so one GPU/CPU forward does not stall the UI as hard |
+| **Token budget** (`ROLLING_BUDGET`) | Interactive catch-up only: target `batch × seq` work per dispatch — long buckets flush smaller so one GPU/CPU forward does not stall the UI as hard |
 | **Warmup grid** | Batch sizes and seq rungs the embed runtime warms at model load; live flush sizes must stay inside that set |
 
-Flush size is derived, not a flat constant:
+Flush size is derived on the interactive path, and uncapped on a full reindex:
 
 ```text
-flushCount(bucket) ≈ clamp(round(ROLLING_BUDGET / bucket), 1, ROLLING_MAX)
+flushCount(bucket) ≈ mode === full
+  ? ROLLING_MAX
+  : clamp(round(ROLLING_BUDGET / bucket), 1, ROLLING_MAX)
 ```
 
-Read the live constants next to that helper on the index path — do not copy historical yield tables from comments or older docs; they drift when the budget changes.
+The parent overlaps IndexedDB persist of batch N with the next iframe embed. Queue depth, max batch size, and the catch-up token budget are Settings → Index → Advanced (defaults 10 / 8 / 1536). The iframe RPC itself stays single-flight. Read the live constants and clamps in `src/index/rolling-batch.ts` and `src/index/embed-pipeline.ts`.
 
 **Why two knobs.** Max batch size is “how full is the dishwasher rack.” Token budget is “how much work is allowed in one wash.” Raising only the max helps short buckets; long buckets stay small until the budget rises too. Raising either without extending the warmup grid risks cold shader compiles mid-reindex and historically triggered ORT-Web WebGPU **SafeInt** overflows on arbitrary `(batch × seq)` shapes.
 
-**Throughput context.** On desktop WebGPU, indexing is largely GPU-bound. Moving inference to a background worker does not by itself raise chunks/s; larger batches can, at the cost of longer non-preemptible stalls, thermal load, and SafeInt risk. After a reindex, trust `index-complete` embed throughput / batch latency / pace-wait / recycle fields before treating a higher cap as a win. A compositor pacer still yields between flushes so Obsidian can paint.
+**Throughput context.** On desktop WebGPU, indexing is largely GPU-bound. Moving inference to a background worker does not by itself raise chunks/s; larger batches can, at the cost of longer non-preemptible stalls, thermal load, and SafeInt risk. After a reindex, the value-proof fields on `index-complete` are `totalDurationMs`, `filesPerSec`, `gpuBusyMs` / wall (encoder occupancy), `persistWaitMs` (GPU parked on disk), and `effectiveBatch`. Real SM% and process CPU% are not visible inside the plugin — sample those with `scripts/sample-full-index-load.ps1` while a full reindex runs. A compositor pacer still yields between flushes so Obsidian can paint.
 
 **Query vs index.** Optional per-device “query in background worker” routing (when enabled) applies to single-query embeds only. Index batches stay on the iframe pipeline so token-exact bucket padding matches the warmup grid.
 

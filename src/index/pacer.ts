@@ -59,6 +59,10 @@ export function cheapYield(): Promise<void> {
 // until a search query is actually in flight, then idle-paces so that query
 // can cut in. `null` keeps the historical incremental idle pace (flush, workflow,
 // mobile catch-up — callers that did not opt in).
+//
+// Persist is not gated here: embedAndCommitFiles overlaps the next GPU dispatch
+// with IndexedDB of the previous batch (InFlightSemaphore in embed-pipeline.ts).
+// This yield only sits between iframe RPCs so the compositor/query can cut in.
 export async function yieldAfterEmbedDispatch(
     pacer: CompositorPacer,
     mode: 'full' | 'incremental',

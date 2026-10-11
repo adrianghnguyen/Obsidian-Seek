@@ -72,6 +72,20 @@ import { isUnderExcludedFolder, normalizeExcludedFolderPath } from '../search/se
 import {
     clampCatchUpBurstMaxFiles,
 } from '../index/startup-drain';
+import {
+    clampEmbedInFlightMax,
+    DEFAULT_EMBED_IN_FLIGHT,
+    EMBED_IN_FLIGHT_MIN,
+    EMBED_IN_FLIGHT_MAX,
+} from '../index/embed-pipeline';
+import {
+    clampRollingBatchMax,
+    clampRollingTokenBudget,
+    ROLLING_MAX,
+    ROLLING_BUDGET,
+    ROLLING_BUDGET_MIN,
+    ROLLING_BUDGET_MAX,
+} from '../index/rolling-batch';
 
 /** Optional About-footer URLs beyond Obsidian's base manifest schema. */
 type SeekAboutManifest = {
@@ -463,6 +477,42 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                         await this.save();
                     }));
         }
+
+        new Setting(adv)
+            .setName('Prepared embed batches')
+            .setDesc(`How many embedding batches can wait on disk writes while the GPU starts the next one. Higher keeps the GPU busy during a full reindex; too high uses more memory. Default ${DEFAULT_EMBED_IN_FLIGHT}. Applies to the next indexing pass.`)
+            .addSlider(slider => slider
+                .setLimits(EMBED_IN_FLIGHT_MIN, EMBED_IN_FLIGHT_MAX, 1)
+                .setValue(clampEmbedInFlightMax(this.s.embedInFlightMax))
+                .setDynamicTooltip()
+                .onChange(async v => {
+                    this.s.embedInFlightMax = clampEmbedInFlightMax(v);
+                    await this.save();
+                }));
+
+        new Setting(adv)
+            .setName('Chunks per GPU batch')
+            .setDesc(`Max chunks in one embedding call. The model is warmed for 1–${ROLLING_MAX}. A full reindex uses this size on every note length. Default ${ROLLING_MAX}. Applies to the next indexing pass.`)
+            .addSlider(slider => slider
+                .setLimits(1, ROLLING_MAX, 1)
+                .setValue(clampRollingBatchMax(this.s.rollingBatchMax))
+                .setDynamicTooltip()
+                .onChange(async v => {
+                    this.s.rollingBatchMax = clampRollingBatchMax(v);
+                    await this.save();
+                }));
+
+        new Setting(adv)
+            .setName('Catch-up token budget')
+            .setDesc(`Target work per catch-up dispatch so long notes do not stall the UI while you type. A full reindex ignores this and uses Chunks per GPU batch. Default ${ROLLING_BUDGET}. Applies to the next catch-up pass.`)
+            .addSlider(slider => slider
+                .setLimits(ROLLING_BUDGET_MIN, ROLLING_BUDGET_MAX, 128)
+                .setValue(clampRollingTokenBudget(this.s.rollingTokenBudget))
+                .setDynamicTooltip()
+                .onChange(async v => {
+                    this.s.rollingTokenBudget = clampRollingTokenBudget(v);
+                    await this.save();
+                }));
 
         // Live search always uses this device's IndexedDB. The toggle only controls
         // whether Seek also writes/hydrates vault index files (sidecar) for Sync/iOS.
