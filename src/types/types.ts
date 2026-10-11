@@ -477,8 +477,15 @@ export interface SeekSettings {
     // How many embed batches may sit unwritten while the next GPU dispatch
     // runs. 1 = old stop-and-wait (GPU idle during IndexedDB). Higher keeps
     // the GPU fed; too high holds more vectors in RAM. Clamped 1–16.
-    // Snapshot at the start of each index pass — next pass picks up a change.
+    // When embedInFlightAuto is on, the effective cap comes from the last
+    // index-complete pass (localStorage telemetry); this field is the manual
+    // override. Snapshot at the start of each index pass.
     embedInFlightMax: number;
+
+    // When true (default), prepared-embed batch cap is tuned from the last
+    // rebuild’s GPU/disk overlap (high-water + persist wait). Turn off to use
+    // embedInFlightMax from the slider. Per-device; not synced.
+    embedInFlightAuto: boolean;
 
     // Max chunks in one embedBatch. Must stay inside the warmed grid [1..8].
     // Full reindex uses this size on every sequence-length bucket.
@@ -668,7 +675,8 @@ export const DEFAULT_SETTINGS: SeekSettings = {
     customExcludedFolders: [], // additional Seek-only folder excludes (additive with Obsidian's list)
     indexBases: true,          // ON: index .base files (Obsidian Bases) as synthetic docs; preserves the feature's unconditional pre-toggle behavior
     catchUpBurstMaxFiles: 30,  // desktop catch-up burst cap; clamped 1–40 in startup-drain.ts
-    embedInFlightMax: 10,      // GPU batches allowed ahead of IndexedDB persist; clamped 1–16 in embed-pipeline.ts
+    embedInFlightMax: 10,      // manual cap when embedInFlightAuto is off; clamped 1–16 in embed-pipeline.ts
+    embedInFlightAuto: true,   // closed-loop cap from last index-complete (embed-auto-caps.ts)
     rollingBatchMax: 8,        // warmed ceiling; clamped 1–8 in rolling-batch.ts
     rollingTokenBudget: 1536,  // catch-up token budget; clamped 256–4096 in rolling-batch.ts
     showScores: false,         // OFF by default: per-result score line (Matching % · recency · title); opt-in via Display settings. (Also auto-hidden until the corpus is calibrated — ≥200 notes + full pass.) Default-only flip, no migration: installs that already persisted showScores keep their choice.

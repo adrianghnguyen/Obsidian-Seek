@@ -71,7 +71,8 @@ import { gzipString, gunzipToString, gzipAvailable } from '../sidecar/gzip';
 import { IndexCoordinator } from '../index/index-coordinator';
 import { CompositorPacer, yieldAfterEmbedDispatch } from '../index/pacer';
 import { rollingBatchFor, clampRollingBatchMax, clampRollingTokenBudget } from '../index/rolling-batch';
-import { InFlightSemaphore, createExclusiveChain, clampEmbedInFlightMax, gpuOccupancyPct, effectiveBatchSize } from '../index/embed-pipeline';
+import { InFlightSemaphore, createExclusiveChain, gpuOccupancyPct, effectiveBatchSize } from '../index/embed-pipeline';
+import { recordEmbedPipelineTelemetry, resolveEmbedInFlightMax } from '../index/embed-auto-caps';
 import { beginLongTaskPass } from '../app/observers';
 import { isMobilePlatform, residentInt8Enabled } from '../embedding/platform';
 import { CacheManager } from './cache-manager';
@@ -831,11 +832,12 @@ export class SearchOrchestrator {
         const pacer = new CompositorPacer();
         // GPU RPC is still single-flight (iframe rpcBusy). Persist of batch N
         // overlaps the next embed: semaphore caps unwritten batches in RAM.
+        const inflightCap = resolveEmbedInFlightMax(this.settings);
         const rollingOpts = {
             rollingBatchMax: clampRollingBatchMax(this.settings.rollingBatchMax),
             rollingTokenBudget: clampRollingTokenBudget(this.settings.rollingTokenBudget),
         };
-        const inflight = new InFlightSemaphore(clampEmbedInFlightMax(this.settings.embedInFlightMax));
+        const inflight = new InFlightSemaphore(inflightCap);
         const persistChain = createExclusiveChain();
         const persistJobs: Promise<void>[] = [];
         let persistFatal: unknown = null;
@@ -1468,7 +1470,6 @@ export class SearchOrchestrator {
         const effectiveBatch = effectiveBatchSize(totalVectors, embedDispatches);
         const gpuBusyMs = embedBatchLatencyMs.reduce((s, x) => s + x, 0);
         const persistWaitMs = inflight.waitMs;
-        const inflightCap = clampEmbedInFlightMax(this.settings.embedInFlightMax);
         const occupancy = gpuOccupancyPct(gpuBusyMs, totalMs);
         const longTaskRollup = longTaskPass.stop();
         checks.push(`ℹ️ embed: ${embedDispatches} dispatches, effective batch ≈ ${effectiveBatch.toFixed(1)} (${mode === 'full' ? `full reindex batch ${rollingOpts.rollingBatchMax}` : `budget ${rollingOpts.rollingTokenBudget}, max ${rollingOpts.rollingBatchMax}`}, in-flight ${inflightCap})`);
@@ -1580,6 +1581,7 @@ export class SearchOrchestrator {
             pass: (totalChunks > 0 || chunksReconciled > 0) && skipRate <= SKIP_RATE_FAIL,
             checks,
         };
+        recordEmbedPipelineTelemetry(entry);
         // Completion beat closes the indexing window: a death AFTER this reads
         // as idle/background eviction, not crash-while-indexing.
         this.forensics?.beat('index-complete', {
