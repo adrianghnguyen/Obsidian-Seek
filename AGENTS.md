@@ -48,6 +48,7 @@ Non-obvious notes:
 | Vault (CLI) | Path | Role |
 |-------------|------|------|
 | `plugin-sandbox-Obsidian` | `C:\plugin-sandbox-Obsidian` | **Default** — routine deploy, reload, CLI verify, playbooks, cold-start at scale (~3k notes) |
+| `seek-index-lab-500` | `C:\seek-index-lab-500` | **Index lab** — ~500 notes for full-reindex throughput / GPU saturation (skill `seek-index-lab-vault`). Disable Seek on the 3k sandbox first so the encoder is not shared. |
 | `Obsidian` | `C:\Obsidian` | **Production** — personal notes; deploy **only** on explicit promotion or after merge to `main` + user request |
 
 Copy `main.js`, `manifest.json`, and `styles.css` to the sandbox plugin path for testing. Do **not** copy to `C:\Obsidian\.obsidian\plugins\seek\` during feature branches or routine task completion. Policy is in `.cursor/rules/deploy-and-verify.mdc`.

@@ -96,6 +96,13 @@ export class SeekPerfConsole {
             commitDurationMs: entry.commitDurationMs,
             totalDurationMs: entry.totalDurationMs,
             paceWaitMs: entry.paceWaitMs,
+            filesPerSec: entry.filesPerSec,
+            gpuBusyMs: entry.gpuBusyMs,
+            persistWaitMs: entry.persistWaitMs,
+            inflightHighWater: entry.inflightHighWater,
+            effectiveBatch: entry.effectiveBatch,
+            longTaskCount: entry.longTaskCount,
+            longTaskMs: entry.longTaskMs,
             pass: entry.pass,
         });
     }
