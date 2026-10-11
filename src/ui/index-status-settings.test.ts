@@ -207,6 +207,7 @@ describe('renderEmbedDiagnostic', () => {
         expect(blob).toContain('Phases');
         expect(blob).toContain('3m 12s');
         expect(blob).toContain('412');
+        expect(blob).not.toContain('Encoder feed');
         expect(blob).toContain('webgpu');
         expect(blob).toContain('1.8s');
         expect(card.querySelector('.seek-status-embed-grid')).not.toBeNull();
@@ -243,6 +244,27 @@ describe('renderEmbedDiagnostic', () => {
         });
         expect(textOf(card)).toContain('1000');
         expect(textOf(card)).toContain('tok/s');
+    });
+
+    it('unrolled shows encoder-feed occupancy when pipeline fields are present', () => {
+        const card = stubEl();
+        renderEmbedDiagnostic(card as unknown as HTMLElement, {
+            open: true,
+            onToggle: () => {},
+            live: null,
+            lastComplete: sampleComplete({
+                gpuBusyMs: 129_000,
+                persistWaitMs: 800,
+                inflightHighWater: 8,
+                embedInFlightMax: 10,
+                effectiveBatch: 7.9,
+            }),
+            lastLoad: sampleLoad(),
+        });
+        const blob = textOf(card);
+        expect(blob).toContain('Encoder feed');
+        expect(blob).toContain('50%');
+        expect(blob).toContain('8 / 10');
     });
 
     it('renderSettingsIndexStatusCard appends embed block after startup', () => {

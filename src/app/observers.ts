@@ -15,9 +15,53 @@ import type { Forensics } from '../diagnostics/forensics';
 import { seekPerf } from '../diagnostics/perf-console';
 import { isIgnorableStartupConsoleError } from './layout-ready';
 
-// Entries shorter than this are not logged as long tasks. Kept module-local
-// (only wired_gate reads it) so the threshold travels with the observer.
-const LONG_TASK_THRESHOLD_MS = 250;
+// Entries shorter than this are not logged as long tasks. Shared with the
+// pass-local counter so index-complete stall rollups use the same cutoff.
+export const LONG_TASK_THRESHOLD_MS = 250;
+
+/**
+ * Pass-local renderer long-task counter (Electron: do not block the renderer).
+ * The plugin cannot see Chromium's browser/main process; this is the vault
+ * window's UI thread, which IndexedDB commits and chunking still share.
+ */
+export function beginLongTaskPass(thresholdMs = LONG_TASK_THRESHOLD_MS): {
+    stop: () => { count: number; ms: number };
+} {
+    let count = 0;
+    let ms = 0;
+    interface PolyfillObserver {
+        new(cb: (list: { getEntries(): PerformanceEntry[] }) => void): PerformanceObserver;
+        prototype: { disconnect(): void; observe(opts: { entryTypes: string[] }): void };
+    }
+    const Ctor = (typeof window !== 'undefined'
+        ? (window as unknown as { PerformanceObserver?: PolyfillObserver }).PerformanceObserver
+        : undefined);
+    let observer: PerformanceObserver | null = null;
+    if (Ctor) {
+        try {
+            observer = new Ctor(list => {
+                for (const entry of list.getEntries()) {
+                    if (entry.duration < thresholdMs) continue;
+                    count++;
+                    ms += entry.duration;
+                }
+            });
+            observer.observe({ entryTypes: ['longtask'] });
+        } catch {
+            observer = null;
+        }
+    }
+    let stopped = false;
+    return {
+        stop() {
+            if (!stopped) {
+                observer?.disconnect();
+                stopped = true;
+            }
+            return { count, ms };
+        },
+    };
+}
 
 export interface ObserverHost {
     /** Live probe — true once onunload begins; async callbacks must not resurrect teardown. */

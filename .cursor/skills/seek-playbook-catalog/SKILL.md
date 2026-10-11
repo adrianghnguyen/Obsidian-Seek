@@ -43,6 +43,7 @@ Machine-readable: [`playbook-scenarios.json`](playbook-scenarios.json)
 - **Performance S1–S7:** [`.cursor/skills/seek-telemetry-playbook/SKILL.md`](../seek-telemetry-playbook/SKILL.md)
 - **Functional F1–F10:** [`.cursor/skills/seek-functional-telemetry/SKILL.md`](../seek-functional-telemetry/SKILL.md)
 - **CLI startup probes:** [`.cursor/skills/seek-cli-startup-debug/SKILL.md`](../seek-cli-startup-debug/SKILL.md)
+- **Full-reindex GPU / queue-batch (500 notes):** [`.cursor/skills/seek-index-lab-vault/SKILL.md`](../seek-index-lab-vault/SKILL.md) — do not use the 3k sandbox for B/D/E saturation sets
 
 ## Fixtures
 

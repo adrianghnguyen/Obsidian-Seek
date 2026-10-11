@@ -180,6 +180,18 @@ export interface IndexCompleteEntry {
     // the hidden-window pacing inversion: ~1.5 s of embed compute arriving as
     // 92.8 s wall was invisible until this split pace-wait out of embed time.
     paceWaitMs?: number;
+    // Pipeline value-proof (optional on older logs). gpuBusyMs is the sum of
+    // iframe embed-batch latencies — the closest in-plugin proxy for "was the
+    // GPU fed?" Real SM%/CPU% still need an OS sampler.
+    gpuBusyMs?: number;
+    persistWaitMs?: number;
+    inflightHighWater?: number;
+    embedInFlightMax?: number;
+    rollingBatchMax?: number;
+    effectiveBatch?: number;
+    /** Renderer long tasks ≥250 ms during this pass (Electron renderer jank). */
+    longTaskCount?: number;
+    longTaskMs?: number;
     pass: boolean;
     checks: string[];
 }

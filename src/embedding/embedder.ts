@@ -355,6 +355,9 @@ export class LocalEmbedder {
         //      coldStartMs to drop by ~the previous warmupMs.
         //   3. WASM fallback: warmup doesn't apply; we say so explicitly so
         //      anyone reading the log doesn't conflate cases 2 and 3.
+        // Warmup-as-bench hook: iframe warms batch 1–8 × seq buckets but only
+        // reports total warmupMs today. When per-dispatch latencies exist, feed
+        // pickRollingBatchMaxFromWarmup (embed-auto-caps.ts).
         if (result.warmupSkipped) {
             checks.push(`ℹ️ warmup SKIPPED (fingerprint cache hit) · cold-start ${coldStartMs.toFixed(0)} ms is read + parse + device init only`);
         } else if (result.warmupMs != null) {

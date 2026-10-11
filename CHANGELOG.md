@@ -9,8 +9,15 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 - **A second full reindex no longer queues behind one that is still loading the model.** The running check used to ignore that window, so a cold build and a manual rebuild could both start, the status bar stuck at 0 files, and the second pass wiped the index when the first finished.
 - **Status bar progress from an older indexing job is ignored.** Chunk counts from that job no longer land on the job the bar is showing.
 
+### Changed
+- **Full vault reindex keeps the GPU busy while IndexedDB catches up.** When a batch of vectors returns, the next embed starts immediately and the previous batch writes to disk in the background. Catch-up while you type is unchanged.
+- **Full vault reindex embeds 8 chunks per GPU dispatch** on every sequence-length bucket (the size the WebGPU shaders already warm). Interactive catch-up still uses the smaller token budget so a long note does not stall the UI.
+
 ### Added
 - **EmbeddingGemma 2.** Settings → Model & performance → Embedding model can switch from Granite multilingual (default, 384 dimensions) to EmbeddingGemma 2. Vector size offers 768, 512, 256, or 128. Seek loads the text weights only (about 175 MB) and adds the model's search instructions to queries and notes. Changing the model or vector size asks you to reindex; keyword search keeps working until you do.
+- **Index → Advanced embed-dispatch sliders.** Prepared embed batches (default 10, how far the GPU may run ahead of disk), chunks per GPU batch (1–8), and catch-up token budget (how much work one catch-up dispatch may do so typing stays smooth). Changes apply on the next indexing pass.
+- **Auto-tune prepared embed batches (default on).** After each rebuild, Seek suggests how many batches may queue ahead of disk from GPU busy time, persist wait, and queue high-water — typically ~4 on desktop lab runs instead of a fixed 10. Turn off in Index → Advanced to set a fixed cap with the slider. Same overlap applies during background catch-up; catch-up still respects the token budget while you type.
+- **Last-index card and logging report show whether a rebuild kept the encoder busy.** GPU-busy share of wall, time spent waiting on disk, queue high-water, average batch size, and vault-window stalls (≥250 ms) land on `index-complete` (and Settings → Index). Real GPU SM% and Obsidian CPU% still need the OS sampler.
 
 ## 1.12.2
 

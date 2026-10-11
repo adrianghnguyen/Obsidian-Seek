@@ -55,11 +55,10 @@ const CDN_URL = `https://cdn.jsdelivr.net/npm/@huggingface/transformers@${TRANSF
 // (the fingerprint won't match) — that's the intended behavior, no manual
 // cache bust required.
 //
-// WARMUP_BATCH_SIZES: the indexer uses a per-bucket rolling buffer that flushes
-// at a FIXED warmed size of 8 (ROLLING_BATCH in search.ts), so the only batch
-// counts ever dispatched are 8 and the partial-drain remainders 1..7. We warm
-// exactly that set [1..8] — no 32 (the old within-file ceiling, never dispatched
-// now). All warmed on both device classes so a vault sync between desktop+mobile
+// WARMUP_BATCH_SIZES: full reindex flushes at 8 (ROLLING_MAX); interactive
+// catch-up uses the token budget (512→3). Remainders 1..7 still occur. We warm
+// exactly [1..8] — no 32 (the old within-file ceiling, never dispatched now).
+// All warmed on both device classes so a vault sync between desktop+mobile
 // never eats a multi-second WGSL compile stall mid-reindex.
 //
 // SEQ_BUCKETS: padding ladder. Caps unique tensor shapes Dawn sees to O(buckets)
@@ -334,6 +333,9 @@ export class IframeRunner {
     // for concurrent forwards: an in-flight embed-batch (catch-up) + a query
     // embed used to contend and hang seek:search for 30s+ (G_catchup_ux). Queue
     // model RPCs one-at-a-time; `embed` jumps ahead of index traffic.
+    // Parent-side IDB persist is pipelined separately (embed-pipeline.ts,
+    // Settings → Index → Advanced → Prepared embed batches) — this flag only
+    // serializes GPU/tokenizer RPCs, not disk.
     private rpcBusy = false;
     private queryRpcQueue: QueuedRpc[] = [];
     private indexRpcQueue: QueuedRpc[] = [];

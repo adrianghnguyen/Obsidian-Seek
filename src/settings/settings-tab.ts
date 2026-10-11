@@ -78,6 +78,24 @@ import { isUnderExcludedFolder, normalizeExcludedFolderPath } from '../search/se
 import {
     clampCatchUpBurstMaxFiles,
 } from '../index/startup-drain';
+import {
+    clampEmbedInFlightMax,
+    DEFAULT_EMBED_IN_FLIGHT,
+    EMBED_IN_FLIGHT_MIN,
+    EMBED_IN_FLIGHT_MAX,
+} from '../index/embed-pipeline';
+import {
+    previewAutoEmbedInFlightMax,
+    EMBED_IN_FLIGHT_COLD_SUGGEST,
+} from '../index/embed-auto-caps';
+import {
+    clampRollingBatchMax,
+    clampRollingTokenBudget,
+    ROLLING_MAX,
+    ROLLING_BUDGET,
+    ROLLING_BUDGET_MIN,
+    ROLLING_BUDGET_MAX,
+} from '../index/rolling-batch';
 
 /** Optional About-footer URLs beyond Obsidian's base manifest schema. */
 type SeekAboutManifest = {
@@ -469,6 +487,62 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                         await this.save();
                     }));
         }
+
+        const nextInflightCap = previewAutoEmbedInFlightMax(this.s);
+        const autoInflightHint = this.s.embedInFlightAuto
+            ? `On: the next index pass uses ${nextInflightCap} prepared batch(es) from the last rebuild’s GPU/disk overlap (or ${EMBED_IN_FLIGHT_COLD_SUGGEST} before the first rebuild). Turn off to set a fixed cap with the slider below.`
+            : `Off: the slider below is used (${clampEmbedInFlightMax(this.s.embedInFlightMax)}). Turn on to let Seek pick a cap after each rebuild instead of default ${DEFAULT_EMBED_IN_FLIGHT}.`;
+        new Setting(adv)
+            .setName('Auto-tune prepared embed batches')
+            .setDesc(`${autoInflightHint} Applies to full reindex and background catch-up (catch-up still uses the token budget while you type).`)
+            .addToggle(t => t
+                .setValue(this.s.embedInFlightAuto)
+                .onChange(async v => {
+                    this.s.embedInFlightAuto = v;
+                    await this.save();
+                    this.rerender();
+                }));
+
+        new Setting(adv)
+            .setName('Prepared embed batches')
+            .setDesc(`How many embedding batches can wait on disk writes while the GPU starts the next one. Higher keeps the GPU busy; too high uses more memory. Manual override when auto-tune is off.`)
+            .addSlider(slider => slider
+                .setLimits(EMBED_IN_FLIGHT_MIN, EMBED_IN_FLIGHT_MAX, 1)
+                .setValue(this.s.embedInFlightAuto
+                    ? nextInflightCap
+                    : clampEmbedInFlightMax(this.s.embedInFlightMax))
+                .setDynamicTooltip()
+                .setDisabled(this.s.embedInFlightAuto)
+                .onChange(async v => {
+                    this.s.embedInFlightAuto = false;
+                    this.s.embedInFlightMax = clampEmbedInFlightMax(v);
+                    await this.save();
+                    this.rerender();
+                }));
+
+        new Setting(adv)
+            .setName('Chunks per GPU batch')
+            .setDesc(`Max chunks in one embedding call. The model is warmed for 1–${ROLLING_MAX}. Full reindex and catch-up use this ceiling; catch-up still shrinks each dispatch via the token budget so typing stays smooth. Default ${ROLLING_MAX}. Applies to the next indexing pass.`)
+            .addSlider(slider => slider
+                .setLimits(1, ROLLING_MAX, 1)
+                .setValue(clampRollingBatchMax(this.s.rollingBatchMax))
+                .setDynamicTooltip()
+                .onChange(async v => {
+                    this.s.rollingBatchMax = clampRollingBatchMax(v);
+                    await this.save();
+                }));
+
+        new Setting(adv)
+            .setName('Catch-up token budget')
+            .setDesc(`Target work per catch-up dispatch so long notes do not stall the UI while you type. A full reindex ignores this and uses Chunks per GPU batch. Default ${ROLLING_BUDGET}. Applies to the next catch-up pass.`)
+            .addSlider(slider => slider
+                .setLimits(ROLLING_BUDGET_MIN, ROLLING_BUDGET_MAX, 128)
+                .setValue(clampRollingTokenBudget(this.s.rollingTokenBudget))
+                .setDynamicTooltip()
+                .onChange(async v => {
+                    this.s.rollingTokenBudget = clampRollingTokenBudget(v);
+                    await this.save();
+                }));
 
         // Live search always uses this device's IndexedDB. The toggle only controls
         // whether Seek also writes/hydrates vault index files (sidecar) for Sync/iOS.

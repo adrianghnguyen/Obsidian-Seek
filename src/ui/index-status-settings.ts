@@ -29,6 +29,7 @@ import {
     type IndexJobSpeedView,
 } from './index-status-bar';
 import type { IndexCompleteEntry, LoadEntry } from '../types/types';
+import { gpuOccupancyPct } from '../index/embed-pipeline';
 
 /** Novice glossary for embed-metric labels (hover target = muted label). */
 export const EMBED_METRIC_HELP: Record<string, string> = {
@@ -54,6 +55,11 @@ export const EMBED_METRIC_HELP: Record<string, string> = {
     batch: 'How work is sent to the model.',
     dispatches: 'How many times Seek sent a group of slices to the model.',
     'batch size': 'Average slices per send. Closer to 8 means the model is well fed.',
+    feed: 'Whether the last rebuild kept the encoder busy, or sat waiting on disk.',
+    'GPU busy': 'Share of the run the encoder reported it was working. Higher means the GPU was fed. This is not nvidia-smi — that still needs an OS sampler.',
+    'persist wait': 'Time the encoder sat idle because disk had not caught up. Near zero means the pipeline is doing its job.',
+    'queue peak': 'How many finished batches were waiting to be saved at the high point. Hitting the prepared-batches cap means disk is the limit.',
+    stalls: 'Times the vault window froze for 250 ms or more during this run. The encoder lives in a child frame; these stalls are the Obsidian window itself (typing, scrolling).',
     p50: 'Typical time for one model batch. Half of batches were faster than this.',
     p95: 'A slow batch. Most batches were faster than this. Spikes mean hitching.',
     health: 'Whether the last run finished cleanly.',
@@ -281,6 +287,30 @@ export function renderEmbedDiagnostic(card: HTMLElement, view: EmbedDiagView): v
             );
         }
         kvGrid(batch, batchRows);
+
+        if (complete.gpuBusyMs != null || complete.persistWaitMs != null) {
+            const feed = body.createDiv({ cls: 'seek-status-embed-section' });
+            sectionHead(feed, 'feed', 'Encoder feed');
+            const occ = gpuOccupancyPct(complete.gpuBusyMs ?? 0, complete.totalDurationMs);
+            const peak = complete.inflightHighWater;
+            const cap = complete.embedInFlightMax;
+            kvGrid(feed, [
+                { key: 'GPU busy', value: `${occ.toFixed(0)}%`, label: 'GPU busy' },
+                { key: 'persist wait', value: fmtPhaseDuration(complete.persistWaitMs ?? 0), label: 'Persist wait' },
+                {
+                    key: 'queue peak',
+                    value: peak != null && cap != null ? `${peak} / ${cap}` : '—',
+                    label: 'Queue peak',
+                },
+                {
+                    key: 'stalls',
+                    value: complete.longTaskCount != null
+                        ? `${complete.longTaskCount} / ${fmtPhaseDuration(complete.longTaskMs ?? 0)}`
+                        : '—',
+                    label: 'Window stalls',
+                },
+            ]);
+        }
 
         const health = body.createDiv({ cls: 'seek-status-embed-section' });
         sectionHead(health, 'health', 'Health');

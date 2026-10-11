@@ -61,7 +61,10 @@ export type Dtype = 'q4f16' | 'q4' | 'q8' | 'fp32';
 // reason, patch cost, mutex hold), + IndexCompleteEntry.paceWaitMs.
 // v17: startup trace infra — rechunk-live (filesWalked, tokenCountsRpc),
 // startup-span (boot/hydrate phase boundaries), startup-gate (search gate release).
-export const LOG_SCHEMA_VERSION = 18;
+// v19: IndexCompleteEntry pipeline occupancy — gpuBusyMs, persistWaitMs,
+// inflightHighWater, embedInFlightMax, rollingBatchMax, effectiveBatch,
+// longTaskCount, longTaskMs (renderer stalls during the pass).
+export const LOG_SCHEMA_VERSION = 19;
 
 // ---- chunk model ----
 
@@ -471,6 +474,28 @@ export interface SeekSettings {
     // fixed cap (see catchup.ts). Read live on each drain — no reload required.
     catchUpBurstMaxFiles: number;
 
+    // How many embed batches may sit unwritten while the next GPU dispatch
+    // runs. 1 = old stop-and-wait (GPU idle during IndexedDB). Higher keeps
+    // the GPU fed; too high holds more vectors in RAM. Clamped 1–16.
+    // When embedInFlightAuto is on, the effective cap comes from the last
+    // index-complete pass (localStorage telemetry); this field is the manual
+    // override. Snapshot at the start of each index pass.
+    embedInFlightMax: number;
+
+    // When true (default), prepared-embed batch cap is tuned from the last
+    // rebuild’s GPU/disk overlap (high-water + persist wait). Turn off to use
+    // embedInFlightMax from the slider. Per-device; not synced.
+    embedInFlightAuto: boolean;
+
+    // Max chunks in one embedBatch. Must stay inside the warmed grid [1..8].
+    // Full reindex uses this size on every sequence-length bucket.
+    rollingBatchMax: number;
+
+    // Interactive catch-up only: target batch × seq-length per dispatch so a
+    // long (512) bucket flushes small and typing stays smooth. Full reindex
+    // ignores this and uses rollingBatchMax. Clamped 256–4096.
+    rollingTokenBudget: number;
+
     // Per-result score line in the search modal. ON shows each result's
     // "Matching %" (the calibrated match strength) plus its recency and
     // title-boost bonuses. Requires a CALIBRATED corpus: the line is hidden — and
@@ -660,6 +685,10 @@ export const DEFAULT_SETTINGS: SeekSettings = {
     customExcludedFolders: [], // additional Seek-only folder excludes (additive with Obsidian's list)
     indexBases: true,          // ON: index .base files (Obsidian Bases) as synthetic docs; preserves the feature's unconditional pre-toggle behavior
     catchUpBurstMaxFiles: 30,  // desktop catch-up burst cap; clamped 1–40 in startup-drain.ts
+    embedInFlightMax: 10,      // manual cap when embedInFlightAuto is off; clamped 1–16 in embed-pipeline.ts
+    embedInFlightAuto: true,   // closed-loop cap from last index-complete (embed-auto-caps.ts)
+    rollingBatchMax: 8,        // warmed ceiling; clamped 1–8 in rolling-batch.ts
+    rollingTokenBudget: 1536,  // catch-up token budget; clamped 256–4096 in rolling-batch.ts
     showScores: false,         // OFF by default: per-result score line (Matching % · recency · title); opt-in via Display settings. (Also auto-hidden until the corpus is calibrated — ≥200 notes + full pass.) Default-only flip, no migration: installs that already persisted showScores keep their choice.
     verboseTrace: false,       // OFF: persist only the top-10 ranking trace per search (what the report shows); ON = full 50-deep tail for offline eval. Diagnostic-only, no UI
     redactReport: true,        // ON: salted tokens for paths/titles/queries in the generated report — the share-safe default for a file made to be pasted into a public issue; see field comment
