@@ -4,6 +4,8 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.13.0-rc.1
+
 ### Fixed
 - **EmbeddingGemma 2 load no longer waits out the whole model timeout on a stuck proxy worker.** The ORT proxy worker can sit idle on this model's external-data graph and never reject, so the in-page CPU session never started and a full reindex failed at 180s. That attempt is now bounded and the load continues on the in-page path.
 - **A second full reindex no longer queues behind one that is still loading the model.** The running check used to ignore that window, so a cold build and a manual rebuild could both start, the status bar stuck at 0 files, and the second pass wiped the index when the first finished.
