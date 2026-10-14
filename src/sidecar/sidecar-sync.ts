@@ -2,6 +2,23 @@
 // sidecar WITHOUT re-embedding. This is what restores search after iOS evicts
 // the IDB, and what lets a fresh device pick up another device's index.
 //
+// ## Producer / consumer (cross-device)
+//
+// - **Producer** — Each Seek install with sidecar enabled and a stable `deviceId`
+//   (see SeekLogger) appends to *its own* artifacts only: `index.<deviceId>.jsonl`,
+//   `embeddings.<deviceId>.<seq>.bin`, `meta.<deviceId>.json`, and (desktop) `bm25.<deviceId>.json.gz`.
+//   Writes happen during local indexing (`bulkAppend` / flush) under the vault dir lock;
+//   Obsidian Sync / iCloud replicate those files to other devices. This module never
+//   mutates another device's sidecar files.
+// - **Consumer** — Every device (including the producer on a fresh IDB after iOS eviction)
+//   reads the *union* of all peer artifacts via `listSidecarDeviceIds` → `scanProducerGate`
+//   → `scanJsonl` (chunk-id merge with deterministic cross-device winner in `sidecar.ts`).
+//   Accepted vectors are written only into **local IndexedDB** (`putQuantized` / file records).
+// - **Discovery / re-hydrate** — `SidecarCoordinator.reconcileSidecarIfChanged` compares
+//   `sidecarDirSignature` (peer jsonl + meta mtimes, excluding self) and runs hydrate when
+//   the dir changed or the local index is empty. Signature unchanged still refreshes
+//   `probePeerAhead` so relaunch keeps peer-ahead UI accurate.
+//
 // The algorithm is a pure function over injectable dependencies (HydrateDeps) so
 // it can be unit-tested against fakes with no IndexedDB / vault. SearchOrchestrator
 // supplies the real deps (re-chunk the live vault, read/write the store) and runs
@@ -31,9 +48,9 @@ import type { Chunk } from '../types/types';
 import type { QuantVec } from '../embedding/quant';
 import {
     decodeRecord,
-    deviceIdFromJsonlPath,
     isOffsetInRange,
-    listDeviceJsonls,
+    jsonlPathFor,
+    listSidecarDeviceIds,
     scanJsonl,
     shardPathFor,
     type ResolvedEntry,
@@ -132,6 +149,83 @@ function fullReindexEpoch(m: SidecarMeta | null): number {
     return Number.isNaN(t) ? -Infinity : t;
 }
 
+/*
+ * Failure modes & mitigations (sidecar sharing) — agent/review pointer; full table in
+ * docs/sidecar-sharing-failure-modes.md.
+ *
+ * Partial sync (meta/jsonl/shard arrive out of order): enumerate producers via
+ * listSidecarDeviceIds, not jsonl alone; hydrate only when jsonl exists; all-or-nothing
+ * per note when shard bytes lag; peerSidecarPresent uses the same union as reap.
+ * Atomic writes (.tmp + rename): sweepOrphanTmpFiles never deletes a peer's .tmp.
+ * Version mismatch: metaAccepts refuses ingest; peerAhead when peer chunker is newer.
+ * Dir lock (writeDeviceMeta): serializes floor raises vs meta preserve-read.
+ * Plugin reload / vault close: sidecar coordinator defers compaction; IDB mutex bounds overlap.
+ */
+
+interface ProducerGateScan {
+    acceptedJsonls: string[];
+    refusedProducers: number;
+    peerAhead: boolean;
+    bgMean?: number;
+    bgStd?: number;
+    /** Every device id owning any sidecar artifact (union enumeration). */
+    artifactDevices: string[];
+    /** Device ids with a committed index.<device>.jsonl (hydrate scan input). */
+    jsonlReadyDevices: string[];
+}
+
+// Single version-gate pass over every sidecar device id. Sync providers deliver
+// meta, bm25, shards, and jsonl independently — jsonl-only enumeration missed
+// meta-first peers (peer-ahead banner, Restoring vs action-needed drift vs
+// peerSidecarPresent). Hydrate still requires a jsonl before scanJsonl; ranking
+// includes meta-only accepted producers so cross-device BM25 can load from bm25.gz
+// when the jsonl has not landed yet.
+async function scanProducerGate(
+    adapter: DataAdapter,
+    indexDir: string,
+    expect: MetaExpectation,
+    onRefusedProducer?: HydrateDeps['onRefusedProducer'],
+): Promise<ProducerGateScan> {
+    const artifactDevices = await listSidecarDeviceIds(adapter, indexDir);
+    const jsonlReadyDevices: string[] = [];
+    const acceptedJsonls: string[] = [];
+    let refusedProducers = 0;
+    let peerAhead = false;
+    let bgSource: SidecarMeta | null = null;
+
+    for (const dev of artifactDevices) {
+        const meta = await readDeviceMeta(adapter, indexDir, dev);
+        const jsonlPath = jsonlPathFor(indexDir, dev);
+        const hasJsonl = await adapter.exists(jsonlPath).catch(() => false);
+        if (hasJsonl) jsonlReadyDevices.push(dev);
+
+        if (metaAccepts(meta, expect)) {
+            if (hasJsonl) {
+                acceptedJsonls.push(jsonlPath);
+            }
+            if (meta && meta.bgMean != null && meta.bgStd != null &&
+                (bgSource == null || fullReindexEpoch(meta) > fullReindexEpoch(bgSource))) {
+                bgSource = meta;
+            }
+            continue;
+        }
+
+        refusedProducers++;
+        if (meta && meta.chunkerVersion > expect.chunkerVersion) peerAhead = true;
+        onRefusedProducer?.(dev, meta, expect);
+    }
+
+    return {
+        acceptedJsonls,
+        refusedProducers,
+        peerAhead,
+        bgMean: bgSource?.bgMean,
+        bgStd: bgSource?.bgStd,
+        artifactDevices,
+        jsonlReadyDevices,
+    };
+}
+
 // Rank the version-COMPATIBLE producers freshest-first (newest full reindex). Used
 // by the cross-device BM25 load (Phase 3): the consumer tries each in turn until one
 // has a loadable BM25 .gz artifact — a single "freshest" pick is NOT enough because a
@@ -148,16 +242,12 @@ export async function rankAcceptedProducers(
     indexDir: string,
     expect: MetaExpectation,
 ): Promise<string[]> {
-    const jsonls = await listDeviceJsonls(adapter, indexDir);
     const accepted: { dev: string; epoch: number }[] = [];
-    for (const jsonl of jsonls) {
-        const dev = deviceIdFromJsonlPath(jsonl);
-        if (!dev) continue;
+    for (const dev of await listSidecarDeviceIds(adapter, indexDir)) {
         const meta = await readDeviceMeta(adapter, indexDir, dev);
         if (!metaAccepts(meta, expect)) continue;
         accepted.push({ dev, epoch: fullReindexEpoch(meta) });
     }
-    // Freshest first; listDeviceJsonls already sorted, so equal epochs stay stable.
     accepted.sort((a, b) => b.epoch - a.epoch);
     return accepted.map(a => a.dev);
 }
@@ -178,10 +268,7 @@ export async function probePeerAhead(
     indexDir: string,
     expect: MetaExpectation,
 ): Promise<boolean> {
-    const jsonls = await listDeviceJsonls(adapter, indexDir);
-    for (const jsonl of jsonls) {
-        const dev = deviceIdFromJsonlPath(jsonl);
-        if (!dev) continue;
+    for (const dev of await listSidecarDeviceIds(adapter, indexDir)) {
         const meta = await readDeviceMeta(adapter, indexDir, dev);
         if (!metaAccepts(meta, expect) && meta && meta.chunkerVersion > expect.chunkerVersion) return true;
     }
@@ -478,45 +565,20 @@ export async function hydrateFromSidecar(deps: HydrateDeps): Promise<HydrateResu
     const empty: HydrateResult = { scanned: 0, needed: 0, hydrated: 0, skippedPartialNotes: 0, refusedProducers: 0, acceptedProducers: 0, peerAhead: false, hydratedNotePaths: [] };
 
     // 1. Version gate: keep only producers this consumer can reproduce.
-    const allJsonls = await listDeviceJsonls(adapter, indexDir);
-    // Early producer-file probe: producerFilesFound:0 means NO other device's
-    // sidecar has reached this device's index dir yet (the iCloud-delivery gap
-    // that strands an iPhone into a local re-embed). Logged before the version
-    // gate so "0 files synced" is distinguishable from "files present but refused".
+    const gate = await scanProducerGate(adapter, indexDir, expect, deps.onRefusedProducer);
+    const accepted = gate.acceptedJsonls;
+    const refused = gate.refusedProducers;
+    const peerAhead = gate.peerAhead;
+    // Early producer-file probe: artifactDevices:0 means NO sidecar has reached this
+    // index dir yet (iCloud delivery gap). jsonlReady vs artifact distinguishes
+    // "meta landed, index log still syncing" from "nothing synced".
     deps.log?.('sidecar-hydrate-scan', {
-        producerFilesFound: allJsonls.length,
-        devices: allJsonls.map(j => deviceIdFromJsonlPath(j) ?? '?').join(',') || 'none',
+        producerFilesFound: gate.jsonlReadyDevices.length,
+        artifactDevices: gate.artifactDevices.length,
+        devices: gate.jsonlReadyDevices.join(',') || 'none',
+        artifactOnly: gate.artifactDevices.filter(d => !gate.jsonlReadyDevices.includes(d)).join(',') || 'none',
     });
-    const accepted: string[] = [];
-    let refused = 0;
-    // A refused producer whose chunkerVersion is HIGHER than ours = a newer index we're
-    // too old to read (the user should update Seek). Tracked across the whole scan so a
-    // single ahead peer is reported even when other producers are accepted.
-    let peerAhead = false;
-    // Inherit display-calibration stats from the freshest accepted producer (the
-    // one whose last full reindex is newest = most representative of the corpus).
-    // Compare by parsed epoch, NOT lexicographically: a missing/malformed/null
-    // timestamp sorts below all real ones (a stats-bearing producer with a real
-    // timestamp always wins, never just jsonl-iteration order), and mixed-width
-    // ISO strings (with/without millis) can't compare backwards.
-    let bgSource: SidecarMeta | null = null;
-    for (const jsonl of allJsonls) {
-        const dev = deviceIdFromJsonlPath(jsonl);
-        if (!dev) continue;
-        const meta = await readDeviceMeta(adapter, indexDir, dev);
-        if (metaAccepts(meta, expect)) {
-            accepted.push(jsonl);
-            if (meta && meta.bgMean != null && meta.bgStd != null &&
-                (bgSource == null || fullReindexEpoch(meta) > fullReindexEpoch(bgSource))) {
-                bgSource = meta;
-            }
-        } else {
-            refused++;
-            if (meta && meta.chunkerVersion > expect.chunkerVersion) peerAhead = true;
-            deps.onRefusedProducer?.(dev, meta, expect);
-        }
-    }
-    const bg = { bgMean: bgSource?.bgMean, bgStd: bgSource?.bgStd };
+    const bg = { bgMean: gate.bgMean, bgStd: gate.bgStd };
     if (accepted.length === 0) {
         deps.log?.('sidecar-hydrate', { ...empty, refusedProducers: refused, peerAhead });
         return { ...empty, refusedProducers: refused, peerAhead };

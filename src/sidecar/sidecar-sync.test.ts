@@ -262,6 +262,31 @@ describe('hydrateFromSidecar', () => {
         expect(r.peerAhead).toBe(true);
     });
 
+    it('flags peerAhead when newer peer has only meta on disk (partial sync order)', async () => {
+        const a = new FakeAdapter();
+        await writeDeviceMeta(a as unknown as DataAdapter, DIR, {
+            format: SIDECAR_FORMAT,
+            modelId: EXPECT.modelId,
+            revision: EXPECT.revision,
+            chunkerVersion: EXPECT.chunkerVersion + 1,
+            dim: EXPECT.dim,
+            deviceId: 'desktop-ahead',
+            lastFullReindex: null,
+        });
+        const logs: { msg: string; detail: unknown }[] = [];
+        const { deps } = makeDeps(a, [], {
+            log: (msg, detail) => logs.push({ msg, detail }),
+        });
+        const r = await hydrateFromSidecar(deps);
+        expect(r.peerAhead).toBe(true);
+        expect(r.refusedProducers).toBe(1);
+        expect(r.acceptedProducers).toBe(0);
+        const scan = logs.find(l => l.msg === 'sidecar-hydrate-scan')?.detail as Record<string, unknown>;
+        expect(scan?.artifactDevices).toBe(1);
+        expect(scan?.producerFilesFound).toBe(0);
+        expect(String(scan?.artifactOnly)).toContain('desktop-ahead');
+    });
+
     it('skips a note whose chunk bytes have not synced yet (all-or-nothing)', async () => {
         const a = new FakeAdapter();
         const notes: NoteSpec[] = [
@@ -403,6 +428,49 @@ describe('hydrateFromSidecar', () => {
         expect(r.hydrated).toBe(2);
         expect(store.has('a1') && store.has('b1')).toBe(true);
     });
+
+    it('cross-device phased sync: remote meta first, jsonl later, then consumer hydrates', async () => {
+        const a = new FakeAdapter();
+        const remote = 'desktop-remote';
+        const notes: NoteSpec[] = [{ path: 'synced.md', mtime: 500, ids: ['remote1'] }];
+        await writeDeviceMeta(a as unknown as DataAdapter, DIR, {
+            format: SIDECAR_FORMAT,
+            ...EXPECT,
+            deviceId: remote,
+            lastFullReindex: '2026-06-01T00:00:00.000Z',
+        });
+        const { deps, store } = makeDeps(a, notes);
+        const beforeJsonl = await hydrateFromSidecar(deps);
+        expect(beforeJsonl.acceptedProducers).toBe(0);
+        expect(beforeJsonl.hydrated).toBe(0);
+        expect(store.size).toBe(0);
+
+        await seedSidecar(a, remote, notes);
+        const afterJsonl = await hydrateFromSidecar(deps);
+        expect(afterJsonl.acceptedProducers).toBe(1);
+        expect(afterJsonl.hydrated).toBe(1);
+        expect(store.has('remote1')).toBe(true);
+    });
+
+    it('local-ahead consumer ignores older remote producer without peerAhead', async () => {
+        const a = new FakeAdapter();
+        await seedSidecar(a, 'desktop-old-peer', [{ path: 'a.md', mtime: 100, ids: ['a1'] }]);
+        await writeDeviceMeta(a as unknown as DataAdapter, DIR, {
+            format: SIDECAR_FORMAT,
+            modelId: EXPECT.modelId,
+            revision: EXPECT.revision,
+            chunkerVersion: EXPECT.chunkerVersion - 1,
+            dim: EXPECT.dim,
+            deviceId: 'desktop-old-peer',
+            lastFullReindex: null,
+        });
+        const { deps, store } = makeDeps(a, [{ path: 'a.md', mtime: 100, ids: ['a1'] }]);
+        const r = await hydrateFromSidecar(deps);
+        expect(r.refusedProducers).toBe(1);
+        expect(r.peerAhead).toBe(false);
+        expect(r.hydrated).toBe(0);
+        expect(store.size).toBe(0);
+    });
 });
 
 // Cross-device BM25 artifact (Phase 3) source selection. The consumer tries
@@ -445,6 +513,12 @@ describe('rankAcceptedProducers', () => {
         const ranked = await rankAcceptedProducers(a as unknown as DataAdapter, DIR, EXPECT);
         expect(ranked[0]).toBe('desktop-dated');
         expect(ranked).toContain('desktop-null');
+    });
+
+    it('includes a meta-only compatible producer (bm25.gz may sync before jsonl)', async () => {
+        const a = new FakeAdapter();
+        await setMeta(a, 'desktop-meta-only', '2026-06-15T00:00:00.000Z');
+        expect(await rankAcceptedProducers(a as unknown as DataAdapter, DIR, EXPECT)).toEqual(['desktop-meta-only']);
     });
 
     it('keeps a gz-less freshest producer in the list so the consumer can fall through to an older one with a gz', async () => {
@@ -497,6 +571,20 @@ describe('probePeerAhead', () => {
         await seedSidecar(a, 'desktop-compat', [{ path: 'a.md', mtime: 1, ids: ['a'] }]); // accepted (v3)
         await seedSidecar(a, 'desktop-ahead', [{ path: 'b.md', mtime: 1, ids: ['b'] }]);
         await overMeta(a, 'desktop-ahead', EXPECT.chunkerVersion + 1); // v4 — peer ahead
+        expect(await probePeerAhead(a as unknown as DataAdapter, DIR, EXPECT)).toBe(true);
+    });
+
+    it('returns true when a newer peer has only meta synced (jsonl not landed yet)', async () => {
+        const a = new FakeAdapter();
+        await writeDeviceMeta(a as unknown as DataAdapter, DIR, {
+            format: SIDECAR_FORMAT,
+            modelId: EXPECT.modelId,
+            revision: EXPECT.revision,
+            chunkerVersion: EXPECT.chunkerVersion + 1,
+            dim: EXPECT.dim,
+            deviceId: 'desktop-meta-only',
+            lastFullReindex: null,
+        });
         expect(await probePeerAhead(a as unknown as DataAdapter, DIR, EXPECT)).toBe(true);
     });
 
