@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.14.0
+
+Sidecar cross-device hydrate and producer/consumer fleet controls — share the vault sidecar folder; each device keeps its own IndexedDB.
+
 ### Added
 - **Cross-device index role (producer / consumer).** Settings → Index → Advanced → **This device’s index role** (this device only, not synced). Auto treats phones and laptops that never finished a full pass as hydrate-only. A consumer waits for complete producer sidecar files instead of re-embedding, and will not full-reindex, compact, or delete another device’s shards.
 
