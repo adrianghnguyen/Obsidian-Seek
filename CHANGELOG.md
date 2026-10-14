@@ -11,6 +11,7 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 - **Hydrate waits until sidecar shards are fully local.** 0-byte / cloud-placeholder bins and missing offsets stay on Restoring, not catch-up. CRC-corrupt records are skipped; the peer device is not wiped. Changing the embedding model on a consumer stamps a pending change until the producer’s matching files arrive.
 
 ### Fixed
+- **Sidecar producer detection no longer requires jsonl to land first.** Hydrate, peer-ahead probe, and cross-device BM25 ranking now enumerate every device artifact (same union as reap and `peerSidecarPresent`), so meta-first sync order cannot hide a newer peer or skip a compatible BM25 source while the index log is still syncing.
 - **Stalled indexing no longer sits on Indexing with no way out.** After ~90s without catch-up progress, Seek aborts hung work, bounds IndexedDB reads (`listAllMeta`, persist-cache restore), and shows **Stuck** with Settings **Recover search index** (Retry first; rebuild if it stays stuck). Search still works on a populated index. Retry cancels hung writers before resuming.
 
 ## 1.13.0
