@@ -491,6 +491,8 @@ Written to `.obsidian/plugins/seek/index/` (default) or vault-root `Seek Index/`
 
 **Identity gates** (`identity.ts`, `sidecar-meta.ts`): model repo, chunker version, embedding dim, analyzer stamp must match before accepting a sidecar producer.
 
+**Fleet roles** (`sidecar-fleet.ts`): one producer writes sidecar files; consumers hydrate only. A consumer never full-reindexes, reaps, or compact-deletes another device’s shards. Dual-open: a hidden window with a peer present skips sidecar writes and compaction. Model/dim changes on a consumer stamp `pendingModel` in localStorage and keep hydrating the old identity. Hydrate preflight (`sidecar-preflight.ts`) refuses to start until jsonl offsets resolve to local non-empty shards (0-byte / dataless files count as incomplete); CRC failures skip that record, never wipe the peer.
+
 ---
 
 ## 8. Embedding & compute

@@ -62,6 +62,11 @@ function liveLayout(): { q: number; sign: number; payload: number; vec: number }
     return { q, sign, payload, vec: payload + CRC_BYTES };
 }
 
+/** Live record stride in bytes (int8×dim + f64 scale + sign bits + CRC). */
+export function liveRecordBytes(): number {
+    return liveLayout().vec;
+}
+
 // Per-shard cap. Obsidian Sync's default per-file limit is 5 MB; staying at 4 MB
 // keeps headroom and bounds iCloud whole-file re-upload cost on each append.
 export const SHARD_CAP_BYTES = 4 * 1024 * 1024;

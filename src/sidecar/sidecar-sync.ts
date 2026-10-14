@@ -55,7 +55,7 @@ import {
     shardPathFor,
     type ResolvedEntry,
 } from './sidecar';
-import { metaAccepts, readDeviceMeta, type MetaExpectation, type SidecarMeta } from './sidecar-meta';
+import { metaAccepts, readDeviceMeta, fullReindexEpoch, type MetaExpectation, type SidecarMeta } from './sidecar-meta';
 
 // One live note re-chunked locally: the liveness oracle's unit.
 export interface ReChunkedNote {
@@ -125,6 +125,11 @@ export interface HydrateResult {
     skippedPartialNotes: number; // notes skipped because a chunk's bytes weren't synced yet
     refusedProducers: number; // producers excluded by the version gate
     acceptedProducers: number;
+    /** Matching producer jsonl exists but shards are missing, 0-byte, or short. */
+    incompleteFolder?: boolean;
+    datalessShards?: number;
+    /** Consumer with no ready matching producer — wait, do not catch-up embed. */
+    waitingForProducer?: boolean;
     // A refused producer is at a HIGHER chunkerVersion than this build can read — i.e.
     // another device holds a newer index this plugin is too old to use. Distinct from
     // refusedProducers (which also counts merely-different/older/torn producers): this is
@@ -138,15 +143,6 @@ export interface HydrateResult {
     // carried stats.
     bgMean?: number;
     bgStd?: number;
-}
-
-// Epoch (ms) of a producer's last full reindex, for "freshest" selection. A
-// null / absent / unparseable timestamp yields -Infinity so it sorts below every
-// real one — the choice of which producer's calibration to inherit is then a
-// well-defined max, never dependent on file-scan order.
-function fullReindexEpoch(m: SidecarMeta | null): number {
-    const t = m?.lastFullReindex ? Date.parse(m.lastFullReindex) : NaN;
-    return Number.isNaN(t) ? -Infinity : t;
 }
 
 /*

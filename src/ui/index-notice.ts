@@ -46,6 +46,7 @@ export interface IndexBannerSpec {
 // against the same string the UI shows.
 export const INDEX_STALE_MSG = 'Index change detected. Search results may be inaccurate. Please reindex.';
 export const INDEX_SYNCING_MSG = 'A newer index is syncing from another device. Results may be inaccurate.';
+export const INDEX_WAITING_SIDECAR_MSG = 'Waiting for the shared index files from the producer device. Search will hydrate without re-embedding once they are fully on disk.';
 export const INDEX_PEER_AHEAD_MSG = 'Another device has a newer index. Update Seek on this device to use it.';
 // Boot watchdog: startup exceeded its expected window without becoming searchable.
 // Unlike INDEX_STARTING_MSG (an optimistic "in a moment"), this copy admits the wait
@@ -73,7 +74,12 @@ export const INDEX_QUOTA_MSG = 'Seek: device storage is full — some notes coul
 // sets indexHealth='recovering' (over a possibly version-stale index), so keying "a peer
 // is syncing" off 'recovering' falsely shows "syncing from another device" on a
 // single-device vault mid drift-recovery. The peer fact must be carried explicitly.
-export function indexBannerSpec(health: IndexHealth, reason: DegradedReason, peerSyncPending = false): IndexBannerSpec | null {
+export function indexBannerSpec(
+    health: IndexHealth,
+    reason: DegradedReason,
+    peerSyncPending = false,
+    waitingForSidecar = false,
+): IndexBannerSpec | null {
     // Boot watchdog fired: startup never reached a searchable state (the store
     // opened but hydrate stalled, or a backing-store read never resolved). This is
     // the ONLY reason that offers recovery actions, so the user is never stranded
@@ -82,6 +88,12 @@ export function indexBannerSpec(health: IndexHealth, reason: DegradedReason, pee
     // Local build is behind a peer's index version: the fix is to update the plugin (not
     // reindex), so warn with no action button. Independent of health (always 'degraded').
     if (reason === 'peer-ahead') return { message: INDEX_PEER_AHEAD_MSG, tone: 'warn', showAction: false };
+    // Producer shards missing, dataless, or still copying — wait, do not catch-up-embed.
+    // This is independent of version health: Gemma settings with no matching sidecar
+    // on disk is the same wait as a version-stale Mac waiting on Windows files.
+    if (waitingForSidecar) {
+        return { message: INDEX_WAITING_SIDECAR_MSG, tone: 'info', showAction: false };
+    }
     if (reason !== 'version') return null;
     // A peer's current index is on its way (heals embed-free on the next poll): say so,
     // calmly, and offer no button — there is nothing for the user to do. Gated on the
@@ -97,7 +109,7 @@ export function indexBannerSpec(health: IndexHealth, reason: DegradedReason, pee
 export const INDEX_STARTING_TITLE = 'Starting up';
 export const INDEX_STARTING_MSG = 'Seek is loading the search index. This is not an empty vault — search will be available in a moment.';
 export const INDEX_RESTORING_TITLE = 'Restoring';
-export const INDEX_RESTORING_MSG = 'Seek is restoring the search index from another device…';
+export const INDEX_RESTORING_MSG = 'Seek is restoring the search index from another device. Waiting until those files are fully on this disk — it will not re-embed locally.';
 export const INDEX_BUILDING_TITLE = 'Indexing';
 export const INDEX_BUILDING_MSG = 'Seek is still building the full search index. Results will be available when the pass finishes.';
 export const INDEX_NO_INDEX_TITLE = 'No index yet';
@@ -266,9 +278,16 @@ export function resolveIndexUiStatus(input: IndexUiStatusInput): IndexUiStatus {
 
 /** Warm no-op hydrate (accepted producer, nothing new) must clear Restoring. */
 export function resolveSidecarWait(
-    result: { hydrated: number; skippedPartialNotes: number },
+    result: {
+        hydrated: number;
+        skippedPartialNotes: number;
+        waitingForProducer?: boolean;
+        incompleteFolder?: boolean;
+        datalessShards?: number;
+    },
     inventoryChunks: number | null,
 ): boolean {
+    if (result.waitingForProducer || result.incompleteFolder || (result.datalessShards ?? 0) > 0) return true;
     if (result.hydrated > 0) return false;
     return result.skippedPartialNotes > 0 && (inventoryChunks ?? 0) === 0;
 }

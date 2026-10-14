@@ -12,6 +12,7 @@ import { SearchOrchestrator } from '../search/search';
 import { FakeVault, fakeEmbedder } from '../test-harness/scenario';
 import { SIDECAR_FORMAT } from './sidecar';
 import { writeDeviceMeta, expectationFor } from './sidecar-meta';
+import { setSidecarIndexRole } from '../embedding/platform';
 
 const EXPECT = expectationFor();
 
@@ -69,6 +70,11 @@ class MemoryAdapter {
         this.bins.delete(p);
     }
     // Atomic meta writes (writeTextAtomic) rename a temp file over the target.
+    async stat(p: string): Promise<{ size: number; type: 'file' } | null> {
+        if (this.bins.has(p)) return { size: this.bins.get(p)!.byteLength, type: 'file' };
+        if (this.files.has(p)) return { size: this.files.get(p)!.length, type: 'file' };
+        return null;
+    }
     async rename(from: string, to: string): Promise<void> {
         const v = this.files.get(from);
         if (v !== undefined) {
@@ -106,6 +112,16 @@ describe('SidecarCoordinator', () => {
         } as unknown as App;
         embedder = fakeEmbedder();
         logger = { deviceId: 'device-test', append: async () => {}, appendError: async () => {} } as unknown as SeekLogger;
+        const mem: Record<string, string> = {};
+        (window as unknown as { localStorage: Storage }).localStorage = {
+            getItem: (k: string) => (k in mem ? mem[k] : null),
+            setItem: (k: string, v: string) => { mem[k] = String(v); },
+            removeItem: (k: string) => { delete mem[k]; },
+            clear: () => { for (const k of Object.keys(mem)) delete mem[k]; },
+            get length() { return Object.keys(mem).length; },
+            key: (i: number) => Object.keys(mem)[i] ?? null,
+        };
+        setSidecarIndexRole('auto');
     });
 
     afterEach(async () => {
@@ -230,6 +246,102 @@ describe('SidecarCoordinator', () => {
                 lastFullReindex: null,
             });
             expect(await coordinator.peerSidecarPresent()).toBe(true);
+        });
+
+        it('inspectFleet locks a desktop with a stale peer as consumer (no reap, no full reindex)', async () => {
+            const settings = structuredClone(DEFAULT_SETTINGS);
+            settings.sidecarEnabled = true;
+            const indexDir = '.seek-test-index';
+            const coord = new IndexCoordinator(indexDir, settings);
+            const cacheManager = new CacheManager({ app, store, coord, embedder, settings, logger });
+            const coordinator = new SidecarCoordinator({
+                app, store, coord, embedder, logger, settings,
+                cacheManager,
+                chunksFor: () => [],
+                indexableFiles: () => [{ path: 'note.md' } as TFile],
+                shouldIndex: () => true,
+            });
+
+            await writeDeviceMeta(adapter as never, indexDir, {
+                format: SIDECAR_FORMAT,
+                modelId: 'hotchpotch/bekko-embedding-v1-a8m',
+                revision: null,
+                chunkerVersion: EXPECT.chunkerVersion,
+                dim: EXPECT.dim,
+                deviceId: 'desktop-stale',
+                lastFullReindex: '2026-10-01T00:00:00Z',
+            });
+
+            const fleet = await coordinator.inspectFleet();
+            expect(fleet?.role).toBe('consumer');
+            expect(fleet?.mayFullReindex).toBe(false);
+            expect(fleet?.mayReapPeers).toBe(false);
+            expect(fleet?.waitingForProducer).toBe(true);
+            expect(fleet?.copy).toMatch(/will not re-embed or delete/);
+        });
+
+        it('does not reap a stale peer when this device is a consumer', async () => {
+            const settings = structuredClone(DEFAULT_SETTINGS);
+            settings.sidecarEnabled = true;
+            const indexDir = '.seek-test-index';
+            const coord = new IndexCoordinator(indexDir, settings);
+            const cacheManager = new CacheManager({ app, store, coord, embedder, settings, logger });
+            const coordinator = new SidecarCoordinator({
+                app, store, coord, embedder, logger, settings,
+                cacheManager,
+                chunksFor: () => [],
+                indexableFiles: () => [],
+                shouldIndex: () => true,
+            });
+
+            await writeDeviceMeta(adapter as never, indexDir, {
+                format: SIDECAR_FORMAT,
+                modelId: 'hotchpotch/bekko-embedding-v1-a8m',
+                revision: null,
+                chunkerVersion: EXPECT.chunkerVersion,
+                dim: EXPECT.dim,
+                deviceId: 'desktop-stale',
+                lastFullReindex: '2026-10-01T00:00:00Z',
+            });
+            adapter.files.set(`${indexDir}/index.desktop-stale.jsonl`, '{"id":"x"}\n');
+
+            setSidecarIndexRole('consumer');
+            const reaped = await coordinator.reapDeadIdentitySidecars();
+            expect(reaped).toBe(0);
+            expect(adapter.files.has(`${indexDir}/meta.desktop-stale.json`)).toBe(true);
+            setSidecarIndexRole('auto');
+        });
+
+        it('producer still reaps a stale peer sidecar', async () => {
+            const settings = structuredClone(DEFAULT_SETTINGS);
+            settings.sidecarEnabled = true;
+            const indexDir = '.seek-test-index';
+            const coord = new IndexCoordinator(indexDir, settings);
+            const cacheManager = new CacheManager({ app, store, coord, embedder, settings, logger });
+            const coordinator = new SidecarCoordinator({
+                app, store, coord, embedder, logger, settings,
+                cacheManager,
+                chunksFor: () => [],
+                indexableFiles: () => [],
+                shouldIndex: () => true,
+            });
+
+            await writeDeviceMeta(adapter as never, indexDir, {
+                format: SIDECAR_FORMAT,
+                modelId: 'hotchpotch/bekko-embedding-v1-a8m',
+                revision: null,
+                chunkerVersion: EXPECT.chunkerVersion,
+                dim: EXPECT.dim,
+                deviceId: 'desktop-stale',
+                lastFullReindex: '2026-10-01T00:00:00Z',
+            });
+            adapter.files.set(`${indexDir}/index.desktop-stale.jsonl`, '{"id":"x"}\n');
+
+            setSidecarIndexRole('producer');
+            const reaped = await coordinator.reapDeadIdentitySidecars();
+            expect(reaped).toBe(1);
+            expect(adapter.files.has(`${indexDir}/meta.desktop-stale.json`)).toBe(false);
+            setSidecarIndexRole('auto');
         });
 
         it('sweeps orphan chunks when store has orphans', async () => {

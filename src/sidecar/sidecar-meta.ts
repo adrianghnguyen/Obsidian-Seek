@@ -122,3 +122,11 @@ export function metaAccepts(meta: SidecarMeta | null, expect: MetaExpectation): 
 export function expectationFor(id: IndexIdentity = pluginIdentity()): MetaExpectation {
     return { modelId: id.modelId, revision: id.revision, chunkerVersion: id.chunkerVersion, dim: id.dim };
 }
+
+// Epoch (ms) of a producer's last full reindex. Null / absent / unparseable
+// timestamps yield -Infinity so they sort below every real pass — used by
+// fleet-role resolution and hydrate's "freshest producer" pick.
+export function fullReindexEpoch(m: SidecarMeta | null): number {
+    const t = m?.lastFullReindex ? Date.parse(m.lastFullReindex) : NaN;
+    return Number.isNaN(t) ? -Infinity : t;
+}

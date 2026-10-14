@@ -20,6 +20,10 @@ import {
     RESIDENT_INT8_MAX_BYTES,
     getStartupWarm,
     setStartupWarm,
+    getSidecarIndexRole,
+    setSidecarIndexRole,
+    getPendingEmbeddingModel,
+    setPendingEmbeddingModel,
 } from './platform';
 
 // Minimal in-memory localStorage (node has no DOM). Reset per test.
@@ -216,5 +220,25 @@ describe('startup cache warm (per-device)', () => {
         expect(getStartupWarm()).toBe(false);
         setStartupWarm(true);
         expect(getStartupWarm()).toBe(true);
+    });
+});
+
+describe('sidecar fleet role (per-device)', () => {
+    it('defaults to auto', () => {
+        expect(getSidecarIndexRole()).toBe('auto');
+        expect(getPendingEmbeddingModel()).toBeNull();
+    });
+
+    it('round-trips role and pending model through localStorage', () => {
+        setSidecarIndexRole('consumer');
+        expect(getSidecarIndexRole()).toBe('consumer');
+        setSidecarIndexRole('producer');
+        expect(getSidecarIndexRole()).toBe('producer');
+        setPendingEmbeddingModel({ key: 'onnx-community/embeddinggemma-2-ONNX', dim: 768 });
+        expect(getPendingEmbeddingModel()).toEqual({ key: 'onnx-community/embeddinggemma-2-ONNX', dim: 768 });
+        setPendingEmbeddingModel(null);
+        expect(getPendingEmbeddingModel()).toBeNull();
+        setSidecarIndexRole('auto');
+        expect(getSidecarIndexRole()).toBe('auto');
     });
 });

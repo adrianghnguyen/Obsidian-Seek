@@ -104,6 +104,48 @@ export function setStartupWarm(on: boolean): void {
     catch { /* best-effort */ }
 }
 
+// ── Per-device sidecar fleet role ──────────────────────────────────────────
+// Producer vs consumer must not live in data.json: that file syncs, and both
+// machines would claim the same role. localStorage is per Chromium install.
+export type SidecarIndexRole = 'auto' | 'producer' | 'consumer';
+const SIDECAR_ROLE_KEY = 'seek-sidecar-index-role';
+const PENDING_MODEL_KEY = 'seek-pending-embedding-model';
+
+export function getSidecarIndexRole(): SidecarIndexRole {
+    try {
+        const v = window.localStorage.getItem(SIDECAR_ROLE_KEY);
+        if (v === 'producer' || v === 'consumer' || v === 'auto') return v;
+    } catch { /* unavailable — auto */ }
+    return 'auto';
+}
+
+export function setSidecarIndexRole(role: SidecarIndexRole): void {
+    try { window.localStorage.setItem(SIDECAR_ROLE_KEY, role); }
+    catch { /* best-effort */ }
+}
+
+export interface PendingEmbeddingModel {
+    key: string;
+    dim: number;
+}
+
+export function getPendingEmbeddingModel(): PendingEmbeddingModel | null {
+    try {
+        const raw = window.localStorage.getItem(PENDING_MODEL_KEY);
+        if (!raw) return null;
+        const v = JSON.parse(raw) as PendingEmbeddingModel;
+        if (typeof v?.key === 'string' && typeof v?.dim === 'number') return v;
+    } catch { /* ignore */ }
+    return null;
+}
+
+export function setPendingEmbeddingModel(pending: PendingEmbeddingModel | null): void {
+    try {
+        if (!pending) window.localStorage.removeItem(PENDING_MODEL_KEY);
+        else window.localStorage.setItem(PENDING_MODEL_KEY, JSON.stringify(pending));
+    } catch { /* best-effort */ }
+}
+
 // Capability ALLOWLIST — WebGPU auto-enables ONLY on surfaces verified to
 // reindex without an OS memory kill. NOT "mobile minus iPhone": anything
 // unverified (every Android, an iPad we haven't characterised stays on the

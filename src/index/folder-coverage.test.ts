@@ -311,6 +311,17 @@ describe('resolveCoveragePanelView', () => {
         });
         expect(errorView.showTree).toBe(true);
         expect(errorView.statusLine?.title).toBe('Index error');
+        expect(errorView.statusLine?.detail).toMatch(/full reindex/);
+
+        const lockedReindex = resolveCoveragePanelView({
+            summary: readySummary,
+            health: 'error',
+            job: null,
+            orchestratorReady: true,
+            reindexLocked: true,
+        });
+        expect(lockedReindex.statusLine?.detail).toMatch(/will not re-embed/);
+        expect(lockedReindex.statusLine?.detail).not.toMatch(/full reindex/);
 
         const lockedView = resolveCoveragePanelView({
             summary: readySummary,
