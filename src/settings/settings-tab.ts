@@ -447,7 +447,9 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
 
         if (this.plugin.indexHealthState === 'degraded') {
             const warn = containerEl.createDiv({ cls: 'seek-inline-warn' });
-            warn.setText('Index degraded — search still works but ranking may be off. A full reindex is recommended.');
+            warn.setText(this.fleetStatus && !this.fleetStatus.mayFullReindex
+                ? 'Index degraded — search still works. This device will not re-embed; wait for producer sidecar files, or set this device’s index role to Producer.'
+                : 'Index degraded — search still works but ranking may be off. A full reindex is recommended.');
         }
 
         // The reindex button + live progress bar stay outside the disclosure: it's the
@@ -863,6 +865,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             loadFailed,
             aligningExclusions: !!this.plugin.getExclusionChange(),
             pendingCount: pendingPaths.length,
+            reindexLocked: !!(this.fleetStatus && !this.fleetStatus.mayFullReindex),
         });
 
         const wrap = host.createDiv({ cls: 'seek-coverage-panel' });

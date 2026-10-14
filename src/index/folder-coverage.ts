@@ -514,8 +514,16 @@ export function resolveCoveragePanelView(input: {
     aligningExclusions?: boolean;
     /** Active dirty/delta pending count for the status banner. */
     pendingCount?: number;
+    /** Consumer lock: do not tell the user to full-reindex. */
+    reindexLocked?: boolean;
 }): CoveragePanelView {
-    const { summary, health, job, orchestratorReady, loadFailed, aligningExclusions, pendingCount } = input;
+    const { summary, health, job, orchestratorReady, loadFailed, aligningExclusions, pendingCount, reindexLocked } = input;
+    const errorFix = reindexLocked
+        ? 'This device hydrates the producer’s index and will not re-embed. Wait for matching sidecar files, or set this device’s index role to Producer.'
+        : 'Fix the index (try a full reindex) to see embedder coverage by folder.';
+    const errorFixTree = reindexLocked
+        ? 'This device hydrates the producer’s index and will not re-embed. Folder coverage is the last snapshot.'
+        : 'Fix the index (try a full reindex). Folder coverage is the last snapshot.';
     const { total, covered, excluded, remaining, refreshing } = summary.overall;
     const hasTree = total > 0;
     const updatingCount = Math.max(pendingCount ?? 0, refreshing);
@@ -564,13 +572,13 @@ export function resolveCoveragePanelView(input: {
         return placeholderOnly({
             tone: 'bad',
             title: 'Index error',
-            detail: 'Fix the index (try a full reindex) to see embedder coverage by folder.',
+            detail: errorFix,
         });
     }
     if (health === 'error' && hasTree) {
         return withTree(treeBanner(
             'Index error',
-            'Fix the index (try a full reindex). Folder coverage is the last snapshot.',
+            errorFixTree,
             'bad',
         ));
     }
