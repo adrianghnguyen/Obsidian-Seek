@@ -114,6 +114,8 @@ export interface SidecarWaitCopyInput {
     dataless: boolean;
     matchingProducers: number;
     stalePeerCount: number;
+    /** True when catch-up/full reindex are parked for missing shards. */
+    waiting?: boolean;
 }
 
 /** One-sentence Settings / toast copy. */
@@ -132,6 +134,9 @@ export function sidecarWaitCopy(input: SidecarWaitCopyInput): string {
     }
     if (input.matchingProducers === 0 && input.stalePeerCount > 0) {
         return 'Another device’s index does not match this embedding model yet. Waiting for matching files — this device will not re-embed or delete those shards.';
+    }
+    if (input.waiting === false) {
+        return 'No producer sidecar on this disk. Search uses this device’s local index. This device will not run a full reindex.';
     }
     return 'Producer index files are not on this disk yet — waiting. Search will hydrate without re-embedding once they arrive.';
 }

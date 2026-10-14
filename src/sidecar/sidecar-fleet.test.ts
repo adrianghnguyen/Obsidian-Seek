@@ -167,5 +167,9 @@ describe('sidecarWaitCopy', () => {
             role: 'producer', matchingReady: false, incomplete: false, dataless: false,
             matchingProducers: 0, stalePeerCount: 0,
         })).toMatch(/writes the shared index/);
+        expect(sidecarWaitCopy({
+            role: 'consumer', matchingReady: false, incomplete: false, dataless: false,
+            matchingProducers: 0, stalePeerCount: 0, waiting: false,
+        })).toMatch(/uses this device’s local index/);
     });
 });

@@ -231,6 +231,7 @@ export class SidecarCoordinator {
                 dataless: preflight.datalessShards > 0,
                 matchingProducers: preflight.matchingProducers,
                 stalePeerCount: stale.length,
+                waiting: waitingForProducer,
             }),
             preflight,
             peerDeviceIds: peers.map(p => p.deviceId),
