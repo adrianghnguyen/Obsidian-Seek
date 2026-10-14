@@ -24,6 +24,7 @@ import {
     INDEX_RECOVERY_NAME,
     INDEX_RECOVERY_STUCK_DESC,
     INDEX_RECOVERY_LOCKED_DESC,
+    INDEX_RECOVERY_STALL_DESC,
 } from '../ui/index-notice';
 import {
     BM25_FIELD_KEYS,
@@ -1108,7 +1109,9 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         }
         new Setting(containerEl)
             .setName(INDEX_RECOVERY_NAME)
-            .setDesc(health === 'locked' ? INDEX_RECOVERY_LOCKED_DESC : INDEX_RECOVERY_STUCK_DESC)
+            .setDesc(health === 'locked'
+                ? INDEX_RECOVERY_LOCKED_DESC
+                : (this.plugin.isIndexingStalled ? INDEX_RECOVERY_STALL_DESC : INDEX_RECOVERY_STUCK_DESC))
             .addButton(b => b
                 .setButtonText(this.recoveryBusy ? 'Rebuilding…' : 'Rebuild index')
                 .setWarning()

@@ -20,7 +20,7 @@ describe('storeOpenBackoffDelaysMs', () => {
 });
 
 describe('isRetryIndexStoreCommandEnabled', () => {
-    it('is enabled only while the store is locked', () => {
+    it('is enabled for locked, boot-stuck, or indexing-stalled recovery', () => {
         expect(isRetryIndexStoreCommandEnabled(true)).toBe(true);
         expect(isRetryIndexStoreCommandEnabled(false)).toBe(false);
     });

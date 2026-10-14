@@ -4,6 +4,9 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Fixed
+- **Stalled indexing no longer sits on Indexing with no way out.** After ~90s without catch-up progress, Seek aborts hung work, bounds IndexedDB reads (`listAllMeta`, persist-cache restore), and shows **Stuck** with Settings **Recover search index** (Retry first; rebuild if it stays stuck). Search still works on a populated index. Retry cancels hung writers before resuming.
+
 ## 1.13.0
 
 ### Fixed

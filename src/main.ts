@@ -44,6 +44,13 @@ import { activeModelSpec, bindLiveModel, currentModelSpec, resolveOverrideSpec, 
 import { pluginIdentity, identityMatches, identityFromMeta } from './index/identity';
 import { isLoadGenerationCurrent, isSessionWorkCurrent } from './app/boot-session';
 import {
+    INDEXING_STALL_TIMEOUT_MS,
+    indexingProgressKey,
+    indexingStallDetected,
+    indexingWorkActive,
+    type IndexingStallSnapshot,
+} from './app/indexing-stall-guard';
+import {
     createStoreOpenRetryScheduler,
     isRetryIndexStoreCommandEnabled,
     resolveStoreRecoveryMode,
@@ -87,7 +94,7 @@ import {
     UNLOAD_CHECK_MS,
     BULK_DELTA_THRESHOLD,
 } from './app/plugin-schedulers';
-import { indexBannerSpec, resolveIndexLoadPhase, resolveCliSearchGate, CLI_SEARCH_WARMING, resolveIndexUiStatus, resolveSidecarWait, retainIndexInventory, INDEX_STALE_MSG, INDEX_SYNCING_MSG, INDEX_PEER_AHEAD_MSG, type DegradedReason, type IndexLoadState } from './ui/index-notice';
+import { indexBannerSpec, resolveIndexLoadPhase, resolveCliSearchGate, CLI_SEARCH_WARMING, resolveIndexUiStatus, resolveSidecarWait, retainIndexInventory, INDEX_STALE_MSG, INDEX_SYNCING_MSG, INDEX_PEER_AHEAD_MSG, INDEX_STALL_NOTICE, type DegradedReason, type IndexLoadState } from './ui/index-notice';
 import { IndexStatusBar, extendIndexPassTotal, parseIndexedProgress, type IndexJobSpeedView } from './ui/index-status-bar';
 import type { IndexJobKind, IndexStatusHealth, IndexStatusJob } from './ui/index-status-card';
 import {
@@ -152,6 +159,8 @@ const POST_LAYOUT_BOOT_BUFFER_MS = 3500;
 // wedged store (an IDB open/read that never resolves) doesn't strand the user on a
 // permanent "Starting" with no explanation.
 const STUCK_BOOT_TIMEOUT_MS = 45_000;
+const INDEXING_STALL_CHECK_MS = 15_000;
+const PERSIST_CACHE_RESTORE_CATCHUP_TIMEOUT_MS = 30_000;
 
 
 // Sidecar compaction: how many 'incomplete-rechunk' verdicts (each = a full
@@ -412,6 +421,17 @@ export default class SeekPlugin extends Plugin {
     // moment the boot continuation reaches a searchable/ready state.
     private indexBootStuck = false;
     private bootWatchdogTimer: number | null = null;
+    /** Catch-up/flush made no progress — Recover row, not perpetual Indexing. */
+    private indexIndexingStalled = false;
+    get isIndexingStalled(): boolean { return this.indexIndexingStalled; }
+    /** Last time indexing job counters or activity notifications moved (stall guard). */
+    private lastIndexingProgressAt = 0;
+    private lastIndexingProgressKey = '';
+    private indexingStallHandling = false;
+
+    private indexRecoveryCommandsEnabled(): boolean {
+        return this.indexStoreLocked || this.indexBootStuck || this.indexIndexingStalled;
+    }
     private bootResumeCtx: {
         migrateSidecarPath: boolean;
         sidecarIndexDir: string;
@@ -519,7 +539,7 @@ export default class SeekPlugin extends Plugin {
     private statusBarHealth(): IndexStatusHealth {
         return resolveIndexUiStatus({
             storeLocked: this.indexStoreLocked,
-            stuck: this.indexBootStuck || this.indexStoreWedged,
+            stuck: this.indexBootStuck || this.indexStoreWedged || this.indexIndexingStalled,
             booting: this.indexBootPending,
             bootDecisionPending: this.indexBootDecisionPending,
             hydrating: this.sidecarHydrating,
@@ -538,6 +558,146 @@ export default class SeekPlugin extends Plugin {
 
     private refreshIndexStatusBar(): void {
         this.indexProgress.refreshIdle();
+        this.bumpIndexingProgressHeartbeat();
+    }
+
+    private indexingStallSnapshot(): IndexingStallSnapshot {
+        const job = this.indexProgress?.job?.() ?? null;
+        const orch = this.orchestrator;
+        return {
+            catchUpRunning: this.catchUpRunning,
+            flushing: this.flushing,
+            indexing: this.taskCtx?.current() === 'indexing',
+            writing: typeof orch?.isWriting === 'function' ? orch.isWriting() : false,
+            jobDone: job?.done ?? null,
+            jobTotal: job?.total ?? null,
+        };
+    }
+
+    private bumpIndexingProgressHeartbeat(): void {
+        const snap = this.indexingStallSnapshot();
+        const key = indexingProgressKey(snap);
+        if (key !== this.lastIndexingProgressKey) {
+            this.lastIndexingProgressKey = key;
+            this.lastIndexingProgressAt = performance.now();
+        }
+    }
+
+    private checkIndexingStallGuard(): void {
+        if (this.unloading || this.indexingStallHandling) return;
+        const snap = this.indexingStallSnapshot();
+        if (!indexingWorkActive(snap)) {
+            this.lastIndexingProgressAt = performance.now();
+            this.lastIndexingProgressKey = indexingProgressKey(snap);
+            return;
+        }
+        const now = performance.now();
+        if (this.lastIndexingProgressAt === 0) this.lastIndexingProgressAt = now;
+        if (!indexingStallDetected(this.lastIndexingProgressAt, now, INDEXING_STALL_TIMEOUT_MS, snap)) return;
+        void this.handleIndexingStall();
+    }
+
+    /**
+     * Invalidate in-flight catch-up / flush async work without waiting for a hung
+     * await (e.g. unbounded IDB). Zombie promises still check loadGeneration
+     * before mutating state when they eventually settle.
+     */
+    private attachOrchestrator(sidecarIndexDir: string): void {
+        this.orchestrator?.dispose();
+        this.orchestrator = new SearchOrchestrator(
+            this.app, this.store, this.embedder, this.logger, this.settings, this.forensics, sidecarIndexDir, this.taskCtx,
+        );
+        this.workflowCoordinator = this.orchestrator.getWorkflowCoordinator();
+        this.workflowCoordinator.setSchedulers(this.schedulers);
+        this.workflowCoordinator.setRunCatchUp(() => this.runCatchUp());
+        this.workflowCoordinator.setHooks({
+            isQueryInFlight: () => this.queryInFlightCount > 0,
+            onHealthChange: (health, reason) => {
+                this.indexHealth = health;
+                if (health === 'degraded' && reason) {
+                    this.degradedReason = 'drift';
+                } else if (health === 'healthy') {
+                    this.degradedReason = null;
+                }
+            },
+        });
+        this.driftRecoveryCoordinator = new DriftRecoveryCoordinator({
+            getOrchestrator: () => this.orchestrator,
+            getIndexHealth: () => this.indexHealth,
+            setIndexHealth: (h) => { this.indexHealth = h; },
+            setDegradedReason: (r) => { this.degradedReason = r; },
+            isIndexingBlocked: () => this.indexingBlocked,
+            isSessionWorkCurrent: (gen) => this.isSessionWorkCurrent(gen),
+            getLoadGeneration: () => this.loadGeneration,
+            appendErrorIfCurrent: (ctx, e, gen) => this.appendErrorIfCurrent(ctx, e, gen),
+            withSidecarHydrate: (fn) => this.withSidecarHydrate(fn),
+        });
+        this.orchestrator.setPersistentDriftHandler(() => this.onPersistentDrift());
+        this.orchestrator.setGoodEnoughHandler(() => this.markIndexGoodEnough());
+    }
+
+    private abortInflightSessionWork(reason: string): void {
+        const hungWriter = this.orchestrator?.isWriting() ?? false;
+        this.loadGeneration++;
+        this.catchUpRunning = false;
+        this.flushing = false;
+        this.driftRecoveryRunning = false;
+        if (this.catchUpJob != null) this.finishCatchUpJob();
+        this.taskCtx.closeOpen(['catchup', 'indexing']);
+        if (hungWriter) {
+            this.attachOrchestrator(this.resolveSidecarIndexDir());
+        }
+        this.syncWarmDeferred();
+        this.bumpIndexingProgressHeartbeat();
+        this.refreshIndexStatusBar();
+        void this.logger.append({
+            type: 'indexing-abort',
+            timestamp: new Date().toISOString(),
+            reason,
+        }).catch(() => {});
+    }
+
+    private async handleIndexingStall(): Promise<void> {
+        if (this.unloading || this.indexingStallHandling) return;
+        this.indexingStallHandling = true;
+        try {
+            const snap = this.indexingStallSnapshot();
+            console.warn('[seek] indexing stall guard — aborting in-flight work and retrying recovery'
+                + ` (catchUp=${snap.catchUpRunning} writing=${snap.writing} job=${snap.jobDone}/${snap.jobTotal})`);
+            void this.logger.append({
+                type: 'indexing-stall',
+                timestamp: new Date().toISOString(),
+                catchUpRunning: snap.catchUpRunning,
+                writing: snap.writing,
+                jobDone: snap.jobDone,
+                jobTotal: snap.jobTotal,
+            }).catch(() => {});
+            this.abortInflightSessionWork('stall-guard');
+            if (!this.store.isOpen()) {
+                await this.retryIndexStoreOpen();
+                return;
+            }
+            try {
+                const c = await this.store.count();
+                this.publishInventory(c.files, c.chunks, true);
+                this.indexStoreWedged = false;
+                this.storeWedgedLogged = false;
+                this.markIndexingStalled();
+            } catch (e) {
+                if (isStoreOpTimeout(e)) {
+                    this.markStoreWedged('indexing-stall');
+                    await this.recoverWedgedStore();
+                } else {
+                    throw e;
+                }
+            }
+            if (this.orchestrator?.isWriting()) {
+                this.abortInflightSessionWork('stall-guard-post-count');
+            }
+        } finally {
+            this.indexingStallHandling = false;
+            this.bumpIndexingProgressHeartbeat();
+        }
     }
 
     private publishInventory(files: number, chunks: number, force = false): void {
@@ -862,37 +1022,7 @@ export default class SeekPlugin extends Plugin {
         // The pre-rev-4 path (active-override-relative). Used only to migrate an
         // existing index off it into the literal path on upgrade.
         const legacySidecarDir = this.manifest.dir ? `${this.manifest.dir}/index` : null;
-        this.orchestrator = new SearchOrchestrator(this.app, this.store, this.embedder, this.logger, this.settings, this.forensics, sidecarIndexDir, this.taskCtx);
-        this.workflowCoordinator = this.orchestrator.getWorkflowCoordinator();
-        this.workflowCoordinator.setSchedulers(this.schedulers);
-        this.workflowCoordinator.setRunCatchUp(() => this.runCatchUp());
-        this.workflowCoordinator.setHooks({
-            isQueryInFlight: () => this.queryInFlightCount > 0,
-            onHealthChange: (health, reason) => {
-                this.indexHealth = health;
-                if (health === 'degraded' && reason) {
-                    this.degradedReason = 'drift';
-                } else if (health === 'healthy') {
-                    this.degradedReason = null;
-                }
-            },
-        });
-        this.driftRecoveryCoordinator = new DriftRecoveryCoordinator({
-            getOrchestrator: () => this.orchestrator,
-            getIndexHealth: () => this.indexHealth,
-            setIndexHealth: (h) => { this.indexHealth = h; },
-            setDegradedReason: (r) => { this.degradedReason = r; },
-            isIndexingBlocked: () => this.indexingBlocked,
-            isSessionWorkCurrent: (gen) => this.isSessionWorkCurrent(gen),
-            getLoadGeneration: () => this.loadGeneration,
-            appendErrorIfCurrent: (ctx, e, gen) => this.appendErrorIfCurrent(ctx, e, gen),
-            withSidecarHydrate: (fn) => this.withSidecarHydrate(fn),
-        });
-        // The orchestrator is pull-based; this is its one injected outbound edge — it
-        // fires when persistent frame/BM25 drift survives the cooldown, and we drive the
-        // embed-free recovery ladder from the plugin (which owns scheduling + gating).
-        this.orchestrator.setPersistentDriftHandler(() => this.onPersistentDrift());
-        this.orchestrator.setGoodEnoughHandler(() => this.markIndexGoodEnough());
+        this.attachOrchestrator(sidecarIndexDir);
         this.addSettingTab(new SeekSettingTab(this.app, this));
         this.indexProgress.mount(this.addStatusBarItem(), {
             getStats: () => this.getIndexStats(),
@@ -949,6 +1079,8 @@ export default class SeekPlugin extends Plugin {
 
         // Periodic sidecar reconcile, exclusion-list watch, and mobile idle model unload.
         this.schedulers.wireBackgroundIntervals((id) => this.registerInterval(id));
+        this.lastIndexingProgressAt = performance.now();
+        this.registerInterval(window.setInterval(() => this.checkIndexingStallGuard(), INDEXING_STALL_CHECK_MS));
 
         // Wire global observers + handlers BEFORE we do anything else, so
         // any error in the init path itself gets logged.
@@ -1042,10 +1174,10 @@ export default class SeekPlugin extends Plugin {
             id: 'retry-index-store',
             name: 'Retry opening the search index',
             checkCallback: (checking) => {
-                if (checking) return isRetryIndexStoreCommandEnabled(this.indexStoreLocked || this.indexBootStuck);
+                if (checking) return isRetryIndexStoreCommandEnabled(this.indexRecoveryCommandsEnabled());
                 // Allow an explicit retry from the Stuck state even when the store
                 // reports open but boot never became searchable (a wedged read).
-                if (!this.indexStoreLocked && !this.indexBootStuck) return false;
+                if (!this.indexRecoveryCommandsEnabled()) return false;
                 void this.retryIndexStoreOpen();
                 return true;
             },
@@ -1055,7 +1187,7 @@ export default class SeekPlugin extends Plugin {
             id: 'force-reset-index',
             name: 'Force reset search index',
             checkCallback: (checking) => {
-                const enabled = this.indexStoreLocked || this.indexBootStuck;
+                const enabled = this.indexRecoveryCommandsEnabled();
                 if (checking) return enabled;
                 if (!enabled) return false;
                 const bootGen = this.loadGeneration;
@@ -1253,7 +1385,23 @@ export default class SeekPlugin extends Plugin {
         if (this.indexStoreWedged) return;
         if (!this.indexBootStuck) return;
         this.indexBootStuck = false;
-        if (this.degradedReason === 'stuck') this.degradedReason = null;
+        if (this.degradedReason === 'stuck' && !this.indexIndexingStalled) this.degradedReason = null;
+        this.refreshIndexStatusBar();
+    }
+
+    private markIndexingStalled(): void {
+        this.indexIndexingStalled = true;
+        if (this.degradedReason == null) this.degradedReason = 'stuck';
+        new Notice(INDEX_STALL_NOTICE, 8000);
+        this.refreshIndexStatusBar();
+    }
+
+    private clearIndexingStalled(): void {
+        if (!this.indexIndexingStalled) return;
+        this.indexIndexingStalled = false;
+        if (this.degradedReason === 'stuck' && !this.indexBootStuck && !this.indexStoreWedged) {
+            this.degradedReason = null;
+        }
         this.refreshIndexStatusBar();
     }
 
@@ -1354,6 +1502,7 @@ export default class SeekPlugin extends Plugin {
             this.indexStoreWedged = false;
             this.storeWedgedLogged = false;
             this.markBootStuckResolved();
+            this.clearIndexingStalled();
             void this.touchIndexInventory();
             new Notice(`Seek: index ${result.nuked ? 'reset' : 'cleared'} — rebuilding from scratch...`, 6000);
             void this.scheduleColdBuild();
@@ -1373,6 +1522,7 @@ export default class SeekPlugin extends Plugin {
             return;
         }
         this.markBootStuckResolved();
+        this.clearIndexingStalled();
         if (this.storeOpenRetryScheduler) {
             // Use retryNow to bypass pending backoff timers.
             this.storeOpenRetryScheduler.retryNow();
@@ -1429,6 +1579,7 @@ export default class SeekPlugin extends Plugin {
                 this.indexStoreWedged = false;
                 this.storeWedgedLogged = false;
                 this.indexBootStuck = false;
+                this.indexIndexingStalled = false;
                 if (this.degradedReason === 'stuck') this.degradedReason = null;
                 this.publishInventory(c.files, c.chunks, true);
                 if (!this.indexGoodEnough) this.markIndexGoodEnough();
@@ -1453,7 +1604,10 @@ export default class SeekPlugin extends Plugin {
      * palette exposes when startup is stuck or the store is locked.
      */
     async recoverIndexFromSettings(): Promise<void> {
+        this.abortInflightSessionWork('user-recover');
+        this.clearIndexingStalled();
         await this.retryIndexStoreOpen();
+        if (this.catchUpPending) this.scheduleStartupCatchUp();
     }
 
     /**
@@ -1523,6 +1677,7 @@ export default class SeekPlugin extends Plugin {
         this.bootBuffer = null;
         this.clearBootWatchdog();
         this.indexBootStuck = false;
+        this.indexIndexingStalled = false;
         this.indexStoreWedged = false;
         this.storeWedgedLogged = false;
         this.disposeStoreOpenRetryScheduler();
@@ -2497,6 +2652,7 @@ export default class SeekPlugin extends Plugin {
             window.clearTimeout(this.indexDeltaNotifyTimer);
             this.indexDeltaNotifyTimer = null;
         }
+        this.bumpIndexingProgressHeartbeat();
         this.notifySessionTelemetryChanged();
         this.notifyFolderCoverageChanged();
     }
@@ -2764,6 +2920,7 @@ export default class SeekPlugin extends Plugin {
         if (isMobilePlatform() && this.orchestrator.peerAhead) return;
         this.catchUpRunning = true;
         this.syncWarmDeferred();
+        this.bumpIndexingProgressHeartbeat();
         const orchestrator = this.orchestrator;
         const mobile = isMobilePlatform();
         const pacer = new CompositorPacer();
@@ -2775,7 +2932,15 @@ export default class SeekPlugin extends Plugin {
                 if (!this.persistCacheRestoredThisBoot && (this.indexInventoryChunks ?? 0) > 0) {
                     this.persistCacheRestoredThisBoot = true;
                     try {
-                        await orchestrator.restorePersistedCachesBeforeReconcile();
+                        await Promise.race([
+                            orchestrator.restorePersistedCachesBeforeReconcile(),
+                            new Promise<never>((_, reject) => {
+                                window.setTimeout(
+                                    () => reject(new Error('persist-cache-restore-timeout')),
+                                    PERSIST_CACHE_RESTORE_CATCHUP_TIMEOUT_MS,
+                                );
+                            }),
+                        ]);
                     } catch (e) {
                         await this.logger.appendError('persist-cache-restore', e).catch(() => {});
                     }
