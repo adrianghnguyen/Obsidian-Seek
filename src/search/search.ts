@@ -77,7 +77,7 @@ import { beginLongTaskPass } from '../app/observers';
 import { isMobilePlatform, residentInt8Enabled } from '../embedding/platform';
 import { CacheManager } from './cache-manager';
 import { SearchQuery, type RecencyOverride, dedupByPath, topKByScore } from './search-query';
-import { SidecarCoordinator } from '../sidecar/sidecar-coordinator';
+import { SidecarCoordinator, type SidecarFleetSnapshot } from '../sidecar/sidecar-coordinator';
 import { WorkflowCoordinator } from '../app/workflow-coordinator';
 import {
     alignCandidate,
@@ -488,6 +488,8 @@ export class SearchOrchestrator {
         if (this.disposed) return;
         // Re-read the live setting: it can toggle off between the pass and this flush.
         if (!this.coord.sidecarOn()) return;
+        const fleet = await this.sidecarCoordinator.inspectFleet();
+        if (fleet && !fleet.mayWriteSidecar) return;
         try {
             const adapter = this.app.vault.adapter;
             // Create the sidecar dir up front. The F8 ordering writes meta FIRST,
@@ -748,25 +750,26 @@ export class SearchOrchestrator {
         // never resolve — they only cost disk until reclaimed.
         const sidecarPending: Array<{ id: string; tiers: TierBytes; mtime: number }> = [];
         if (this.coord.sidecarOn() && mode === 'full') {
-            try {
-                // preserveSeqFloor: the rebuild's flushes must allocate ABOVE every
-                // shard deleted here — a peer may still hold the old files, and a
-                // republished embeddings.<dev>.N.bin with different bytes lets it
-                // resolve fresh jsonl refs against stale bytes (sidecar.ts).
-                await clearDevice(this.app.vault.adapter, this.coord.dir!, this.logger.deviceId, { preserveSeqFloor: true });
-            } catch (e) {
-                await this.logger.appendError('sidecar-clear', e);
-            }
-            // Reap OTHER devices' dead-identity sidecar files (identity ≠ this build).
-            // Provably useless — the same metaAccepts gate that refuses them for
-            // hydration means no current-version device can use them — so this is
-            // sync-safe; an un-updated device simply re-creates its own files until it
-            // updates (self-resolving). Stops fleet-wide version drift from piling up.
-            // Best-effort: never fail the reindex on a reap error.
-            try {
-                await this.reapDeadIdentitySidecars();
-            } catch (e) {
-                await this.logger.appendError('sidecar-reap', e);
+            const fleet = await this.sidecarCoordinator.inspectFleet();
+            // Consumers never clearDevice / reap peers — that is how an empty Mac
+            // deleted a Windows sidecar. Producer-only.
+            if (!fleet || fleet.mayFullReindex) {
+                try {
+                    // preserveSeqFloor: the rebuild's flushes must allocate ABOVE every
+                    // shard deleted here — a peer may still hold the old files, and a
+                    // republished embeddings.<dev>.N.bin with different bytes lets it
+                    // resolve fresh jsonl refs against stale bytes (sidecar.ts).
+                    await clearDevice(this.app.vault.adapter, this.coord.dir!, this.logger.deviceId, { preserveSeqFloor: true });
+                } catch (e) {
+                    await this.logger.appendError('sidecar-clear', e);
+                }
+                if (!fleet || fleet.mayReapPeers) {
+                    try {
+                        await this.reapDeadIdentitySidecars();
+                    } catch (e) {
+                        await this.logger.appendError('sidecar-reap', e);
+                    }
+                }
             }
         }
         // Forensic dispatch accounting. iOS exposes no heap numbers, so the
@@ -2518,6 +2521,10 @@ export class SearchOrchestrator {
 
     async peerSidecarPresent(): Promise<boolean> {
         return this.sidecarCoordinator.peerSidecarPresent();
+    }
+
+    async inspectSidecarFleet(): Promise<SidecarFleetSnapshot | null> {
+        return this.sidecarCoordinator.inspectFleet();
     }
 
     async sweepOrphanChunks(opts: { shouldContinue?: () => boolean } = {}): Promise<{ removed: number; completed: boolean }> {

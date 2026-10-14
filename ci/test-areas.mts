@@ -52,6 +52,8 @@ export const CI_TEST_AREAS = {
         'src/search/offmutex-flush.test.ts',
         'src/search/persist-cache-startup.test.ts',
         'src/sidecar/sidecar-coordinator.test.ts',
+        'src/sidecar/sidecar-fleet.test.ts',
+        'src/sidecar/sidecar-preflight.test.ts',
         'src/sidecar/sidecar-sync.test.ts',
         'src/sidecar/sidecar.test.ts',
         'src/ui/index-eta.test.ts',

@@ -4,6 +4,12 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Added
+- **Cross-device index role (producer / consumer).** Settings → Index → Advanced → **This device’s index role** (this device only, not synced). Auto treats phones and laptops that never finished a full pass as hydrate-only. A consumer waits for complete producer sidecar files instead of re-embedding, and will not full-reindex, compact, or delete another device’s shards.
+
+### Changed
+- **Hydrate waits until sidecar shards are fully local.** 0-byte / cloud-placeholder bins and missing offsets stay on Restoring, not catch-up. CRC-corrupt records are skipped; the peer device is not wiped. Changing the embedding model on a consumer stamps a pending change until the producer’s matching files arrive.
+
 ### Fixed
 - **Stalled indexing no longer sits on Indexing with no way out.** After ~90s without catch-up progress, Seek aborts hung work, bounds IndexedDB reads (`listAllMeta`, persist-cache restore), and shows **Stuck** with Settings **Recover search index** (Retry first; rebuild if it stays stuck). Search still works on a populated index. Retry cancels hung writers before resuming.
 

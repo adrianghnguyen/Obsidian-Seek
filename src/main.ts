@@ -94,7 +94,7 @@ import {
     UNLOAD_CHECK_MS,
     BULK_DELTA_THRESHOLD,
 } from './app/plugin-schedulers';
-import { indexBannerSpec, resolveIndexLoadPhase, resolveCliSearchGate, CLI_SEARCH_WARMING, resolveIndexUiStatus, resolveSidecarWait, retainIndexInventory, INDEX_STALE_MSG, INDEX_SYNCING_MSG, INDEX_PEER_AHEAD_MSG, INDEX_STALL_NOTICE, type DegradedReason, type IndexLoadState } from './ui/index-notice';
+import { indexBannerSpec, resolveIndexLoadPhase, resolveCliSearchGate, CLI_SEARCH_WARMING, resolveIndexUiStatus, resolveSidecarWait, retainIndexInventory, INDEX_STALE_MSG, INDEX_SYNCING_MSG, INDEX_WAITING_SIDECAR_MSG, INDEX_PEER_AHEAD_MSG, INDEX_STALL_NOTICE, type DegradedReason, type IndexLoadState } from './ui/index-notice';
 import { IndexStatusBar, extendIndexPassTotal, parseIndexedProgress, type IndexJobSpeedView } from './ui/index-status-bar';
 import type { IndexJobKind, IndexStatusHealth, IndexStatusJob } from './ui/index-status-card';
 import {
@@ -1505,6 +1505,13 @@ export default class SeekPlugin extends Plugin {
             this.clearIndexingStalled();
             void this.touchIndexInventory();
             new Notice(`Seek: index ${result.nuked ? 'reset' : 'cleared'} — rebuilding from scratch...`, 6000);
+            const fleet = this.orchestrator ? await this.orchestrator.inspectSidecarFleet() : null;
+            if (fleet && !fleet.mayFullReindex) {
+                this.waitingForSidecar = true;
+                this.peerSyncPending = true;
+                new Notice(fleet.copy, 8000);
+                return;
+            }
             void this.scheduleColdBuild();
         } catch (e) {
             this.appendErrorIfCurrent('force-reset', e, bootGen);
@@ -1645,15 +1652,16 @@ export default class SeekPlugin extends Plugin {
                 this.applySidecarWait(hydrated);
                 this.applyPeerAheadBanner();
             }
+            await this.refreshSidecarFleet();
         } catch (e) {
             if (this.isBootCurrent(bootGen) && !isTransientIdbUnavailable(e)) {
                 await this.logger.appendError('sidecar-hydrate-onload', e).catch(() => {});
             }
         }
         await this.maybeSteerSidecarLocation().catch(() => {});
-        if (!identityHandled) {
+            if (!identityHandled) {
             if (!this.indexGoodEnough) this.markIndexGoodEnough();
-            if (this.isBootCurrent(bootGen)) {
+            if (this.isBootCurrent(bootGen) && !this.waitingForSidecar) {
                 void this.reconcileOnLoad(bootGen).catch(e =>
                     this.appendErrorIfCurrent('reconcileOnLoad', e, bootGen));
             }
@@ -2139,17 +2147,22 @@ export default class SeekPlugin extends Plugin {
             //    and tapping Reindex on a phone is exactly the bulk re-embed we want them
             //    NOT to trigger). Only a genuinely-stuck index (no peer in sight) is
             //    'degraded' with the action-needed banner + sticky toast.
-            const peerComing = await this.orchestrator.peerSidecarPresent();
-            this.indexHealth = peerComing ? 'recovering' : 'degraded';
+            const fleet = await this.orchestrator.inspectSidecarFleet();
+            const peerComing = fleet?.matchingPeerPresent || fleet?.waitingForProducer
+                || await this.orchestrator.peerSidecarPresent();
+            const waiting = !!fleet?.waitingForProducer;
+            this.indexHealth = peerComing || waiting ? 'recovering' : 'degraded';
             this.degradedReason = 'version';
             // Drive the calm "syncing" banner off this explicit peer fact, not indexHealth:
             // local drift recovery also sets 'recovering' and must stay silent (see indexBannerSpec).
-            this.peerSyncPending = peerComing;
+            this.peerSyncPending = peerComing || waiting;
+            this.waitingForSidecar = waiting || this.waitingForSidecar;
             if (firstReport) {
                 // Syncing: a brief, non-sticky heads-up (it self-heals, so don't nag).
                 // Stale: sticky (duration 0) — rare enough that the intrusion is worth not
                 // letting it auto-vanish unseen. Same copy as the modal banner, once per spell.
-                if (peerComing) new Notice(INDEX_SYNCING_MSG, 8000);
+                if (waiting) new Notice(fleet?.copy ?? INDEX_WAITING_SIDECAR_MSG, 8000);
+                else if (peerComing) new Notice(INDEX_SYNCING_MSG, 8000);
                 else new Notice(INDEX_STALE_MSG, 0);
             }
             return true;
@@ -2197,6 +2210,8 @@ export default class SeekPlugin extends Plugin {
             if (await this.enforceIndexIdentity()) return;
             const hydrated = await this.withSidecarHydrate(() => this.orchestrator.reconcileSidecarIfChanged());
             this.applySidecarWait(hydrated);
+            await this.refreshSidecarFleet();
+            if (this.waitingForSidecar) return;
             // The reconcile above scanned the sidecar dir, so peerAhead is fresh: raise (or
             // clear) the "update Seek" banner. Runs only on the local-healthy path, since
             // enforceIndexIdentity returns early when the local index is itself version-stale.
@@ -2408,6 +2423,7 @@ export default class SeekPlugin extends Plugin {
   /** @returns true when reconcile applied a non-empty delta (restore + reindex). */
     private async reconcileOnLoad(sessionGen?: number): Promise<boolean> {
         const workGen = sessionGen ?? this.loadGeneration;
+        if (this.waitingForSidecar) return false;
         if (!this.isSessionWorkCurrent(workGen) || !this.orchestrator) return false;
         await this.store.ensureOpen().catch(() => {});
         if (!this.isSessionWorkCurrent(workGen) || !this.store.isOpen()) return false;
@@ -2522,7 +2538,12 @@ export default class SeekPlugin extends Plugin {
     // here is "is the index version-stale?". Re-evaluated by the modal on each open, so a
     // reindex done from Settings clears it the next time the modal opens.
     private indexNotice(): IndexBanner | null {
-        return indexBannerSpec(this.indexHealth, this.degradedReason, this.peerSyncPending);
+        return indexBannerSpec(
+            this.indexHealth,
+            this.degradedReason,
+            this.peerSyncPending,
+            this.waitingForSidecar,
+        );
     }
 
     private indexLoadState(): IndexLoadState {
@@ -2546,11 +2567,48 @@ export default class SeekPlugin extends Plugin {
         };
     }
 
-    private applySidecarWait(result: { hydrated: number; skippedPartialNotes: number; acceptedProducers: number } | null): void {
+    private applySidecarWait(result: {
+        hydrated: number;
+        skippedPartialNotes: number;
+        acceptedProducers: number;
+        waitingForProducer?: boolean;
+        incompleteFolder?: boolean;
+        datalessShards?: number;
+    } | null): void {
         if (!result) return;
         this.waitingForSidecar = resolveSidecarWait(result, this.indexInventoryChunks);
+        if (this.waitingForSidecar) this.peerSyncPending = true;
         if (result.hydrated > 0) void this.touchIndexInventory();
         else this.refreshIndexStatusBar();
+    }
+
+    private async refreshSidecarFleet(): Promise<void> {
+        if (!this.settings.sidecarEnabled || !this.orchestrator) return;
+        const fleet = await this.orchestrator.inspectSidecarFleet();
+        if (!fleet) return;
+        if (fleet.waitingForProducer) {
+            this.waitingForSidecar = true;
+            this.peerSyncPending = true;
+            if (this.indexHealth === 'degraded' && this.degradedReason === 'version') {
+                this.indexHealth = 'recovering';
+            }
+            this.refreshIndexStatusBar();
+        } else if (this.waitingForSidecar && fleet.matchingReady) {
+            this.waitingForSidecar = false;
+        }
+    }
+
+    /** Settings Index card: producer/consumer wait copy, or null when sidecar is off. */
+    async getSidecarFleetStatus(): Promise<{ role: string; copy: string; waiting: boolean; mayFullReindex: boolean } | null> {
+        if (!this.settings.sidecarEnabled || !this.orchestrator) return null;
+        const fleet = await this.orchestrator.inspectSidecarFleet();
+        if (!fleet) return null;
+        return {
+            role: fleet.role,
+            copy: fleet.copy,
+            waiting: fleet.waitingForProducer,
+            mayFullReindex: fleet.mayFullReindex,
+        };
     }
 
     private markIndexGoodEnough(): void {
@@ -2904,6 +2962,7 @@ export default class SeekPlugin extends Plugin {
     // cheap no-op
     // unless something was deferred (catchUpPending) and we're in a safe window.
     private runCatchUp(): void {
+        if (this.waitingForSidecar) return;
         if (!this.catchUpPending || this.catchUpRunning || !this.orchestrator) return;
         if (!this.embedder.loaded) {
             this.scheduleStartupCatchUp();
@@ -3044,6 +3103,13 @@ export default class SeekPlugin extends Plugin {
     // embeds without opening Search. Mobile stays lazy (jetsam / heap).
     private applyPostBootIndexScheduling(): void {
         if (this.unloading) return;
+        if (this.waitingForSidecar) {
+            if (this.indexBootDecisionPending) {
+                this.indexBootDecisionPending = false;
+                this.refreshIndexStatusBar();
+            }
+            return;
+        }
         const empty = isKnownEmptyIndexWithNotes(this.indexInventoryChunks, this.indexableNoteCount());
         if (empty && !isMobilePlatform()) {
             this.scheduleIndexBuild('cold');
@@ -3061,6 +3127,7 @@ export default class SeekPlugin extends Plugin {
 
     private scheduleIndexBuild(mode: IndexBuildMode): void {
         if (mode === 'idle') return;
+        if (this.waitingForSidecar) return;
         if (isMobilePlatform()) {
             if (mode === 'catchup') this.catchUpPending = true;
             return;
@@ -3080,6 +3147,14 @@ export default class SeekPlugin extends Plugin {
         const workGen = this.loadGeneration;
         if (isMobilePlatform() || !this.orchestrator) {
             this.coldBuildScheduled = false;
+            return;
+        }
+        const fleet = await this.orchestrator.inspectSidecarFleet();
+        if (fleet && !fleet.mayFullReindex) {
+            this.coldBuildScheduled = false;
+            this.waitingForSidecar = fleet.waitingForProducer || this.waitingForSidecar;
+            this.peerSyncPending = true;
+            this.refreshIndexStatusBar();
             return;
         }
         try {
@@ -3113,6 +3188,7 @@ export default class SeekPlugin extends Plugin {
     }
 
     private scheduleStartupCatchUp(): void {
+        if (this.waitingForSidecar) return;
         if (!shouldAutoDrainStartupCatchUp({
             mobile: isMobilePlatform(),
             catchUpPending: this.catchUpPending,
@@ -3249,30 +3325,37 @@ export default class SeekPlugin extends Plugin {
             new Notice('Seek: a reindex is already running.', 4000);
             return false;
         }
-        if (!opts?.skipConfirm) {
-            const message = 'This will delete the existing Seek index and re-embed every markdown file in this vault.\nProceed?';
-            if (!(await new ConfirmModal(this.app, message).openAndConfirm())) return false;
-            // Re-check: the confirm dialog awaits user input, so a reindex (e.g. the
-            // identity heal, or another caller of this same method) could have started
-            // in that window. Without this, both would proceed past the mutex.
-            if (this.fullReindexInFlight || this.orchestrator.isWriting()) {
-                new Notice('Seek: a reindex is already running.', 4000);
+        // Latch before any await (fleet inspect, confirm, model load) so a second
+        // caller cannot start a wipe in that gap. Model load is not isWriting(),
+        // and the mutex is acquired only inside reindexAll.
+        this.fullReindexInFlight = true;
+        let jobId: number | null = null;
+        try {
+            const fleet = await this.orchestrator.inspectSidecarFleet();
+            if (fleet && !fleet.mayFullReindex) {
+                this.waitingForSidecar = fleet.waitingForProducer || this.waitingForSidecar;
+                this.peerSyncPending = true;
+                new Notice(fleet.copy, 8000);
+                this.refreshIndexStatusBar();
                 return false;
             }
-        }
+            if (!opts?.skipConfirm) {
+                const message = 'This will delete the existing Seek index and re-embed every markdown file in this vault.\nProceed?';
+                if (!(await new ConfirmModal(this.app, message).openAndConfirm())) return false;
+                // Confirm awaits the user, so another writer could have taken the mutex.
+                if (this.orchestrator.isWriting()) {
+                    new Notice('Seek: a reindex is already running.', 4000);
+                    return false;
+                }
+            }
 
-        // Before any await. Model load is not isWriting(), and the mutex is
-        // acquired only inside reindexAll — a second caller in that gap used
-        // to begin a new status-bar job and queue another nuke.
-        this.fullReindexInFlight = true;
-        const jobId = this.beginIndexJob('full', this.indexableNoteCount(), 'Seek: indexing…');
-        this.pushTaskContext('indexing');
-        try {
+            jobId = this.beginIndexJob('full', this.indexableNoteCount(), 'Seek: indexing…');
+            this.pushTaskContext('indexing');
             await this.ensureModelLoaded();
             this.orchestrator.invalidateBm25Cache();
             const result = await this.orchestrator.reindexAll((msg) => {
                 opts?.onProgress?.(msg);
-                this.indexProgress.updateFromProgress(msg, jobId);
+                this.indexProgress.updateFromProgress(msg, jobId!);
                 this.notifyIndexActivityChanged();
             });
             const summary = [
@@ -3306,10 +3389,12 @@ export default class SeekPlugin extends Plugin {
             return false;
         } finally {
             this.fullReindexInFlight = false;
-            this.popTaskContext('indexing');
-            this.indexProgress.hide(jobId);
-            this.clearIndexDelta();
-            void this.touchIndexInventory();
+            if (jobId != null) {
+                this.popTaskContext('indexing');
+                this.indexProgress.hide(jobId);
+                this.clearIndexDelta();
+                void this.touchIndexInventory();
+            }
         }
     }
 

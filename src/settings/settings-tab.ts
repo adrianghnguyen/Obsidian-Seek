@@ -65,7 +65,9 @@ import {
     getBackendOverride, setBackendOverride, isWebgpuDemoted, clearWebgpuDemoted,
     getStartupWarm, setStartupWarm, isMobilePlatform,
     getWorkerEmbedRoute, setWorkerEmbedRoute,
-    type BackendChoice,
+    getSidecarIndexRole, setSidecarIndexRole,
+    getPendingEmbeddingModel, setPendingEmbeddingModel,
+    type BackendChoice, type SidecarIndexRole,
 } from '../embedding/platform';
 import {
     EMBEDDING_MODEL_CHOICES,
@@ -212,6 +214,7 @@ export const COVERAGE_LIVE_POLL_MS = 1000;
 export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetrySink {
     // Async index/model snapshots, loaded once per tab open (guarded null→fetch→re-render).
     private stats: IndexStats | null = null;
+    private fleetStatus: { role: string; copy: string; waiting: boolean; mayFullReindex: boolean } | null = null;
     private modelStatus: ModelStatus | null = null;
     private loading = false;
     // UI state that must survive the synchronous display() re-renders triggered by
@@ -343,6 +346,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         this.coverageHost = null;
         this.exclusionBannerHost = null;
         this.stats = null;
+        this.fleetStatus = null;
         this.modelStatus = null;
         this.modelDeleteConfirm = false;
         this.modelDeleting = false;
@@ -354,12 +358,14 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
     private async loadData(): Promise<void> {
         this.loading = true;
         try {
-            const [stats, modelStatus] = await Promise.all([
+            const [stats, modelStatus, fleetStatus] = await Promise.all([
                 this.plugin.getIndexStats(),
                 this.plugin.getModelStatus(),
+                this.plugin.getSidecarFleetStatus(),
             ]);
             this.stats = stats;
             this.modelStatus = modelStatus;
+            this.fleetStatus = fleetStatus;
         } finally {
             this.loading = false;
         }
@@ -548,7 +554,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         // Live search always uses this device's IndexedDB. The toggle only controls
         // whether Seek also writes/hydrates vault index files (sidecar) for Sync/iOS.
         const syncIdx = new Setting(adv).setName('Sync index across devices');
-        syncIdx.descEl.createDiv({ text: 'Search always uses this device’s local index. When on, Seek also writes vault index files (~MBs) so phones and Sync can hydrate without re-embedding. When off, this device only — no vault index writes or hydrate.' });
+        syncIdx.descEl.createDiv({ text: 'Search always uses this device’s local index. When on, Seek also writes vault index files (~MBs) so phones and Sync can hydrate without re-embedding. One device produces those files; others wait until every shard is fully on this disk (empty cloud placeholders do not count). When off, this device only — no vault index writes or hydrate.' });
         syncIdx.addToggle(t => t
             .setValue(this.s.sidecarEnabled)
             .onChange(async v => {
@@ -578,8 +584,8 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             locHidden.createSpan({ text: `inside the hidden .obsidian config folder.` });
             const locRoot = locList.createEl('li');
             locRoot.createEl('strong', { text: 'Vault root: ' });
-            locRoot.createSpan({ text: 'a visible "Seek Index" folder will appear in your vault. Choose this only if you use Obsidian Sync with a mobile or tablet override config folder.' });
-            indexLoc.descEl.createDiv({ text: 'Takes effect after reloading Seek.' });
+            locRoot.createSpan({ text: 'a visible "Seek Index" folder will appear in your vault. Choose this only if you use Obsidian Sync with a mobile or tablet override config folder, or if the hidden folder is not actually copied (gitignored, stale Drive).' });
+            indexLoc.descEl.createDiv({ text: 'Takes effect after reloading Seek. Hydrate will not start until jsonl and .bin shards are complete local files.' });
         }
         indexLoc.addDropdown(dd => dd
             .addOption('config', `Hidden (.obsidian, recommended)`)
@@ -592,6 +598,35 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                 new Notice('Seek: index location changed — reload Seek (or restart Obsidian) for it to take effect.', 8000);
             }));
         if (!this.s.sidecarEnabled) indexLoc.setDisabled(true);
+
+        if (this.s.sidecarEnabled) {
+            const roleRow = new Setting(adv)
+                .setName('This device’s index role')
+                .setDesc('On this device only (not synced). Producer writes the shared index files. Consumer hydrates them and will not full-reindex or delete another device’s shards.');
+            roleRow.addDropdown(dd => dd
+                .addOption('auto', 'Auto')
+                .addOption('producer', 'Producer — this device writes the index')
+                .addOption('consumer', 'Consumer — hydrate only')
+                .setValue(getSidecarIndexRole())
+                .onChange(v => {
+                    setSidecarIndexRole(v as SidecarIndexRole);
+                    void this.loadData();
+                }));
+            const fleet = this.fleetStatus;
+            if (fleet) {
+                adv.createDiv({
+                    cls: fleet.waiting ? 'seek-inline-warn' : 'seek-hint',
+                    text: fleet.copy,
+                });
+            }
+            const pending = getPendingEmbeddingModel();
+            if (pending && !fleet?.mayFullReindex) {
+                adv.createDiv({
+                    cls: 'seek-hint',
+                    text: `Model change is waiting for matching producer files (${pending.key || 'default'}, ${pending.dim || 'native'}).`,
+                });
+            }
+        }
     }
 
     private renderExcludedFoldersBlock(adv: HTMLElement): void {
@@ -1160,10 +1195,27 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         // destructive "Delete & reindex" double-confirm is just friction. Offer a single
         // non-warning click that builds the index straight away.
         if (this.statusState() === 'none') {
+            if (this.fleetStatus && !this.fleetStatus.mayFullReindex) {
+                new Setting(containerEl)
+                    .setName('Build index')
+                    .setDesc(this.fleetStatus.copy)
+                    .addButton(b => b.setButtonText('Build index').setDisabled(true));
+                this.renderReindexNote(containerEl);
+                return;
+            }
             new Setting(containerEl)
                 .setName('Build index')
                 .setDesc('Index every note so Seek can search your vault. This may take a few minutes on a large vault.')
                 .addButton(b => b.setButtonText('Build index').setCta().onClick(() => this.startReindex()));
+            this.renderReindexNote(containerEl);
+            return;
+        }
+
+        if (this.fleetStatus && !this.fleetStatus.mayFullReindex) {
+            new Setting(containerEl)
+                .setName('Full reindex')
+                .setDesc(this.fleetStatus.copy)
+                .addButton(b => b.setButtonText('Reindex…').setDisabled(true));
             this.renderReindexNote(containerEl);
             return;
         }
@@ -1183,7 +1235,9 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
     private renderReindexNote(containerEl: HTMLElement): void {
         containerEl.createDiv({
             cls: 'seek-hint',
-            text: 'Building the index re-embeds every note and isn’t recommended on a mobile phone. Run it on a computer, and your phone will sync the finished index automatically.',
+            text: this.fleetStatus && !this.fleetStatus.mayFullReindex
+                ? 'This device hydrates the producer’s index files. It will not re-embed the vault while that role is set.'
+                : 'Building the index re-embeds every note and isn’t recommended on a mobile phone. Run it on a computer, and your phone will sync the finished index automatically.',
         });
     }
 
@@ -1616,11 +1670,18 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         const selected = MODEL_REGISTRY[selectedKey];
         new Setting(containerEl)
             .setName('Embedding model')
-            .setDesc('Turns notes into meaning for semantic search. Changing the model asks you to reindex; keyword search keeps working until you do.')
+            .setDesc('Turns notes into meaning for semantic search. Changing the model asks you to reindex; keyword search keeps working until you do. A consumer device waits for the producer’s matching index files instead of embedding here.')
             .addDropdown(dd => dd
                 .addOptions(modelOptions)
                 .setValue(selectedKey)
                 .onChange(async v => {
+                    if (this.fleetStatus && !this.fleetStatus.mayFullReindex) {
+                        setPendingEmbeddingModel({ key: v, dim: this.s.embeddingOutputDim });
+                        new Notice('Seek: this device hydrates the shared index. Change the embedding model on the producer, then wait for those files to arrive.', 8000);
+                        this.rerender();
+                        return;
+                    }
+                    setPendingEmbeddingModel(null);
                     this.s.embeddingModelKey = v;
                     await this.save();
                     this.modelStatus = null;
@@ -1645,6 +1706,13 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                     .addOptions(dimOptions)
                     .setValue(String(shownDim))
                     .onChange(async v => {
+                        if (this.fleetStatus && !this.fleetStatus.mayFullReindex) {
+                            setPendingEmbeddingModel({ key: this.s.embeddingModelKey, dim: Number(v) });
+                            new Notice('Seek: this device hydrates the shared index. Change the vector size on the producer, then wait for those files to arrive.', 8000);
+                            this.rerender();
+                            return;
+                        }
+                        setPendingEmbeddingModel(null);
                         this.s.embeddingOutputDim = Number(v);
                         await this.save();
                         this.modelStatus = null;

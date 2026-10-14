@@ -80,6 +80,42 @@ import {
     type HydrateResult,
     type HydrateDeps,
 } from './sidecar-sync';
+import { preflightSidecar, type SidecarPreflight } from './sidecar-preflight';
+import {
+    resolveFleetRole,
+    mayFullReindex,
+    mayReapPeerSidecars,
+    mayWriteSidecar,
+    mayCompactOwnSidecar,
+    shouldWaitForProducer,
+    sidecarWaitCopy,
+    matchingPeers,
+    stalePeers,
+    type ResolvedSidecarRole,
+    type SidecarIndexRole,
+} from './sidecar-fleet';
+import { getSidecarIndexRole } from '../embedding/platform';
+
+export interface SidecarFleetSnapshot {
+    role: ResolvedSidecarRole;
+    roleSetting: SidecarIndexRole;
+    anyPeerPresent: boolean;
+    matchingPeerPresent: boolean;
+    matchingReady: boolean;
+    waitingForProducer: boolean;
+    mayFullReindex: boolean;
+    mayReapPeers: boolean;
+    mayWriteSidecar: boolean;
+    mayCompact: boolean;
+    copy: string;
+    preflight: SidecarPreflight;
+    peerDeviceIds: string[];
+}
+
+const EMPTY_HYDRATE: HydrateResult = {
+    scanned: 0, needed: 0, hydrated: 0, skippedPartialNotes: 0,
+    refusedProducers: 0, acceptedProducers: 0, peerAhead: false, hydratedNotePaths: [],
+};
 
 export interface SidecarCoordinatorDeps {
     app: App;
@@ -94,6 +130,8 @@ export interface SidecarCoordinatorDeps {
     indexableFiles: () => TFile[];
     shouldIndex: (path: string) => boolean;
     onGoodEnough?: () => void;
+    /** Dual-open: a hidden window must not write or compact over a peer. */
+    isHidden?: () => boolean;
 }
 
 export class SidecarCoordinator {
@@ -108,6 +146,7 @@ export class SidecarCoordinator {
     private chunksFor: (content: string, path: string, modifiedIso: string | null) => Chunk[];
     private indexableFiles: () => TFile[];
     private shouldIndex: (path: string) => boolean;
+    private isHidden: () => boolean;
     onGoodEnough?: () => void;
 
     private _peerAhead = false;
@@ -127,6 +166,7 @@ export class SidecarCoordinator {
         this.chunksFor = deps.chunksFor;
         this.indexableFiles = deps.indexableFiles;
         this.shouldIndex = deps.shouldIndex;
+        this.isHidden = deps.isHidden ?? (() => typeof document !== 'undefined' && !!document.hidden);
         this.onGoodEnough = deps.onGoodEnough;
     }
 
@@ -136,6 +176,76 @@ export class SidecarCoordinator {
 
     set peerAhead(val: boolean) {
         this._peerAhead = val;
+    }
+
+    async inspectFleet(): Promise<SidecarFleetSnapshot | null> {
+        if (!this.coord.sidecarOn()) return null;
+        const adapter = this.app.vault.adapter;
+        const dir = this.coord.dir!;
+        const expect = expectationFor();
+        const ownId = this.logger.deviceId;
+        const ids = await listSidecarDeviceIds(adapter, dir);
+        const peers: Array<{ deviceId: string; meta: Awaited<ReturnType<typeof readDeviceMeta>> }> = [];
+        let ownMeta: Awaited<ReturnType<typeof readDeviceMeta>> = null;
+        for (const dev of ids) {
+            const meta = await readDeviceMeta(adapter, dir, dev);
+            if (dev === ownId) ownMeta = meta;
+            else peers.push({ deviceId: dev, meta });
+        }
+        let localFileCount = 0;
+        try { localFileCount = (await this.store.count()).files; } catch { /* store closed */ }
+        const indexableNotes = this.indexableFiles().filter(f => this.shouldIndex(f.path)).length;
+        const roleSetting = getSidecarIndexRole();
+        const role = resolveFleetRole({
+            roleSetting, isMobile: isMobilePlatform(), ownMeta, peers, expect, localFileCount,
+        });
+        const preflight = await preflightSidecar(adapter, dir, expect, ownId);
+        const matching = matchingPeers(peers, expect);
+        const stale = stalePeers(peers, expect);
+        const matchingReady = preflight.ready && preflight.matchingProducers > 0;
+        const waitingForProducer = shouldWaitForProducer({
+            role,
+            matchingReady,
+            incomplete: preflight.incomplete,
+            dataless: preflight.datalessShards > 0,
+            localFileCount,
+            indexableNotes,
+        });
+        const hidden = this.isHidden();
+        const anyPeerPresent = peers.length > 0;
+        return {
+            role,
+            roleSetting,
+            anyPeerPresent,
+            matchingPeerPresent: matching.length > 0,
+            matchingReady,
+            waitingForProducer,
+            mayFullReindex: mayFullReindex(role),
+            mayReapPeers: mayReapPeerSidecars(role),
+            mayWriteSidecar: mayWriteSidecar(role, hidden, anyPeerPresent, waitingForProducer),
+            mayCompact: mayCompactOwnSidecar(role, hidden, anyPeerPresent),
+            copy: sidecarWaitCopy({
+                role,
+                matchingReady,
+                incomplete: preflight.incomplete,
+                dataless: preflight.datalessShards > 0,
+                matchingProducers: preflight.matchingProducers,
+                stalePeerCount: stale.length,
+            }),
+            preflight,
+            peerDeviceIds: peers.map(p => p.deviceId),
+        };
+    }
+
+    private hydrateBlockedResult(fleet: SidecarFleetSnapshot): HydrateResult {
+        return {
+            ...EMPTY_HYDRATE,
+            acceptedProducers: fleet.preflight.matchingProducers,
+            refusedProducers: fleet.preflight.staleProducers,
+            incompleteFolder: fleet.preflight.incomplete,
+            datalessShards: fleet.preflight.datalessShards,
+            waitingForProducer: fleet.waitingForProducer || fleet.preflight.incomplete,
+        };
     }
 
     // Rebuild the IDB index from the vault-file sidecar without re-embedding —
@@ -168,7 +278,12 @@ export class SidecarCoordinator {
         // Count inside the exclusive section (R3): a concurrent writer cannot
         // populate the store between the empty check and hydrate.
         const wasEmpty = (await this.store.count()).chunks === 0;
+        const fleet = await this.inspectFleet();
+        if (fleet && (fleet.waitingForProducer || (fleet.preflight.matchingProducers > 0 && !fleet.preflight.ready))) {
+            return this.hydrateBlockedResult(fleet);
+        }
         const result = await hydrateFromSidecar(this.hydrateDepsGreedy());
+        if (fleet?.waitingForProducer) result.waitingForProducer = true;
         // Stamp the build identity when hydrating onto a PREVIOUSLY-EMPTY index: every
         // chunk came from a metaAccepts-filtered (current-identity) producer, so the
         // index is provably at the current identity. This lets a hydrate-only device
@@ -228,10 +343,14 @@ export class SidecarCoordinator {
     // in seconds instead of a hot multi-minute on-device embed.
     async rebuildFromSidecar(): Promise<HydrateResult | null> {
         if (!this.coord.sidecarOn()) return null;
+        const fleet = await this.inspectFleet();
+        if (fleet && (fleet.preflight.matchingProducers === 0 || !fleet.preflight.ready)) {
+            return this.hydrateBlockedResult(fleet);
+        }
         const expect = expectationFor();
         const producers = await rankAcceptedProducers(this.app.vault.adapter, this.coord.dir!, expect);
         if (producers.length === 0) {
-            return { scanned: 0, needed: 0, hydrated: 0, skippedPartialNotes: 0, refusedProducers: 0, acceptedProducers: 0, peerAhead: false, hydratedNotePaths: [] };
+            return fleet ? this.hydrateBlockedResult(fleet) : { ...EMPTY_HYDRATE };
         }
         // Nuke + stamp + hydrate under ONE write mutex.
         const result = await this.coord.runExclusive(async () => {
@@ -303,6 +422,11 @@ export class SidecarCoordinator {
     // whose meta identity no longer matches this build.
     async reapDeadIdentitySidecars(): Promise<number> {
         if (!this.coord.sidecarOn()) return 0;
+        const fleet = await this.inspectFleet();
+        // Consumers never delete another device's files — a Mac on Gemma must
+        // not reap a Windows Granite sidecar (and the reverse). The producer
+        // compacts its own identity.
+        if (!fleet?.mayReapPeers) return 0;
         const dir = this.coord.dir!;
         const adapter = this.app.vault.adapter;
         const expect = expectationFor();
@@ -379,6 +503,8 @@ export class SidecarCoordinator {
 
     async compactOwnSidecar(): Promise<CompactResult | null> {
         if (!this.coord.sidecarOn()) return null;
+        const fleet = await this.inspectFleet();
+        if (fleet && !fleet.mayCompact) return null;
         const adapter = this.app.vault.adapter;
         const dir = this.coord.dir!;
         const dev = this.logger.deviceId;
@@ -435,6 +561,8 @@ export class SidecarCoordinator {
 
     async coalesceOwnSidecar(): Promise<CoalesceResult | null> {
         if (!this.coord.sidecarOn()) return null;
+        const fleet = await this.inspectFleet();
+        if (fleet && !fleet.mayCompact) return null;
         const adapter = this.app.vault.adapter;
         const dir = this.coord.dir!;
         const dev = this.logger.deviceId;
@@ -668,6 +796,22 @@ export class SidecarCoordinator {
         const { chunks } = await this.store.count();
         if (chunks > 0) return;
         this.warnedStranded = true;
+        if (result.waitingForProducer || result.incompleteFolder) {
+            console.warn(
+                `[seek] waiting for producer sidecar files before hydrating — will not re-embed on this device.`,
+            );
+            void this.logger
+                .append({
+                    type: 'sidecar-hydrate',
+                    timestamp: new Date().toISOString(),
+                    phase: 'waiting-for-producer',
+                    incompleteFolder: !!result.incompleteFolder,
+                    datalessShards: result.datalessShards ?? 0,
+                    acceptedProducers: result.acceptedProducers,
+                })
+                .catch(() => {});
+            return;
+        }
         const cause =
             result.refusedProducers > 0
                 ? `all ${result.refusedProducers} sidecar producer(s) were version-refused — the other device's plugin/model is out of date`

@@ -11,6 +11,7 @@ import {
     indexFooterStatus,
     INDEX_STALE_MSG,
     INDEX_SYNCING_MSG,
+    INDEX_WAITING_SIDECAR_MSG,
     INDEX_PEER_AHEAD_MSG,
     INDEX_RESTORING_MSG,
     INDEX_RESTORING_TITLE,
@@ -116,6 +117,15 @@ describe('indexBannerSpec', () => {
         // Set from orchestrator.peerAhead, always paired with 'degraded' in practice, but
         // the reason alone decides the banner — so it must not depend on the health value.
         expect(indexBannerSpec('healthy', 'peer-ahead')?.message).toBe(INDEX_PEER_AHEAD_MSG);
+    });
+
+    it('waiting for producer files names the wait even when identity already matches', () => {
+        const spec = indexBannerSpec('healthy', null, false, true);
+        expect(spec?.message).toBe(INDEX_WAITING_SIDECAR_MSG);
+        expect(spec?.tone).toBe('info');
+        expect(spec?.showAction).toBe(false);
+        expect(indexBannerSpec('recovering', 'version', true, true)?.message).toBe(INDEX_WAITING_SIDECAR_MSG);
+        expect(indexBannerSpec('degraded', 'peer-ahead', false, true)?.message).toBe(INDEX_PEER_AHEAD_MSG);
     });
 });
 
@@ -663,6 +673,12 @@ describe('resolveSidecarWait', () => {
 
     it('clears waiting once any chunks hydrated', () => {
         expect(resolveSidecarWait({ hydrated: 12, skippedPartialNotes: 2 }, 0)).toBe(false);
+    });
+
+    it('stays waiting for an incomplete or producer-missing folder even with local chunks', () => {
+        expect(resolveSidecarWait({ hydrated: 0, skippedPartialNotes: 0, waitingForProducer: true }, 400)).toBe(true);
+        expect(resolveSidecarWait({ hydrated: 0, skippedPartialNotes: 0, incompleteFolder: true }, 16570)).toBe(true);
+        expect(resolveSidecarWait({ hydrated: 0, skippedPartialNotes: 0, datalessShards: 2 }, 0)).toBe(true);
     });
 });
 

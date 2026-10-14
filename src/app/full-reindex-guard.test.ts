@@ -33,6 +33,7 @@ describe('runFullReindex stacking', () => {
             orchestrator: {
                 isWriting: () => false,
                 invalidateBm25Cache: () => {},
+                inspectSidecarFleet: async () => null,
                 reindexAll,
             },
             beginIndexJob: () => 1,
