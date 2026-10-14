@@ -65,6 +65,15 @@ export class TaskContextTracker {
         // No open span of this context — a double-pop. Harmless: ignore.
     }
 
+    /** Close every still-open span whose context is in `contexts` (recovery / abort). */
+    closeOpen(contexts: readonly TaskContext[]): void {
+        const set = new Set(contexts);
+        const end = this.now();
+        for (const s of this.spans) {
+            if (s.end === null && set.has(s.c)) s.end = end;
+        }
+    }
+
     // The context of the most recently opened still-open span — the old
     // top-of-stack read. Behavioral consumers (the settings card's isIndexing,
     // the mobile unload gate's `busy`) want "what is running NOW", which is a

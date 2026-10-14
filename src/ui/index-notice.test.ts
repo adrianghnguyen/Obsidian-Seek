@@ -39,6 +39,7 @@ import {
     INDEX_STUCK_MSG,
     INDEX_STUCK_TITLE,
     INDEX_STUCK_LABEL,
+    INDEX_RECOVERY_STALL_DESC,
     isIndexWaitKind,
     type IndexFooterInput,
 } from './index-notice';
@@ -479,7 +480,7 @@ describe('resolveCliSearchGate', () => {
         expect(resolveCliSearchGate({ warmPhase: 'starting', uiHealth: 'stuck', chunks: null }))
             .toBe(CLI_SEARCH_GATE_STUCK);
         expect(resolveCliSearchGate({ warmPhase: null, uiHealth: 'stuck', chunks: 120 }))
-            .toBe(CLI_SEARCH_GATE_STUCK);
+            .toBeNull();
     });
 
     it('is ready when warm phase is clear, uiHealth ok, and chunks > 0', () => {
@@ -569,6 +570,15 @@ describe('resolveIndexUiStatus', () => {
         expect(resolveIndexUiStatus({
             ...idle, storeLocked: true, goodEnough: true, hydrating: true,
         })).toBe('locked');
+    });
+
+    it('indexing stall copy points at Recover retry before rebuild', () => {
+        expect(INDEX_RECOVERY_STALL_DESC).toContain('Indexing stopped making progress');
+        expect(INDEX_RECOVERY_STALL_DESC).toContain('Retry');
+    });
+
+    it('stuck outranks a leftover indexing job so Recover is shown', () => {
+        expect(resolveIndexUiStatus({ ...idle, stuck: true, indexing: true, job: { done: 0, total: 42 } })).toBe('stuck');
     });
 
     it('boot watchdog stuck outranks starting and restoring, but not locked', () => {

@@ -16,6 +16,7 @@ import {
     INDEX_UP_TO_DATE_LABEL,
     INDEX_LOCKED_TITLE,
     INDEX_LOCKED_LABEL,
+    INDEX_STUCK_LABEL,
     INDEX_BUILDING_MSG,
     CLI_SEARCH_GATE_LOCKED,
     type IndexLoadPhase,
@@ -41,6 +42,7 @@ interface BootSnapshot {
     job?: { done: number; total: number; kind?: 'full' | 'delta' | 'catchup' } | null;
     bootDecisionPending?: boolean;
     storeLocked?: boolean;
+    stuck?: boolean;
 }
 
 function evaluateSnapshot(s: BootSnapshot) {
@@ -66,6 +68,7 @@ function evaluateSnapshot(s: BootSnapshot) {
         job: s.job ? { done: s.job.done, total: s.job.total } : null,
         searchableChunks: s.inventoryChunks,
         inventoryFiles: s.inventoryFiles,
+        stuck: s.stuck,
     });
     const modalChunks = s.modalChunks !== undefined ? s.modalChunks : s.inventoryChunks;
     const loadSpec = indexLoadSpec({
@@ -276,5 +279,24 @@ describe('Ready means searchable (status contract)', () => {
         expect(r.loadSpec.message).not.toContain(INDEX_BUILDING_MSG);
         expect(r.footer.label).toBe(INDEX_LOCKED_LABEL);
         expect(r.footer.kind).not.toBe('up-to-date');
+    });
+
+    it('stalled catch-up: Stuck recovery, not perpetual Indexing; CLI still searches a populated index', () => {
+        const snap: BootSnapshot = {
+            label: 'catch-up hung at 0/N then aborted',
+            inventoryChunks: 15308,
+            inventoryFiles: 3825,
+            warmPhase: null,
+            goodEnough: true,
+            stuck: true,
+            catchUpRunning: false,
+            job: null,
+        };
+        const r = evaluateSnapshot(snap);
+        expect(r.uiHealth).toBe('stuck');
+        expect(r.footer.label).toBe(INDEX_STUCK_LABEL);
+        expect(isIndexWaitKind(r.loadSpec.kind)).toBe(true);
+        expect(r.loadSpec.showAction).toBe(true);
+        expect(r.cliGate).toBeNull();
     });
 });

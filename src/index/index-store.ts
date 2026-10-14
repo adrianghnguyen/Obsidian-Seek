@@ -1209,7 +1209,11 @@ export class IndexStore {
     async listAllMeta(): Promise<ChunkMeta[]> {
         const db = this.requireDb();
         const tx = db.transaction(STORE_CHUNK_META, 'readonly');
-        return await awaitRequest(tx.objectStore(STORE_CHUNK_META).getAll()) as ChunkMeta[];
+        return await withDeadline(
+            awaitRequest(tx.objectStore(STORE_CHUNK_META).getAll()) as Promise<ChunkMeta[]>,
+            'listAllMeta',
+            STORE_READ_TIMEOUT_MS,
+        );
     }
 
     // Stage-1 read: pull every chunk's packed sign-bit vector. Cheap (~64 KB

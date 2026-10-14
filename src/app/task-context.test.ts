@@ -111,4 +111,15 @@ describe('TaskContextTracker', () => {
         // …but the open span survived pruning
         expect(tr.attribute(499_000, 100)).toBe('indexing');
     });
+
+    it('closeOpen ends catchup and indexing spans for stall abort', () => {
+        const clock = makeClock();
+        const tr = new TaskContextTracker(clock.now);
+        clock.set(0); tr.push('catchup');
+        clock.set(10); tr.push('indexing');
+        clock.set(50); tr.closeOpen(['catchup', 'indexing']);
+        expect(tr.current()).toBe('idle');
+        clock.set(80);
+        expect(tr.attribute(20, 10)).toBe('indexing');
+    });
 });

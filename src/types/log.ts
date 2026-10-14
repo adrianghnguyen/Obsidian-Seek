@@ -789,6 +789,23 @@ export interface ExclusionAlignEntry {
     newlyExcludedFolders: string[];
 }
 
+/** Stall guard fired: indexing flags stayed on without job progress. */
+export interface IndexingStallEntry {
+    type: 'indexing-stall';
+    timestamp: string;
+    catchUpRunning: boolean;
+    writing: boolean;
+    jobDone: number | null;
+    jobTotal: number | null;
+}
+
+/** User or stall guard cancelled in-flight catch-up / flush work. */
+export interface IndexingAbortEntry {
+    type: 'indexing-abort';
+    timestamp: string;
+    reason: string;
+}
+
 // Stamped onto every entry by logger.append(). Optional so pre-v9 logs (which
 // predate device/session attribution) still parse — the report treats a missing
 // deviceId as 'legacy' and a missing sessionId as un-scopable.
@@ -833,4 +850,6 @@ export type LogEntry = (
     | StoreForceResetEntry
     | BootWatchdogEntry
     | ExclusionAlignEntry
+    | IndexingStallEntry
+    | IndexingAbortEntry
 ) & LogMeta;

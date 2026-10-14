@@ -58,6 +58,8 @@ export const INDEX_STUCK_MSG = 'Seek has been starting much longer than expected
 export const INDEX_RECOVERY_NAME = 'Recover search index';
 export const INDEX_RECOVERY_STUCK_DESC = 'Startup did not finish loading the index. Retry first; if it stays stuck, rebuild the index (this re-embeds every note).';
 export const INDEX_RECOVERY_LOCKED_DESC = 'Seek could not open the index database. Retry first; if it stays locked, rebuild the index (this re-embeds every note).';
+export const INDEX_RECOVERY_STALL_DESC = 'Indexing stopped making progress. Retry first to cancel hung work and resume; if it stays stuck, rebuild the index (this re-embeds every note).';
+export const INDEX_STALL_NOTICE = 'Seek: indexing stopped making progress. Open Settings → Seek → Recover search index (Retry first; rebuild if it stays stuck).';
 // Shown (rate-limited) when index commits fail with QuotaExceededError — device
 // storage is full. The un-committed files stay dirty by the drain's own criterion,
 // so once space frees up the normal catch-up path heals them without a manual
@@ -293,9 +295,12 @@ export const CLI_SEARCH_WARMING = 'Seek is warming up — lexical results only u
 
 export function resolveCliSearchGate(input: CliSearchGateInput): string | null {
     if (input.uiHealth === 'locked') return CLI_SEARCH_GATE_LOCKED;
-    // Boot watchdog fired: startup was expected to be searchable by now. Report the
-    // stuck state rather than an optimistic "still loading" so diagnostics/CLI agree.
-    if (input.uiHealth === 'stuck') return CLI_SEARCH_GATE_STUCK;
+    // Stuck with a populated store: search still serves the last good index. Only
+    // an empty/unknown store is a hard CLI refusal (retry or rebuild).
+    if (input.uiHealth === 'stuck') {
+        if (input.chunks != null && input.chunks > 0) return null;
+        return CLI_SEARCH_GATE_STUCK;
+    }
     // A full rebuild is always a hard block — even over a populated store and
     // even while booting. Results mid-pass are partial and misleading.
     if (input.fullJobActive) return CLI_SEARCH_GATE_INDEXING;
