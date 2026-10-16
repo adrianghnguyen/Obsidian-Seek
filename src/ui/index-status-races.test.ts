@@ -59,6 +59,27 @@ describe('index status races (drop × hydrate × catch-up)', () => {
         })).toBe('none');
     });
 
+    it('failed drop recovery on empty inventory is Restoring, not None', () => {
+        expect(resolveIndexUiStatus({
+            ...base,
+            dropRecovering: true,
+            goodEnough: false,
+            searchableChunks: 0,
+            inventoryFiles: 0,
+        })).toBe('restoring');
+    });
+
+    it('an in-flight full reindex still beats dropRecovering', () => {
+        expect(resolveIndexUiStatus({
+            ...base,
+            dropRecovering: true,
+            indexing: true,
+            job: { done: 1, total: 40 },
+            searchableChunks: 0,
+            inventoryFiles: 0,
+        })).toBe('indexing');
+    });
+
     it('catch-up on a populated index still paints Indexing once hydrate is done', () => {
         expect(resolveIndexUiStatus({
             ...base,

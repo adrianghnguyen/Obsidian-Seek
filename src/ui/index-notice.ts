@@ -181,6 +181,7 @@ export interface IndexLoadState {
     uiHealth?: IndexUiStatus;
     /** Status-bar inventory; modal may use when uiHealth is ok and the store probe lags. */
     inventoryChunks?: number | null;
+    statusReport?: IndexFooterInput['statusReport'];
 }
 
 export interface IndexFooterInput {
@@ -193,6 +194,13 @@ export interface IndexFooterInput {
     waitingForSidecar?: boolean;
     job?: { done: number; total: number; paused?: boolean } | null;
     uiHealth?: IndexUiStatus;
+    /** Authoritative snapshot — footer labels must match status bar + Settings. */
+    statusReport?: {
+        mode: IndexUiStatus | 'full-reindex';
+        compact: string;
+        tone: string;
+        health: IndexUiStatus;
+    };
 }
 
 export interface IndexFooterStatus {
@@ -242,12 +250,17 @@ export interface IndexUiStatusInput {
     job?: { done: number; total: number } | null;
     searchableChunks: number | null;
     inventoryFiles: number | null;
+    /**
+     * Wipe started (noteIndexDropped / failed clearAllStores) and restore has
+     * not finished — empty inventory must not paint None/error.
+     */
+    dropRecovering?: boolean;
 }
 
 /**
  * Canonical UI status. Precedence (last-write-wins with explicit rank):
  * locked > stuck > consumer/peer restore > hydrate (empty-after-drop or in-flight)
- * > startup > integrity error > catch-up/indexing job > empty > ready.
+ * > startup > catch-up/indexing job > drop-recovering > integrity error > empty > ready.
  * Cache warming is invisible here (search stays usable on a populated index).
  *
  * Greedy background hydrate on an already-searchable store may show Indexing.
@@ -272,8 +285,10 @@ export function resolveIndexUiStatus(input: IndexUiStatusInput): IndexUiStatus {
         return 'restoring';
     }
     if (input.booting || input.hydrating) return 'starting';
+    const jobActive = input.indexing || (input.job != null && input.job.total > 0);
+    if (input.dropRecovering && !jobActive) return 'restoring';
     if (input.health === 'degraded' || input.reason === 'peer-ahead') return 'error';
-    if (input.indexing || (input.job != null && input.job.total > 0)) return 'indexing';
+    if (jobActive) return 'indexing';
     if (input.bootDecisionPending || chunks == null) return 'starting';
     if (emptyInventory) {
         // Queued first build — not "no index", not "still indexing your notes".
@@ -439,6 +454,43 @@ export function isIndexWaitKind(kind: IndexLoadKind): boolean {
 // Starting / Restoring / Indexing (plus Loading, None, Error, Ready).
 // Peer-sync and sidecar wait both read as Restoring.
 export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
+    const report = input.statusReport;
+    if (report) {
+        if (report.mode === 'locked' || report.health === 'locked') {
+            return { kind: 'locked', label: report.compact, icon: 'lock', tone: 'bad' };
+        }
+        if (report.mode === 'stuck' || report.health === 'stuck') {
+            return { kind: 'stuck', label: report.compact, icon: 'alert-triangle', tone: 'bad' };
+        }
+        if (report.mode === 'restoring' || report.health === 'restoring') {
+            return { kind: 'restoring', label: report.compact, icon: 'refresh-cw', tone: report.tone as IndexFooterTone };
+        }
+        if (report.mode === 'starting' || report.health === 'starting') {
+            return { kind: 'starting', label: report.compact, icon: 'refresh-cw', tone: report.tone as IndexFooterTone };
+        }
+        if (report.mode === 'error' || report.health === 'error') {
+            return { kind: 'error', label: report.compact, icon: 'alert-triangle', tone: 'bad' };
+        }
+        if (report.mode === 'full-reindex' || report.mode === 'indexing' || report.health === 'indexing') {
+            const remaining = input.job && input.job.total > 0
+                ? Math.max(0, input.job.total - input.job.done)
+                : null;
+            return {
+                kind: 'indexing',
+                label: report.compact,
+                icon: '',
+                tone: 'accent',
+                badgeCount: remaining,
+            };
+        }
+        if (!input.modelReady) {
+            return { kind: 'model-loading', label: INDEX_MODEL_LOADING_LABEL, icon: 'refresh-cw', tone: 'warn' };
+        }
+        if (report.mode === 'none' || report.health === 'none') {
+            return { kind: 'no-index', label: report.compact, icon: 'circle-off', tone: 'mid' };
+        }
+        return { kind: 'up-to-date', label: report.compact, icon: 'check', tone: 'good' };
+    }
     if (input.uiHealth === 'locked') {
         return { kind: 'locked', label: INDEX_LOCKED_LABEL, icon: 'lock', tone: 'bad' };
     }

@@ -95,6 +95,7 @@ import {
     type SidecarIndexRole,
 } from './sidecar-fleet';
 import { getSidecarIndexRole } from '../embedding/platform';
+import { continueAfterStoreWipe } from '../index/failed-drop-recovery';
 
 export interface SidecarFleetSnapshot {
     role: ResolvedSidecarRole;
@@ -361,19 +362,23 @@ export class SidecarCoordinator {
             if (producers.length === 0) {
                 return fleet ? this.hydrateBlockedResult(fleet) : { ...EMPTY_HYDRATE };
             }
-            await this.store.clearAllStores();
-            this.onIndexDropped?.();
-            const id = pluginIdentity();
-            await this.store.setMeta({
-                embeddingDim: pluginIdentity().dim,
-                lastIndexedAt: null,
-                schemaVersion: META_SCHEMA_VERSION,
-                modelId: pluginIdentity().modelId,
-                chunkerVersion: id.chunkerVersion,
-                analyzerVersion: id.analyzerVersion,
-                revision: id.revision,
+            return continueAfterStoreWipe({
+                wipe: () => this.store.clearAllStores(),
+                onDropped: () => this.onIndexDropped?.(),
+                hydrate: async () => {
+                    const id = pluginIdentity();
+                    await this.store.setMeta({
+                        embeddingDim: pluginIdentity().dim,
+                        lastIndexedAt: null,
+                        schemaVersion: META_SCHEMA_VERSION,
+                        modelId: pluginIdentity().modelId,
+                        chunkerVersion: id.chunkerVersion,
+                        analyzerVersion: id.analyzerVersion,
+                        revision: id.revision,
+                    });
+                    return this.hydrateSidecarExclusive({ skipProducerWait: true });
+                },
             });
-            return this.hydrateSidecarExclusive({ skipProducerWait: true });
         });
         this.cacheManager.invalidateBm25Cache();
         return this.afterHydrateExclusive(result);

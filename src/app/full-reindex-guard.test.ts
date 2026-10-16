@@ -41,6 +41,8 @@ describe('runFullReindex stacking', () => {
             pushTaskContext: () => {},
             popTaskContext: () => {},
             noteIndexDropped: () => {},
+            recoverAfterFailedDrop: async () => {},
+            unloading: false,
             ensureModelLoaded: () => loadGate,
             indexProgress: { updateFromProgress: () => {}, hide: () => {} },
             notifyIndexActivityChanged: () => {},

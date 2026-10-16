@@ -121,6 +121,7 @@ import {
     catchUpBurstLimits,
     type IndexBuildMode,
 } from './index/startup-drain';
+import { planFailedDropRecovery } from './index/failed-drop-recovery';
 import { TaskContextTracker, type TaskContext } from './app/task-context';
 import { seekPerf } from './diagnostics/perf-console';
 import {
@@ -336,6 +337,9 @@ export default class SeekPlugin extends Plugin {
     // performance.now() at boot IIFE start — used for startup-gate elapsedMs.
     private bootStartMs = 0;
     private waitingForSidecar = false;
+    /** Wipe started; restore (sidecar hydrate or cold-build) has not finished. */
+    private indexDropRecovering = false;
+    private dropRecoveryInFlight = false;
     // Last known indexed file/chunk counts for sync status-bar health (null = not probed yet).
     private indexInventoryFiles: number | null = null;
     private indexInventoryChunks: number | null = null;
@@ -465,7 +469,7 @@ export default class SeekPlugin extends Plugin {
             if (this.waitingForSidecar) return 'restoring';
             return null;
         }
-        if (this.waitingForSidecar || (this.sidecarHydrating && !this.indexBootPending)) return 'restoring';
+        if (this.indexDropRecovering || this.waitingForSidecar || (this.sidecarHydrating && !this.indexBootPending)) return 'restoring';
         if (this.indexBootPending || this.sidecarHydrating) return 'starting';
         return null;
     }
@@ -488,6 +492,7 @@ export default class SeekPlugin extends Plugin {
             hydrating: this.sidecarHydrating,
             goodEnough: this.indexGoodEnough,
             waitingForSidecar: this.waitingForSidecar,
+            dropRecovering: this.indexDropRecovering,
             peerSyncPending: this.peerSyncPending,
             health: this.indexHealth,
             reason: this.degradedReason,
@@ -1499,10 +1504,14 @@ export default class SeekPlugin extends Plugin {
             if (!this.isBootCurrent(bootGen)) return;
             if (result.error) {
                 new Notice(`Seek: ${result.error}`, 8000);
+                this.noteIndexDropped();
+                await this.recoverAfterFailedDrop('force-reset-error');
                 return;
             }
             if (!this.store.isOpen()) {
                 new Notice('Seek: cannot reset search index — another window may hold the lock. Close other vault windows and retry.', 8000);
+                this.noteIndexDropped();
+                await this.recoverAfterFailedDrop('force-reset-closed');
                 return;
             }
             this.clearIndexStoreLocked();
@@ -1513,18 +1522,12 @@ export default class SeekPlugin extends Plugin {
             this.markBootStuckResolved();
             this.clearIndexingStalled();
             this.noteIndexDropped();
-            new Notice(`Seek: index ${result.nuked ? 'reset' : 'cleared'} — rebuilding from scratch...`, 6000);
-            const fleet = this.orchestrator ? await this.orchestrator.inspectSidecarFleet() : null;
-            if (fleet && !fleet.mayFullReindex) {
-                this.waitingForSidecar = true;
-                this.peerSyncPending = true;
-                new Notice(fleet.copy, 8000);
-                this.refreshIndexStatusBar();
-                return;
-            }
-            void this.scheduleColdBuild();
+            new Notice(`Seek: index ${result.nuked ? 'reset' : 'cleared'} — restoring…`, 6000);
+            await this.recoverAfterFailedDrop('force-reset');
         } catch (e) {
             this.appendErrorIfCurrent('force-reset', e, bootGen);
+            this.noteIndexDropped();
+            await this.recoverAfterFailedDrop('force-reset-throw');
             new Notice('Seek: failed to reset search index. Try quitting Obsidian completely.', 8000);
         }
     }
@@ -1670,7 +1673,10 @@ export default class SeekPlugin extends Plugin {
         }
         await this.maybeSteerSidecarLocation().catch(() => {});
             if (!identityHandled) {
-            if (!this.indexGoodEnough && !this.waitingForSidecar) this.markIndexGoodEnough();
+            const emptyWithNotes = isKnownEmptyIndexWithNotes(this.indexInventoryChunks, this.indexableNoteCount());
+            if (!this.indexGoodEnough && !this.waitingForSidecar && !emptyWithNotes && !this.indexDropRecovering) {
+                this.markIndexGoodEnough();
+            }
             if (this.isBootCurrent(bootGen) && !this.waitingForSidecar && !this.sidecarHydrating) {
                 void this.reconcileOnLoad(bootGen).catch(e =>
                     this.appendErrorIfCurrent('reconcileOnLoad', e, bootGen));
@@ -1708,6 +1714,8 @@ export default class SeekPlugin extends Plugin {
         this.sidecarHydrateDepth = 0;
         this.sidecarHydrateGen = -1;
         this.sidecarHydrating = false;
+        this.indexDropRecovering = false;
+        this.dropRecoveryInFlight = false;
         this.driftRecoveryRunning = false;
         this.orphanSweepRunning = false;
         this.sidecarCompactRunning = false;
@@ -2561,6 +2569,7 @@ export default class SeekPlugin extends Plugin {
     }
 
     private indexLoadState(): IndexLoadState {
+        const statusReport = this.getIndexStatusReport();
         return {
             phase: resolveIndexLoadPhase({
                 hydrating: (this.indexBootPending || this.sidecarHydrating) && !this.indexGoodEnough,
@@ -2576,8 +2585,9 @@ export default class SeekPlugin extends Plugin {
             reason: this.degradedReason,
             peerSyncPending: this.peerSyncPending,
             job: this.indexProgress.job(),
-            uiHealth: this.getIndexStatusReport().health,
+            uiHealth: statusReport.health,
             inventoryChunks: this.indexInventoryChunks,
+            statusReport,
         };
     }
 
@@ -2629,13 +2639,74 @@ export default class SeekPlugin extends Plugin {
     /** IndexedDB was emptied (full reset or sidecar rebuild) — do not keep Ready inventory. */
     private noteIndexDropped(): void {
         this.indexGoodEnough = false;
+        this.indexDropRecovering = true;
         this.publishInventory(0, 0, true);
         this.refreshIndexStatusBar();
+    }
+
+    /**
+     * After a failed or interrupted IDB drop, hydrate from sidecar (Restoring)
+     * instead of sitting on None/error. Desktop may cold-build if sidecar cannot
+     * heal. Next boot retries via applyPostBootIndexScheduling.
+     */
+    private async recoverAfterFailedDrop(
+        reason: string,
+        opts: { allowColdBuild?: boolean } = {},
+    ): Promise<void> {
+        if (this.unloading || this.dropRecoveryInFlight) return;
+        this.dropRecoveryInFlight = true;
+        const allowColdBuild = opts.allowColdBuild !== false;
+        try {
+            if (!this.store.isOpen()) await this.store.open().catch(() => {});
+            const fleet = this.orchestrator && this.settings.sidecarEnabled
+                ? await this.orchestrator.inspectSidecarFleet().catch(() => null)
+                : null;
+            const plan = planFailedDropRecovery({
+                sidecarEnabled: this.settings.sidecarEnabled,
+                storeOpen: this.store.isOpen(),
+                mayFullReindex: fleet?.mayFullReindex ?? true,
+                mobile: isMobilePlatform(),
+            });
+            this.indexDropRecovering = true;
+            this.indexGoodEnough = false;
+            this.waitingForSidecar = plan.waitingForSidecar;
+            if (plan.waitingForSidecar) this.peerSyncPending = true;
+            this.refreshIndexStatusBar();
+
+            if (plan.action === 'hydrate' || (plan.action === 'reopen' && this.settings.sidecarEnabled)) {
+                if (!this.store.isOpen()) return;
+                if (!this.orchestrator) return;
+                try {
+                    const result = await this.withSidecarHydrate(() => this.orchestrator.hydrateSidecar());
+                    this.applySidecarWait(result);
+                    await this.touchIndexInventory();
+                    const chunks = this.indexInventoryChunks ?? 0;
+                    if (sidecarHydrateHealedIndex(result) || chunks > 0) {
+                        this.waitingForSidecar = false;
+                        this.peerSyncPending = false;
+                        this.markIndexGoodEnough();
+                        return;
+                    }
+                } catch (e) {
+                    await this.logger.appendError('index-drop-recover-hydrate', e).catch(() => {});
+                }
+            }
+            if (this.waitingForSidecar) return;
+            if (allowColdBuild && (plan.action === 'cold-build' || plan.action === 'hydrate')
+                && !isMobilePlatform() && (fleet?.mayFullReindex ?? true)) {
+                void this.scheduleColdBuild();
+                return;
+            }
+        } finally {
+            this.dropRecoveryInFlight = false;
+            this.refreshIndexStatusBar();
+        }
     }
 
     private markIndexGoodEnough(): void {
         if (this.indexGoodEnough) return;
         this.indexGoodEnough = true;
+        this.indexDropRecovering = false;
         this.indexBootPending = false;
         // Reached searchable — stand down the stuck watchdog.
         this.clearBootWatchdog();
@@ -3141,7 +3212,9 @@ export default class SeekPlugin extends Plugin {
             return;
         }
         const empty = isKnownEmptyIndexWithNotes(this.indexInventoryChunks, this.indexableNoteCount());
-        if (empty && !isMobilePlatform()) {
+        if (this.indexDropRecovering || (empty && this.settings.sidecarEnabled)) {
+            void this.recoverAfterFailedDrop('post-boot', { allowColdBuild: true });
+        } else if (empty && !isMobilePlatform()) {
             this.scheduleIndexBuild('cold');
         } else if (shouldAutoDrainStartupCatchUp({
             mobile: isMobilePlatform(),
@@ -3360,6 +3433,8 @@ export default class SeekPlugin extends Plugin {
         // and the mutex is acquired only inside reindexAll.
         this.fullReindexInFlight = true;
         let jobId: number | null = null;
+        let wipeStarted = false;
+        let succeeded = false;
         try {
             const fleet = await this.orchestrator.inspectSidecarFleet();
             if (fleet && !fleet.mayFullReindex) {
@@ -3382,6 +3457,7 @@ export default class SeekPlugin extends Plugin {
             jobId = this.beginIndexJob('full', this.indexableNoteCount(), 'Seek: indexing…');
             this.pushTaskContext('indexing');
             this.noteIndexDropped();
+            wipeStarted = true;
             await this.ensureModelLoaded();
             this.orchestrator.invalidateBm25Cache();
             const result = await this.orchestrator.reindexAll((msg) => {
@@ -3411,13 +3487,13 @@ export default class SeekPlugin extends Plugin {
             // ship should toast/banner again. (Without this, identityHealNotified could
             // stay latched until the next poll's identityMatches clears it.)
             this.identityHealNotified = false;
-            return true;
+            this.indexDropRecovering = false;
+            succeeded = true;
         } catch (e) {
             await this.store.open().catch(() => {});
             await this.logger.appendError('seek-full-reindex', e);
             // One end-toast whether it passed or failed (the recap). Detail → console + log.
             new Notice('Seek reindex: ❌ failed — see the logging report (Settings → Seek).', 10000);
-            return false;
         } finally {
             this.fullReindexInFlight = false;
             if (jobId != null) {
@@ -3427,6 +3503,10 @@ export default class SeekPlugin extends Plugin {
                 void this.touchIndexInventory();
             }
         }
+        if (!succeeded && wipeStarted && !this.unloading) {
+            await this.recoverAfterFailedDrop('full-reindex', { allowColdBuild: false });
+        }
+        return succeeded;
     }
 
     getWorkflowCoordinator(): WorkflowCoordinator {

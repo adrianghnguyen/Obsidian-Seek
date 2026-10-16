@@ -824,6 +824,7 @@ export class SeekSearchModal extends Modal {
             waitingForSidecar: load.waitingForSidecar,
             job: load.job,
             uiHealth: load.uiHealth,
+            statusReport: load.statusReport,
         });
         this.footStatusEl.className = `seek-foot-status is-${spec.tone}`;
         this.footStatusLabelEl.setText(spec.label);
