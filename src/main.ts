@@ -339,6 +339,9 @@ export default class SeekPlugin extends Plugin {
     private sidecarHydrating = false;
     private sidecarHydrateDepth = 0;
     private sidecarHydrateGen = -1;
+    /** Live sidecar hydrate files done/total; not an embed catch-up job. */
+    private sidecarHydrateProgress: { done: number; total: number } | null = null;
+    private lastIndexableNotes = 0;
     // performance.now() at boot IIFE start — used for startup-gate elapsedMs.
     private bootStartMs = 0;
     private waitingForSidecar = false;
@@ -509,7 +512,19 @@ export default class SeekPlugin extends Plugin {
             searchableChunks: this.indexInventoryChunks,
             inventoryFiles: this.indexInventoryFiles,
             jobKind: this.indexProgress.job()?.kind ?? null,
+            hydrateProgress: this.resolveHydrateProgress(),
         });
+    }
+
+    private resolveHydrateProgress(): { done: number; total: number } | null {
+        if (this.sidecarHydrateProgress && this.sidecarHydrateProgress.total > 0) {
+            return this.sidecarHydrateProgress;
+        }
+        if (!(this.waitingForSidecar || this.sidecarHydrating || this.indexDropRecovering)) return null;
+        const done = this.indexInventoryFiles ?? 0;
+        const total = Math.max(done, this.lastIndexableNotes);
+        if (total <= 0) return null;
+        return { done, total };
     }
 
     /** Coordinator pass currently shown on the status-bar badge, or null. */
@@ -651,6 +666,11 @@ export default class SeekPlugin extends Plugin {
         });
         this.orchestrator.setPersistentDriftHandler(() => this.onPersistentDrift());
         this.orchestrator.setGoodEnoughHandler(() => this.markIndexGoodEnough());
+        this.orchestrator.setHydrateProgressHandler((detail) => {
+            if (detail.total <= 0) return;
+            this.sidecarHydrateProgress = { done: detail.done, total: detail.total };
+            this.refreshIndexStatusBar();
+        });
         this.orchestrator.setIndexDroppedHandler(() => this.noteIndexDropped());
     }
 
@@ -662,6 +682,7 @@ export default class SeekPlugin extends Plugin {
         this.sidecarHydrateDepth = 0;
         this.sidecarHydrateGen = -1;
         this.sidecarHydrating = false;
+        this.sidecarHydrateProgress = null;
         this.driftRecoveryRunning = false;
         if (this.catchUpJob != null) this.finishCatchUpJob();
         this.taskCtx.closeOpen(['catchup', 'indexing']);
@@ -1723,6 +1744,7 @@ export default class SeekPlugin extends Plugin {
         this.sidecarHydrateDepth = 0;
         this.sidecarHydrateGen = -1;
         this.sidecarHydrating = false;
+        this.sidecarHydrateProgress = null;
         this.indexDropRecovering = false;
         this.dropRecoveryInFlight = false;
         this.driftRecoveryRunning = false;
@@ -2620,7 +2642,10 @@ export default class SeekPlugin extends Plugin {
         const fleet = await this.orchestrator.inspectSidecarFleet();
         if (!fleet) return;
         this.lastMayFullReindex = fleet.mayFullReindex;
+        this.lastIndexableNotes = fleet.indexableNotes;
         if (fleet.waitingForProducer) {
+            const total = Math.max(fleet.localFileCount, fleet.indexableNotes);
+            if (total > 0) this.sidecarHydrateProgress = { done: fleet.localFileCount, total };
             this.waitingForSidecar = true;
             this.peerSyncPending = true;
             if (this.indexHealth === 'degraded' && this.degradedReason === 'version') {
@@ -2884,6 +2909,9 @@ export default class SeekPlugin extends Plugin {
             }
             this.popTaskContext('hydrating');
             this.sidecarHydrating = this.sidecarHydrateDepth > 0;
+            if (this.sidecarHydrateDepth === 0 && !this.waitingForSidecar) {
+                this.sidecarHydrateProgress = null;
+            }
             this.refreshIndexStatusBar();
             if (this.sidecarHydrateDepth === 0) {
                 void this.maybeCompleteConsumerHydrateBoot();

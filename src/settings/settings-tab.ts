@@ -760,6 +760,8 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         renderSettingsIndexStatusCard(host, {
             health: report.health,
             mode: report.mode,
+            label: report.label,
+            hydrateProgress: report.hydrateProgress,
             stats: this.stats,
             job: this.plugin.getIndexJob(),
             startup,

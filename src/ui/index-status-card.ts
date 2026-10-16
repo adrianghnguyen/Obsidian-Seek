@@ -4,7 +4,7 @@
 // compete with that number.
 
 import { indexPercent } from './index-eta';
-import { INDEX_STATUS_COPY, type IndexStatusHealth, type IndexStatusMode } from './index-status-report';
+import { INDEX_STATUS_COPY, type IndexHydrateProgress, type IndexStatusHealth, type IndexStatusMode } from './index-status-report';
 
 export type { IndexStatusHealth, IndexStatusMode };
 
@@ -67,13 +67,25 @@ export function indexWaitCardModel(input: {
     health: IndexStatusHealth;
     job?: IndexStatusJob | null;
     stats?: IndexStatusCardStats | null;
-}): { health: IndexStatusHealth; stats: IndexStatusCardStats | null; job: IndexStatusJob | null } {
+    hydrateProgress?: IndexHydrateProgress | null;
+}): {
+    health: IndexStatusHealth;
+    stats: IndexStatusCardStats | null;
+    job: IndexStatusJob | null;
+    hydrate: IndexHydrateProgress | null;
+} {
+    const hydrate = input.hydrateProgress && input.hydrateProgress.total > 0
+        ? input.hydrateProgress
+        : null;
     // Starting/Restoring/Locked/Stuck win over an in-flight job so hydrate/lock never paints Indexing.
     if (input.health === 'starting' || input.health === 'restoring' || input.health === 'locked' || input.health === 'stuck') {
-        return { health: input.health, stats: null, job: null };
+        const showHydrate = (input.health === 'starting' || input.health === 'restoring') ? hydrate : null;
+        return { health: input.health, stats: null, job: null, hydrate: showHydrate };
     }
-    const job = input.job && input.job.total > 0 && input.health === 'indexing' ? input.job : null;
-    return { health: input.health, stats: input.stats ?? null, job };
+    const job = input.job && input.job.total > 0 && input.health === 'indexing' && !hydrate
+        ? input.job
+        : null;
+    return { health: input.health, stats: input.stats ?? null, job, hydrate };
 }
 
 /**
@@ -105,6 +117,9 @@ export function renderIndexStatusCard(
         job?: IndexStatusJob | null;
         eta?: string | null;
         mode?: IndexStatusMode;
+        /** Live reporter heading (includes hydrate counts when restoring). */
+        label?: string;
+        hydrateProgress?: IndexHydrateProgress | null;
     },
 ): HTMLElement {
     const model = indexWaitCardModel(opts);
@@ -114,10 +129,13 @@ export function renderIndexStatusCard(
 
     const aligning = !!model.job?.aligningExclusions && model.health === 'indexing';
     const health = card.createDiv({ cls: 'seek-status-health' });
-    renderIndexStatusBadge(health, { health: model.health, remaining: jobRemaining(model.job) });
+    const remaining = model.hydrate && model.health === 'indexing'
+        ? Math.max(0, model.hydrate.total - model.hydrate.done)
+        : jobRemaining(model.job);
+    renderIndexStatusBadge(health, { health: model.health, remaining });
     health.createSpan({
         cls: 'seek-status-label',
-        text: aligning ? INDEX_ALIGNING_EXCLUSIONS_LABEL : st.label,
+        text: aligning ? INDEX_ALIGNING_EXCLUSIONS_LABEL : (opts.label ?? st.label),
     });
 
     card.createDiv({ cls: 'seek-status-sep' });
@@ -127,6 +145,15 @@ export function renderIndexStatusCard(
         m.createDiv({ cls: 'seek-status-value', text: value });
         m.createDiv({ cls: 'seek-status-mlabel', text: label });
     };
+
+    if (model.hydrate) {
+        const pct = indexPercent(model.hydrate.done, model.hydrate.total);
+        const progressLine = `${fmtCount(model.hydrate.done)} / ${fmtCount(model.hydrate.total)} · ${pct}%`;
+        const job = card.createDiv({ cls: 'seek-status-metric seek-status-job' });
+        job.createDiv({ cls: 'seek-status-value', text: progressLine });
+        job.createDiv({ cls: 'seek-status-mlabel', text: 'this restore' });
+        return card;
+    }
 
     if (model.job) {
         const remaining = jobRemaining(model.job) ?? 0;

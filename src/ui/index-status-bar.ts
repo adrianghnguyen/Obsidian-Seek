@@ -285,11 +285,37 @@ export class IndexStatusBar {
         };
     }
 
+    private paintHydrateProgress(report: IndexStatusReport): boolean {
+        const hp = report.hydrateProgress;
+        if (!hp || hp.total <= 0) return false;
+        if (report.health !== 'starting' && report.health !== 'restoring' && report.health !== 'indexing') {
+            return false;
+        }
+        const pct = indexPercent(hp.done, hp.total);
+        this.paintedDone = hp.done;
+        this.paintedTotal = hp.total;
+        this.paintedChunks = -1;
+        this.paintedPercent = pct;
+        this.labelEl?.removeClass('is-hidden');
+        this.filesEl?.setText(`${hp.done.toLocaleString()}/${hp.total.toLocaleString()}`);
+        this.chunksEl?.addClass('is-hidden');
+        if (this.progressEl) {
+            this.progressEl.removeClass('is-hidden');
+            this.progressEl.max = 100;
+            this.progressEl.value = pct;
+        }
+        const remaining = report.health === 'indexing' ? Math.max(0, hp.total - hp.done) : null;
+        this.paintChrome(report.health, remaining);
+        this.setStatusLabel(`Seek: ${report.compact}`);
+        return true;
+    }
+
     private paintJob(force: boolean): void {
         if (!this.root) return;
         const report = this.hooks?.getReport();
         const canonical = report?.mode;
         if (canonical === 'starting' || canonical === 'restoring' || canonical === 'locked' || canonical === 'stuck') {
+            if (report && this.paintHydrateProgress(report)) return;
             this.paintedDone = -1;
             this.paintedTotal = -1;
             this.paintedChunks = -1;
@@ -302,6 +328,7 @@ export class IndexStatusBar {
             this.setStatusLabel(`Seek: ${report!.compact}`);
             return;
         }
+        if (report && this.paintHydrateProgress(report)) return;
         const pct = indexPercent(this.done, this.total);
         if (!force && this.done === this.paintedDone && this.total === this.paintedTotal
             && this.chunksDone === this.paintedChunks && pct === this.paintedPercent) return;
@@ -324,11 +351,12 @@ export class IndexStatusBar {
 
     private paintIdle(): void {
         if (!this.root) return;
+        const report = this.hooks?.getReport();
+        if (report && this.paintHydrateProgress(report)) return;
         this.labelEl?.removeClass('is-hidden');
         this.filesEl?.setText('Seek');
         this.chunksEl?.addClass('is-hidden');
         this.progressEl?.addClass('is-hidden');
-        const report = this.hooks?.getReport();
         const health = report?.health ?? 'ok';
         this.paintChrome(health, null);
         this.setStatusLabel(`Seek: ${report?.compact ?? 'Ready'}`);
@@ -360,9 +388,11 @@ export class IndexStatusBar {
         renderIndexStatusCard(hover, {
             health: report.health,
             mode: report.mode,
+            label: report.label,
+            hydrateProgress: report.hydrateProgress,
             stats,
             job: this.job(),
-            eta: this.jobActive && report.health === 'indexing'
+            eta: this.jobActive && report.health === 'indexing' && !report.hydrateProgress
                 ? formatRoughEta(this.done, this.total, performance.now() - this.jobStartedAt)
                 : null,
         });

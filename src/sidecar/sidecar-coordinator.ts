@@ -79,6 +79,7 @@ import {
     type ReChunkedNote,
     type HydrateResult,
     type HydrateDeps,
+    type HydrateProgressDetail,
 } from './sidecar-sync';
 import { preflightSidecar, type SidecarPreflight } from './sidecar-preflight';
 import {
@@ -111,6 +112,8 @@ export interface SidecarFleetSnapshot {
     copy: string;
     preflight: SidecarPreflight;
     peerDeviceIds: string[];
+    localFileCount: number;
+    indexableNotes: number;
 }
 
 const EMPTY_HYDRATE: HydrateResult = {
@@ -131,6 +134,8 @@ export interface SidecarCoordinatorDeps {
     indexableFiles: () => TFile[];
     shouldIndex: (path: string) => boolean;
     onGoodEnough?: () => void;
+    /** Live sidecar hydrate file progress for status chrome. */
+    onHydrateProgress?: (detail: HydrateProgressDetail) => void;
     /** Fired after clearAllStores in rebuildFromSidecar so UI inventory/health can drop. */
     onIndexDropped?: () => void;
     /** Dual-open: a hidden window must not write or compact over a peer. */
@@ -151,6 +156,7 @@ export class SidecarCoordinator {
     private shouldIndex: (path: string) => boolean;
     private isHidden: () => boolean;
     onGoodEnough?: () => void;
+    onHydrateProgress?: (detail: HydrateProgressDetail) => void;
     onIndexDropped?: () => void;
 
     private _peerAhead = false;
@@ -172,6 +178,7 @@ export class SidecarCoordinator {
         this.shouldIndex = deps.shouldIndex;
         this.isHidden = deps.isHidden ?? (() => typeof document !== 'undefined' && !!document.hidden);
         this.onGoodEnough = deps.onGoodEnough;
+        this.onHydrateProgress = deps.onHydrateProgress;
         this.onIndexDropped = deps.onIndexDropped;
     }
 
@@ -240,6 +247,8 @@ export class SidecarCoordinator {
             }),
             preflight,
             peerDeviceIds: peers.map(p => p.deviceId),
+            localFileCount,
+            indexableNotes,
         };
     }
 
@@ -287,6 +296,10 @@ export class SidecarCoordinator {
         const fleet = await this.inspectFleet();
         if (!opts?.skipProducerWait
             && fleet && (fleet.waitingForProducer || (fleet.preflight.matchingProducers > 0 && !fleet.preflight.ready))) {
+            const total = Math.max(fleet.localFileCount, fleet.indexableNotes);
+            if (total > 0) {
+                this.onHydrateProgress?.({ done: fleet.localFileCount, total });
+            }
             return this.hydrateBlockedResult(fleet);
         }
         const result = await hydrateFromSidecar(this.hydrateDepsGreedy());
@@ -863,6 +876,7 @@ export class SidecarCoordinator {
             },
             putFileRecord: rec => this.store.putFileRecord(rec),
             onRefusedProducer: (dev, meta, expect) => this.warnRefusedProducer(dev, meta, expect),
+            onHydrateProgress: detail => this.onHydrateProgress?.(detail),
             log: (msg, detail) => {
                 const flat: Record<string, string | number | boolean | null> = {};
                 if (detail && typeof detail === 'object') {

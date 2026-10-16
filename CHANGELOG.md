@@ -4,6 +4,9 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Changed
+- **Sidecar hydrate shows file progress on every index-status surface.** While hydrate (including greedy restore and wait-for-producer) is the active job, the status bar compact label, Settings Index card, and search-modal footer read `IndexStatusReporter` copy with files done/total and a percent — not an empty Starting / Restoring. Counts come from greedy file-walk / hydrate-note telemetry (and inventory vs vault files while waiting). Consumer hydrate stays hydrate progress, not embed catch-up. Startup stuck is unchanged.
+
 ## 1.15.0-rc.2
 
 Consumer boot after sidecar hydrate — Ready without embed catch-up on hydrate-only devices.

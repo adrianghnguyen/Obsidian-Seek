@@ -640,6 +640,34 @@ describe('probePeerAhead', () => {
         expect(subsetPaths[0]).toEqual(['recent.md']);
     });
 
+    it('greedy hydrate emits file done/total progress for status chrome', async () => {
+        const a = new FakeAdapter();
+        const now = Date.now();
+        const notes: NoteSpec[] = [
+            { path: 'a.md', mtime: now, ids: ['a1'] },
+            { path: 'b.md', mtime: now, ids: ['b1'] },
+        ];
+        await seedSidecar(a, 'desktop-aaa', notes);
+        const ticks: Array<{ done: number; total: number }> = [];
+        const { deps } = makeDeps(a, notes, {
+            existingIds: async () => new Set(),
+            greedyHydrate: true,
+            listHydrateFiles: async () => notes.map(n => ({ path: n.path, mtimeMs: n.mtime })),
+            reChunkSubset: async files => files.map(ref => {
+                const n = notes.find(x => x.path === ref.path)!;
+                return { notePath: n.path, mtimeMs: n.mtime, chunks: n.ids.map(id => chunk(id, n.path)) };
+            }),
+            reChunk: async () => { throw new Error('full reChunk should not run'); },
+            onHydrateProgress: p => ticks.push({ done: p.done, total: p.total }),
+        });
+        await hydrateFromSidecar(deps);
+        expect(ticks.length).toBeGreaterThan(0);
+        expect(ticks[0]).toEqual({ done: 0, total: 2 });
+        expect(ticks.at(-1)?.done).toBe(2);
+        expect(ticks.at(-1)?.total).toBe(2);
+        expect(ticks.some(t => t.done > 0 && t.done < t.total)).toBe(true);
+    });
+
     it('WARM index (nothing to hydrate) releases the gate without re-chunking the vault', async () => {
         // Regression: a healthy warm boot — every coverable chunk already in the store —
         // used to return from hydrate WITHOUT calling onGoodEnough, so the startup gate

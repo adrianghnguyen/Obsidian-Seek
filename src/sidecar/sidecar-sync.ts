@@ -81,6 +81,13 @@ export interface HydrateTierCompleteDetail {
     gateReleased: boolean;
 }
 
+export interface HydrateProgressDetail {
+    done: number;
+    total: number;
+    needed?: number;
+    hydrated?: number;
+}
+
 export const HYDRATE_TIERS = [
     { id: 'hydrate-tier-3d', days: 3 },
     { id: 'hydrate-tier-7d', days: 7 },
@@ -104,6 +111,8 @@ export interface HydrateDeps {
     /** Greedy hydrate: warm tokenizer in parallel with file-list wait. */
     ensureTokenizer?: () => Promise<void>;
     onTierComplete?: (detail: HydrateTierCompleteDetail) => void;
+    /** Live file progress for status chrome (greedy walk or note hydrate). */
+    onHydrateProgress?: (detail: HydrateProgressDetail) => void;
     /** When true and reChunkSubset + listHydrateFiles are set, use tiered greedy hydrate. */
     greedyHydrate?: boolean;
     existingIds: () => Promise<Set<string>>; // chunk_ids already in IDB (skip — idempotent)
@@ -375,11 +384,26 @@ async function hydrateCandidates(
             chunk_ids: cand.note.chunks.map(c => c.chunk_id),
             contentHash: cand.note.contentHash,
         });
+        deps.onHydrateProgress?.({
+            done: fileRecords.length,
+            total: candidates.length,
+            needed: candidates.reduce((n, c) => n + c.entries.length, 0),
+            hydrated,
+        });
     }
     await flush();
     for (const rec of fileRecords) await deps.putFileRecord(rec);
+    const needed = candidates.reduce((n, c) => n + c.entries.length, 0);
+    if (candidates.length > 0) {
+        deps.onHydrateProgress?.({
+            done: fileRecords.length,
+            total: candidates.length,
+            needed,
+            hydrated,
+        });
+    }
     return {
-        needed: candidates.reduce((n, c) => n + c.entries.length, 0),
+        needed,
         hydrated,
         skippedPartialNotes,
         hydratedNotePaths: fileRecords.map(r => r.note_path),
@@ -415,6 +439,13 @@ async function hydrateFromSidecarGreedy(
     if (allFiles.length === 0 && freshIds.size > 0) {
         deps.log?.('sidecar-hydrate-greedy-no-files', { freshIdsRemaining: freshIds.size });
     }
+    let filesDone = 0;
+    let filesTotal = allFiles.length;
+    const emitFiles = (needed: number, hydrated: number) => {
+        if (filesTotal <= 0) return;
+        deps.onHydrateProgress?.({ done: filesDone, total: filesTotal, needed, hydrated });
+    };
+    emitFiles(0, 0);
     let freshIdsRemaining = new Set(freshIds);
     const processedPaths = new Set<string>();
     let tiersRun = 0;
@@ -472,16 +503,26 @@ async function hydrateFromSidecarGreedy(
             // startup index good enough. Each file commits independently, so the
             // modal can surface early results as soon as its chunk-count poll sees
             // them; the gate itself means every coverable recent file is now present.
+            filesTotal = filesDone === 0
+                ? tierFiles.length
+                : Math.max(filesTotal, filesDone + tierFiles.length);
+            emitFiles(totalNeeded, totalHydrated);
             for (const ref of tierFiles) {
                 if (freshIdsRemaining.size === 0) break;
                 tierFilesWalked++;
                 const live = await deps.reChunkSubset!([ref], () => freshIdsRemaining.size === 0);
                 await processRechunked(live);
+                filesDone++;
+                emitFiles(totalNeeded + tierNeeded, totalHydrated + tierHydrated);
             }
         } else {
+            filesTotal = Math.max(filesTotal, filesDone + tierFiles.length);
+            emitFiles(totalNeeded, totalHydrated);
             tierFilesWalked = tierFiles.length;
             const live = await deps.reChunkSubset!(tierFiles, () => freshIdsRemaining.size === 0);
             await processRechunked(live);
+            filesDone += tierFiles.length;
+            emitFiles(totalNeeded + tierNeeded, totalHydrated + tierHydrated);
         }
 
         totalNeeded += tierNeeded;

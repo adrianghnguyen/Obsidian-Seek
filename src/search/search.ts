@@ -65,7 +65,7 @@ import { quantizeInt8, dequantizeInt8, type QuantVec } from '../embedding/quant'
 import { VecReservoir, denseBgStats, BG_RESERVOIR, MIN_BG_SAMPLE } from './dense-stats';
 import { bulkAppend, clearDevice, sidecarDirSignature, shouldReconcileSidecar, staleSidecarFormat, SIDECAR_FORMAT, bm25PathFor, writeBytesAtomic, ensureDir, listSidecarDeviceIds, listDeviceShards, compactDevice, coalesceSmallShards, type CompactResult, type CoalesceResult, type TierBytes } from '../sidecar/sidecar';
 import { writeDeviceMeta, readDeviceMeta, metaAccepts, expectationFor, type SidecarMeta, type MetaExpectation } from '../sidecar/sidecar-meta';
-import { hydrateFromSidecar, rankAcceptedProducers, probePeerAhead, type ReChunkedNote, type HydrateResult, type HydrateDeps } from '../sidecar/sidecar-sync';
+import { hydrateFromSidecar, rankAcceptedProducers, probePeerAhead, type ReChunkedNote, type HydrateResult, type HydrateDeps, type HydrateProgressDetail } from '../sidecar/sidecar-sync';
 import { pluginIdentity, shouldStampLiveIdentity, identityHealEligibility, type IndexIdentity } from '../index/identity';
 import { gzipString, gunzipToString, gzipAvailable } from '../sidecar/gzip';
 import { IndexCoordinator } from '../index/index-coordinator';
@@ -322,6 +322,7 @@ export class SearchOrchestrator {
             indexableFiles: () => this.indexableFiles(),
             shouldIndex: (path) => this.shouldIndex(path),
             onGoodEnough: () => this.onGoodEnough?.(),
+            onHydrateProgress: (detail) => this.onHydrateProgress?.(detail),
             onIndexDropped: () => this.onIndexDropped?.(),
         });
         this.workflowCoordinator = new WorkflowCoordinator({
@@ -2482,6 +2483,11 @@ export class SearchOrchestrator {
     private onGoodEnough?: () => void;
     setGoodEnoughHandler(fn: () => void): void {
         this.onGoodEnough = fn;
+    }
+    private onHydrateProgress?: (detail: HydrateProgressDetail) => void;
+    setHydrateProgressHandler(fn: (detail: HydrateProgressDetail) => void): void {
+        this.onHydrateProgress = fn;
+        if (this.sidecarCoordinator) this.sidecarCoordinator.onHydrateProgress = fn;
     }
     /** Fired when rebuildFromSidecar actually empties IndexedDB. */
     private onIndexDropped?: () => void;

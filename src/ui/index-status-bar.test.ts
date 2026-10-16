@@ -29,6 +29,7 @@ function reportOf(health: IndexStatusHealth, mode?: IndexStatusMode): IndexStatu
         label: copy.label,
         compact: copy.compact,
         tone: copy.tone,
+        hydrateProgress: null,
     };
 }
 
@@ -336,9 +337,9 @@ describe('indexWaitCardModel', () => {
 
     it('drops stale inventory on the starting/restoring first paint', () => {
         expect(indexWaitCardModel({ health: 'starting', stats: inventory, job: { done: 0, total: 15 } }))
-            .toEqual({ health: 'starting', stats: null, job: null });
+            .toEqual({ health: 'starting', stats: null, job: null, hydrate: null });
         expect(indexWaitCardModel({ health: 'restoring', stats: inventory }))
-            .toEqual({ health: 'restoring', stats: null, job: null });
+            .toEqual({ health: 'restoring', stats: null, job: null, hydrate: null });
     });
 
     it('keeps the coordinator job as the indexing source of truth', () => {

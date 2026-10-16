@@ -347,6 +347,8 @@ export function renderSettingsIndexStatusCard(
     opts: {
         health: IndexStatusHealth;
         mode?: IndexStatusMode;
+        label?: string;
+        hydrateProgress?: import('./index-status-report').IndexHydrateProgress | null;
         stats: IndexStatusCardStats | null;
         job?: IndexStatusJob | null;
         startup?: StartupTimingView | null;
@@ -359,6 +361,8 @@ export function renderSettingsIndexStatusCard(
     const card = renderIndexStatusCard(parent, {
         health: opts.health,
         mode: opts.mode,
+        label: opts.label,
+        hydrateProgress: opts.hydrateProgress,
         stats: opts.stats,
         job: opts.job,
     });

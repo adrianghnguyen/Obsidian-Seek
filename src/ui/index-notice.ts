@@ -200,6 +200,8 @@ export interface IndexFooterInput {
         compact: string;
         tone: string;
         health: IndexUiStatus;
+        label?: string;
+        hydrateProgress?: { done: number; total: number } | null;
     };
 }
 
