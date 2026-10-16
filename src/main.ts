@@ -94,7 +94,7 @@ import {
     UNLOAD_CHECK_MS,
     BULK_DELTA_THRESHOLD,
 } from './app/plugin-schedulers';
-import { indexBannerSpec, resolveIndexLoadPhase, resolveCliSearchGate, CLI_SEARCH_WARMING, resolveIndexUiStatus, resolveSidecarWait, retainIndexInventory, INDEX_STALE_MSG, INDEX_SYNCING_MSG, INDEX_WAITING_SIDECAR_MSG, INDEX_PEER_AHEAD_MSG, INDEX_STALL_NOTICE, type DegradedReason, type IndexLoadState } from './ui/index-notice';
+import { indexBannerSpec, resolveIndexLoadPhase, resolveCliSearchGate, CLI_SEARCH_WARMING, resolveIndexUiStatus, resolveSidecarWait, sidecarHydrateHealedIndex, retainIndexInventory, INDEX_STALE_MSG, INDEX_SYNCING_MSG, INDEX_WAITING_SIDECAR_MSG, INDEX_PEER_AHEAD_MSG, INDEX_STALL_NOTICE, type DegradedReason, type IndexLoadState } from './ui/index-notice';
 import { IndexStatusBar, extendIndexPassTotal, parseIndexedProgress, type IndexJobSpeedView } from './ui/index-status-bar';
 import type { IndexJobKind, IndexStatusHealth, IndexStatusJob } from './ui/index-status-card';
 import {
@@ -330,6 +330,8 @@ export default class SeekPlugin extends Plugin {
     private indexBootDecisionPending = true;
     private indexGoodEnough = false;
     private sidecarHydrating = false;
+    private sidecarHydrateDepth = 0;
+    private sidecarHydrateGen = -1;
     // performance.now() at boot IIFE start — used for startup-gate elapsedMs.
     private bootStartMs = 0;
     private waitingForSidecar = false;
@@ -634,6 +636,7 @@ export default class SeekPlugin extends Plugin {
         });
         this.orchestrator.setPersistentDriftHandler(() => this.onPersistentDrift());
         this.orchestrator.setGoodEnoughHandler(() => this.markIndexGoodEnough());
+        this.orchestrator.setIndexDroppedHandler(() => this.noteIndexDropped());
     }
 
     private abortInflightSessionWork(reason: string): void {
@@ -641,6 +644,9 @@ export default class SeekPlugin extends Plugin {
         this.loadGeneration++;
         this.catchUpRunning = false;
         this.flushing = false;
+        this.sidecarHydrateDepth = 0;
+        this.sidecarHydrateGen = -1;
+        this.sidecarHydrating = false;
         this.driftRecoveryRunning = false;
         if (this.catchUpJob != null) this.finishCatchUpJob();
         this.taskCtx.closeOpen(['catchup', 'indexing']);
@@ -1306,7 +1312,7 @@ export default class SeekPlugin extends Plugin {
             await this.resumeBootAfterStoreOpen(bootGen);
         } finally {
             if (!this.isBootCurrent(bootGen)) return;
-            this.sidecarHydrating = false;
+            if (this.sidecarHydrateDepth === 0) this.sidecarHydrating = false;
             const bootDurationMs = Math.round(performance.now() - this.bootStartMs);
             {
                 const span = {
@@ -1503,13 +1509,14 @@ export default class SeekPlugin extends Plugin {
             this.storeWedgedLogged = false;
             this.markBootStuckResolved();
             this.clearIndexingStalled();
-            void this.touchIndexInventory();
+            this.noteIndexDropped();
             new Notice(`Seek: index ${result.nuked ? 'reset' : 'cleared'} — rebuilding from scratch...`, 6000);
             const fleet = this.orchestrator ? await this.orchestrator.inspectSidecarFleet() : null;
             if (fleet && !fleet.mayFullReindex) {
                 this.waitingForSidecar = true;
                 this.peerSyncPending = true;
                 new Notice(fleet.copy, 8000);
+                this.refreshIndexStatusBar();
                 return;
             }
             void this.scheduleColdBuild();
@@ -1660,8 +1667,8 @@ export default class SeekPlugin extends Plugin {
         }
         await this.maybeSteerSidecarLocation().catch(() => {});
             if (!identityHandled) {
-            if (!this.indexGoodEnough) this.markIndexGoodEnough();
-            if (this.isBootCurrent(bootGen) && !this.waitingForSidecar) {
+            if (!this.indexGoodEnough && !this.waitingForSidecar) this.markIndexGoodEnough();
+            if (this.isBootCurrent(bootGen) && !this.waitingForSidecar && !this.sidecarHydrating) {
                 void this.reconcileOnLoad(bootGen).catch(e =>
                     this.appendErrorIfCurrent('reconcileOnLoad', e, bootGen));
             }
@@ -1695,6 +1702,9 @@ export default class SeekPlugin extends Plugin {
         this.vaultIndexEventsReady = false;
         this.catchUpRunning = false;
         this.flushing = false;
+        this.sidecarHydrateDepth = 0;
+        this.sidecarHydrateGen = -1;
+        this.sidecarHydrating = false;
         this.driftRecoveryRunning = false;
         this.orphanSweepRunning = false;
         this.sidecarCompactRunning = false;
@@ -2080,7 +2090,8 @@ export default class SeekPlugin extends Plugin {
             //    rebuildFromSidecar nukes+stamps+hydrates ONLY if a compatible producer
             //    exists; otherwise it returns acceptedProducers:0 without touching the index.
             const rebuilt = await this.withSidecarHydrate(() => this.orchestrator.rebuildFromSidecar());
-            if (rebuilt && rebuilt.acceptedProducers > 0) {
+            this.applySidecarWait(rebuilt);
+            if (sidecarHydrateHealedIndex(rebuilt)) {
                 this.identityHealNotified = false; // healed (silent — background sync)
                 // A current-version peer existed: the fleet self-heals embed-free even
                 // with desktop auto-reindex gone. Clear any version banner this device
@@ -2211,7 +2222,7 @@ export default class SeekPlugin extends Plugin {
             const hydrated = await this.withSidecarHydrate(() => this.orchestrator.reconcileSidecarIfChanged());
             this.applySidecarWait(hydrated);
             await this.refreshSidecarFleet();
-            if (this.waitingForSidecar) return;
+            if (this.waitingForSidecar || this.sidecarHydrating) return;
             // The reconcile above scanned the sidecar dir, so peerAhead is fresh: raise (or
             // clear) the "update Seek" banner. Runs only on the local-healthy path, since
             // enforceIndexIdentity returns early when the local index is itself version-stale.
@@ -2595,6 +2606,7 @@ export default class SeekPlugin extends Plugin {
             this.refreshIndexStatusBar();
         } else if (this.waitingForSidecar && fleet.matchingReady) {
             this.waitingForSidecar = false;
+            this.refreshIndexStatusBar();
         }
     }
 
@@ -2609,6 +2621,13 @@ export default class SeekPlugin extends Plugin {
             waiting: fleet.waitingForProducer,
             mayFullReindex: fleet.mayFullReindex,
         };
+    }
+
+    /** IndexedDB was emptied (full reset or sidecar rebuild) — do not keep Ready inventory. */
+    private noteIndexDropped(): void {
+        this.indexGoodEnough = false;
+        this.publishInventory(0, 0, true);
+        this.refreshIndexStatusBar();
     }
 
     private markIndexGoodEnough(): void {
@@ -2731,6 +2750,11 @@ export default class SeekPlugin extends Plugin {
 
     private async withSidecarHydrate<T>(fn: () => Promise<T>): Promise<T> {
         const hydrateGen = this.loadGeneration;
+        if (this.sidecarHydrateGen !== hydrateGen) {
+            this.sidecarHydrateGen = hydrateGen;
+            this.sidecarHydrateDepth = 0;
+        }
+        this.sidecarHydrateDepth++;
         this.sidecarHydrating = true;
         this.pushTaskContext('hydrating');
         this.refreshIndexStatusBar();
@@ -2748,6 +2772,9 @@ export default class SeekPlugin extends Plugin {
         try {
             return await fn();
         } finally {
+            if (this.sidecarHydrateGen === hydrateGen) {
+                this.sidecarHydrateDepth = Math.max(0, this.sidecarHydrateDepth - 1);
+            }
             if (!this.isSessionWorkCurrent(hydrateGen)) {
                 /* stale hydrate — leave UI state to the current session */
             } else {
@@ -2764,7 +2791,7 @@ export default class SeekPlugin extends Plugin {
                 void this.logger.append(span).catch(() => {});
             }
             this.popTaskContext('hydrating');
-            this.sidecarHydrating = false;
+            this.sidecarHydrating = this.sidecarHydrateDepth > 0;
             this.refreshIndexStatusBar();
             }
         }
@@ -3103,7 +3130,7 @@ export default class SeekPlugin extends Plugin {
     // embeds without opening Search. Mobile stays lazy (jetsam / heap).
     private applyPostBootIndexScheduling(): void {
         if (this.unloading) return;
-        if (this.waitingForSidecar) {
+        if (this.waitingForSidecar || this.sidecarHydrating) {
             if (this.indexBootDecisionPending) {
                 this.indexBootDecisionPending = false;
                 this.refreshIndexStatusBar();
@@ -3127,7 +3154,7 @@ export default class SeekPlugin extends Plugin {
 
     private scheduleIndexBuild(mode: IndexBuildMode): void {
         if (mode === 'idle') return;
-        if (this.waitingForSidecar) return;
+        if (this.waitingForSidecar || this.sidecarHydrating) return;
         if (isMobilePlatform()) {
             if (mode === 'catchup') this.catchUpPending = true;
             return;
@@ -3351,6 +3378,7 @@ export default class SeekPlugin extends Plugin {
 
             jobId = this.beginIndexJob('full', this.indexableNoteCount(), 'Seek: indexing…');
             this.pushTaskContext('indexing');
+            this.noteIndexDropped();
             await this.ensureModelLoaded();
             this.orchestrator.invalidateBm25Cache();
             const result = await this.orchestrator.reindexAll((msg) => {

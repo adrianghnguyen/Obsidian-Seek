@@ -245,9 +245,13 @@ export interface IndexUiStatusInput {
 }
 
 /**
- * Canonical UI status. Precedence:
- * active restore > startup > integrity error > real indexing > empty > ready.
+ * Canonical UI status. Precedence (last-write-wins with explicit rank):
+ * locked > stuck > consumer/peer restore > hydrate (empty-after-drop or in-flight)
+ * > startup > integrity error > catch-up/indexing job > empty > ready.
  * Cache warming is invisible here (search stays usable on a populated index).
+ *
+ * Greedy background hydrate on an already-searchable store may show Indexing.
+ * A drop (0/0 inventory) or consumer wait must not flash None or Indexing.
  */
 export function resolveIndexUiStatus(input: IndexUiStatusInput): IndexUiStatus {
     if (input.storeLocked) return 'locked';
@@ -258,17 +262,20 @@ export function resolveIndexUiStatus(input: IndexUiStatusInput): IndexUiStatus {
     if (input.waitingForSidecar || input.peerSyncPending) {
         return 'restoring';
     }
-    if (input.goodEnough && input.hydrating && !input.booting) {
-        return 'indexing';
+    const chunks = input.searchableChunks;
+    const files = input.inventoryFiles ?? 0;
+    const emptyInventory = (chunks ?? 0) === 0 && files === 0;
+    if (input.hydrating && !input.booting) {
+        // Drop+hydrate and empty restore beat catch-up chrome. Only a populated
+        // good-enough store (greedy background hydrate) stays Indexing.
+        if (input.goodEnough && !emptyInventory && chunks != null) return 'indexing';
+        return 'restoring';
     }
-    if (input.hydrating && !input.booting) return 'restoring';
     if (input.booting || input.hydrating) return 'starting';
     if (input.health === 'degraded' || input.reason === 'peer-ahead') return 'error';
     if (input.indexing || (input.job != null && input.job.total > 0)) return 'indexing';
-    const chunks = input.searchableChunks;
-    const files = input.inventoryFiles ?? 0;
     if (input.bootDecisionPending || chunks == null) return 'starting';
-    if (chunks === 0 && files === 0) {
+    if (emptyInventory) {
         // Queued first build — not "no index", not "still indexing your notes".
         if (input.catchUpPending) return 'starting';
         return 'none';
@@ -276,20 +283,35 @@ export function resolveIndexUiStatus(input: IndexUiStatusInput): IndexUiStatus {
     return 'ok';
 }
 
+export interface SidecarHydrateWaitResult {
+    hydrated: number;
+    skippedPartialNotes?: number;
+    acceptedProducers?: number;
+    waitingForProducer?: boolean;
+    incompleteFolder?: boolean;
+    datalessShards?: number;
+}
+
 /** Warm no-op hydrate (accepted producer, nothing new) must clear Restoring. */
 export function resolveSidecarWait(
-    result: {
-        hydrated: number;
-        skippedPartialNotes: number;
-        waitingForProducer?: boolean;
-        incompleteFolder?: boolean;
-        datalessShards?: number;
-    },
+    result: SidecarHydrateWaitResult,
     inventoryChunks: number | null,
 ): boolean {
     if (result.waitingForProducer || result.incompleteFolder || (result.datalessShards ?? 0) > 0) return true;
     if (result.hydrated > 0) return false;
-    return result.skippedPartialNotes > 0 && (inventoryChunks ?? 0) === 0;
+    return (result.skippedPartialNotes ?? 0) > 0 && (inventoryChunks ?? 0) === 0;
+}
+
+/**
+ * True when hydrate/rebuild finished a restore (including warm no-op).
+ * Incomplete producer files and consumer wait must not count as healed.
+ */
+export function sidecarHydrateHealedIndex(result: SidecarHydrateWaitResult | null | undefined): boolean {
+    if (!result) return false;
+    if (result.waitingForProducer || result.incompleteFolder || (result.datalessShards ?? 0) > 0) {
+        return false;
+    }
+    return result.hydrated > 0 || (result.acceptedProducers ?? 0) > 0;
 }
 
 /** CLI / headless search gate — null when the index checklist is satisfied. */

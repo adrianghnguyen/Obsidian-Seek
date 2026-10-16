@@ -430,4 +430,49 @@ describe('SidecarCoordinator', () => {
             orch.dispose();
         });
     });
+
+    describe('rebuildFromSidecar drop vs hydrate', () => {
+        function coordinatorFor(indexDir: string): SidecarCoordinator {
+            const settings = structuredClone(DEFAULT_SETTINGS);
+            settings.sidecarEnabled = true;
+            const coord = new IndexCoordinator(indexDir, settings);
+            const cacheManager = new CacheManager({ app, store, coord, embedder, settings, logger });
+            return new SidecarCoordinator({
+                app, store, coord, embedder, logger, settings, cacheManager,
+                chunksFor: () => [],
+                indexableFiles: () => [{ path: 'note.md' } as TFile],
+                shouldIndex: () => true,
+            });
+        }
+
+        it('does not wipe IDB when the producer sidecar is incomplete', async () => {
+            const indexDir = '.seek-test-index';
+            await store.putBatchQuantized(
+                [{
+                    chunk_id: 'keep-1', title: 'Keep', content: 'body', note_path: 'keep.md',
+                    heading_path: [], metadata: { tags: [], aliases: [], created: null, modified: null, properties: {} },
+                    start_line: 0, end_line: 0,
+                }],
+                [{ q: { q: new Int8Array([1, 2]), s: 0.5 }, bin: new Uint8Array([1]) }],
+                { note_path: 'keep.md', mtimeMs: 1, chunk_ids: ['keep-1'], contentHash: 'h' },
+            );
+            expect((await store.count()).chunks).toBe(1);
+
+            await writeDeviceMeta(adapter as never, indexDir, {
+                format: SIDECAR_FORMAT,
+                modelId: EXPECT.modelId,
+                revision: EXPECT.revision,
+                chunkerVersion: EXPECT.chunkerVersion,
+                dim: EXPECT.dim,
+                deviceId: 'peer-desktop',
+                lastFullReindex: '2026-10-01T00:00:00Z',
+            });
+
+            const coordinator = coordinatorFor(indexDir);
+            const result = await coordinator.rebuildFromSidecar();
+            expect(result?.waitingForProducer || result?.acceptedProducers === 0).toBe(true);
+            expect((await store.count()).chunks).toBe(1);
+            expect(await store.getFileRecord('keep.md')).toBeTruthy();
+        });
+    });
 });

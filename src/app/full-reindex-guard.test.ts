@@ -40,6 +40,7 @@ describe('runFullReindex stacking', () => {
             indexableNoteCount: () => 10,
             pushTaskContext: () => {},
             popTaskContext: () => {},
+            noteIndexDropped: () => {},
             ensureModelLoaded: () => loadGate,
             indexProgress: { updateFromProgress: () => {}, hide: () => {} },
             notifyIndexActivityChanged: () => {},

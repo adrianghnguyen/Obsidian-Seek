@@ -31,7 +31,7 @@ Each Obsidian window on the same vault shares the same synced sidecar directory;
 | Peer ahead | Newer chunker on another device; this build too old to read | `peerAhead` / `probePeerAhead` (meta scan, hydrate-independent) | Update Seek banner; mobile grind-stop skips futile full re-embed |
 | Atomic write crash | `.tmp` left without final rename | Strict glob excludes `.tmp` from scans; `sweepOrphanTmpFiles` | Recover own `.tmp`; never delete a **peer** `.tmp` (in-flight write) |
 | Meta floor race | `writeDeviceMeta` preserve-read clobbers seq floor raised under dir lock | Unit test: meta write blocked on held lock | `writeDeviceMeta` runs under same dir lock as floor raises |
-| Concurrent IDB + sidecar | Hydrate vs catch-up vs reload | `IndexCoordinator.runExclusive` write mutex | Hydrate before catch-up; sidecar flush outside mutex where safe (`offmutex-flush` tests) |
+| Concurrent IDB + sidecar | Hydrate vs catch-up vs reload vs full drop | `IndexCoordinator.runExclusive` write mutex | Hydrate before catch-up; wipe+hydrate stay in one exclusive section; inspect producer before clearAllStores; UI precedence hydrate > empty-after-drop > catch-up (`resolveIndexUiStatus`) |
 | CRC / corrupt shard | Bit flip or truncated shard | `readRecordAt` → null; hydrate skips partial note | No partial file records; retry on next reconcile when bytes heal |
 | Half-cleared dead device | jsonl deleted, meta/bm25/shards remain | `listSidecarDeviceIds` union (not jsonl-only reap) | Idempotent `clearDevice`; reap revisits leftovers |
 | Warm hydrate no-op | Every synced id already in IDB | Fresh-id pre-gate | Release startup gate (`onGoodEnough`); avoid full-vault re-chunk |

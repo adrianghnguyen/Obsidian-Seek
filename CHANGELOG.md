@@ -4,6 +4,9 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Fixed
+- **Dropping the index no longer races restore/hydrate on the status bar.** A sidecar rebuild inspects the producer under the write lock before wiping IndexedDB, so an incomplete peer cannot empty the store. Nested hydrates keep Restoring until they finish. Empty-after-drop and consumer wait outrank leftover catch-up chrome (Ready / None / Indexing).
+
 ## 1.14.0
 
 Sidecar cross-device hydrate and producer/consumer fleet controls — share the vault sidecar folder; each device keeps its own IndexedDB.
