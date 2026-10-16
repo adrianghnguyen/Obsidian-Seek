@@ -228,7 +228,7 @@ describe('resolveCoveragePanelView', () => {
             orchestratorReady: true,
         });
         expect(view.showTree).toBe(false);
-        expect(view.placeholder?.title).toBe('Still indexing');
+        expect(view.placeholder?.title).toBe('Reindexing…');
         expect(view.placeholder?.detail).toContain('12 of 100');
     });
 
@@ -240,7 +240,7 @@ describe('resolveCoveragePanelView', () => {
             orchestratorReady: false,
         });
         expect(view.showTree).toBe(false);
-        expect(view.placeholder?.title).toBe('Still starting up');
+        expect(view.placeholder?.title).toBe('Starting up…');
     });
 
     it('shows a status banner above a partial tree while starting up when notes exist', () => {
@@ -251,7 +251,7 @@ describe('resolveCoveragePanelView', () => {
             orchestratorReady: true,
         });
         expect(view.showTree).toBe(true);
-        expect(view.statusLine?.title).toBe('Still starting up');
+        expect(view.statusLine?.title).toBe('Starting up…');
         expect(view.statusLine?.detail).toContain('1 of 2 notes so far');
     });
 
@@ -263,7 +263,7 @@ describe('resolveCoveragePanelView', () => {
             orchestratorReady: true,
         });
         expect(view.showTree).toBe(true);
-        expect(view.statusLine?.title).toBe('Restoring index…');
+        expect(view.statusLine?.title).toBe('Restoring…');
     });
 
     it('shows an Adding banner above a partial tree while notes are not yet in the index', () => {
@@ -339,7 +339,7 @@ describe('resolveCoveragePanelView', () => {
             orchestratorReady: false,
         });
         expect(startingView.showTree).toBe(true);
-        expect(startingView.statusLine?.title).toBe('Still starting up');
+        expect(startingView.statusLine?.title).toBe('Starting up…');
     });
 
     it('keeps the tree when a refresh fails but a snapshot exists', () => {

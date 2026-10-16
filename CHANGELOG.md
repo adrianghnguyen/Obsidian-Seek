@@ -6,6 +6,7 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ### Fixed
 - **Dropping the index no longer races restore/hydrate on the status bar.** A sidecar rebuild inspects the producer under the write lock before wiping IndexedDB, so an incomplete peer cannot empty the store. Nested hydrates keep Restoring until they finish. Empty-after-drop and consumer wait outrank leftover catch-up chrome (Ready / None / Indexing).
+- **Status bar and Settings Index share one status snapshot.** Full reindex is Reindexing, catch-up is Indexing, drop/hydrate/wait is Restoring — same labels on both surfaces. Torn sidecar (0-byte shard, incomplete folder) stays Restoring, never silent Ready on an empty store.
 
 ## 1.14.0
 

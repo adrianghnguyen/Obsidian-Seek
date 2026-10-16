@@ -6,6 +6,7 @@
 // tree, a placeholder ("still indexing"), or both (tree + status banner).
 //
 import type { IndexStatusHealth, IndexStatusJob } from '../ui/index-status-card';
+import { INDEX_STATUS_COPY } from '../ui/index-status-report';
 
 // Pure and dependency-injected (no Obsidian / model coupling) so the math and the
 // change detection are unit-testable. The plugin supplies the three live path sets
@@ -557,13 +558,13 @@ export function resolveCoveragePanelView(input: {
     if (!orchestratorReady && !hasTree) {
         return placeholderOnly({
             tone: 'pending',
-            title: 'Still starting up',
+            title: INDEX_STATUS_COPY.starting.label,
             detail: 'Seek is loading the search index. Folder coverage will appear once your vault is ready.',
         });
     }
     if (!orchestratorReady && hasTree) {
         return withTree(treeBanner(
-            'Still starting up',
+            INDEX_STATUS_COPY.starting.label,
             'Seek is loading the search index. Folder coverage updates as notes are indexed.',
         ));
     }
@@ -571,13 +572,13 @@ export function resolveCoveragePanelView(input: {
     if (health === 'error' && !hasTree) {
         return placeholderOnly({
             tone: 'bad',
-            title: 'Index error',
+            title: INDEX_STATUS_COPY.error.label,
             detail: errorFix,
         });
     }
     if (health === 'error' && hasTree) {
         return withTree(treeBanner(
-            'Index error',
+            INDEX_STATUS_COPY.error.label,
             errorFixTree,
             'bad',
         ));
@@ -586,13 +587,13 @@ export function resolveCoveragePanelView(input: {
     if (health === 'locked' && !hasTree) {
         return placeholderOnly({
             tone: 'bad',
-            title: 'Index locked',
+            title: INDEX_STATUS_COPY.locked.label,
             detail: 'Close other Obsidian windows using this vault, then reopen Settings.',
         });
     }
     if (health === 'locked' && hasTree) {
         return withTree(treeBanner(
-            'Index locked',
+            INDEX_STATUS_COPY.locked.label,
             'Close other Obsidian windows using this vault. Folder coverage is the last snapshot.',
             'bad',
         ));
@@ -601,7 +602,7 @@ export function resolveCoveragePanelView(input: {
     if (hasTree) {
         if (health === 'starting') {
             return withTree(treeBanner(
-                'Still starting up',
+                INDEX_STATUS_COPY.starting.label,
                 job && job.total > 0
                     ? `Indexed ${job.done.toLocaleString()} of ${job.total.toLocaleString()} notes so far. Folder coverage is updating live.`
                     : 'Seek is loading the search index. Folder coverage updates as notes are indexed.',
@@ -609,7 +610,7 @@ export function resolveCoveragePanelView(input: {
         }
         if (health === 'restoring') {
             return withTree(treeBanner(
-                'Restoring index…',
+                INDEX_STATUS_COPY.restoring.label,
                 'Seek is restoring your index. Folder coverage is updating live as notes are restored.',
             ));
         }
@@ -636,7 +637,7 @@ export function resolveCoveragePanelView(input: {
     if (health === 'starting' || health === 'restoring') {
         return placeholderOnly({
             tone: 'pending',
-            title: health === 'restoring' ? 'Restoring index…' : 'Still starting up',
+            title: health === 'restoring' ? INDEX_STATUS_COPY.restoring.label : INDEX_STATUS_COPY.starting.label,
             detail: health === 'restoring'
                 ? 'Seek is restoring your index. Folder coverage will appear once the vault layout is ready.'
                 : 'Seek is loading the search index. Folder coverage will appear once your vault is ready.',
@@ -654,7 +655,7 @@ export function resolveCoveragePanelView(input: {
     if (isIndexingActive(health, job) || health === 'none') {
         return placeholderOnly({
             tone: 'pending',
-            title: 'Still indexing',
+            title: job?.kind === 'full' ? INDEX_STATUS_COPY['full-reindex'].label : INDEX_STATUS_COPY.indexing.label,
             detail: job && job.total > 0
                 ? `Indexed ${job.done.toLocaleString()} of ${job.total.toLocaleString()} this pass. Folder coverage will appear once notes are indexed.`
                 : 'Seek is still scanning and embedding your vault. Folder coverage will appear once notes are indexed.',

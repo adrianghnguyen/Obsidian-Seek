@@ -38,6 +38,7 @@ import {
 } from '../search/bm25-boosts';
 import { DEFAULT_FIELD_BOOSTS } from '../search/bm25';
 import type { IndexStatusHealth } from '../ui/index-status-card';
+import type { IndexStatusReport } from '../ui/index-status-report';
 import {
     renderRecentSearchConsole,
     renderSettingsIndexStatusCard,
@@ -376,8 +377,12 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
     private save = () => this.plugin.saveSettings();
 
     // ---- Index ---------------------------------------------------------------------
+    private statusReport(): IndexStatusReport {
+        return this.plugin.getIndexStatusReport();
+    }
+
     private statusState(): IndexStatusHealth {
-        return this.plugin.indexUiHealth;
+        return this.statusReport().health;
     }
 
     private activeFullJob() {
@@ -751,8 +756,10 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         host.empty();
         this.paintRecoveryRow();
         const startup = this.plugin.getStartupTimingView();
+        const report = this.statusReport();
         renderSettingsIndexStatusCard(host, {
-            health: this.statusState(),
+            health: report.health,
+            mode: report.mode,
             stats: this.stats,
             job: this.plugin.getIndexJob(),
             startup,
@@ -1174,7 +1181,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         if (this.showIndexingProgress()) {
             const row = containerEl.createDiv({ cls: 'seek-progress-row' });
             const head = row.createDiv({ cls: 'seek-progress-head' });
-            head.createDiv({ cls: 'setting-item-name', text: 'Indexing…' });
+            head.createDiv({ cls: 'setting-item-name', text: this.statusReport().label });
             this.progressLabelEl = head.createDiv({ cls: 'seek-progress-count' });
             const bar = row.createDiv({ cls: 'seek-progress-track' });
             this.progressFillEl = bar.createDiv({ cls: 'seek-progress-fill' });

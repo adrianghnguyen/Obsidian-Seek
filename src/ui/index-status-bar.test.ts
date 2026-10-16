@@ -17,6 +17,20 @@ import {
     INDEX_STATUS_DOT_CLS,
     INDEX_STATUS_HEALTH,
 } from './index-status-card';
+import { INDEX_STATUS_COPY, type IndexStatusReport } from './index-status-report';
+import type { IndexStatusHealth, IndexStatusMode } from './index-status-card';
+
+function reportOf(health: IndexStatusHealth, mode?: IndexStatusMode): IndexStatusReport {
+    const m = mode ?? health;
+    const copy = INDEX_STATUS_COPY[m];
+    return {
+        mode: m,
+        health: m === 'full-reindex' ? 'indexing' : health,
+        label: copy.label,
+        compact: copy.compact,
+        tone: copy.tone,
+    };
+}
 
 interface StubEl {
     tagName: string;
@@ -170,7 +184,7 @@ describe('IndexStatusBar', () => {
         getStats: async () => ({
             files: 12, chunks: 40, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null,
         }),
-        getHealth: () => 'ok' as const,
+        getReport: () => reportOf('ok'),
         onOpenSettings: () => {},
         onRecover: () => {},
     };
@@ -247,7 +261,7 @@ describe('IndexStatusBar', () => {
         const bar = new IndexStatusBar();
         bar.mount(root as unknown as HTMLElement, {
             ...hooks,
-            getHealth: () => busy ? 'indexing' : 'ok',
+            getReport: () => reportOf(busy ? 'indexing' : 'ok'),
         });
         bar.show(5, 'Seek: indexing…');
         busy = false;
@@ -260,7 +274,7 @@ describe('IndexStatusBar', () => {
         let health: 'indexing' | 'ok' | 'starting' = 'indexing';
         const root = stubEl();
         const bar = new IndexStatusBar();
-        bar.mount(root as unknown as HTMLElement, { ...hooks, getHealth: () => health });
+        bar.mount(root as unknown as HTMLElement, { ...hooks, getReport: () => reportOf(health) });
         expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)?.textContent).toBe('…');
         expect(root.querySelector('.seek-dot')).toBeNull();
         health = 'ok';
@@ -275,7 +289,7 @@ describe('IndexStatusBar', () => {
         let health: 'starting' | 'restoring' | 'ok' = 'starting';
         const root = stubEl();
         const bar = new IndexStatusBar();
-        bar.mount(root as unknown as HTMLElement, { ...hooks, getHealth: () => health });
+        bar.mount(root as unknown as HTMLElement, { ...hooks, getReport: () => reportOf(health) });
         bar.show(15, 'Seek: indexing 15 notes…');
         expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)).toBeNull();
         expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-pending');
@@ -328,11 +342,17 @@ describe('indexWaitCardModel', () => {
     });
 
     it('keeps the coordinator job as the indexing source of truth', () => {
-        const model = indexWaitCardModel({ health: 'ok', stats: inventory, job: { done: 0, total: 15 } });
+        const model = indexWaitCardModel({ health: 'indexing', stats: inventory, job: { done: 0, total: 15 } });
         expect(model.health).toBe('indexing');
         expect(model.job).toEqual({ done: 0, total: 15 });
         expect(jobRemaining(model.job)).toBe(15);
         expect(jobRemaining(model.job)).not.toBe(model.stats?.files);
+    });
+
+    it('does not remap a Ready report to Indexing just because a leftover job object exists', () => {
+        const model = indexWaitCardModel({ health: 'ok', stats: inventory, job: { done: 0, total: 15 } });
+        expect(model.health).toBe('ok');
+        expect(model.job).toBeNull();
     });
 });
 
@@ -375,7 +395,7 @@ describe('renderIndexStatusCard', () => {
             getStats: async () => ({
                 files: 5, chunks: 18, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null,
             }),
-            getHealth: () => 'indexing' as const,
+            getReport: () => reportOf('indexing'),
             onOpenSettings: () => {},
             onRecover: () => {},
         });
@@ -472,7 +492,7 @@ describe('INDEX_STATUS_HEALTH stuck', () => {
             bar.mount(root as unknown as HTMLElement, {
                 // Zero inventory: the empty-store remap must NOT hide the recovery row.
                 getStats: async () => ({ files: 0, chunks: 0, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null }),
-                getHealth: () => health,
+                getReport: () => reportOf(health),
                 onOpenSettings: () => {},
                 onRecover: () => { recovered += 1; },
             });
@@ -495,7 +515,7 @@ describe('INDEX_STATUS_HEALTH stuck', () => {
         const bar = new IndexStatusBar();
         bar.mount(root as unknown as HTMLElement, {
             getStats: async () => ({ files: 5, chunks: 18, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null }),
-            getHealth: () => 'ok',
+            getReport: () => reportOf('ok'),
             onOpenSettings: () => {},
             onRecover: () => {},
         });

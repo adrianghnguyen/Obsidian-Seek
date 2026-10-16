@@ -94,9 +94,10 @@ import {
     UNLOAD_CHECK_MS,
     BULK_DELTA_THRESHOLD,
 } from './app/plugin-schedulers';
-import { indexBannerSpec, resolveIndexLoadPhase, resolveCliSearchGate, CLI_SEARCH_WARMING, resolveIndexUiStatus, resolveSidecarWait, sidecarHydrateHealedIndex, retainIndexInventory, INDEX_STALE_MSG, INDEX_SYNCING_MSG, INDEX_WAITING_SIDECAR_MSG, INDEX_PEER_AHEAD_MSG, INDEX_STALL_NOTICE, type DegradedReason, type IndexLoadState } from './ui/index-notice';
+import { indexBannerSpec, resolveIndexLoadPhase, resolveCliSearchGate, CLI_SEARCH_WARMING, resolveSidecarWait, sidecarHydrateHealedIndex, retainIndexInventory, INDEX_STALE_MSG, INDEX_SYNCING_MSG, INDEX_WAITING_SIDECAR_MSG, INDEX_PEER_AHEAD_MSG, INDEX_STALL_NOTICE, type DegradedReason, type IndexLoadState } from './ui/index-notice';
 import { IndexStatusBar, extendIndexPassTotal, parseIndexedProgress, type IndexJobSpeedView } from './ui/index-status-bar';
 import type { IndexJobKind, IndexStatusHealth, IndexStatusJob } from './ui/index-status-card';
+import { IndexStatusReporter, type IndexStatusReport } from './ui/index-status-report';
 import {
     RecentSearchRing,
     StartupBootHistory,
@@ -474,7 +475,29 @@ export default class SeekPlugin extends Plugin {
 
     /** Same health the status-bar item uses — Settings and the search modal must match it. */
     get indexUiHealth(): IndexStatusHealth {
-        return this.statusBarHealth();
+        return this.getIndexStatusReport().health;
+    }
+
+    /** Sole high-level snapshot for status bar + Settings Index. */
+    getIndexStatusReport(): IndexStatusReport {
+        return IndexStatusReporter.compute({
+            storeLocked: this.indexStoreLocked,
+            stuck: this.indexBootStuck || this.indexStoreWedged || this.indexIndexingStalled,
+            booting: this.indexBootPending,
+            bootDecisionPending: this.indexBootDecisionPending,
+            hydrating: this.sidecarHydrating,
+            goodEnough: this.indexGoodEnough,
+            waitingForSidecar: this.waitingForSidecar,
+            peerSyncPending: this.peerSyncPending,
+            health: this.indexHealth,
+            reason: this.degradedReason,
+            indexing: this.catchUpRunning || this.flushing || this.isIndexing,
+            catchUpPending: this.catchUpPending,
+            job: this.indexProgress.job(),
+            searchableChunks: this.indexInventoryChunks,
+            inventoryFiles: this.indexInventoryFiles,
+            jobKind: this.indexProgress.job()?.kind ?? null,
+        });
     }
 
     /** Coordinator pass currently shown on the status-bar badge, or null. */
@@ -536,26 +559,6 @@ export default class SeekPlugin extends Plugin {
     /** Newest model load entry (logger cache). */
     getLastLoadEntry(): LoadEntry | null {
         return this.logger.lastLoad;
-    }
-
-    private statusBarHealth(): IndexStatusHealth {
-        return resolveIndexUiStatus({
-            storeLocked: this.indexStoreLocked,
-            stuck: this.indexBootStuck || this.indexStoreWedged || this.indexIndexingStalled,
-            booting: this.indexBootPending,
-            bootDecisionPending: this.indexBootDecisionPending,
-            hydrating: this.sidecarHydrating,
-            goodEnough: this.indexGoodEnough,
-            waitingForSidecar: this.waitingForSidecar,
-            peerSyncPending: this.peerSyncPending,
-            health: this.indexHealth,
-            reason: this.degradedReason,
-            indexing: this.catchUpRunning || this.flushing || this.isIndexing,
-            catchUpPending: this.catchUpPending,
-            job: this.indexProgress.job(),
-            searchableChunks: this.indexInventoryChunks,
-            inventoryFiles: this.indexInventoryFiles,
-        });
     }
 
     private refreshIndexStatusBar(): void {
@@ -1032,7 +1035,7 @@ export default class SeekPlugin extends Plugin {
         this.addSettingTab(new SeekSettingTab(this.app, this));
         this.indexProgress.mount(this.addStatusBarItem(), {
             getStats: () => this.getIndexStats(),
-            getHealth: () => this.statusBarHealth(),
+            getReport: () => this.getIndexStatusReport(),
             onOpenSettings: () => this.openSeekSettings(),
             onRecover: () => { void this.retryIndexStoreOpen(); },
         });
@@ -2573,7 +2576,7 @@ export default class SeekPlugin extends Plugin {
             reason: this.degradedReason,
             peerSyncPending: this.peerSyncPending,
             job: this.indexProgress.job(),
-            uiHealth: this.statusBarHealth(),
+            uiHealth: this.getIndexStatusReport().health,
             inventoryChunks: this.indexInventoryChunks,
         };
     }

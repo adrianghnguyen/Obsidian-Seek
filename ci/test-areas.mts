@@ -61,6 +61,7 @@ export const CI_TEST_AREAS = {
         'src/ui/index-status-bar.test.ts',
         'src/ui/index-status-contract.test.ts',
         'src/ui/index-status-races.test.ts',
+        'src/ui/index-status-degrade.test.ts',
         'src/ui/index-status-settings.test.ts',
     ],
     'search': [

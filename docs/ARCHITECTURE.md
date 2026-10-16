@@ -235,6 +235,8 @@ Model weights are **not** loaded at startup. First search or reindex calls `ensu
 
 Synchronous clean end: mark forensics session closed → teardown embedder iframe → dispose orchestrator → close IndexedDB → disconnect observers and timers.
 
+Do **not** assume this runs. Process death, iOS jetsam, and some mobile quits skip teardown. Recovery must work from durable IDB + sidecar on the next boot (see design theme 9).
+
 ### 4.3 Indexing schedulers (`plugin-schedulers.ts`)
 
 | Mechanism | Role |
@@ -723,6 +725,8 @@ CLI handlers register only when `registerCliHandler` exists on the plugin instan
 7. **Sidecar as sync transport** — IndexedDB is the query engine; vault files are the durable, iCloud/Obsidian-Sync-friendly backup that lets mobile recover without re-embedding.
 
 8. **Lazy model load** — Plugin boots fast; embedding model downloads and initializes on first search or reindex.
+
+9. **Graceful degradation is the default** — Do not assume continuous writing or a clean `onunload`. Treat corrupt indexes, sudden vault-file changes, and process death mid-write as normal. A torn sidecar record (truncated jsonl, 0-byte/short shard, CRC failure) is skipped or refused — never shown as healthy. A mid-write abort (flush, shard append, meta, jsonl) must leave the next boot able to resume, hydrate, or surface Restoring / Recover; the in-memory write mutex must not wedge a new session. A note that changes under an in-flight embed is a later catch-up delta, not a stuck job. Partial IDB after a nuke is searchable if files committed atomically, or empty-honest (`None` / Restoring), never silent healthy-empty. Status bar and Settings Index read one `IndexStatusReporter` snapshot for those modes.
 
 ---
 
