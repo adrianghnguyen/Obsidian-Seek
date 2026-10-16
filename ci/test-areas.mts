@@ -25,6 +25,8 @@ export const CI_TEST_AREAS = {
         'src/index/atoms.test.ts',
         'src/index/base-extractor.test.ts',
         'src/index/catchup.test.ts',
+        'src/index/consumer-boot-wiring.test.ts',
+        'src/index/consumer-boot.test.ts',
         'src/index/chunk-diff.test.ts',
         'src/index/chunker-idpin.test.ts',
         'src/index/chunker.test.ts',

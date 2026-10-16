@@ -309,6 +309,7 @@ flowchart TD
    - `IndexStore.open()` verifies `META_SCHEMA_VERSION` and identity.
    - `SearchOrchestrator` constructs sub-coordinators (`IndexCoordinator`, `CacheManager`, `SearchQuery`, `SidecarCoordinator`).
    - `sidecarCoordinator.hydrateFromSidecar()` runs **before** catch-up to load peer-embedded chunks into IndexedDB.
+   - On a Consumer (`mayFullReindex` false), a ready fleet after that hydrate marks the index good-enough immediately — search is not blocked on embed catch-up, and post-boot recovery must not start a second hydrate once `bootContinuationDone` is true.
    - `cacheManager.warmCaches()` loads the resident frame and BM25 index into RAM.
    - `PluginSchedulerManager` registers Obsidian vault event listeners (`modify`, `delete`, `rename`).
    - `runCatchUp()` indexes offline modifications.
@@ -494,6 +495,8 @@ Written to `.obsidian/plugins/seek/index/` (default) or vault-root `Seek Index/`
 **Identity gates** (`identity.ts`, `sidecar-meta.ts`): model repo, chunker version, embedding dim, analyzer stamp must match before accepting a sidecar producer.
 
 **Fleet roles** (`sidecar-fleet.ts`): one producer writes sidecar files; consumers hydrate only. A consumer never full-reindexes, reaps, or compact-deletes another device’s shards. Dual-open: a hidden window with a peer present skips sidecar writes and compaction. Model/dim changes on a consumer stamp `pendingModel` in localStorage and keep hydrating the old identity. Hydrate preflight (`sidecar-preflight.ts`) refuses to start until jsonl offsets resolve to local non-empty shards (0-byte / dataless files count as incomplete); CRC failures skip that record, never wipe the peer.
+
+**Consumer boot after hydrate** (`consumer-boot.ts`): when `sidecar-hydrate` / greedy hydrate releases the search gate and `inspectFleet()` reports a consumer-safe ready state (`role === consumer`, `mayFullReindex === false`, not waiting on the producer), boot always clears `indexBootPending` / `indexBootStuck` / stall latches and calls `markIndexGoodEnough()`. Do not wait for catch-up embed. Desktop consumers may drain **lexical-only** catch-up (`embed: false`); they must not load the GPU embedder or schedule embed catch-up. Post-boot drop recovery must not start a second hydrate once `bootContinuationDone` is already true (force-reset / full-reindex recovery still hydrates).
 
 ---
 
@@ -726,7 +729,7 @@ CLI handlers register only when `registerCliHandler` exists on the plugin instan
 
 8. **Lazy model load** — Plugin boots fast; embedding model downloads and initializes on first search or reindex.
 
-9. **Graceful degradation is the default** — Do not assume continuous writing or a clean `onunload`. Treat corrupt indexes, sudden vault-file changes, and process death mid-write as normal. A torn sidecar record (truncated jsonl, 0-byte/short shard, CRC failure) is skipped or refused — never shown as healthy. A mid-write abort (flush, shard append, meta, jsonl, or `clearAllStores`) must leave the next boot able to resume, hydrate, or surface Restoring / Recover; the in-memory write mutex must not wedge a new session. A failed IDB drop must not pin None/error without a hydrate attempt. A note that changes under an in-flight embed is a later catch-up delta, not a stuck job. Partial IDB after a nuke is searchable if files committed atomically, or empty-honest (`None` / Restoring), never silent healthy-empty. Status bar, Settings Index, and the search-modal footer read one `IndexStatusReporter` snapshot for those modes.
+9. **Graceful degradation is the default** — Do not assume continuous writing or a clean `onunload`. Treat corrupt indexes, sudden vault-file changes, and process death mid-write as normal. A torn sidecar record (truncated jsonl, 0-byte/short shard, CRC failure) is skipped or refused — never shown as healthy. A mid-write abort (flush, shard append, meta, jsonl, or `clearAllStores`) must leave the next boot able to resume, hydrate, or surface Restoring / Recover; the in-memory write mutex must not wedge a new session. A failed IDB drop must not pin None/error without a hydrate attempt. A Consumer that finished sidecar hydrate into a ready fleet must not stay on **Startup stuck** — it becomes good-enough without embed catch-up. A note that changes under an in-flight embed is a later catch-up delta, not a stuck job. Partial IDB after a nuke is searchable if files committed atomically, or empty-honest (`None` / Restoring), never silent healthy-empty. Status bar, Settings Index, and the search-modal footer read one `IndexStatusReporter` snapshot for those modes.
 
 ---
 

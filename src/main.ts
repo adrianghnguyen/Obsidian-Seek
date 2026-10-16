@@ -122,6 +122,11 @@ import {
     type IndexBuildMode,
 } from './index/startup-drain';
 import { planFailedDropRecovery } from './index/failed-drop-recovery';
+import {
+    planConsumerHydrateComplete,
+    resolveConsumerCatchUpKind,
+    shouldStartHydrateFromRecovery,
+} from './index/consumer-boot';
 import { TaskContextTracker, type TaskContext } from './app/task-context';
 import { seekPerf } from './diagnostics/perf-console';
 import {
@@ -446,6 +451,8 @@ export default class SeekPlugin extends Plugin {
     } | null = null;
     /** Boot hydrate/reconcile ran (or was skipped because store stayed locked). */
     private bootContinuationDone = false;
+    /** Last inspectFleet().mayFullReindex; false = Consumer — no GPU/embed catch-up. */
+    private lastMayFullReindex: boolean | null = null;
     /**
      * Boot buffer between onLayoutReady and the first IndexedDB work: other
      * plugins' startup I/O gets the window first. Null once fired/cancelled.
@@ -1672,7 +1679,8 @@ export default class SeekPlugin extends Plugin {
             }
         }
         await this.maybeSteerSidecarLocation().catch(() => {});
-            if (!identityHandled) {
+        await this.maybeCompleteConsumerHydrateBoot();
+        if (!identityHandled) {
             const emptyWithNotes = isKnownEmptyIndexWithNotes(this.indexInventoryChunks, this.indexableNoteCount());
             if (!this.indexGoodEnough && !this.waitingForSidecar && !emptyWithNotes && !this.indexDropRecovering) {
                 this.markIndexGoodEnough();
@@ -1707,6 +1715,7 @@ export default class SeekPlugin extends Plugin {
         this.disposeStoreOpenRetryScheduler();
         this.indexStoreLocked = false;
         this.bootContinuationDone = false;
+        this.lastMayFullReindex = null;
         this.bootResumeCtx = null;
         this.vaultIndexEventsReady = false;
         this.catchUpRunning = false;
@@ -2610,6 +2619,7 @@ export default class SeekPlugin extends Plugin {
         if (!this.settings.sidecarEnabled || !this.orchestrator) return;
         const fleet = await this.orchestrator.inspectSidecarFleet();
         if (!fleet) return;
+        this.lastMayFullReindex = fleet.mayFullReindex;
         if (fleet.waitingForProducer) {
             this.waitingForSidecar = true;
             this.peerSyncPending = true;
@@ -2654,6 +2664,13 @@ export default class SeekPlugin extends Plugin {
         opts: { allowColdBuild?: boolean } = {},
     ): Promise<void> {
         if (this.unloading || this.dropRecoveryInFlight) return;
+        if (!shouldStartHydrateFromRecovery({
+            reason,
+            bootContinuationDone: this.bootContinuationDone,
+        })) {
+            await this.maybeCompleteConsumerHydrateBoot();
+            return;
+        }
         this.dropRecoveryInFlight = true;
         const allowColdBuild = opts.allowColdBuild !== false;
         try {
@@ -2661,6 +2678,7 @@ export default class SeekPlugin extends Plugin {
             const fleet = this.orchestrator && this.settings.sidecarEnabled
                 ? await this.orchestrator.inspectSidecarFleet().catch(() => null)
                 : null;
+            if (fleet) this.lastMayFullReindex = fleet.mayFullReindex;
             const plan = planFailedDropRecovery({
                 sidecarEnabled: this.settings.sidecarEnabled,
                 storeOpen: this.store.isOpen(),
@@ -2867,8 +2885,31 @@ export default class SeekPlugin extends Plugin {
             this.popTaskContext('hydrating');
             this.sidecarHydrating = this.sidecarHydrateDepth > 0;
             this.refreshIndexStatusBar();
+            if (this.sidecarHydrateDepth === 0) {
+                void this.maybeCompleteConsumerHydrateBoot();
+            }
             }
         }
+    }
+
+    /**
+     * After sidecar-hydrate / greedy hydrate releases the search gate: a consumer
+     * whose fleet is already ready becomes good-enough without waiting on embed catch-up.
+     */
+    private async maybeCompleteConsumerHydrateBoot(): Promise<void> {
+        if (this.unloading) return;
+        if (!this.settings.sidecarEnabled || !this.orchestrator) return;
+        const fleet = await this.orchestrator.inspectSidecarFleet().catch(() => null);
+        if (fleet) this.lastMayFullReindex = fleet.mayFullReindex;
+        const plan = planConsumerHydrateComplete({
+            fleet,
+            hydrateReleasedGate: !this.sidecarHydrating,
+        });
+        if (!plan.markGoodEnough) return;
+        this.waitingForSidecar = false;
+        this.peerSyncPending = false;
+        if (plan.clearIndexingStalled) this.clearIndexingStalled();
+        this.markIndexGoodEnough();
     }
 
     private async logStartupGateReleased(): Promise<void> {
@@ -3065,7 +3106,12 @@ export default class SeekPlugin extends Plugin {
     private runCatchUp(): void {
         if (this.waitingForSidecar) return;
         if (!this.catchUpPending || this.catchUpRunning || !this.orchestrator) return;
-        if (!this.embedder.loaded) {
+        const allowEmbed = resolveConsumerCatchUpKind({
+            mayFullReindex: this.lastMayFullReindex ?? true,
+            catchUpPending: true,
+            mobile: isMobilePlatform(),
+        }) === 'embed';
+        if (!this.embedder.loaded && allowEmbed) {
             this.scheduleStartupCatchUp();
             return;
         }
@@ -3126,6 +3172,7 @@ export default class SeekPlugin extends Plugin {
                     reindexDelta: async (d, del, opts) => {
                         const r = await orchestrator.reindexDelta(d, del, {
                             ...opts,
+                            embed: allowEmbed && this.embedder.loaded,
                             // Desktop only: cheap-yield each embed batch until a query
                             // is actually in flight. Mobile omits this and idle-paces.
                             ...(mobile ? {} : { isQueryInFlight: () => this.queryInFlightCount > 0 }),
@@ -3213,7 +3260,12 @@ export default class SeekPlugin extends Plugin {
         }
         const empty = isKnownEmptyIndexWithNotes(this.indexInventoryChunks, this.indexableNoteCount());
         if (this.indexDropRecovering || (empty && this.settings.sidecarEnabled)) {
-            void this.recoverAfterFailedDrop('post-boot', { allowColdBuild: true });
+            if (shouldStartHydrateFromRecovery({
+                reason: 'post-boot',
+                bootContinuationDone: this.bootContinuationDone,
+            })) {
+                void this.recoverAfterFailedDrop('post-boot', { allowColdBuild: true });
+            }
         } else if (empty && !isMobilePlatform()) {
             this.scheduleIndexBuild('cold');
         } else if (shouldAutoDrainStartupCatchUp({
@@ -3253,6 +3305,7 @@ export default class SeekPlugin extends Plugin {
             return;
         }
         const fleet = await this.orchestrator.inspectSidecarFleet();
+        if (fleet) this.lastMayFullReindex = fleet.mayFullReindex;
         if (fleet && !fleet.mayFullReindex) {
             this.coldBuildScheduled = false;
             this.waitingForSidecar = fleet.waitingForProducer || this.waitingForSidecar;
@@ -3297,8 +3350,24 @@ export default class SeekPlugin extends Plugin {
             catchUpPending: this.catchUpPending,
         })) return;
         const workGen = this.loadGeneration;
-        const pacer = new CompositorPacer();
-        void pacer.pace().then(async () => {
+        void (async () => {
+            if (!this.isSessionWorkCurrent(workGen) || !this.catchUpPending) return;
+            const fleet = this.orchestrator
+                ? await this.orchestrator.inspectSidecarFleet().catch(() => null)
+                : null;
+            if (fleet) this.lastMayFullReindex = fleet.mayFullReindex;
+            const kind = resolveConsumerCatchUpKind({
+                mayFullReindex: this.lastMayFullReindex ?? true,
+                catchUpPending: this.catchUpPending,
+                mobile: isMobilePlatform(),
+            });
+            if (kind === 'none') return;
+            if (kind === 'lexical') {
+                this.runCatchUp();
+                return;
+            }
+            const pacer = new CompositorPacer();
+            await pacer.pace();
             if (!this.isSessionWorkCurrent(workGen) || !this.catchUpPending) return;
             try {
                 await this.ensureModelLoaded();
@@ -3307,7 +3376,7 @@ export default class SeekPlugin extends Plugin {
             } catch {
                 // Leave catchUpPending set — visibility / next search retries.
             }
-        });
+        })();
     }
 
     // ── Exclusion-list change detection ────────────────────────────────────────────
@@ -3437,6 +3506,7 @@ export default class SeekPlugin extends Plugin {
         let succeeded = false;
         try {
             const fleet = await this.orchestrator.inspectSidecarFleet();
+            if (fleet) this.lastMayFullReindex = fleet.mayFullReindex;
             if (fleet && !fleet.mayFullReindex) {
                 this.waitingForSidecar = fleet.waitingForProducer || this.waitingForSidecar;
                 this.peerSyncPending = true;

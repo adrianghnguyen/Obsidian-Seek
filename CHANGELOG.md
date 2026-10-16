@@ -4,6 +4,9 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Fixed
+- **Consumer devices no longer sit on Startup stuck after sidecar hydrate.** When fleet preflight is already consumer-safe ready, boot marks the index good-enough and clears pending/stuck latches without waiting for embed catch-up. Consumers with `mayFullReindex` false skip GPU/embed catch-up (lexical-only drain is still allowed) and do not start a second hydrate from post-boot recovery after boot continuation has already run.
+
 ## 1.15.0-rc.1
 
 Index status after a failed drop, plus one status snapshot on the bar, Settings Index, and search-modal footer.
