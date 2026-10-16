@@ -95,6 +95,7 @@ import {
     type SidecarIndexRole,
 } from './sidecar-fleet';
 import { getSidecarIndexRole } from '../embedding/platform';
+import { continueAfterStoreWipe } from '../index/failed-drop-recovery';
 
 export interface SidecarFleetSnapshot {
     role: ResolvedSidecarRole;
@@ -130,6 +131,8 @@ export interface SidecarCoordinatorDeps {
     indexableFiles: () => TFile[];
     shouldIndex: (path: string) => boolean;
     onGoodEnough?: () => void;
+    /** Fired after clearAllStores in rebuildFromSidecar so UI inventory/health can drop. */
+    onIndexDropped?: () => void;
     /** Dual-open: a hidden window must not write or compact over a peer. */
     isHidden?: () => boolean;
 }
@@ -148,6 +151,7 @@ export class SidecarCoordinator {
     private shouldIndex: (path: string) => boolean;
     private isHidden: () => boolean;
     onGoodEnough?: () => void;
+    onIndexDropped?: () => void;
 
     private _peerAhead = false;
     private lastReconcileSig: string | null = null;
@@ -168,6 +172,7 @@ export class SidecarCoordinator {
         this.shouldIndex = deps.shouldIndex;
         this.isHidden = deps.isHidden ?? (() => typeof document !== 'undefined' && !!document.hidden);
         this.onGoodEnough = deps.onGoodEnough;
+        this.onIndexDropped = deps.onIndexDropped;
     }
 
     get peerAhead(): boolean {
@@ -275,12 +280,13 @@ export class SidecarCoordinator {
     // must clearAllStores + hydrate in ONE critical section — releasing
     // between them left isWriting() false so flushDirty/full reindex could
     // run against an empty store). Must NOT call runExclusive (FIFO deadlock).
-    async hydrateSidecarExclusive(): Promise<HydrateResult> {
+    async hydrateSidecarExclusive(opts?: { skipProducerWait?: boolean }): Promise<HydrateResult> {
         // Count inside the exclusive section (R3): a concurrent writer cannot
         // populate the store between the empty check and hydrate.
         const wasEmpty = (await this.store.count()).chunks === 0;
         const fleet = await this.inspectFleet();
-        if (fleet && (fleet.waitingForProducer || (fleet.preflight.matchingProducers > 0 && !fleet.preflight.ready))) {
+        if (!opts?.skipProducerWait
+            && fleet && (fleet.waitingForProducer || (fleet.preflight.matchingProducers > 0 && !fleet.preflight.ready))) {
             return this.hydrateBlockedResult(fleet);
         }
         const result = await hydrateFromSidecar(this.hydrateDepsGreedy());
@@ -344,29 +350,35 @@ export class SidecarCoordinator {
     // in seconds instead of a hot multi-minute on-device embed.
     async rebuildFromSidecar(): Promise<HydrateResult | null> {
         if (!this.coord.sidecarOn()) return null;
-        const fleet = await this.inspectFleet();
-        if (fleet && (fleet.preflight.matchingProducers === 0 || !fleet.preflight.ready)) {
-            return this.hydrateBlockedResult(fleet);
-        }
         const expect = expectationFor();
-        const producers = await rankAcceptedProducers(this.app.vault.adapter, this.coord.dir!, expect);
-        if (producers.length === 0) {
-            return fleet ? this.hydrateBlockedResult(fleet) : { ...EMPTY_HYDRATE };
-        }
-        // Nuke + stamp + hydrate under ONE write mutex.
+        // Inspect + optional wipe + hydrate under ONE write mutex so a catch-up
+        // cannot land on a dropped store, and an incomplete peer cannot wipe IDB.
         const result = await this.coord.runExclusive(async () => {
-            await this.store.clearAllStores();
-            const id = pluginIdentity();
-            await this.store.setMeta({
-                embeddingDim: pluginIdentity().dim,
-                lastIndexedAt: null,
-                schemaVersion: META_SCHEMA_VERSION,
-                modelId: pluginIdentity().modelId,
-                chunkerVersion: id.chunkerVersion,
-                analyzerVersion: id.analyzerVersion,
-                revision: id.revision,
+            const fleet = await this.inspectFleet();
+            if (fleet && (fleet.preflight.matchingProducers === 0 || !fleet.preflight.ready || fleet.waitingForProducer)) {
+                return this.hydrateBlockedResult(fleet);
+            }
+            const producers = await rankAcceptedProducers(this.app.vault.adapter, this.coord.dir!, expect);
+            if (producers.length === 0) {
+                return fleet ? this.hydrateBlockedResult(fleet) : { ...EMPTY_HYDRATE };
+            }
+            return continueAfterStoreWipe({
+                wipe: () => this.store.clearAllStores(),
+                onDropped: () => this.onIndexDropped?.(),
+                hydrate: async () => {
+                    const id = pluginIdentity();
+                    await this.store.setMeta({
+                        embeddingDim: pluginIdentity().dim,
+                        lastIndexedAt: null,
+                        schemaVersion: META_SCHEMA_VERSION,
+                        modelId: pluginIdentity().modelId,
+                        chunkerVersion: id.chunkerVersion,
+                        analyzerVersion: id.analyzerVersion,
+                        revision: id.revision,
+                    });
+                    return this.hydrateSidecarExclusive({ skipProducerWait: true });
+                },
             });
-            return this.hydrateSidecarExclusive();
         });
         this.cacheManager.invalidateBm25Cache();
         return this.afterHydrateExclusive(result);

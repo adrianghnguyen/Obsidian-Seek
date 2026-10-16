@@ -6,6 +6,7 @@ import {
     resolveCliSearchGate,
     resolveIndexUiStatus,
     resolveSidecarWait,
+    sidecarHydrateHealedIndex,
     retainIndexInventory,
     effectiveModalChunks,
     indexFooterStatus,
@@ -530,6 +531,19 @@ describe('resolveIndexUiStatus', () => {
         })).toBe('indexing');
     });
 
+    it('drop+hydrate: empty inventory stays Restoring even if goodEnough was still latched', () => {
+        expect(resolveIndexUiStatus({
+            ...idle, hydrating: true, goodEnough: true, searchableChunks: 0, inventoryFiles: 0,
+            indexing: true, job: { done: 0, total: 40 },
+        })).toBe('restoring');
+    });
+
+    it('empty-after-drop idle is None, not Indexing, until catch-up or hydrate starts', () => {
+        expect(resolveIndexUiStatus({
+            ...idle, searchableChunks: 0, inventoryFiles: 0,
+        })).toBe('none');
+    });
+
     it('startup cache warm after hydrate is Starting, not Indexing', () => {
         expect(resolveIndexUiStatus({ ...idle, booting: true })).toBe('starting');
     });
@@ -679,6 +693,27 @@ describe('resolveSidecarWait', () => {
         expect(resolveSidecarWait({ hydrated: 0, skippedPartialNotes: 0, waitingForProducer: true }, 400)).toBe(true);
         expect(resolveSidecarWait({ hydrated: 0, skippedPartialNotes: 0, incompleteFolder: true }, 16570)).toBe(true);
         expect(resolveSidecarWait({ hydrated: 0, skippedPartialNotes: 0, datalessShards: 2 }, 0)).toBe(true);
+    });
+});
+
+describe('sidecarHydrateHealedIndex', () => {
+    it('does not treat a consumer wait or incomplete folder as a successful heal', () => {
+        expect(sidecarHydrateHealedIndex({
+            hydrated: 0, acceptedProducers: 2, waitingForProducer: true,
+        })).toBe(false);
+        expect(sidecarHydrateHealedIndex({
+            hydrated: 0, acceptedProducers: 1, incompleteFolder: true,
+        })).toBe(false);
+        expect(sidecarHydrateHealedIndex({
+            hydrated: 0, acceptedProducers: 1, datalessShards: 3,
+        })).toBe(false);
+    });
+
+    it('counts a real hydrate or warm no-op accepted producer as healed', () => {
+        expect(sidecarHydrateHealedIndex({ hydrated: 12, acceptedProducers: 1 })).toBe(true);
+        expect(sidecarHydrateHealedIndex({ hydrated: 0, acceptedProducers: 1 })).toBe(true);
+        expect(sidecarHydrateHealedIndex({ hydrated: 0, acceptedProducers: 0 })).toBe(false);
+        expect(sidecarHydrateHealedIndex(null)).toBe(false);
     });
 });
 

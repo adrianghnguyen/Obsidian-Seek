@@ -31,6 +31,7 @@ export const CI_TEST_AREAS = {
         'src/index/db-upgrade.test.ts',
         'src/index/embed-pipeline.test.ts',
         'src/index/embed-auto-caps.test.ts',
+        'src/index/failed-drop-recovery.test.ts',
         'src/index/identity.test.ts',
         'src/index/index-coordinator.test.ts',
         'src/index/index-delta-view.test.ts',
@@ -60,6 +61,8 @@ export const CI_TEST_AREAS = {
         'src/ui/index-notice.test.ts',
         'src/ui/index-status-bar.test.ts',
         'src/ui/index-status-contract.test.ts',
+        'src/ui/index-status-races.test.ts',
+        'src/ui/index-status-degrade.test.ts',
         'src/ui/index-status-settings.test.ts',
     ],
     'search': [

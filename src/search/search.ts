@@ -322,6 +322,7 @@ export class SearchOrchestrator {
             indexableFiles: () => this.indexableFiles(),
             shouldIndex: (path) => this.shouldIndex(path),
             onGoodEnough: () => this.onGoodEnough?.(),
+            onIndexDropped: () => this.onIndexDropped?.(),
         });
         this.workflowCoordinator = new WorkflowCoordinator({
             app: this.app,
@@ -2481,6 +2482,11 @@ export class SearchOrchestrator {
     private onGoodEnough?: () => void;
     setGoodEnoughHandler(fn: () => void): void {
         this.onGoodEnough = fn;
+    }
+    /** Fired when rebuildFromSidecar actually empties IndexedDB. */
+    private onIndexDropped?: () => void;
+    setIndexDroppedHandler(fn: () => void): void {
+        this.onIndexDropped = fn;
     }
     private onCoherenceDrift(where: string): void {
         this.coherenceDriftCount++;

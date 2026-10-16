@@ -4,6 +4,9 @@
 // compete with that number.
 
 import { indexPercent } from './index-eta';
+import { INDEX_STATUS_COPY, type IndexStatusHealth, type IndexStatusMode } from './index-status-report';
+
+export type { IndexStatusHealth, IndexStatusMode };
 
 export interface IndexStatusCardStats {
     files: number;
@@ -13,7 +16,6 @@ export interface IndexStatusCardStats {
     lastUpdatedAt: string | null;
 }
 
-export type IndexStatusHealth = 'none' | 'starting' | 'restoring' | 'ok' | 'indexing' | 'error' | 'locked' | 'stuck';
 export type IndexJobKind = 'full' | 'delta' | 'catchup';
 
 export interface IndexStatusJob {
@@ -29,16 +31,16 @@ export interface IndexStatusJob {
 export const INDEX_ALIGNING_EXCLUSIONS_LABEL = 'Aligning with exclusions…';
 export const INDEX_ALIGNING_EXCLUSIONS_PASS = 'exclusion pass';
 
-export const INDEX_STATUS_HEALTH: Record<IndexStatusHealth, { tone: string; label: string; compact: string }> = {
-    none: { tone: 'mid', label: 'No index', compact: 'None' },
-    starting: { tone: 'pending', label: 'Starting up…', compact: 'Starting' },
-    restoring: { tone: 'info', label: 'Restoring…', compact: 'Restoring' },
-    ok: { tone: 'good', label: 'Up to date', compact: 'Ready' },
-    indexing: { tone: 'accent', label: 'Indexing…', compact: 'Indexing' },
-    error: { tone: 'bad', label: 'Index error', compact: 'Error' },
-    locked: { tone: 'bad', label: 'Index locked', compact: 'Locked' },
-    stuck: { tone: 'bad', label: 'Startup stuck', compact: 'Stuck' },
-};
+export const INDEX_STATUS_HEALTH = {
+    none: INDEX_STATUS_COPY.none,
+    starting: INDEX_STATUS_COPY.starting,
+    restoring: INDEX_STATUS_COPY.restoring,
+    ok: INDEX_STATUS_COPY.ok,
+    indexing: INDEX_STATUS_COPY.indexing,
+    error: INDEX_STATUS_COPY.error,
+    locked: INDEX_STATUS_COPY.locked,
+    stuck: INDEX_STATUS_COPY.stuck,
+} as const;
 
 /** Numbered status-bar badge. Replaces the old circular indexing dot. */
 export const INDEX_STATUS_BADGE_CLS = 'seek-index-badge';
@@ -70,9 +72,8 @@ export function indexWaitCardModel(input: {
     if (input.health === 'starting' || input.health === 'restoring' || input.health === 'locked' || input.health === 'stuck') {
         return { health: input.health, stats: null, job: null };
     }
-    const job = input.job && input.job.total > 0 ? input.job : null;
-    if (job) return { health: 'indexing', stats: input.stats ?? null, job };
-    return { health: input.health, stats: input.stats ?? null, job: null };
+    const job = input.job && input.job.total > 0 && input.health === 'indexing' ? input.job : null;
+    return { health: input.health, stats: input.stats ?? null, job };
 }
 
 /**
@@ -103,11 +104,13 @@ export function renderIndexStatusCard(
         stats: IndexStatusCardStats | null;
         job?: IndexStatusJob | null;
         eta?: string | null;
+        mode?: IndexStatusMode;
     },
 ): HTMLElement {
     const model = indexWaitCardModel(opts);
     const card = parent.createDiv({ cls: 'seek-status-card' });
-    const st = INDEX_STATUS_HEALTH[model.health];
+    const mode = opts.mode ?? (model.health as IndexStatusMode);
+    const st = INDEX_STATUS_COPY[mode] ?? INDEX_STATUS_HEALTH[model.health];
 
     const aligning = !!model.job?.aligningExclusions && model.health === 'indexing';
     const health = card.createDiv({ cls: 'seek-status-health' });

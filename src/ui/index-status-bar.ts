@@ -6,13 +6,13 @@ import { Platform, setTooltip } from 'obsidian';
 import {
     renderIndexStatusCard,
     renderIndexStatusBadge,
-    INDEX_STATUS_HEALTH,
     jobRemaining,
     type IndexStatusCardStats,
     type IndexStatusHealth,
     type IndexStatusJob,
     type IndexJobKind,
 } from './index-status-card';
+import type { IndexStatusReport } from './index-status-report';
 import { formatRoughEta, indexPercent } from './index-eta';
 
 export function parseIndexedProgress(msg: string): { files: number; chunks: number | null; tokens: number | null } | null {
@@ -80,7 +80,7 @@ export function extendIndexPassTotal(committed: number, passTotal: number, dirty
 
 export interface IndexStatusBarHooks {
     getStats: () => Promise<IndexStatusCardStats>;
-    getHealth: () => IndexStatusHealth;
+    getReport: () => IndexStatusReport;
     onOpenSettings: () => void;
     /** One-click recovery for a wedged startup (stuck/locked) — retries the index. */
     onRecover: () => void;
@@ -220,7 +220,7 @@ export class IndexStatusBar {
         this.hideHover();
     }
 
-    /** Repaint the idle chrome from getHealth() — e.g. after boot or catch-up. */
+    /** Repaint the idle chrome from getReport() — e.g. after boot or catch-up. */
     refreshIdle(): void {
         if (this.jobActive) {
             this.schedulePaintJob(true);
@@ -262,7 +262,12 @@ export class IndexStatusBar {
         const eta = formatRoughEta(this.done, this.total, elapsedMs);
         const files = `${this.done.toLocaleString()} / ${this.total.toLocaleString()} files · ${pct}%`;
         const tail = eta ? ` · ${eta} left` : '';
-        const verb = this.aligningExclusions ? 'Aligning with exclusions' : 'Indexing';
+        const report = this.hooks?.getReport();
+        const verb = this.aligningExclusions
+            ? 'Aligning with exclusions'
+            : (report?.mode === 'full-reindex' || report?.mode === 'indexing'
+                ? report.compact
+                : 'Indexing');
         return `Seek: ${verb} ${files}${tail}`;
     }
 
@@ -282,8 +287,9 @@ export class IndexStatusBar {
 
     private paintJob(force: boolean): void {
         if (!this.root) return;
-        const canonical = this.hooks?.getHealth();
-        if (canonical === 'starting' || canonical === 'restoring') {
+        const report = this.hooks?.getReport();
+        const canonical = report?.mode;
+        if (canonical === 'starting' || canonical === 'restoring' || canonical === 'locked' || canonical === 'stuck') {
             this.paintedDone = -1;
             this.paintedTotal = -1;
             this.paintedChunks = -1;
@@ -292,8 +298,8 @@ export class IndexStatusBar {
             this.filesEl?.setText('Seek');
             this.chunksEl?.addClass('is-hidden');
             this.progressEl?.addClass('is-hidden');
-            this.paintChrome(canonical, null);
-            this.setStatusLabel(`Seek: ${INDEX_STATUS_HEALTH[canonical].compact}`);
+            this.paintChrome(report!.health, null);
+            this.setStatusLabel(`Seek: ${report!.compact}`);
             return;
         }
         const pct = indexPercent(this.done, this.total);
@@ -322,9 +328,10 @@ export class IndexStatusBar {
         this.filesEl?.setText('Seek');
         this.chunksEl?.addClass('is-hidden');
         this.progressEl?.addClass('is-hidden');
-        const health = this.hooks?.getHealth() ?? 'ok';
+        const report = this.hooks?.getReport();
+        const health = report?.health ?? 'ok';
         this.paintChrome(health, null);
-        this.setStatusLabel(`Seek: ${INDEX_STATUS_HEALTH[health].compact}`);
+        this.setStatusLabel(`Seek: ${report?.compact ?? 'Ready'}`);
     }
 
     private paintChrome(health: IndexStatusHealth, remaining: number | null): void {
@@ -349,19 +356,17 @@ export class IndexStatusBar {
         const stats = await hooks.getStats();
         if (gen !== this.hoverGen) return;
         hover.empty();
-        let health = hooks.getHealth();
-        if (health === 'starting' || health === 'restoring' || health === 'locked' || health === 'stuck') {
-            /* keep canonical hydrate/lock/stuck labels even if a job is queued.
-               'stuck' must be excluded from the empty-store remap below, or a wedged
-               startup with no inventory would read as 'none' and hide the recovery. */
-        } else if (this.jobActive) health = 'indexing';
-        else if (health !== 'error' && health !== 'indexing' && stats.files === 0 && stats.chunks === 0) health = 'none';
+        const report = hooks.getReport();
         renderIndexStatusCard(hover, {
-            health,
+            health: report.health,
+            mode: report.mode,
             stats,
             job: this.job(),
-            eta: this.jobActive ? formatRoughEta(this.done, this.total, performance.now() - this.jobStartedAt) : null,
+            eta: this.jobActive && report.health === 'indexing'
+                ? formatRoughEta(this.done, this.total, performance.now() - this.jobStartedAt)
+                : null,
         });
+        const health = report.health;
         // One-click recovery lives on the hover card so a wedged startup is fixable
         // without opening Settings. Destructive rebuild stays in Settings; this is the
         // non-destructive Retry (same action as the command palette / Settings row).

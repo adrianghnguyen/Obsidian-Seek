@@ -18,6 +18,7 @@ import {
 import {
     renderIndexStatusCard,
     type IndexStatusHealth,
+    type IndexStatusMode,
     type IndexStatusCardStats,
     type IndexStatusJob,
     type IndexJobKind,
@@ -345,6 +346,7 @@ export function renderSettingsIndexStatusCard(
     parent: HTMLElement,
     opts: {
         health: IndexStatusHealth;
+        mode?: IndexStatusMode;
         stats: IndexStatusCardStats | null;
         job?: IndexStatusJob | null;
         startup?: StartupTimingView | null;
@@ -356,6 +358,7 @@ export function renderSettingsIndexStatusCard(
 ): HTMLElement {
     const card = renderIndexStatusCard(parent, {
         health: opts.health,
+        mode: opts.mode,
         stats: opts.stats,
         job: opts.job,
     });

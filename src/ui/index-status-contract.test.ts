@@ -22,6 +22,7 @@ import {
     type IndexLoadPhase,
     type IndexUiStatus,
 } from './index-notice';
+import { IndexStatusReporter } from './index-status-report';
 
 interface BootSnapshot {
     label: string;
@@ -80,6 +81,23 @@ function evaluateSnapshot(s: BootSnapshot) {
         uiHealth,
         inventoryChunks: s.inventoryChunks,
     });
+    const report = IndexStatusReporter.compute({
+        booting: !!s.booting,
+        bootDecisionPending: s.bootDecisionPending,
+        hydrating: !!s.hydrating,
+        goodEnough: s.goodEnough,
+        waitingForSidecar: false,
+        peerSyncPending: false,
+        health: 'healthy',
+        reason: null,
+        indexing: !!(s.catchUpRunning || s.flushing || s.indexing),
+        catchUpPending: s.catchUpPending,
+        job: s.job ? { done: s.job.done, total: s.job.total } : null,
+        searchableChunks: s.inventoryChunks,
+        inventoryFiles: s.inventoryFiles,
+        stuck: s.stuck,
+        jobKind: s.job?.kind ?? null,
+    });
     const footer = indexFooterStatus({
         kind: loadSpec.kind,
         modelReady: true,
@@ -90,6 +108,7 @@ function evaluateSnapshot(s: BootSnapshot) {
         waitingForSidecar: false,
         job: s.job ? { done: s.job.done, total: s.job.total } : null,
         uiHealth,
+        statusReport: report,
     });
     const cliGate = resolveCliSearchGate({
         warmPhase: s.warmPhase,
@@ -135,6 +154,23 @@ function evaluateSnapshotLocked(s: BootSnapshot) {
         uiHealth,
         inventoryChunks: s.inventoryChunks,
     });
+    const report = IndexStatusReporter.compute({
+        booting: !!s.booting,
+        bootDecisionPending: s.bootDecisionPending,
+        hydrating: !!s.hydrating,
+        goodEnough: s.goodEnough,
+        waitingForSidecar: false,
+        peerSyncPending: false,
+        health: 'healthy',
+        reason: null,
+        indexing: !!(s.catchUpRunning || s.flushing || s.indexing),
+        catchUpPending: s.catchUpPending,
+        job: s.job ? { done: s.job.done, total: s.job.total } : null,
+        searchableChunks: s.inventoryChunks,
+        inventoryFiles: s.inventoryFiles,
+        storeLocked: s.storeLocked,
+        jobKind: s.job?.kind ?? null,
+    });
     const footer = indexFooterStatus({
         kind: loadSpec.kind,
         modelReady: true,
@@ -145,6 +181,7 @@ function evaluateSnapshotLocked(s: BootSnapshot) {
         waitingForSidecar: false,
         job: s.job ? { done: s.job.done, total: s.job.total } : null,
         uiHealth,
+        statusReport: report,
     });
     const cliGate = resolveCliSearchGate({
         warmPhase: s.warmPhase,

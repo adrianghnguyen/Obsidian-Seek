@@ -96,6 +96,16 @@ describe('IndexCoordinator: isWriting (reconcile-poll defer signal)', () => {
         await expect(coord.runExclusive(async () => { throw new Error('boom'); })).rejects.toThrow('boom');
         expect(coord.isWriting()).toBe(false);
     });
+
+    it('a new coordinator after an abandoned lock is idle (process death / skipped onunload)', async () => {
+        const dying = new IndexCoordinator(null, settings(false));
+        void dying.runExclusive(() => new Promise(() => { /* never release — analogue of SIGKILL */ }));
+        await new Promise(r => setTimeout(r, 0));
+        expect(dying.isWriting()).toBe(true);
+        const reincarnated = new IndexCoordinator(null, settings(false));
+        expect(reincarnated.isWriting()).toBe(false);
+        await expect(reincarnated.runExclusive(async () => 'boot')).resolves.toBe('boot');
+    });
 });
 
 describe('IndexCoordinator: sidecar enablement + location', () => {

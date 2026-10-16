@@ -281,4 +281,22 @@ describe('Tier-2 scenario harness', () => {
         const { results } = await s.orch.search('kelp forest rewritten', 5);
         expect(results[0]?.note_path).toBe('a.md');
     });
+
+    it('a vault rewrite after commit is a new delta, not a stuck write job', async () => {
+        const s = await boot();
+        s.vault.write('note.md', 'original body about granite', 1000);
+        await s.coldStart();
+        expect(s.orch.isWriting()).toBe(false);
+
+        s.vault.write('note.md', 'edited body about basalt while the last pass is gone', 2000);
+        const delta = await s.orch.computeDelta();
+        expect(delta.dirty).toEqual(['note.md']);
+        expect(s.orch.isWriting()).toBe(false);
+
+        await s.orch.reindexDelta(delta.dirty, delta.deleted, { embed: true });
+        expect(s.orch.isWriting()).toBe(false);
+        expect((await s.orch.computeDelta()).dirty).toEqual([]);
+        const rec = (await s.store.listFileRecords()).find(r => r.note_path === 'note.md');
+        expect(rec?.contentHash).toBe(cyrb53Hex('edited body about basalt while the last pass is gone'));
+    });
 });
