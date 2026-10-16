@@ -1,0 +1,16 @@
+---
+description: Index, hydrate, boot, catch-up, jobs, and health changes must ship matching user-visible status in the same change
+alwaysApply: true
+---
+
+# UI status is a first-class implementation concern
+
+(Adrian, 2026-10-16.) Any change to **index / hydrate / boot / catch-up / jobs / health** must ship matching **user-visible status in the same change**. Do not treat status chrome as a follow-up PR.
+
+Ship all of these when the process is user-visible:
+
+- **Status bar**
+- **`IndexStatusReporter`** (Settings Index card **and** search-modal footer)
+- **Progress with known units** — files `done/total` or `%` — when the process has them
+
+Do **not** leave the user on a static label with no motion (`Starting up`, `Hydrating`, and similar) while work is running. If units exist, show them updating.

@@ -18,6 +18,8 @@ Project doc: `/cursor/stores/bc-a8a2e9ee-3f2b-4d31-ae8c-85b3734c071e/docs/cursor
 ### UI transparency gate
 Any feature, behavioral change, or settings addition that affects what the user sees or experiences must be reviewed against the plugin's own UI surfaces — Settings (especially the Relevance pipeline diagram and the Search stages explainer), the search modal footer, status bar, and keyboard hints. If the change introduces a new state, label, ranking stage, or visual cue that the plugin advertises, the corresponding UI surface in the plugin must be updated to explain or reflect it. This ensures Seek users always have a path to understand what the plugin is doing.
 
+Index / hydrate / boot / catch-up / jobs / health: matching status (status bar, `IndexStatusReporter`, progress units) ships in the **same** change — [`.cursor/rules/ui-status-first-class.mdc`](.cursor/rules/ui-status-first-class.mdc).
+
 ### Commands
 
 Seek is an **Obsidian plugin** (TypeScript, bundled with esbuild). There is no standalone server or web app — the plugin runs inside the Obsidian desktop/mobile app. Dependencies are managed with npm (`package-lock.json`); the startup update script already runs `npm ci`.
