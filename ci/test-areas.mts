@@ -13,6 +13,7 @@ export const CI_TEST_AREAS = {
     'index-store': [
         'src/app/boot-session.test.ts',
         'src/app/catchup-scheduling.test.ts',
+        'src/app/index-self-heal.test.ts',
         'src/app/indexing-stall-guard.test.ts',
         'src/app/full-reindex-guard.test.ts',
         'src/app/drift-recovery-coordinator.test.ts',
@@ -54,6 +55,7 @@ export const CI_TEST_AREAS = {
         'src/search/frame-incremental.test.ts',
         'src/search/offmutex-flush.test.ts',
         'src/search/persist-cache-startup.test.ts',
+        'src/sidecar/hydrate-catalog.test.ts',
         'src/sidecar/sidecar-coordinator.test.ts',
         'src/sidecar/sidecar-fleet.test.ts',
         'src/sidecar/sidecar-preflight.test.ts',

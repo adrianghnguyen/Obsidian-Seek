@@ -56,6 +56,8 @@ import {
     type ResolvedEntry,
 } from './sidecar';
 import { metaAccepts, readDeviceMeta, fullReindexEpoch, type MetaExpectation, type SidecarMeta } from './sidecar-meta';
+import { CatchUpHydrateCatalog, hydrateScanSignature } from './hydrate-catalog';
+import type { FileRecord } from '../index/index-store';
 
 // One live note re-chunked locally: the liveness oracle's unit.
 export interface ReChunkedNote {
@@ -116,8 +118,14 @@ export interface HydrateDeps {
     /** When true and reChunkSubset + listHydrateFiles are set, use tiered greedy hydrate. */
     greedyHydrate?: boolean;
     existingIds: () => Promise<Set<string>>; // chunk_ids already in IDB (skip — idempotent)
-    putQuantized: (chunks: Chunk[], tiers: { q: QuantVec; bin: Uint8Array }[]) => Promise<void>;
+    putQuantized: (
+        chunks: Chunk[],
+        tiers: { q: QuantVec; bin: Uint8Array }[],
+        fileRecords?: FileRecord | FileRecord[],
+    ) => Promise<void>;
     putFileRecord: (rec: { note_path: string; mtimeMs: number; chunk_ids: string[]; contentHash?: string }) => Promise<void>;
+    /** Optional session cache: skip re-parsing jsonl / re-listing IDB ids across catch-up bursts. */
+    catalog?: CatchUpHydrateCatalog;
     // Version-gate refusal. Carries the producer meta (null = missing/unreadable)
     // and this consumer's expectation so the consumer can log WHAT is stale
     // (e.g. "chunker v3≠v4") and throttle to once per device+reason — a chunker
@@ -354,9 +362,9 @@ async function hydrateCandidates(
     const batchSize = deps.batchSize ?? 500;
     let pendingChunks: Chunk[] = [];
     let pendingTiers: { q: QuantVec; bin: Uint8Array }[] = [];
-    const flush = async (): Promise<void> => {
-        if (pendingChunks.length === 0) return;
-        await deps.putQuantized(pendingChunks, pendingTiers);
+    const flush = async (records?: FileRecord[]): Promise<void> => {
+        if (pendingChunks.length === 0 && (!records || records.length === 0)) return;
+        await deps.putQuantized(pendingChunks, pendingTiers, records);
         pendingChunks = [];
         pendingTiers = [];
     };
@@ -391,8 +399,8 @@ async function hydrateCandidates(
             hydrated,
         });
     }
-    await flush();
-    for (const rec of fileRecords) await deps.putFileRecord(rec);
+    await flush(fileRecords);
+    deps.catalog?.noteHydrated(hydratedIds);
     const needed = candidates.reduce((n, c) => n + c.entries.length, 0);
     if (candidates.length > 0) {
         deps.onHydrateProgress?.({
@@ -622,7 +630,13 @@ export async function hydrateFromSidecar(deps: HydrateDeps): Promise<HydrateResu
     }
 
     // 2. Scan accepted producers → resolved id → location map.
-    const scan = await scanJsonl(adapter, accepted);
+    // Catch-up re-enters here per burst; reuse the jsonl map until shard sizes change.
+    const scan = deps.catalog
+        ? await deps.catalog.getScan(
+            await hydrateScanSignature(p => adapter.stat(p), accepted),
+            () => scanJsonl(adapter, accepted),
+        )
+        : await scanJsonl(adapter, accepted);
 
     // 3. Cheap pre-gate — skip the whole-vault re-chunk when the scan surfaced no
     //    sidecar id this device is missing. chunk_id is a content hash, so an id
@@ -639,7 +653,9 @@ export async function hydrateFromSidecar(deps: HydrateDeps): Promise<HydrateResu
     //    the candidate loop reuses it. NOTE: the empty-store eviction case never
     //    reaches here as a no-op — an empty IDB has nothing in `existing`, so every
     //    synced id is fresh and the full re-chunk runs (mandatory recovery).
-    const existing = await deps.existingIds();
+    const existing = deps.catalog
+        ? await deps.catalog.getExisting(() => deps.existingIds())
+        : await deps.existingIds();
     let hasFreshId = false;
     for (const id of scan.map.keys()) {
         if (!existing.has(id)) { hasFreshId = true; break; }

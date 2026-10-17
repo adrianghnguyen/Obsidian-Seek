@@ -10,6 +10,8 @@ import type { QuantVec } from '../embedding/quant';
 import { bulkAppend, shardPathFor, Q_BYTES, SIGN_BYTES, SIDECAR_FORMAT, type TierBytes } from './sidecar';
 import { writeDeviceMeta } from './sidecar-meta';
 import { hydrateFromSidecar, rankAcceptedProducers, probePeerAhead, type ReChunkedNote, type HydrateDeps } from './sidecar-sync';
+import { CatchUpHydrateCatalog } from './hydrate-catalog';
+import type { FileRecord } from '../index/index-store';
 
 // ---- in-memory adapter (same shape as sidecar.test.ts) ----
 
@@ -122,7 +124,11 @@ function makeDeps(a: FakeAdapter, live: NoteSpec[], overrides: Partial<HydrateDe
         expect: EXPECT,
         reChunk: async (): Promise<ReChunkedNote[]> => live.map(n => ({ notePath: n.path, mtimeMs: n.mtime, chunks: n.ids.map(id => chunk(id, n.path)) })),
         existingIds: async () => new Set(store.keys()),
-        putQuantized: async (chunks, t) => chunks.forEach((c, i) => store.set(c.chunk_id, t[i])),
+        putQuantized: async (chunks, t, recs) => {
+            chunks.forEach((c, i) => store.set(c.chunk_id, t[i]));
+            const list: FileRecord[] = recs == null ? [] : Array.isArray(recs) ? recs : [recs];
+            for (const rec of list) fileRecs.set(rec.note_path, rec);
+        },
         putFileRecord: async rec => {
             fileRecs.set(rec.note_path, rec);
         },
@@ -751,5 +757,18 @@ describe('probePeerAhead', () => {
         const walked = subsetPaths.flat();
         expect(walked).toContain('recent.md');
         expect(walked).not.toContain('ancient.md');
+    });
+
+    it('reuses a CatchUpHydrateCatalog scan across two hydrates of the same jsonl', async () => {
+        const a = new FakeAdapter();
+        const notes: NoteSpec[] = [{ path: 'a.md', mtime: 100, ids: ['a1', 'a2'] }];
+        await seedSidecar(a, 'desktop-aaa', notes);
+        const catalog = new CatchUpHydrateCatalog();
+        const { deps } = makeDeps(a, notes, { catalog });
+        await hydrateFromSidecar(deps);
+        const r = await hydrateFromSidecar(deps);
+        expect(catalog.scanLoadCount).toBe(1);
+        expect(catalog.existingLoadCount).toBe(1);
+        expect(r.hydrated).toBe(0);
     });
 });

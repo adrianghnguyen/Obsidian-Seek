@@ -81,6 +81,7 @@ import {
     type HydrateDeps,
     type HydrateProgressDetail,
 } from './sidecar-sync';
+import { CatchUpHydrateCatalog } from './hydrate-catalog';
 import { preflightSidecar, type SidecarPreflight } from './sidecar-preflight';
 import {
     resolveFleetRole,
@@ -163,6 +164,7 @@ export class SidecarCoordinator {
     private lastReconcileSig: string | null = null;
     private warnedRefusals = new Set<string>();
     private warnedStranded = false;
+    readonly hydrateCatalog = new CatchUpHydrateCatalog();
 
     constructor(deps: SidecarCoordinatorDeps) {
         this.app = deps.app;
@@ -376,7 +378,10 @@ export class SidecarCoordinator {
                 return fleet ? this.hydrateBlockedResult(fleet) : { ...EMPTY_HYDRATE };
             }
             return continueAfterStoreWipe({
-                wipe: () => this.store.clearAllStores(),
+                wipe: () => {
+                    this.hydrateCatalog.invalidate();
+                    return this.store.clearAllStores();
+                },
                 onDropped: () => this.onIndexDropped?.(),
                 hydrate: async () => {
                     const id = pluginIdentity();
@@ -869,10 +874,11 @@ export class SidecarCoordinator {
             indexDir: this.coord.dir!,
             expect: expectationFor(),
             reChunk,
-            existingIds: async () => new Set((await this.store.listAllMeta()).map(c => c.chunk_id)),
-            putQuantized: async (chunks, tiers) => {
-                await this.store.putBatchQuantized(chunks, tiers);
-                if (addsSink) pushDeltaAdds(addsSink, chunks, tiers);
+            catalog: this.hydrateCatalog,
+            existingIds: async () => new Set(await this.store.getAllChunkIds()),
+            putQuantized: async (chunks, tiers, recs) => {
+                await this.store.putBatchQuantized(chunks, tiers, recs);
+                if (addsSink && chunks.length > 0) pushDeltaAdds(addsSink, chunks, tiers);
             },
             putFileRecord: rec => this.store.putFileRecord(rec),
             onRefusedProducer: (dev, meta, expect) => this.warnRefusedProducer(dev, meta, expect),
