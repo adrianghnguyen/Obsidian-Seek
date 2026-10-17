@@ -18,6 +18,14 @@ Project doc: `/cursor/stores/bc-a8a2e9ee-3f2b-4d31-ae8c-85b3734c071e/docs/cursor
 ### UI transparency gate
 Any feature, behavioral change, or settings addition that affects what the user sees or experiences must be reviewed against the plugin's own UI surfaces — Settings (especially the Relevance pipeline diagram and the Search stages explainer), the search modal footer, status bar, and keyboard hints. If the change introduces a new state, label, ranking stage, or visual cue that the plugin advertises, the corresponding UI surface in the plugin must be updated to explain or reflect it. This ensures Seek users always have a path to understand what the plugin is doing.
 
+### UI single source of truth (producer / consumers)
+Every visible number, mode, or progress string has **one producer** and **N consumers**. The producer owns the snapshot (or the live stream that updates it). Status bar, Settings Index, search-modal footer, folder-coverage tree, and any other chrome **read that snapshot** — they must not each compute files / chunks / tokens / percent / ETA from a different job, inventory, last-pass, GPU, or sidecar counter.
+
+- **Index status producer today:** `IndexStatusReporter.compute` → `getIndexStatusReport()`. Bar, Settings Index card, and modal footer already consume that report for health/mode labels. Folder coverage, embed-pass tokens, and live full-reindex counts must join the same snapshot (or an input the reporter already owns), not a parallel tally.
+- **New surface or new field:** add it to the producer first, then bind consumers. Do not special-case one widget.
+- **Desync is a bug:** if coverage-by-folder disagrees with the status bar or Settings Index, the consumers diverged — fix by deleting the extra source, not by copying numbers around.
+- **Resume after unload:** the producer’s durable job state is what boot restores; UI must not invent a second “looks idle / looks stuck” path.
+
 ### Commands
 
 Seek is an **Obsidian plugin** (TypeScript, bundled with esbuild). There is no standalone server or web app — the plugin runs inside the Obsidian desktop/mobile app. Dependencies are managed with npm (`package-lock.json`); the startup update script already runs `npm ci`.
