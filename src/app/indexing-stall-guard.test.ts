@@ -53,4 +53,18 @@ describe('indexing-stall-guard', () => {
         expect(stallTimeoutMs({ ...idle, jobKind: 'catchup' })).toBe(INDEXING_STALL_TIMEOUT_MS);
         expect(stallTimeoutMs(idle)).toBe(INDEXING_STALL_TIMEOUT_MS);
     });
+
+    it('treats a large catch-up like a full pass for stall timeout', () => {
+        expect(stallTimeoutMs({ ...idle, jobKind: 'catchup', jobTotal: 3853 })).toBe(FULL_REINDEX_STALL_TIMEOUT_MS);
+    });
+
+    it('progress key changes when committed inventory moves with job.done frozen', () => {
+        const a = indexingProgressKey({
+            ...idle, catchUpRunning: true, jobDone: 30, jobTotal: 3730, inventoryFiles: 123,
+        });
+        const b = indexingProgressKey({
+            ...idle, catchUpRunning: true, jobDone: 30, jobTotal: 3730, inventoryFiles: 200,
+        });
+        expect(a).not.toBe(b);
+    });
 });

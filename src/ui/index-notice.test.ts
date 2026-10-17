@@ -596,9 +596,9 @@ describe('resolveIndexUiStatus', () => {
         })).toBe('locked');
     });
 
-    it('indexing stall copy points at Recover retry before rebuild', () => {
+    it('indexing stall copy points at Recover Resume indexing before rebuild', () => {
         expect(INDEX_RECOVERY_STALL_DESC).toContain('Indexing stopped making progress');
-        expect(INDEX_RECOVERY_STALL_DESC).toContain('Retry');
+        expect(INDEX_RECOVERY_STALL_DESC).toContain('Resume indexing');
     });
 
     it('stuck outranks a leftover indexing job so Recover is shown', () => {

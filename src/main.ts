@@ -38,6 +38,7 @@
 import { Notice, Plugin, TFile } from 'obsidian';
 import type { App } from 'obsidian';
 import { ConfirmModal } from './app/confirm-modal';
+import { executeFullReindexCleanSlate } from './app/full-reindex-clean-slate';
 import { LocalEmbedder, LOCAL_MODEL, LEGACY_ENGLISH_MODEL_ID } from './embedding/embedder';
 import type { WorkerProbeResult, WorkerEmbedTestResult } from './embedding/iframe-runner';
 import { activeModelSpec, bindLiveModel, currentModelSpec, resolveOverrideSpec, evictStaleModelCaches, deleteModelCaches, probeModelDownloaded } from './embedding/model-registry';
@@ -50,6 +51,13 @@ import {
     stallTimeoutMs,
     type IndexingStallSnapshot,
 } from './app/indexing-stall-guard';
+import {
+    coverageGap,
+    hydrateProgressAgainstVault,
+    shouldResumeIndexing,
+    staleCompleteHydrateWalk,
+    vaultCoverageIncomplete,
+} from './app/index-self-heal';
 import {
     createStoreOpenRetryScheduler,
     isRetryIndexStoreCommandEnabled,
@@ -332,6 +340,8 @@ export default class SeekPlugin extends Plugin {
     // full reindex (cold build + a manual kick) can otherwise pass the guard,
     // steal the status-bar job, and queue a wipe behind the pass that is running.
     private fullReindexInFlight = false;
+    private fullReindexGen = 0;
+    private fullReindexRun: Promise<boolean> | null = null;
     private persistCacheRestoredThisBoot = false; // restorePersistedCachesBeforeReconcile once
     /** Live catch-up pass shown on the status bar — survives burst pauses and self-chains. */
     private catchUpJob: { id: number; passTotal: number; committed: number; chunksCommitted: number; tokensCommitted: number } | null = null;
@@ -526,12 +536,13 @@ export default class SeekPlugin extends Plugin {
     }
 
     private resolveHydrateProgress(): { done: number; total: number } | null {
+        const notes = Math.max(this.lastIndexableNotes, this.indexableNoteCount());
         if (this.sidecarHydrateProgress && this.sidecarHydrateProgress.total > 0) {
-            return this.sidecarHydrateProgress;
+            return hydrateProgressAgainstVault(this.sidecarHydrateProgress, notes);
         }
         if (!(this.waitingForSidecar || this.sidecarHydrating || this.indexDropRecovering)) return null;
         const done = this.indexInventoryFiles ?? 0;
-        const total = Math.max(done, this.lastIndexableNotes);
+        const total = Math.max(done, notes);
         if (total <= 0) return null;
         return { done, total };
     }
@@ -561,6 +572,7 @@ export default class SeekPlugin extends Plugin {
             speed: this.indexProgress.jobSpeedView(),
             inventoryFiles: this.indexInventoryFiles,
             inventoryChunks: this.indexInventoryChunks,
+            indexableNotes: Math.max(this.lastIndexableNotes, this.indexableNoteCount()),
             coverage: coverage ?? this.indexCoverageOverlay,
         });
     }
@@ -631,6 +643,8 @@ export default class SeekPlugin extends Plugin {
             jobTotal: job?.total ?? null,
             jobChunks: speed?.chunksDone ?? null,
             jobKind: job?.kind ?? speed?.kind ?? null,
+            inventoryFiles: this.indexInventoryFiles,
+            inventoryChunks: this.indexInventoryChunks,
         };
     }
 
@@ -702,7 +716,11 @@ export default class SeekPlugin extends Plugin {
         this.orchestrator.setIndexDroppedHandler(() => this.noteIndexDropped());
     }
 
-    private abortInflightSessionWork(reason: string): void {
+    private abortInflightSessionWork(reason: string, opts?: {
+        keepFullReindexLatch?: boolean;
+        /** Tear down embedder + IDB connection so deleteDatabase is not self-blocked. */
+        releaseIndexHold?: boolean;
+    }): void {
         const hungWriter = this.orchestrator?.isWriting() ?? false;
         this.loadGeneration++;
         this.catchUpRunning = false;
@@ -711,10 +729,16 @@ export default class SeekPlugin extends Plugin {
         this.sidecarHydrateGen = -1;
         this.sidecarHydrating = false;
         this.sidecarHydrateProgress = null;
+        this.bootContinuationDone = false;
+        if (!opts?.keepFullReindexLatch) this.fullReindexInFlight = false;
         this.driftRecoveryRunning = false;
         if (this.catchUpJob != null) this.finishCatchUpJob();
         this.taskCtx.closeOpen(['catchup', 'indexing']);
-        if (hungWriter) {
+        if (opts?.releaseIndexHold) {
+            try { this.orchestrator?.dispose(); } catch { /* already torn down */ }
+            try { this.releaseEmbedder(); } catch { /* already torn down */ }
+            try { this.store.close(); } catch { /* already closed */ }
+        } else if (hungWriter) {
             this.attachOrchestrator(this.resolveSidecarIndexDir());
         }
         this.syncWarmDeferred();
@@ -742,7 +766,9 @@ export default class SeekPlugin extends Plugin {
                 jobDone: snap.jobDone,
                 jobTotal: snap.jobTotal,
             }).catch(() => {});
-            this.abortInflightSessionWork('stall-guard');
+            this.abortInflightSessionWork('stall-guard', { releaseIndexHold: true });
+            if (!this.store.isOpen()) await this.store.open().catch(() => {});
+            this.attachOrchestrator(this.resolveSidecarIndexDir());
             if (!this.store.isOpen()) {
                 await this.retryIndexStoreOpen();
                 return;
@@ -752,7 +778,12 @@ export default class SeekPlugin extends Plugin {
                 this.publishInventory(c.files, c.chunks, true);
                 this.indexStoreWedged = false;
                 this.storeWedgedLogged = false;
-                this.markIndexingStalled();
+                if (vaultCoverageIncomplete(this.indexInventoryFiles, this.indexableNoteCount())) {
+                    this.clearIndexingStalled();
+                    this.maybeResumeIncompleteCoverage();
+                } else {
+                    this.markIndexingStalled();
+                }
             } catch (e) {
                 if (isStoreOpTimeout(e)) {
                     this.markStoreWedged('indexing-stall');
@@ -762,7 +793,9 @@ export default class SeekPlugin extends Plugin {
                 }
             }
             if (this.orchestrator?.isWriting()) {
-                this.abortInflightSessionWork('stall-guard-post-count');
+                this.abortInflightSessionWork('stall-guard-post-count', { releaseIndexHold: true });
+                if (!this.store.isOpen()) await this.store.open().catch(() => {});
+                this.attachOrchestrator(this.resolveSidecarIndexDir());
             }
         } finally {
             this.indexingStallHandling = false;
@@ -1422,6 +1455,20 @@ export default class SeekPlugin extends Plugin {
             // Healthy outcomes never leave booting=true; treat them as resolved even if
             // the explicit resolve call raced the timer.
             if (this.indexGoodEnough || this.indexStoreLocked || !this.indexBootPending) return;
+            if ((this.indexInventoryChunks ?? 0) > 0 || (this.indexInventoryFiles ?? 0) > 0) {
+                const notes = this.indexableNoteCount();
+                if (
+                    vaultCoverageIncomplete(this.indexInventoryFiles, notes)
+                    && this.sidecarHydrating
+                    && staleCompleteHydrateWalk(this.sidecarHydrateProgress, notes)
+                ) {
+                    this.abortInflightSessionWork('boot-watchdog-stale-hydrate');
+                    this.waitingForSidecar = false;
+                    this.peerSyncPending = false;
+                }
+                this.markIndexGoodEnough();
+                return;
+            }
             this.indexBootStuck = true;
             // Carry the reason to the banner surface (indexBannerSpec) without
             // clobbering a real version/drift/peer-ahead reason that may already stand.
@@ -1681,10 +1728,24 @@ export default class SeekPlugin extends Plugin {
      * palette exposes when startup is stuck or the store is locked.
      */
     async recoverIndexFromSettings(): Promise<void> {
-        this.abortInflightSessionWork('user-recover');
+        this.abortInflightSessionWork('user-recover', { releaseIndexHold: true });
+        const prior = this.fullReindexRun;
+        if (prior) await prior.catch(() => false);
         this.clearIndexingStalled();
+        if (!this.store.isOpen()) await this.store.open().catch(() => {});
+        this.attachOrchestrator(this.resolveSidecarIndexDir());
         await this.retryIndexStoreOpen();
+        this.maybeResumeIncompleteCoverage();
         if (this.catchUpPending) this.scheduleStartupCatchUp();
+        new Notice('Seek: resumed indexing.', 4000);
+    }
+
+    /**
+     * Settings recovery: abort in-flight work and release the index hold in-plugin
+     * (no plugin disable/enable, no Obsidian quit).
+     */
+    async reloadSeekFromSettings(): Promise<void> {
+        await this.recoverIndexFromSettings();
     }
 
     /**
@@ -2678,7 +2739,7 @@ export default class SeekPlugin extends Plugin {
         const fleet = await this.orchestrator.inspectSidecarFleet();
         if (!fleet) return;
         this.noteSidecarFleetFlags(fleet);
-        this.lastIndexableNotes = fleet.indexableNotes;
+        this.lastIndexableNotes = Math.max(fleet.indexableNotes, this.indexableNoteCount());
         if (fleet.waitingForProducer) {
             const total = Math.max(fleet.localFileCount, fleet.indexableNotes);
             if (total > 0) this.sidecarHydrateProgress = { done: fleet.localFileCount, total };
@@ -2794,7 +2855,20 @@ export default class SeekPlugin extends Plugin {
         void this.touchIndexInventory();
         this.refreshIndexStatusBar();
         this.syncWarmDeferred();
+        this.maybeResumeIncompleteCoverage();
         void this.runStartupWarm();
+    }
+
+    /** After an aborted pass, keep indexing until FileRecords match the vault. */
+    private maybeResumeIncompleteCoverage(): void {
+        if (!shouldResumeIndexing({
+            indexableNotes: this.indexableNoteCount(),
+            indexedFiles: this.indexInventoryFiles,
+            indexing: this.catchUpRunning || this.isIndexing || this.fullReindexInFlight,
+            hydrating: this.sidecarHydrating,
+            waitingForProducer: this.waitingForSidecar,
+        })) return;
+        this.scheduleIndexBuild('catchup');
     }
 
     private async runStartupWarm(trigger: 'startup-good-enough' | 'post-catchup' = 'startup-good-enough'): Promise<void> {
@@ -2945,13 +3019,12 @@ export default class SeekPlugin extends Plugin {
             }
             this.popTaskContext('hydrating');
             this.sidecarHydrating = this.sidecarHydrateDepth > 0;
-            if (this.sidecarHydrateDepth === 0 && !this.waitingForSidecar) {
+            if (this.sidecarHydrateDepth === 0) {
                 this.sidecarHydrateProgress = null;
+                void this.maybeCompleteConsumerHydrateBoot();
+                this.applyPostBootIndexScheduling();
             }
             this.refreshIndexStatusBar();
-            if (this.sidecarHydrateDepth === 0) {
-                void this.maybeCompleteConsumerHydrateBoot();
-            }
             }
         }
     }
@@ -3033,8 +3106,12 @@ export default class SeekPlugin extends Plugin {
     }
 
     private indexableNoteCount(): number {
-        const md = this.app.vault.getMarkdownFiles();
-        const extra = this.settings.indexBases ? this.app.vault.getFiles().filter(f => f.extension === 'base') : [];
+        const vault = this.app?.vault as { getMarkdownFiles?: () => { path: string }[]; getFiles?: () => { path: string; extension: string }[] } | undefined;
+        if (!vault || typeof vault.getMarkdownFiles !== 'function') return this.lastIndexableNotes;
+        const md = vault.getMarkdownFiles() ?? [];
+        const extra = this.settings.indexBases && typeof vault.getFiles === 'function'
+            ? vault.getFiles().filter(f => f.extension === 'base')
+            : [];
         const all = extra.length === 0 ? md : [...md, ...extra];
         return all.filter(f => shouldIndexPath(this.app, this.settings, f.path)).length;
     }
@@ -3189,6 +3266,7 @@ export default class SeekPlugin extends Plugin {
         // loop behind the 2026-06-28 mobile bog-down: v7 phone grinding against a v8 sidecar.)
         if (isMobilePlatform() && this.orchestrator.peerAhead) return;
         this.catchUpRunning = true;
+        this.indexProgress.resumeElapsed();
         this.syncWarmDeferred();
         this.bumpIndexingProgressHeartbeat();
         const orchestrator = this.orchestrator;
@@ -3198,6 +3276,7 @@ export default class SeekPlugin extends Plugin {
         void (async () => {
             if (!this.isSessionWorkCurrent(workGen)) return;
             this.pushTaskContext('catchup');
+            let committedAtStart = 0;
             try {
                 if (!this.persistCacheRestoredThisBoot && (this.indexInventoryChunks ?? 0) > 0) {
                     this.persistCacheRestoredThisBoot = true;
@@ -3218,6 +3297,7 @@ export default class SeekPlugin extends Plugin {
                 const burst = catchUpBurstLimits({
                     mobile,
                     burstMaxFiles: this.settings.catchUpBurstMaxFiles,
+                    remainingFiles: coverageGap(this.indexInventoryFiles, this.indexableNoteCount()),
                 });
                 // Desktop catch-up is allowed to drain while the window is hidden;
                 // only mobile pauses for backgrounding (the WebContent/jetsam path).
@@ -3226,6 +3306,7 @@ export default class SeekPlugin extends Plugin {
                 // Drain first — never block on warm/restore (G_catchup_ux). Search
                 // serves stale frame / persisted BM25 during bursts; warm runs after
                 // idle or on the search hot path.
+                committedAtStart = this.catchUpJob?.committed ?? 0;
                 const { pending } = await drainCatchUp({
                     computeDelta: async () => {
                         const d = await orchestrator.computeDelta();
@@ -3295,7 +3376,18 @@ export default class SeekPlugin extends Plugin {
                 this.catchUpRunning = false;
                 this.syncWarmDeferred();
                 if (!this.catchUpPending) this.finishCatchUpJob();
-                else this.indexProgress.refreshIdle();
+                else {
+                    this.indexProgress.pauseElapsed();
+                    this.indexProgress.refreshIdle();
+                    const progressed = (this.catchUpJob?.committed ?? 0) > committedAtStart;
+                    if (progressed) {
+                        this.scheduleStartupCatchUp();
+                    } else if (vaultCoverageIncomplete(this.indexInventoryFiles, this.indexableNoteCount())) {
+                        window.setTimeout(() => {
+                            if (!this.unloading) this.scheduleStartupCatchUp();
+                        }, 15_000);
+                    }
+                }
                 void this.touchIndexInventory();
                 if (!this.catchUpPending) {
                     // The drain reached an empty delta — any exclusion change it was
@@ -3303,10 +3395,6 @@ export default class SeekPlugin extends Plugin {
                     this.clearExclusionChange();
                     void this.runStartupWarm('post-catchup');
                 }
-                // drainCatchUp self-chains every progressing burst. A pending return
-                // means it hit a stop/no-progress condition and must wait for an
-                // external trigger (visibility, search completion, file activity, or
-                // the periodic reconcile) rather than immediately retrying forever.
             }
         })();
     }
@@ -3315,6 +3403,16 @@ export default class SeekPlugin extends Plugin {
     // embeds without opening Search. Mobile stays lazy (jetsam / heap).
     private applyPostBootIndexScheduling(): void {
         if (this.unloading) return;
+        const notes = this.indexableNoteCount();
+        if (
+            (this.waitingForSidecar || this.sidecarHydrating)
+            && vaultCoverageIncomplete(this.indexInventoryFiles, notes)
+            && staleCompleteHydrateWalk(this.sidecarHydrateProgress, notes)
+        ) {
+            this.abortInflightSessionWork('stale-hydrate');
+            this.waitingForSidecar = false;
+            this.peerSyncPending = false;
+        }
         if (this.waitingForSidecar || this.sidecarHydrating) {
             if (this.indexBootDecisionPending) {
                 this.indexBootDecisionPending = false;
@@ -3337,6 +3435,8 @@ export default class SeekPlugin extends Plugin {
             catchUpPending: this.catchUpPending,
         }) && this.catchUpPending) {
             this.scheduleIndexBuild('catchup');
+        } else {
+            this.maybeResumeIncompleteCoverage();
         }
         if (this.indexBootDecisionPending) {
             this.indexBootDecisionPending = false;
@@ -3541,34 +3641,60 @@ export default class SeekPlugin extends Plugin {
     // ladder it is allowed to embed — the embed-free guarantee covers only the auto path.
     // opts.skipConfirm: the caller already confirmed (the settings Index section has its
     // own inline two-button confirm, so it suppresses the blocking confirm dialog).
+    // opts.takeover: abort an in-flight full reindex and release the IDB/GPU hold
+    // in-plugin (no plugin reload / Obsidian quit). Default true after a confirm
+    // dialog; false for skipConfirm callers (cold build) unless they pass true.
     // opts.onProgress: a second progress sink (besides the Notice) — the settings status
     // card subscribes to drive its live "N / TOTAL notes" bar. Arg-less callers (command
     // palette main.ts:496, degraded-health button) keep the confirm + Notice unchanged.
-    // Returns whether a reindex actually RAN — false when refused (a build is already
-    // running) or declined at the confirm, or if it threw. The identity heal uses this
-    // to avoid falsely clearing its "needs heal" latch when its reindex didn't happen.
-    async runFullReindex(opts?: { skipConfirm?: boolean; onProgress?: (msg: string) => void }): Promise<boolean> {
-        // Refuse to STACK a reindex on a running one. The write mutex would otherwise
-        // queue a second reindex behind the first (it nukes + re-embeds the whole
-        // vault again the moment the first releases) — pure waste, and on a large
-        // vault the second's nuke is exactly the deleteDatabase that fired versionchange
-        // at an in-flight pass. The identity heal also routes through here, so this
-        // doubles as a guard against a heal stacking on a manual reindex (Fix B).
-        // isWriting() stays false while the model is loading, so fullReindexInFlight
-        // covers that gap; the mutex still covers a writer that has already acquired it.
-        if (this.fullReindexInFlight || this.orchestrator.isWriting()) {
+    // Returns whether a reindex actually RAN — false when refused (cold build while a
+    // user pass is running), declined at the confirm, superseded, or if it threw.
+    async runFullReindex(opts?: { skipConfirm?: boolean; takeover?: boolean; onProgress?: (msg: string) => void }): Promise<boolean> {
+        const takeover = opts?.takeover === true || (opts?.takeover !== false && !opts?.skipConfirm);
+        const didTakeover = this.fullReindexInFlight && takeover;
+        if (this.fullReindexInFlight && !takeover) {
             new Notice('Seek: a reindex is already running.', 4000);
             return false;
         }
-        // Latch before any await (fleet inspect, confirm, model load) so a second
-        // caller cannot start a wipe in that gap. Model load is not isWriting(),
-        // and the mutex is acquired only inside reindexAll.
+        this.fullReindexGen++;
+        const gen = this.fullReindexGen;
+        if (didTakeover) {
+            this.abortInflightSessionWork('full-reindex-takeover', {
+                keepFullReindexLatch: true,
+                releaseIndexHold: true,
+            });
+            const prior = this.fullReindexRun;
+            if (prior) {
+                await Promise.race([
+                    prior.then(() => undefined, () => undefined),
+                    new Promise<void>(resolve => window.setTimeout(resolve, 5000)),
+                ]);
+            }
+            if (gen !== this.fullReindexGen) return false;
+            if (!this.store.isOpen()) await this.store.open().catch(() => {});
+            this.attachOrchestrator(this.resolveSidecarIndexDir());
+        }
         this.fullReindexInFlight = true;
+        const run = this.executeFullReindexBody(gen, opts);
+        this.fullReindexRun = run;
+        try {
+            return await run;
+        } finally {
+            if (this.fullReindexRun === run) this.fullReindexRun = null;
+        }
+    }
+
+    private async executeFullReindexBody(
+        gen: number,
+        opts?: { skipConfirm?: boolean; onProgress?: (msg: string) => void },
+    ): Promise<boolean> {
+        const stillCurrent = (): boolean => gen === this.fullReindexGen && !this.unloading;
         let jobId: number | null = null;
         let wipeStarted = false;
         let succeeded = false;
         try {
             const fleet = await this.orchestrator.inspectSidecarFleet();
+            if (!stillCurrent()) return false;
             this.noteSidecarFleetFlags(fleet);
             if (fleet && !fleet.mayFullReindex) {
                 this.waitingForSidecar = fleet.waitingForProducer || this.waitingForSidecar;
@@ -3578,26 +3704,58 @@ export default class SeekPlugin extends Plugin {
                 return false;
             }
             if (!opts?.skipConfirm) {
-                const message = 'This will delete the existing Seek index and re-embed every markdown file in this vault.\nProceed?';
+                const message = 'This stops any current indexing, deletes the Seek index, and re-embeds every markdown file in this vault.\nProceed?';
                 if (!(await new ConfirmModal(this.app, message).openAndConfirm())) return false;
-                // Confirm awaits the user, so another writer could have taken the mutex.
-                if (this.orchestrator.isWriting()) {
-                    new Notice('Seek: a reindex is already running.', 4000);
-                    return false;
-                }
+                if (!stillCurrent()) return false;
             }
+
+            if (
+                this.orchestrator.isWriting()
+                || this.catchUpRunning
+                || this.sidecarHydrating
+                || this.catchUpPending
+            ) {
+                this.abortInflightSessionWork('full-reindex-takeover', {
+                    keepFullReindexLatch: true,
+                    releaseIndexHold: true,
+                });
+            }
+            this.schedulers.clearDeferredIndexingWork();
+            this.catchUpPending = false;
+            this.clearIndexDelta();
+            this.persistCacheRestoredThisBoot = false;
+            this.clearIndexingStalled();
+            this.bumpIndexingProgressHeartbeat();
 
             jobId = this.beginIndexJob('full', this.indexableNoteCount(), 'Seek: indexing…');
             this.pushTaskContext('indexing');
             this.noteIndexDropped();
             wipeStarted = true;
+
+            const cleanSlate = await executeFullReindexCleanSlate({
+                store: this.store,
+                adapter: this.app.vault.adapter,
+                sidecarIndexDir: this.resolveSidecarIndexDir(),
+                deviceId: this.logger.deviceId,
+                sidecarEnabled: this.settings.sidecarEnabled,
+                logger: this.logger,
+                releaseEmbedder: () => this.releaseEmbedder(),
+                disposeOrchestrator: () => { this.orchestrator?.dispose(); },
+            });
+            if (!stillCurrent()) return false;
+            if (!this.store.isOpen()) {
+                await this.store.open().catch(() => {});
+            }
+            this.attachOrchestrator(this.resolveSidecarIndexDir());
             await this.ensureModelLoaded();
+            if (!stillCurrent()) return false;
             this.orchestrator.invalidateBm25Cache();
             const result = await this.orchestrator.reindexAll((msg) => {
                 opts?.onProgress?.(msg);
                 this.indexProgress.updateFromProgress(msg, jobId!);
                 this.notifyIndexActivityChanged();
-            });
+            }, { storeAlreadyReset: cleanSlate.idbNuked || cleanSlate.idbFallbackClear });
+            if (!stillCurrent()) return false;
             const summary = [
                 result.pass ? '✅' : '❌',
                 `${result.filesIndexed} files`,
@@ -3607,36 +3765,28 @@ export default class SeekPlugin extends Plugin {
             ].join(' · ');
             new Notice(`Seek reindex: ${summary}`, 10000);
 
-            // Post-reindex storage snapshot — answers "how much disk does the index
-            // actually consume?" without waiting for the next platform probe (reload).
             await this.emitStorageSnapshot('post-reindex');
-            // A full reindex re-couples the index from scratch (it is the terminal
-            // recovery): clear any lingering degraded health so the settings affordance,
-            // the version banner, and the suppression baseline all reset.
             this.indexHealth = 'healthy';
             this.degradedReason = null;
             this.peerSyncPending = false;
-            // Re-arm version reporting: this build just stamped its identity, so a FUTURE
-            // ship should toast/banner again. (Without this, identityHealNotified could
-            // stay latched until the next poll's identityMatches clears it.)
             this.identityHealNotified = false;
             this.indexDropRecovering = false;
             succeeded = true;
         } catch (e) {
+            if (!stillCurrent()) return false;
             await this.store.open().catch(() => {});
             await this.logger.appendError('seek-full-reindex', e);
-            // One end-toast whether it passed or failed (the recap). Detail → console + log.
             new Notice('Seek reindex: ❌ failed — see the logging report (Settings → Seek).', 10000);
         } finally {
-            this.fullReindexInFlight = false;
-            if (jobId != null) {
+            if (gen === this.fullReindexGen) this.fullReindexInFlight = false;
+            if (jobId != null && gen === this.fullReindexGen) {
                 this.popTaskContext('indexing');
                 this.indexProgress.hide(jobId);
                 this.clearIndexDelta();
                 void this.touchIndexInventory();
             }
         }
-        if (!succeeded && wipeStarted && !this.unloading) {
+        if (!succeeded && wipeStarted && stillCurrent()) {
             await this.recoverAfterFailedDrop('full-reindex', { allowColdBuild: false });
         }
         return succeeded;

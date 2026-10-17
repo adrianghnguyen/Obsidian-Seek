@@ -527,7 +527,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
 
         new Setting(adv)
             .setName('Prepared embed batches')
-            .setDesc(`How many embedding batches can wait on disk writes while the GPU starts the next one. Higher keeps the GPU busy; too high uses more memory. Manual override when auto-tune is off.`)
+            .setDesc(`How many embedding batches can wait on disk writes while the GPU starts the next one. Full reindex also tokenizes the next GPU batch inside the iframe while the current forward runs, starts the next kernel before pooling (pooling waits a macrotask so WebGPU readback does not stall the encoder), and keeps three embed-batches in flight so the encoder is not idle. Higher keeps the GPU busy; too high uses more memory. Manual override when auto-tune is off.`)
             .addSlider(slider => slider
                 .setLimits(EMBED_IN_FLIGHT_MIN, EMBED_IN_FLIGHT_MAX, 1)
                 .setValue(this.s.embedInFlightAuto
@@ -1152,8 +1152,9 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
      * Recovery affordance for a wedged startup: shown ONLY when the canonical health is
      * 'stuck' (boot watchdog fired) or 'locked' (IDB refused to open). Puts the recovery
      * action next to the state that needs it, instead of relying on the command palette.
-     *   - Retry    → re-attempt the store open / resume boot (non-destructive).
-     *   - Rebuild  → two-step confirm, then nuke + full reindex (re-embeds everything).
+     *   - Resume indexing → abort in-flight work and release the index hold in-plugin.
+     *   - Retry           → re-open the store when locked (non-destructive).
+     *   - Rebuild         → two-step confirm, then nuke + full reindex (re-embeds everything).
      */
     private renderRecoveryRow(containerEl: HTMLElement): void {
         const health = this.statusState();
@@ -1179,17 +1180,18 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                 }));
             return;
         }
-        new Setting(containerEl)
+        const row = new Setting(containerEl)
             .setName(INDEX_RECOVERY_NAME)
             .setDesc(health === 'locked'
                 ? INDEX_RECOVERY_LOCKED_DESC
-                : (this.plugin.isIndexingStalled ? INDEX_RECOVERY_STALL_DESC : INDEX_RECOVERY_STUCK_DESC))
-            .addButton(b => b
-                .setButtonText(this.recoveryBusy ? 'Rebuilding…' : 'Rebuild index')
-                .setWarning()
-                .setDisabled(this.recoveryBusy)
-                .onClick(() => { this.recoveryRebuildConfirm = true; this.rerender(); }))
-            .addButton(b => b
+                : (this.plugin.isIndexingStalled ? INDEX_RECOVERY_STALL_DESC : INDEX_RECOVERY_STUCK_DESC));
+        row.addButton(b => b
+            .setButtonText(this.recoveryBusy ? 'Rebuilding…' : 'Rebuild index')
+            .setWarning()
+            .setDisabled(this.recoveryBusy)
+            .onClick(() => { this.recoveryRebuildConfirm = true; this.rerender(); }));
+        if (health === 'locked') {
+            row.addButton(b => b
                 .setButtonText(this.recoveryBusy ? 'Retrying…' : 'Retry')
                 .setCta()
                 .setDisabled(this.recoveryBusy)
@@ -1202,6 +1204,20 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                         void this.loadData();
                     });
                 }));
+        } else {
+            row.addButton(b => b
+                .setButtonText(this.recoveryBusy ? 'Resuming…' : 'Resume indexing')
+                .setCta()
+                .setDisabled(this.recoveryBusy)
+                .onClick(() => {
+                    this.recoveryBusy = true;
+                    this.rerender();
+                    void this.plugin.reloadSeekFromSettings().finally(() => {
+                        this.recoveryBusy = false;
+                        this.rerender();
+                    });
+                }));
+        }
     }
 
     private renderReindexRow(containerEl: HTMLElement): void {
@@ -1259,7 +1275,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
 
         new Setting(containerEl)
             .setName('Full reindex')
-            .setDesc('Rebuild the whole search index from scratch.')
+            .setDesc('Stops any current indexing, clears the index hold, and rebuilds from scratch — all inside Seek.')
             .addButton(b => b.setButtonText('Reindex…').setWarning().onClick(() => { this.reindexPhase = 'confirm'; this.rerender(); }));
         this.renderReindexNote(containerEl);
     }
@@ -1285,7 +1301,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         this.jobStartedAt = performance.now();
         this.rerender();
 
-        void this.plugin.runFullReindex({ skipConfirm: true }).then(() => {
+        void this.plugin.runFullReindex({ skipConfirm: true, takeover: true }).then(() => {
             this.reindexStarting = false;
             this.stats = null;
             this.rerender();

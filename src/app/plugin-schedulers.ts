@@ -545,7 +545,8 @@ export class PluginSchedulerManager {
         );
     }
 
-    dispose(): void {
+    /** Drop pending edit/delete timers and queues without unregistering vault listeners. */
+    clearDeferredIndexingWork(): void {
         if (this.idleTimer != null) {
             window.clearTimeout(this.idleTimer);
             this.idleTimer = null;
@@ -556,5 +557,9 @@ export class PluginSchedulerManager {
         }
         this.dirtyQueue.clear();
         this.deletedQueue.clear();
+    }
+
+    dispose(): void {
+        this.clearDeferredIndexingWork();
     }
 }

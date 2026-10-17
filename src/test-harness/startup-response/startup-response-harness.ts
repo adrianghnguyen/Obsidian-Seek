@@ -170,10 +170,12 @@ export class StartupResponseHarness {
             existingIds: async () => new Set(
                 (await this.store.listAllMeta()).map(chunk => chunk.chunk_id),
             ),
-            putQuantized: async (chunks, tiers) => {
-                this.chunkCommits++;
+            putQuantized: async (chunks, tiers, fileRecords) => {
+                this.chunkCommits += chunks.length;
+                const recs = fileRecords == null ? [] : Array.isArray(fileRecords) ? fileRecords : [fileRecords];
+                this.fileRecordCommits += recs.length;
                 this.logicalMs += this.costs.commitMs;
-                await this.store.putBatchQuantized(chunks, tiers);
+                await this.store.putBatchQuantized(chunks, tiers, fileRecords);
             },
             putFileRecord: async record => {
                 this.fileRecordCommits++;
