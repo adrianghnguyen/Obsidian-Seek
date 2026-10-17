@@ -1257,6 +1257,13 @@
 .seek-settings .seek-desc-list li {
     margin: 2px 0;
 }
+.seek-settings .seek-danger-zone {
+    margin: 8px 0 16px;
+    padding: 2px 10px 6px;
+    border-left: 2px solid var(--text-error, var(--color-red));
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--color-red) 8%, transparent);
+}
 .seek-settings .seek-inline-warn {
     font-size: 12.5px;
     color: var(--text-warning, var(--color-yellow));

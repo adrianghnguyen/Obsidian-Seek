@@ -5,7 +5,7 @@
 // surface. Section order is intentional — Index leads (the one operational concern),
 // relevance recedes behind a disclosure fronted by a teaching pipeline diagram, and
 // the model/compute story gets a home. Section IA, top→bottom:
-//   Index → Relevance → Display → Model & performance → Reset → About
+//   Index (status, full reindex, Danger Zone) → Relevance → Display → Model & performance → Diagnostics → About
 //
 // Built native: Obsidian `Setting` rows + a few custom DOM helpers (segmented control,
 // status card, pipeline diagram, progress row), all styled from theme CSS variables in
@@ -26,6 +26,10 @@ import {
     INDEX_RECOVERY_LOCKED_DESC,
     INDEX_RECOVERY_STALL_DESC,
 } from '../ui/index-notice';
+import {
+    DANGER_ZONE_HEADING,
+    dangerZoneSectionRows,
+} from './danger-zone';
 import {
     BM25_FIELD_KEYS,
     BM25_FIELD_BOOST_MIN,
@@ -234,6 +238,8 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
     // locked; two-step confirm so a rebuild (full re-embed) can't fire on one click.
     private recoveryRebuildConfirm = false;
     private recoveryBusy = false;
+    private dangerForceResetConfirm = false;
+    private dangerBusy: 'idle' | 'recover' | 'force-reset' = 'idle';
     private progressPoll: number | null = null;
     private jobStartedAt = 0;
     // Live-progress DOM refs, repointed on each display() so the runFullReindex
@@ -346,6 +352,8 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         this.recoveryRowHost = null;
         this.recoveryRebuildConfirm = false;
         this.recoveryBusy = false;
+        this.dangerForceResetConfirm = false;
+        this.dangerBusy = 'idle';
         this.coverageHost = null;
         this.exclusionBannerHost = null;
         this.stats = null;
@@ -468,6 +476,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         // The reindex button + live progress bar stay outside the disclosure: it's the
         // primary action and must be visible regardless of the advanced toggle.
         this.renderReindexRow(containerEl);
+        this.renderDangerZone(containerEl);
 
         // Advanced disclosure — what to index (Bases / excluded folders), startup warm,
         // and where the index lives are set-once knobs, so tuck them away like Relevance's
@@ -1296,6 +1305,91 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         });
     }
 
+    /**
+     * Always-visible self-heal + settings reset, next to Full reindex.
+     * Recover / Force reset call SeekPlugin.recoverIndexFromSettings and
+     * forceResetIndexFromSettings — the same paths as the command palette.
+     */
+    private renderDangerZone(containerEl: HTMLElement): void {
+        const mayFullReindex = !this.fleetStatus || this.fleetStatus.mayFullReindex;
+        const rows = dangerZoneSectionRows({ mayFullReindex });
+        const zone = containerEl.createDiv({ cls: 'seek-danger-zone' });
+        new Setting(zone).setName(DANGER_ZONE_HEADING).setHeading();
+
+        for (const row of rows) {
+            if (row.id === 'force-reset' && this.dangerForceResetConfirm) {
+                new Setting(zone)
+                    .setName(row.name)
+                    .setDesc(mayFullReindex
+                        ? 'This deletes the local search database and restores it. Search is unavailable until restore finishes.'
+                        : row.desc)
+                    .addButton(b => b.setButtonText('Cancel').onClick(() => {
+                        this.dangerForceResetConfirm = false;
+                        this.rerender();
+                    }))
+                    .addButton(b => b.setButtonText('Delete & restore').setWarning().onClick(() => {
+                        this.dangerForceResetConfirm = false;
+                        this.runDangerAction('force-reset');
+                    }));
+                continue;
+            }
+            if (row.id === 'reset-settings' && this.resetConfirm) {
+                new Setting(zone)
+                    .setName(row.name)
+                    .setDesc('Restores the default configuration for all Seek settings. Your index will not be rebuilt.')
+                    .addButton(b => b.setButtonText('Cancel').onClick(() => { this.resetConfirm = false; this.rerender(); }))
+                    .addButton(b => b.setButtonText('Reset settings').setWarning().onClick(async () => {
+                        Object.assign(this.s, DEFAULT_SETTINGS);
+                        await this.save();
+                        this.resetConfirm = false;
+                        new Notice('Seek: settings restored to defaults. Your index was not rebuilt.', 6000);
+                        this.rerender();
+                    }));
+                continue;
+            }
+
+            const setting = new Setting(zone).setName(row.name).setDesc(row.desc);
+            setting.addButton(b => {
+                const label = this.dangerBusy !== 'idle' && (
+                    (row.id === 'recover' && this.dangerBusy === 'recover')
+                    || (row.id === 'force-reset' && this.dangerBusy === 'force-reset')
+                )
+                    ? (row.id === 'recover' ? 'Resuming…' : 'Resetting…')
+                    : row.buttonLabel;
+                b.setButtonText(label).setDisabled(this.dangerBusy !== 'idle');
+                if (row.warningButton) b.setWarning();
+                else if (row.id === 'recover') b.setCta();
+                b.onClick(() => {
+                    if (row.id === 'force-reset') {
+                        this.dangerForceResetConfirm = true;
+                        this.rerender();
+                        return;
+                    }
+                    if (row.id === 'reset-settings') {
+                        this.resetConfirm = true;
+                        this.rerender();
+                        return;
+                    }
+                    if (row.id === 'recover') this.runDangerAction('recover');
+                });
+            });
+        }
+    }
+
+    private runDangerAction(kind: 'recover' | 'force-reset'): void {
+        this.dangerBusy = kind;
+        this.rerender();
+        const work = kind === 'recover'
+            ? this.plugin.recoverIndexFromSettings()
+            : this.plugin.forceResetIndexFromSettings();
+        void work.finally(() => {
+            this.dangerBusy = 'idle';
+            this.stats = null;
+            this.rerender();
+            void this.loadData();
+        });
+    }
+
     private startReindex(): void {
         this.reindexStarting = true;
         this.jobStartedAt = performance.now();
@@ -1864,12 +1958,9 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         });
     }
 
-    // ---- Diagnostics + Reset --------------------------------------------------------
+    // ---- Diagnostics --------------------------------------------------------
     private renderReset(containerEl: HTMLElement): void {
-        // Diagnostics first, under its own heading, and rendered BEFORE the
-        // reset-confirm early-return below so the report button is always visible
-        // (it replaces the removed "Generate logging report" command). openLoggingReport
-        // renders the per-device NDJSON logs into seek-report.md and opens it.
+        // Reset-to-defaults lives in Index → Danger Zone. This block is report-only.
         new Setting(containerEl).setName('Diagnostics').setHeading();
         new Setting(containerEl)
             .setName('Logging report')
@@ -1892,29 +1983,6 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                 this.s.redactReport = v;
                 await this.save();
             }));
-
-        new Setting(containerEl).setName('Reset').setHeading();
-        if (this.resetConfirm) {
-            new Setting(containerEl)
-                .setName('Reset to defaults')
-                .setDesc('Restores the default configuration for all Seek settings. Your index will not be rebuilt.')
-                .addButton(b => b.setButtonText('Cancel').onClick(() => { this.resetConfirm = false; this.rerender(); }))
-                .addButton(b => b.setButtonText('Reset settings').setWarning().onClick(async () => {
-                    // Restore every persisted (synced) setting. Compute and startup-warm
-                    // are per-device localStorage, not part of data.json, so they are
-                    // deliberately untouched.
-                    Object.assign(this.s, DEFAULT_SETTINGS);
-                    await this.save();
-                    this.resetConfirm = false;
-                    new Notice('Seek: settings restored to defaults. Your index was not rebuilt.', 6000);
-                    this.rerender();
-                }));
-            return;
-        }
-        new Setting(containerEl)
-            .setName('Reset to defaults')
-            .setDesc('Restore all Seek settings to their original values. Your index will not be rebuilt.')
-            .addButton(b => b.setButtonText('Reset…').onClick(() => { this.resetConfirm = true; this.rerender(); }));
     }
     private resetConfirm = false;
 

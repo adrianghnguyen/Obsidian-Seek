@@ -4,6 +4,9 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Added
+- **Settings → Index → Danger Zone.** Recover search index (Resume indexing) and Force reset search index sit next to Full reindex, with Reset to defaults in the same card. Both recovery buttons call the existing self-heal paths (`recoverIndexFromSettings` / `forceResetIndexFromSettings`) and refresh the status bar. A Consumer does not start a producer full reindex from Force reset — it restores from the lead computer’s sidecar files.
+
 ## 1.15.0-rc.4
 
 Consumer boot hydrate chrome — Restoring file progress instead of empty Starting up.

@@ -121,6 +121,7 @@ export const CI_TEST_AREAS = {
         'src/app/layout-ready.test.ts',
         'src/app/open-target.test.ts',
         'src/index/open-recovery.test.ts',
+        'src/settings/danger-zone.test.ts',
     ],
     'platform': [
         'src/app/observers-longtask.test.ts',
