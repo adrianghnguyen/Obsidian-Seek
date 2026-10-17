@@ -459,7 +459,9 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         if (this.plugin.indexHealthState === 'degraded') {
             const warn = containerEl.createDiv({ cls: 'seek-inline-warn' });
             warn.setText(this.fleetStatus && !this.fleetStatus.mayFullReindex
-                ? 'Index degraded — search still works. This device will not re-embed; wait for producer sidecar files, or set this device’s index role to Producer.'
+                ? (this.fleetStatus.role === 'contributor'
+                    ? 'Index degraded — search still works. This computer can still index new notes. A full rebuild stays on the lead computer.'
+                    : 'Index degraded — search still works. This device copies the shared index and will not re-embed; wait for lead files, or set this device’s index role to Producer.')
                 : 'Index degraded — search still works but ranking may be off. A full reindex is recommended.');
         }
 
@@ -615,11 +617,11 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         if (this.s.sidecarEnabled) {
             const roleRow = new Setting(adv)
                 .setName('This device’s index role')
-                .setDesc('On this device only (not synced). Producer writes the shared index files. Consumer hydrates them and will not full-reindex or delete another device’s shards.');
+                .setDesc('On this device only (not synced). Auto: the computer with the newest full rebuild is lead; other computers add new notes; phones only copy. Producer = lead. Consumer = copy only.');
             roleRow.addDropdown(dd => dd
                 .addOption('auto', 'Auto')
-                .addOption('producer', 'Producer — this device writes the index')
-                .addOption('consumer', 'Consumer — hydrate only')
+                .addOption('producer', 'Producer — lead (can full rebuild)')
+                .addOption('consumer', 'Consumer — copy the shared index only')
                 .setValue(getSidecarIndexRole())
                 .onChange(v => {
                     setSidecarIndexRole(v as SidecarIndexRole);
@@ -887,6 +889,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             aligningExclusions: !!this.plugin.getExclusionChange(),
             pendingCount: pendingPaths.length,
             reindexLocked: !!(this.fleetStatus && !this.fleetStatus.mayFullReindex),
+            fleetRole: this.fleetStatus?.role,
         });
 
         const wrap = host.createDiv({ cls: 'seek-coverage-panel' });
@@ -1270,7 +1273,9 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         containerEl.createDiv({
             cls: 'seek-hint',
             text: this.fleetStatus && !this.fleetStatus.mayFullReindex
-                ? 'This device hydrates the producer’s index files. It will not re-embed the vault while that role is set.'
+                ? (this.fleetStatus.role === 'contributor'
+                    ? 'This computer can add new notes to the shared index. Full reindex stays on the lead computer.'
+                    : 'This device copies the lead computer’s index files. It will not re-embed the vault while that role is set.')
                 : 'Building the index re-embeds every note and isn’t recommended on a mobile phone. Run it on a computer, and your phone will sync the finished index automatically.',
         });
     }
@@ -1705,14 +1710,14 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         const selected = MODEL_REGISTRY[selectedKey];
         new Setting(containerEl)
             .setName('Embedding model')
-            .setDesc('Turns notes into meaning for semantic search. Changing the model asks you to reindex; keyword search keeps working until you do. A consumer device waits for the producer’s matching index files instead of embedding here.')
+            .setDesc('Turns notes into meaning for semantic search. Changing the model asks you to reindex; keyword search keeps working until you do. Phones and copy-only devices wait for the lead computer’s matching index files.')
             .addDropdown(dd => dd
                 .addOptions(modelOptions)
                 .setValue(selectedKey)
                 .onChange(async v => {
                     if (this.fleetStatus && !this.fleetStatus.mayFullReindex) {
                         setPendingEmbeddingModel({ key: v, dim: this.s.embeddingOutputDim });
-                        new Notice('Seek: this device hydrates the shared index. Change the embedding model on the producer, then wait for those files to arrive.', 8000);
+                        new Notice('Seek: change the embedding model on the lead computer, then wait for those files to arrive.', 8000);
                         this.rerender();
                         return;
                     }
@@ -1743,7 +1748,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                     .onChange(async v => {
                         if (this.fleetStatus && !this.fleetStatus.mayFullReindex) {
                             setPendingEmbeddingModel({ key: this.s.embeddingModelKey, dim: Number(v) });
-                            new Notice('Seek: this device hydrates the shared index. Change the vector size on the producer, then wait for those files to arrive.', 8000);
+                            new Notice('Seek: change the vector size on the lead computer, then wait for those files to arrive.', 8000);
                             this.rerender();
                             return;
                         }

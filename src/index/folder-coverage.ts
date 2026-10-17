@@ -523,13 +523,20 @@ export function resolveCoveragePanelView(input: {
     pendingCount?: number;
     /** Consumer lock: do not tell the user to full-reindex. */
     reindexLocked?: boolean;
+    /** Auto contributor: can add notes, cannot full rebuild. */
+    fleetRole?: string;
 }): CoveragePanelView {
-    const { summary, health, job, orchestratorReady, loadFailed, aligningExclusions, pendingCount, reindexLocked } = input;
+    const { summary, health, job, orchestratorReady, loadFailed, aligningExclusions, pendingCount, reindexLocked, fleetRole } = input;
+    const contributeLocked = reindexLocked && fleetRole === 'contributor';
     const errorFix = reindexLocked
-        ? 'This device hydrates the producer’s index and will not re-embed. Wait for matching sidecar files, or set this device’s index role to Producer.'
+        ? (contributeLocked
+            ? 'This computer can index new notes. A full rebuild stays on the lead computer.'
+            : 'This device copies the lead computer’s index and will not re-embed. Wait for matching index files, or set this device’s index role to Producer.')
         : 'Fix the index (try a full reindex) to see embedder coverage by folder.';
     const errorFixTree = reindexLocked
-        ? 'This device hydrates the producer’s index and will not re-embed. Folder coverage is the last snapshot.'
+        ? (contributeLocked
+            ? 'This computer can index new notes. Folder coverage is the last snapshot. A full rebuild stays on the lead computer.'
+            : 'This device copies the lead computer’s index and will not re-embed. Folder coverage is the last snapshot.')
         : 'Fix the index (try a full reindex). Folder coverage is the last snapshot.';
     const { total, covered, excluded, remaining, refreshing } = summary.overall;
     const hasTree = total > 0;

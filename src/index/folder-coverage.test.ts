@@ -323,6 +323,17 @@ describe('resolveCoveragePanelView', () => {
         expect(lockedReindex.statusLine?.detail).toMatch(/will not re-embed/);
         expect(lockedReindex.statusLine?.detail).not.toMatch(/full reindex/);
 
+        const lockedContributor = resolveCoveragePanelView({
+            summary: readySummary,
+            health: 'error',
+            job: null,
+            orchestratorReady: true,
+            reindexLocked: true,
+            fleetRole: 'contributor',
+        });
+        expect(lockedContributor.statusLine?.detail).toMatch(/lead computer/);
+        expect(lockedContributor.statusLine?.detail).not.toMatch(/full reindex/);
+
         const lockedView = resolveCoveragePanelView({
             summary: readySummary,
             health: 'locked',

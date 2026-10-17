@@ -461,8 +461,10 @@ export default class SeekPlugin extends Plugin {
     } | null = null;
     /** Boot hydrate/reconcile ran (or was skipped because store stayed locked). */
     private bootContinuationDone = false;
-    /** Last inspectFleet().mayFullReindex; false = Consumer — no GPU/embed catch-up. */
+    /** Last inspectFleet().mayFullReindex; false = not lead — no full rebuild. */
     private lastMayFullReindex: boolean | null = null;
+    /** Last inspectFleet().mayEmbedCatchUp; false = hydrate-only, no GPU catch-up. */
+    private lastMayEmbedCatchUp: boolean | null = null;
     /**
      * Boot buffer between onLayoutReady and the first IndexedDB work: other
      * plugins' startup I/O gets the window first. Null once fired/cancelled.
@@ -1764,6 +1766,7 @@ export default class SeekPlugin extends Plugin {
         this.indexStoreLocked = false;
         this.bootContinuationDone = false;
         this.lastMayFullReindex = null;
+        this.lastMayEmbedCatchUp = null;
         this.bootResumeCtx = null;
         this.vaultIndexEventsReady = false;
         this.catchUpRunning = false;
@@ -2664,11 +2667,17 @@ export default class SeekPlugin extends Plugin {
         else this.refreshIndexStatusBar();
     }
 
+    private noteSidecarFleetFlags(fleet: { mayFullReindex: boolean; mayEmbedCatchUp: boolean } | null | undefined): void {
+        if (!fleet) return;
+        this.lastMayFullReindex = fleet.mayFullReindex;
+        this.lastMayEmbedCatchUp = fleet.mayEmbedCatchUp;
+    }
+
     private async refreshSidecarFleet(): Promise<void> {
         if (!this.settings.sidecarEnabled || !this.orchestrator) return;
         const fleet = await this.orchestrator.inspectSidecarFleet();
         if (!fleet) return;
-        this.lastMayFullReindex = fleet.mayFullReindex;
+        this.noteSidecarFleetFlags(fleet);
         this.lastIndexableNotes = fleet.indexableNotes;
         if (fleet.waitingForProducer) {
             const total = Math.max(fleet.localFileCount, fleet.indexableNotes);
@@ -2730,7 +2739,7 @@ export default class SeekPlugin extends Plugin {
             const fleet = this.orchestrator && this.settings.sidecarEnabled
                 ? await this.orchestrator.inspectSidecarFleet().catch(() => null)
                 : null;
-            if (fleet) this.lastMayFullReindex = fleet.mayFullReindex;
+            this.noteSidecarFleetFlags(fleet);
             const plan = planFailedDropRecovery({
                 sidecarEnabled: this.settings.sidecarEnabled,
                 storeOpen: this.store.isOpen(),
@@ -2955,7 +2964,7 @@ export default class SeekPlugin extends Plugin {
         if (this.unloading) return;
         if (!this.settings.sidecarEnabled || !this.orchestrator) return;
         const fleet = await this.orchestrator.inspectSidecarFleet().catch(() => null);
-        if (fleet) this.lastMayFullReindex = fleet.mayFullReindex;
+        this.noteSidecarFleetFlags(fleet);
         const plan = planConsumerHydrateComplete({
             fleet,
             hydrateReleasedGate: !this.sidecarHydrating,
@@ -3162,7 +3171,7 @@ export default class SeekPlugin extends Plugin {
         if (this.waitingForSidecar) return;
         if (!this.catchUpPending || this.catchUpRunning || !this.orchestrator) return;
         const allowEmbed = resolveConsumerCatchUpKind({
-            mayFullReindex: this.lastMayFullReindex ?? true,
+            mayEmbedCatchUp: this.lastMayEmbedCatchUp ?? true,
             catchUpPending: true,
             mobile: isMobilePlatform(),
         }) === 'embed';
@@ -3360,7 +3369,7 @@ export default class SeekPlugin extends Plugin {
             return;
         }
         const fleet = await this.orchestrator.inspectSidecarFleet();
-        if (fleet) this.lastMayFullReindex = fleet.mayFullReindex;
+        this.noteSidecarFleetFlags(fleet);
         if (fleet && !fleet.mayFullReindex) {
             this.coldBuildScheduled = false;
             this.waitingForSidecar = fleet.waitingForProducer || this.waitingForSidecar;
@@ -3410,9 +3419,9 @@ export default class SeekPlugin extends Plugin {
             const fleet = this.orchestrator
                 ? await this.orchestrator.inspectSidecarFleet().catch(() => null)
                 : null;
-            if (fleet) this.lastMayFullReindex = fleet.mayFullReindex;
+            this.noteSidecarFleetFlags(fleet);
             const kind = resolveConsumerCatchUpKind({
-                mayFullReindex: this.lastMayFullReindex ?? true,
+                mayEmbedCatchUp: this.lastMayEmbedCatchUp ?? true,
                 catchUpPending: this.catchUpPending,
                 mobile: isMobilePlatform(),
             });
@@ -3560,7 +3569,7 @@ export default class SeekPlugin extends Plugin {
         let succeeded = false;
         try {
             const fleet = await this.orchestrator.inspectSidecarFleet();
-            if (fleet) this.lastMayFullReindex = fleet.mayFullReindex;
+            this.noteSidecarFleetFlags(fleet);
             if (fleet && !fleet.mayFullReindex) {
                 this.waitingForSidecar = fleet.waitingForProducer || this.waitingForSidecar;
                 this.peerSyncPending = true;

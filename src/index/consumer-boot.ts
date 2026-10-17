@@ -1,14 +1,15 @@
 /**
  * Consumer boot after sidecar hydrate: Ready without waiting on embed catch-up,
- * no GPU catch-up when the fleet forbids full reindex, and no second hydrate
+ * no GPU catch-up when the fleet forbids embed catch-up, and no second hydrate
  * from post-boot recovery once boot continuation already ran.
  */
 
 export interface ConsumerFleetReadyInput {
-    role: 'producer' | 'consumer';
+    role: 'producer' | 'contributor' | 'consumer';
     waitingForProducer: boolean;
     matchingReady: boolean;
     mayFullReindex: boolean;
+    mayEmbedCatchUp?: boolean;
 }
 
 /** inspectFleet() says this device can serve search as a hydrate-only consumer. */
@@ -47,15 +48,15 @@ export function planConsumerHydrateComplete(input: {
 
 export type CatchUpKind = 'embed' | 'lexical' | 'none';
 
-/** GPU/embed catch-up is producer-only. Consumers may still drain lexical work. */
+/** GPU/embed catch-up is lead + contributor. Phones / hydrate-only stay lexical. */
 export function resolveConsumerCatchUpKind(input: {
-    mayFullReindex: boolean;
+    mayEmbedCatchUp: boolean;
     catchUpPending: boolean;
     mobile: boolean;
 }): CatchUpKind {
     if (input.mobile) return 'none';
     if (!input.catchUpPending) return 'none';
-    if (!input.mayFullReindex) return 'lexical';
+    if (!input.mayEmbedCatchUp) return 'lexical';
     return 'embed';
 }
 

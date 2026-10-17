@@ -86,6 +86,7 @@ import { preflightSidecar, type SidecarPreflight } from './sidecar-preflight';
 import {
     resolveFleetRole,
     mayFullReindex,
+    mayEmbedCatchUp,
     mayReapPeerSidecars,
     mayWriteSidecar,
     mayCompactOwnSidecar,
@@ -107,6 +108,7 @@ export interface SidecarFleetSnapshot {
     matchingReady: boolean;
     waitingForProducer: boolean;
     mayFullReindex: boolean;
+    mayEmbedCatchUp: boolean;
     mayReapPeers: boolean;
     mayWriteSidecar: boolean;
     mayCompact: boolean;
@@ -235,6 +237,7 @@ export class SidecarCoordinator {
             matchingReady,
             waitingForProducer,
             mayFullReindex: mayFullReindex(role),
+            mayEmbedCatchUp: mayEmbedCatchUp(role),
             mayReapPeers: mayReapPeerSidecars(role),
             mayWriteSidecar: mayWriteSidecar(role, hidden, anyPeerPresent, waitingForProducer),
             mayCompact: mayCompactOwnSidecar(role, hidden, anyPeerPresent),
