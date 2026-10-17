@@ -4,6 +4,15 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.15.0-rc.4
+
+Consumer boot hydrate chrome — Restoring file progress instead of empty Starting up.
+
+### Fixed
+- **Consumer boot no longer shows a static Starting up while sidecar hydrate (or fleet restore) is in progress.** Status bar, Settings Index, and the search-modal footer use the same Restoring `done/total · percent` snapshot as an active hydrate job. A hydrate-only device (`mayFullReindex` false) stays Restoring during boot even before the hydrate flag latches. Startup stuck still says Stuck (no Starting up). Consumer stays Consumer — no embed catch-up or full reindex.
+- **Index status counts keep a fixed digit width on both chrome and Settings.** Status-bar compact label, tooltip/progress, and search-modal footer share padded `done/total · pct` (live total width, 3-character percent) so 9→10 and 99%→100% do not shift neighbors. Vaults around a few thousand files stay in locale form; larger totals switch both sides to `k` once — digits are not clipped. Settings Index uses a short heading and three metric slots in one nowrap row so Starting / Restoring / Ready / Stuck / Indexing share a stable card frame, with Restoring counts in the metric slot.
+- **Sidecar hydrate no longer paints Restoring 1/vault · 1% when IndexedDB already covers hundreds of notes.** The batch hydrator no longer publishes batch-local `{done,total}` on the vault status channel. In-flight updates with a smaller total are ignored, a batch numerator is never stretched onto the vault denominator, leftover walk progress is ignored once hydrate is not running, and chrome falls back to inventory coverage. Consumer stays Consumer.
+
 ## 1.15.0-rc.3
 
 Hydrate progress on status chrome, in-plugin full-reindex takeover, and GPU overlap for production reindex. RC until this build is proven stable.

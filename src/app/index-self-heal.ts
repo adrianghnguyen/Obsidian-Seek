@@ -15,8 +15,9 @@ export function vaultCoverageIncomplete(indexedFiles: number | null, indexableNo
 }
 
 /**
- * Stretch a hydrate file-walk against the live vault. A 1/1 sidecar walk must not
- * paint 100% when thousands of notes remain.
+ * Keep a vault-scale hydrate walk. A batch-local total (1/1, N-notes-in-this-call)
+ * must not be stretched onto the vault denominator — that paints 1/3132 · 1%.
+ * Drop the event so the caller can fall back to inventory coverage.
  */
 export function hydrateProgressAgainstVault(
     progress: { done: number; total: number } | null | undefined,
@@ -26,8 +27,48 @@ export function hydrateProgressAgainstVault(
     const vault = Math.max(0, Math.floor(indexableNotes) || 0);
     const reportedTotal = Math.floor(progress.total);
     if (!Number.isFinite(reportedTotal) || reportedTotal <= 0) return null;
-    const total = Math.max(reportedTotal, vault);
-    const done = Math.min(total, Math.max(0, Math.floor(progress.done) || 0));
+    if (vault > 0 && reportedTotal < vault) return null;
+    const done = Math.min(reportedTotal, Math.max(0, Math.floor(progress.done) || 0));
+    return { done, total: reportedTotal };
+}
+
+/** In-flight restore: never replace a larger vault total with a smaller batch total. */
+export function applySidecarHydrateProgressUpdate(
+    current: { done: number; total: number } | null,
+    incoming: { done: number; total: number },
+    inFlight: boolean,
+): { done: number; total: number } | null {
+    const total = Math.floor(incoming.total);
+    if (!Number.isFinite(total) || total <= 0) return current;
+    if (inFlight && current && current.total > 0 && total < current.total) return current;
+    return { done: Math.max(0, Math.floor(incoming.done) || 0), total };
+}
+
+export function resolveSidecarHydrateProgress(input: {
+    walk: { done: number; total: number } | null;
+    hydrating: boolean;
+    waitingForSidecar: boolean;
+    dropRecovering: boolean;
+    bootPending: boolean;
+    goodEnough: boolean;
+    inventoryFiles: number | null;
+    indexableNotes: number;
+}): { done: number; total: number } | null {
+    const notes = Math.max(0, Math.floor(input.indexableNotes) || 0);
+    const liveWalk = input.hydrating || input.waitingForSidecar || input.dropRecovering;
+    if (liveWalk && input.walk && input.walk.total > 0) {
+        const fromWalk = hydrateProgressAgainstVault(input.walk, notes);
+        if (fromWalk) return fromWalk;
+    }
+    if (!(
+        input.waitingForSidecar
+        || input.hydrating
+        || input.dropRecovering
+        || (input.bootPending && !input.goodEnough)
+    )) return null;
+    const done = Math.max(0, input.inventoryFiles ?? 0);
+    const total = Math.max(done, notes);
+    if (total <= 0) return null;
     return { done, total };
 }
 

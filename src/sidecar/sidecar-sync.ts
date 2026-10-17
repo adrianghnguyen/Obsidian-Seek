@@ -113,7 +113,7 @@ export interface HydrateDeps {
     /** Greedy hydrate: warm tokenizer in parallel with file-list wait. */
     ensureTokenizer?: () => Promise<void>;
     onTierComplete?: (detail: HydrateTierCompleteDetail) => void;
-    /** Live file progress for status chrome (greedy walk or note hydrate). */
+    /** Live vault file progress for status chrome (greedy walk only). */
     onHydrateProgress?: (detail: HydrateProgressDetail) => void;
     /** When true and reChunkSubset + listHydrateFiles are set, use tiered greedy hydrate. */
     greedyHydrate?: boolean;
@@ -392,24 +392,10 @@ async function hydrateCandidates(
             chunk_ids: cand.note.chunks.map(c => c.chunk_id),
             contentHash: cand.note.contentHash,
         });
-        deps.onHydrateProgress?.({
-            done: fileRecords.length,
-            total: candidates.length,
-            needed: candidates.reduce((n, c) => n + c.entries.length, 0),
-            hydrated,
-        });
     }
     await flush(fileRecords);
     deps.catalog?.noteHydrated(hydratedIds);
     const needed = candidates.reduce((n, c) => n + c.entries.length, 0);
-    if (candidates.length > 0) {
-        deps.onHydrateProgress?.({
-            done: fileRecords.length,
-            total: candidates.length,
-            needed,
-            hydrated,
-        });
-    }
     return {
         needed,
         hydrated,

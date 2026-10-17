@@ -17,6 +17,7 @@ import {
     type IndexUiStatusInput,
 } from './index-notice';
 import { indexPercent } from './index-eta';
+import { formatStableCompactProgress, formatStableLabelProgress } from './index-progress-format';
 export type IndexStatusHealth = 'none' | 'starting' | 'restoring' | 'ok' | 'indexing' | 'error' | 'locked' | 'stuck';
 type ReporterJobKind = 'full' | 'delta' | 'catchup';
 
@@ -102,8 +103,11 @@ function hydrateCopyApplies(
     mode: IndexStatusMode,
     hydrating: boolean,
     waitingForSidecar: boolean,
+    booting: boolean,
+    mayFullReindex?: boolean | null,
 ): boolean {
-    if (!(hydrating || waitingForSidecar)) return false;
+    const fleetRestore = booting && mayFullReindex === false;
+    if (!(hydrating || waitingForSidecar || fleetRestore)) return false;
     if (mode === 'starting' || mode === 'restoring') return true;
     return mode === 'indexing' && hydrating;
 }
@@ -112,8 +116,8 @@ export function withHydrateProgressCopy(
     copy: IndexStatusCopy,
     progress: IndexHydrateProgress,
 ): IndexStatusCopy {
-    const compactCounts = `${progress.done.toLocaleString()}/${progress.total.toLocaleString()} · ${progress.percent}%`;
-    const labelCounts = `${progress.done.toLocaleString()} / ${progress.total.toLocaleString()} · ${progress.percent}%`;
+    const compactCounts = formatStableCompactProgress(progress.done, progress.total, progress.percent);
+    const labelCounts = formatStableLabelProgress(progress.done, progress.total, progress.percent);
     return {
         ...copy,
         compact: `${copy.compact} ${compactCounts}`,
@@ -137,7 +141,13 @@ export class IndexStatusReporter {
         const ui = resolveIndexUiStatus(input);
         const mode = indexStatusModeFromUi(ui, input.jobKind);
         const base = INDEX_STATUS_COPY[mode];
-        const live = hydrateCopyApplies(mode, !!input.hydrating, !!input.waitingForSidecar)
+        const live = hydrateCopyApplies(
+            mode,
+            !!input.hydrating,
+            !!input.waitingForSidecar,
+            !!input.booting,
+            input.mayFullReindex,
+        )
             ? normalizeHydrateProgress(input.hydrateProgress)
             : null;
         const copy = live ? withHydrateProgressCopy(base, live) : base;

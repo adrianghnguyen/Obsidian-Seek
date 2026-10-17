@@ -53,7 +53,8 @@ import {
 } from './app/indexing-stall-guard';
 import {
     coverageGap,
-    hydrateProgressAgainstVault,
+    applySidecarHydrateProgressUpdate,
+    resolveSidecarHydrateProgress,
     shouldResumeIndexing,
     staleCompleteHydrateWalk,
     vaultCoverageIncomplete,
@@ -498,8 +499,13 @@ export default class SeekPlugin extends Plugin {
             if (this.waitingForSidecar) return 'restoring';
             return null;
         }
-        if (this.indexDropRecovering || this.waitingForSidecar || (this.sidecarHydrating && !this.indexBootPending)) return 'restoring';
-        if (this.indexBootPending || this.sidecarHydrating) return 'starting';
+        if (
+            this.indexDropRecovering
+            || this.waitingForSidecar
+            || this.sidecarHydrating
+            || (this.indexBootPending && this.settings.sidecarEnabled && this.lastMayFullReindex !== true)
+        ) return 'restoring';
+        if (this.indexBootPending) return 'starting';
         return null;
     }
     get isIndexWarmingUp(): boolean { return this.indexWarmPhase != null; }
@@ -518,8 +524,11 @@ export default class SeekPlugin extends Plugin {
             stuck: this.indexBootStuck || this.indexStoreWedged || this.indexIndexingStalled,
             booting: this.indexBootPending,
             bootDecisionPending: this.indexBootDecisionPending,
-            hydrating: this.sidecarHydrating,
+            hydrating: this.sidecarHydrating
+                || this.indexDropRecovering
+                || (this.indexBootPending && this.settings.sidecarEnabled && !this.indexGoodEnough),
             goodEnough: this.indexGoodEnough,
+            mayFullReindex: this.lastMayFullReindex,
             waitingForSidecar: this.waitingForSidecar,
             dropRecovering: this.indexDropRecovering,
             peerSyncPending: this.peerSyncPending,
@@ -536,15 +545,16 @@ export default class SeekPlugin extends Plugin {
     }
 
     private resolveHydrateProgress(): { done: number; total: number } | null {
-        const notes = Math.max(this.lastIndexableNotes, this.indexableNoteCount());
-        if (this.sidecarHydrateProgress && this.sidecarHydrateProgress.total > 0) {
-            return hydrateProgressAgainstVault(this.sidecarHydrateProgress, notes);
-        }
-        if (!(this.waitingForSidecar || this.sidecarHydrating || this.indexDropRecovering)) return null;
-        const done = this.indexInventoryFiles ?? 0;
-        const total = Math.max(done, notes);
-        if (total <= 0) return null;
-        return { done, total };
+        return resolveSidecarHydrateProgress({
+            walk: this.sidecarHydrateProgress,
+            hydrating: this.sidecarHydrating,
+            waitingForSidecar: this.waitingForSidecar,
+            dropRecovering: this.indexDropRecovering,
+            bootPending: this.indexBootPending,
+            goodEnough: this.indexGoodEnough,
+            inventoryFiles: this.indexInventoryFiles,
+            indexableNotes: Math.max(this.lastIndexableNotes, this.indexableNoteCount()),
+        });
     }
 
     /** Coordinator pass currently shown on the status-bar badge, or null. */
@@ -709,8 +719,10 @@ export default class SeekPlugin extends Plugin {
         this.orchestrator.setPersistentDriftHandler(() => this.onPersistentDrift());
         this.orchestrator.setGoodEnoughHandler(() => this.markIndexGoodEnough());
         this.orchestrator.setHydrateProgressHandler((detail) => {
-            if (detail.total <= 0) return;
-            this.sidecarHydrateProgress = { done: detail.done, total: detail.total };
+            const inFlight = this.sidecarHydrating || this.waitingForSidecar || this.indexDropRecovering;
+            const next = applySidecarHydrateProgressUpdate(this.sidecarHydrateProgress, detail, inFlight);
+            if (next === this.sidecarHydrateProgress) return;
+            this.sidecarHydrateProgress = next;
             this.refreshIndexStatusBar();
         });
         this.orchestrator.setIndexDroppedHandler(() => this.noteIndexDropped());

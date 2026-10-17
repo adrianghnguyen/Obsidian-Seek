@@ -15,6 +15,7 @@ import {
 } from './index-status-card';
 import type { IndexStatusReport } from './index-status-report';
 import { formatRoughEta } from './index-eta';
+import { formatStableFileFraction } from './index-progress-format';
 import { buildIndexProgressSnapshot, type IndexProgressSnapshot } from './index-progress-snapshot';
 
 export type { IndexJobSpeedView };
@@ -334,7 +335,7 @@ export class IndexStatusBar {
         this.paintedChunks = snap.chunksDone;
         this.paintedPercent = pct;
         this.labelEl?.removeClass('is-hidden');
-        this.filesEl?.setText(`${snap.filesDone.toLocaleString()}/${snap.filesTotal.toLocaleString()}`);
+        this.filesEl?.setText(formatStableFileFraction(snap.filesDone, snap.filesTotal));
         this.chunksEl?.addClass('is-hidden');
         if (this.progressEl) {
             this.progressEl.removeClass('is-hidden');
@@ -366,7 +367,7 @@ export class IndexStatusBar {
         this.paintedChunks = snap.chunksDone;
         this.paintedPercent = -1;
         this.labelEl?.removeClass('is-hidden');
-        this.filesEl?.setText(`${snap.filesDone.toLocaleString()}/${snap.filesTotal.toLocaleString()}`);
+        this.filesEl?.setText(formatStableFileFraction(snap.filesDone, snap.filesTotal));
         this.chunksEl?.addClass('is-hidden');
         this.progressEl?.addClass('is-hidden');
         this.paintChrome(snap.health, null);
@@ -377,6 +378,10 @@ export class IndexStatusBar {
         if (snap.phase === 'hydrate' && snap.filesTotal > 0) {
             const remaining = snap.health === 'indexing' ? Math.max(0, snap.filesTotal - snap.filesDone) : null;
             this.paintCounts(snap, remaining, `Seek: ${snap.report.compact}`);
+            return;
+        }
+        if (snap.phase === 'starting' && snap.filesTotal > 0 && snap.hydrate) {
+            this.paintCounts(snap, null, `Seek: ${snap.report.compact}`);
             return;
         }
         if (snap.phase === 'starting' || snap.phase === 'locked' || snap.phase === 'error') {

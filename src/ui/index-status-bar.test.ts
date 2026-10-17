@@ -18,6 +18,7 @@ import {
     INDEX_STATUS_HEALTH,
 } from './index-status-card';
 import { INDEX_STATUS_COPY, type IndexStatusReport } from './index-status-report';
+import { formatStableFileFraction, visibleProgressText } from './index-progress-format';
 import { buildIndexProgressSnapshot } from './index-progress-snapshot';
 import type { IndexStatusHealth, IndexStatusMode } from './index-status-card';
 
@@ -53,6 +54,7 @@ interface StubEl {
     addEventListener(type: string, fn: unknown): void;
     fire(type: string, e?: unknown): void;
     querySelector(sel: string): StubEl | null;
+    querySelectorAll(sel: string): StubEl[];
 }
 
 function stubEl(tagName = 'div'): StubEl {
@@ -87,19 +89,20 @@ function stubEl(tagName = 'div'): StubEl {
             for (const fn of el.events[type] ?? []) fn(e);
         },
         querySelector(sel) {
-            const walk = (n: StubEl): StubEl | null => {
+            return el.querySelectorAll(sel)[0] ?? null;
+        },
+        querySelectorAll(sel) {
+            const out: StubEl[] = [];
+            const walk = (n: StubEl) => {
                 if (sel.startsWith('.')) {
-                    if (n.className.split(/\s+/).includes(sel.slice(1))) return n;
+                    if (n.className.split(/\s+/).includes(sel.slice(1))) out.push(n);
                 } else if (n.tagName === sel) {
-                    return n;
+                    out.push(n);
                 }
-                for (const c of n.children) {
-                    const hit = walk(c);
-                    if (hit) return hit;
-                }
-                return null;
+                for (const c of n.children) walk(c);
             };
-            return walk(el);
+            walk(el);
+            return out;
         },
     };
     return el;
@@ -220,7 +223,7 @@ describe('IndexStatusBar', () => {
         expect(bar.job()?.done).toBe(34);
         expect(bar.jobSpeedView()?.chunksDone).toBe(34);
         expect(bar.jobSpeedView()?.tokensDone).toBe(62081);
-        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe('34/216');
+        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe(formatStableFileFraction(34, 216));
     });
 
     it('accepts explicit chunk counts without an Indexed progress line', () => {
@@ -343,7 +346,7 @@ describe('IndexStatusBar', () => {
         bar.updateFromProgress('Indexed 3 files · 12 chunks');
         bar.refreshIdle();
         expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)?.textContent).toBe('12');
-        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe('3/15');
+        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe(formatStableFileFraction(3, 15));
     });
 
     it('clamps done to total and ignores stale job ids', () => {
@@ -439,7 +442,7 @@ describe('renderIndexStatusCard', () => {
         });
         const blob = textOf(root);
         expect(blob).toContain('15');
-        expect(blob).toContain('0 / 15');
+        expect(visibleProgressText(blob)).toContain('0 / 15');
         expect(blob).toContain('Indexing');
         expect(blob).not.toMatch(/\b5\b/);
         expect(blob).not.toMatch(/\b18\b/);
@@ -473,7 +476,7 @@ describe('renderIndexStatusCard', () => {
         expect(badge).toBe('12');
         expect(cardBadge).toBe(badge);
         expect(textOf(cardRoot)).toContain('12 remaining');
-        expect(textOf(cardRoot)).toContain('3 / 15 · 20%');
+        expect(visibleProgressText(textOf(cardRoot))).toContain('3 / 15 · 20%');
         expect(textOf(cardRoot)).not.toContain('5 files');
     });
 
@@ -498,7 +501,8 @@ describe('renderIndexStatusCard', () => {
         expect(textOf(start)).not.toContain('No index');
         expect(textOf(start)).not.toMatch(/\b5\b/);
         expect(start.querySelector('.seek-dot')?.className).toContain('seek-dot-pending');
-        expect(textOf(start)).toContain('…');
+        expect(start.querySelectorAll('.seek-status-metric').length).toBe(3);
+        expect(textOf(start)).toContain('—');
 
         const restore = stubEl();
         renderIndexStatusCard(restore as unknown as HTMLElement, {
