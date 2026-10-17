@@ -1611,7 +1611,7 @@ export default class SeekPlugin extends Plugin {
         if (!this.isBootCurrent(bootGen)) return;
         this.markBootStuckResolved();
         try {
-            new Notice('Seek: search index is stuck locked — resetting database...', 8000);
+            new Notice('Seek: resetting search index database…', 8000);
             await this.logger.append({
                 type: 'store-force-reset',
                 timestamp: new Date().toISOString(),
@@ -1740,6 +1740,8 @@ export default class SeekPlugin extends Plugin {
      * palette exposes when startup is stuck or the store is locked.
      */
     async recoverIndexFromSettings(): Promise<void> {
+        this.refreshIndexStatusBar();
+        this.notifyIndexActivityChanged();
         this.abortInflightSessionWork('user-recover', { releaseIndexHold: true });
         const prior = this.fullReindexRun;
         if (prior) await prior.catch(() => false);
@@ -1749,6 +1751,8 @@ export default class SeekPlugin extends Plugin {
         await this.retryIndexStoreOpen();
         this.maybeResumeIncompleteCoverage();
         if (this.catchUpPending) this.scheduleStartupCatchUp();
+        this.refreshIndexStatusBar();
+        this.notifyIndexActivityChanged();
         new Notice('Seek: resumed indexing.', 4000);
     }
 
@@ -1766,7 +1770,11 @@ export default class SeekPlugin extends Plugin {
      * state and schedules a full reindex.
      */
     async forceResetIndexFromSettings(): Promise<void> {
+        this.refreshIndexStatusBar();
+        this.notifyIndexActivityChanged();
         await this.forceResetAndReindex(this.loadGeneration);
+        this.refreshIndexStatusBar();
+        this.notifyIndexActivityChanged();
     }
 
     /** Sidecar hydrate + reconcile after the index store opens (boot or retry). */
