@@ -615,6 +615,11 @@ export interface SeekSettings {
     // device whose config is actually renamed.
     sidecarIndexLocation: SidecarIndexLocation;
 
+    // Expert-only opt-out of the shared vault folder: keeps the sidecar under the
+    // hidden '.obsidian' path. Not for multi-device / vault sync. Without it, a
+    // sync-on install always uses 'visible' (see forceSharedSidecarLocation).
+    sidecarHiddenIndexExpert: boolean;
+
     // Settings-schema revision, persisted in data.json so onload can run
     // one-time migrations. Rev 2 = the 2026-06-09 bound-norm switch: persisted
     // pre-bound denseWeight values (0.90/0.92, empirical-max scale) are on a
@@ -703,11 +708,21 @@ export const DEFAULT_SETTINGS: SeekSettings = {
     searchModalHeight: 'default',  // desktop modal height preset
     altOpenLocation: 'tab',    // schema compat with upstream; fork open UX uses OpenTarget modifiers
     sidecarEnabled: true,      // ON by default; user-facing under Index advanced → Sync index across devices; vault-file index for iOS-eviction survival + Sync hydrate; OFF = this device only — see field comment
-    sidecarIndexLocation: 'config', // hidden literal '.obsidian/plugins/seek/index'; 'visible' = vault-root 'Seek Index/' for split-config Obsidian Sync; see field comment
+    sidecarIndexLocation: 'visible', // vault-root 'Seek Index/' shared folder (default with sync on); 'config' = hidden literal '.obsidian/plugins/seek/index', expert-only
+    sidecarHiddenIndexExpert: false,
     settingsRev: 9,            // current schema rev; bump alongside a migration in main.ts onload (rev 9 = 2026-07-16 Recency High half-life 270→90)
     embeddingModelKey: '',     // '' = shipped Granite. A registry key selects EmbeddingGemma 2. No migration: absent data.json falls through to this default.
     embeddingOutputDim: 0,     // 0 = the selected model's native width. EmbeddingGemma 2 accepts 768, 512, 256, 128.
 };
+
+// Sync-on installs always share through the vault-root folder unless the user chose
+// the expert hidden location. Runs on every load (not rev-gated) so a data.json that
+// still says 'config' from before this UX lands on the shared folder; the files move
+// in main.ts boot. Mutates and returns `s`.
+export function forceSharedSidecarLocation<T extends Pick<SeekSettings, 'sidecarEnabled' | 'sidecarIndexLocation' | 'sidecarHiddenIndexExpert'>>(s: T): T {
+    if (s.sidecarEnabled && !s.sidecarHiddenIndexExpert) s.sidecarIndexLocation = 'visible';
+    return s;
+}
 
 // One-time settings migrations, keyed on the persisted settingsRev. Applied to the
 // raw data.json object BEFORE it is merged over DEFAULT_SETTINGS in main.ts onload —

@@ -7,6 +7,15 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 ### Added
 - **Settings → Index → Danger Zone.** Recover search index (Resume indexing) and Force reset search index sit next to Full reindex, with Reset to defaults in the same card. Both recovery buttons call the existing self-heal paths (`recoverIndexFromSettings` / `forceResetIndexFromSettings`) and refresh the status bar. A Consumer does not start a producer full reindex from Force reset — it restores from the lead computer’s sidecar files.
 
+## 1.15.0-rc.5
+
+One toggle for cross-device index sharing — no folder choice.
+
+### Changed
+- **Settings → Index → Sync index across devices is one toggle with no location picker.** Seek puts its index files in a `Seek Index/` folder at your vault root, and whatever syncs your vault (Obsidian Sync, iCloud, …) delivers them; another device opens the vault and Seek reads those files instead of re-embedding every note. Search still uses each device's own index. Off = this device only, no vault index files.
+- **Turning the toggle on moves any existing hidden index files into `Seek Index/`** (safe to repeat; never overwrites files already there) and shows one notice to reload Seek once. Installs that already had sync on and a synced `data.json` pointing at the hidden folder are moved to `Seek Index/` on the next load, with no re-toggle.
+- **The hidden `.obsidian` index location is now an Expert option** (collapsed under the toggle) with a warning that it is not for multi-device or vault sync. New installs default to the `Seek Index/` location.
+
 ## 1.15.0-rc.4
 
 Consumer boot hydrate chrome — Restoring file progress instead of empty Starting up.

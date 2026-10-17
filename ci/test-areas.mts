@@ -61,6 +61,7 @@ export const CI_TEST_AREAS = {
         'src/sidecar/sidecar-fleet.test.ts',
         'src/sidecar/sidecar-preflight.test.ts',
         'src/sidecar/sidecar-sync.test.ts',
+        'src/sidecar/sidecar-location.test.ts',
         'src/sidecar/sidecar.test.ts',
         'src/ui/index-eta.test.ts',
         'src/ui/index-notice.test.ts',
