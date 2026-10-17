@@ -4,9 +4,9 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
-## 1.15.0
+## 1.15.0-rc.3
 
-Hydrate progress on status chrome, in-plugin full-reindex takeover, and GPU overlap for production reindex.
+Hydrate progress on status chrome, in-plugin full-reindex takeover, and GPU overlap for production reindex. RC until this build is proven stable.
 
 ### Changed
 - **Auto index role: the computer with the newest full rebuild is lead; other computers add new notes to the shared index.** Phones still copy only. A laptop no longer waits for the desktop to encode every new file — it encodes locally, writes its own sidecar files, and the lead copies them. Full reindex, deleting another device’s shards, and model/vector changes stay on the lead. Settings → Index → Advanced explains Auto / Producer / Consumer in those terms.
