@@ -65,6 +65,8 @@ export const INDEX_STATUS_HEALTH: Record<IndexStatusHealth, IndexStatusCopy> = {
 export interface IndexHydrateProgress {
     done: number;
     total: number;
+    /** Integer 0–100 from `indexPercent` — consumers must not recompute. */
+    percent: number;
 }
 
 export interface IndexStatusReport {
@@ -83,17 +85,17 @@ export interface IndexStatusReporterInput extends IndexUiStatusInput {
      * Live sidecar hydrate (greedy files walked, needed/hydrated notes, or
      * wait-for-producer inventory vs vault files). Ignored for stuck/locked.
      */
-    hydrateProgress?: IndexHydrateProgress | null;
+    hydrateProgress?: { done: number; total: number; percent?: number } | null;
 }
 
 export function normalizeHydrateProgress(
-    progress: IndexHydrateProgress | null | undefined,
+    progress: { done: number; total: number; percent?: number } | null | undefined,
 ): IndexHydrateProgress | null {
     if (!progress) return null;
     const total = Math.floor(progress.total);
     if (!Number.isFinite(total) || total <= 0) return null;
     const done = Math.min(total, Math.max(0, Math.floor(progress.done) || 0));
-    return { done, total };
+    return { done, total, percent: indexPercent(done, total) };
 }
 
 function hydrateCopyApplies(mode: IndexStatusMode, hydrating: boolean): boolean {
@@ -105,9 +107,8 @@ export function withHydrateProgressCopy(
     copy: IndexStatusCopy,
     progress: IndexHydrateProgress,
 ): IndexStatusCopy {
-    const pct = indexPercent(progress.done, progress.total);
-    const compactCounts = `${progress.done.toLocaleString()}/${progress.total.toLocaleString()} · ${pct}%`;
-    const labelCounts = `${progress.done.toLocaleString()} / ${progress.total.toLocaleString()} · ${pct}%`;
+    const compactCounts = `${progress.done.toLocaleString()}/${progress.total.toLocaleString()} · ${progress.percent}%`;
+    const labelCounts = `${progress.done.toLocaleString()} / ${progress.total.toLocaleString()} · ${progress.percent}%`;
     return {
         ...copy,
         compact: `${copy.compact} ${compactCounts}`,

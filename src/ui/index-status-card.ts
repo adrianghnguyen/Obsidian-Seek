@@ -4,7 +4,7 @@
 // compete with that number.
 
 import { indexPercent } from './index-eta';
-import { INDEX_STATUS_COPY, type IndexHydrateProgress, type IndexStatusHealth, type IndexStatusMode } from './index-status-report';
+import { INDEX_STATUS_COPY, normalizeHydrateProgress, type IndexHydrateProgress, type IndexStatusHealth, type IndexStatusMode } from './index-status-report';
 
 export type { IndexStatusHealth, IndexStatusMode };
 
@@ -26,6 +26,17 @@ export interface IndexStatusJob {
     paused?: boolean;
     /** Catch-up is aligning the index with Honor / excluded-folder changes. */
     aligningExclusions?: boolean;
+}
+
+/** Live encode-speed inputs for Settings embed diagnostics (not status-bar chrome). */
+export interface IndexJobSpeedView {
+    chunksDone: number;
+    tokensDone: number;
+    done: number;
+    total: number;
+    elapsedMs: number;
+    paused: boolean;
+    kind?: IndexJobKind;
 }
 
 export const INDEX_ALIGNING_EXCLUSIONS_LABEL = 'Aligning with exclusions…';
@@ -67,16 +78,14 @@ export function indexWaitCardModel(input: {
     health: IndexStatusHealth;
     job?: IndexStatusJob | null;
     stats?: IndexStatusCardStats | null;
-    hydrateProgress?: IndexHydrateProgress | null;
+    hydrateProgress?: { done: number; total: number; percent?: number } | null;
 }): {
     health: IndexStatusHealth;
     stats: IndexStatusCardStats | null;
     job: IndexStatusJob | null;
     hydrate: IndexHydrateProgress | null;
 } {
-    const hydrate = input.hydrateProgress && input.hydrateProgress.total > 0
-        ? input.hydrateProgress
-        : null;
+    const hydrate = normalizeHydrateProgress(input.hydrateProgress);
     // Starting/Restoring/Locked/Stuck win over an in-flight job so hydrate/lock never paints Indexing.
     if (input.health === 'starting' || input.health === 'restoring' || input.health === 'locked' || input.health === 'stuck') {
         const showHydrate = (input.health === 'starting' || input.health === 'restoring') ? hydrate : null;
@@ -119,7 +128,7 @@ export function renderIndexStatusCard(
         mode?: IndexStatusMode;
         /** Live reporter heading (includes hydrate counts when restoring). */
         label?: string;
-        hydrateProgress?: IndexHydrateProgress | null;
+        hydrateProgress?: { done: number; total: number; percent?: number } | null;
     },
 ): HTMLElement {
     const model = indexWaitCardModel(opts);

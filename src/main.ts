@@ -99,6 +99,11 @@ import { IndexStatusBar, extendIndexPassTotal, parseIndexedProgress, type IndexJ
 import type { IndexJobKind, IndexStatusHealth, IndexStatusJob } from './ui/index-status-card';
 import { IndexStatusReporter, type IndexStatusReport } from './ui/index-status-report';
 import {
+    buildIndexProgressSnapshot,
+    type IndexProgressCoverageOverlay,
+    type IndexProgressSnapshot,
+} from './ui/index-progress-snapshot';
+import {
     RecentSearchRing,
     StartupBootHistory,
     StartupSessionTracker,
@@ -351,6 +356,8 @@ export default class SeekPlugin extends Plugin {
     // Last known indexed file/chunk counts for sync status-bar health (null = not probed yet).
     private indexInventoryFiles: number | null = null;
     private indexInventoryChunks: number | null = null;
+    /** Last FileRecords ∩ vault overlay so the status bar can read coverage without Settings open. */
+    private indexCoverageOverlay: IndexProgressCoverageOverlay | null = null;
     private inventoryGen = 0;
     private nextIndexJobId = 1;
     private readonly indexProgress = new IndexStatusBar();
@@ -537,7 +544,23 @@ export default class SeekPlugin extends Plugin {
 
     /** Live encode-speed inputs for Settings embed diagnostics. */
     getIndexJobSpeedView(): IndexJobSpeedView | null {
-        return this.indexProgress.jobSpeedView();
+        return this.getIndexProgressSnapshot().speed;
+    }
+
+    /**
+     * Sole live progress snapshot for the status bar, Settings Index, and
+     * folder-coverage headlines (same files/chunks/tokens/kind/phase).
+     */
+    getIndexProgressSnapshot(coverage?: IndexProgressCoverageOverlay | null): IndexProgressSnapshot {
+        if (coverage && coverage.total > 0) this.indexCoverageOverlay = coverage;
+        return buildIndexProgressSnapshot({
+            report: this.getIndexStatusReport(),
+            job: this.getIndexJob(),
+            speed: this.indexProgress.jobSpeedView(),
+            inventoryFiles: this.indexInventoryFiles,
+            inventoryChunks: this.indexInventoryChunks,
+            coverage: coverage ?? this.indexCoverageOverlay,
+        });
     }
 
     /** Pending dirty/delta paths for Settings coverage overlay. */
@@ -1072,6 +1095,7 @@ export default class SeekPlugin extends Plugin {
         this.indexProgress.mount(this.addStatusBarItem(), {
             getStats: () => this.getIndexStats(),
             getReport: () => this.getIndexStatusReport(),
+            getSnapshot: () => this.getIndexProgressSnapshot(),
             onOpenSettings: () => this.openSeekSettings(),
             onRecover: () => { void this.retryIndexStoreOpen(); },
         });
@@ -3452,8 +3476,8 @@ export default class SeekPlugin extends Plugin {
     }
 
     private coverageFullJobActive(): boolean {
-        const job = this.getIndexJob();
-        return job?.kind === 'full' && job.done < job.total;
+        const snap = this.getIndexProgressSnapshot();
+        return snap.kind === 'full' && snap.filesDone < snap.filesTotal;
     }
 
     /** Per-folder embedder coverage for the settings surface (passthrough + pending overlay). */
@@ -3476,8 +3500,7 @@ export default class SeekPlugin extends Plugin {
         const summary = await this.getFolderCoverage();
         return createLiveCoverageSnapshot({
             summary,
-            health: this.indexUiHealth,
-            job: this.getIndexJob(),
+            progress: this.getIndexProgressSnapshot(summary.overall),
         });
     }
 

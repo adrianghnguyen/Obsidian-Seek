@@ -201,7 +201,7 @@ export interface IndexFooterInput {
         tone: string;
         health: IndexUiStatus;
         label?: string;
-        hydrateProgress?: { done: number; total: number } | null;
+        hydrateProgress?: { done: number; total: number; percent?: number } | null;
     };
 }
 

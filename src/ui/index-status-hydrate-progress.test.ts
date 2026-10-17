@@ -89,7 +89,7 @@ describe('IndexStatusReporter hydrate progress', () => {
         });
         expect(report.mode).toBe('restoring');
         expect(report.health).toBe('restoring');
-        expect(report.hydrateProgress).toEqual({ done: 12, total: 40 });
+        expect(report.hydrateProgress).toEqual({ done: 12, total: 40, percent: 30 });
         expect(report.compact).toBe(`${INDEX_STATUS_COPY.restoring.compact} 12/40 · 30%`);
         expect(report.label).toContain('12 / 40');
         expect(report.label).toContain('30%');
@@ -168,7 +168,7 @@ describe('IndexStatusReporter hydrate progress', () => {
         });
         expect(report.mode).toBe('indexing');
         expect(report.compact).toBe(`${INDEX_STATUS_COPY.indexing.compact} 21/80 · 26%`);
-        expect(report.hydrateProgress).toEqual({ done: 21, total: 80 });
+        expect(report.hydrateProgress).toEqual({ done: 21, total: 80, percent: 26 });
     });
 
     it('catch-up without hydrate still uses static Indexing copy (job stays on the bar)', () => {

@@ -955,11 +955,39 @@ describe('createLiveCoverageSnapshot and flattenCoverageTree', () => {
 
         const snapshot = createLiveCoverageSnapshot({
             summary,
-            health: 'indexing',
-            job: { kind: 'full', done: 1, total: 3 },
+            progress: {
+                phase: 'embed',
+                health: 'indexing',
+                mode: 'full-reindex',
+                kind: 'full',
+                filesDone: 1,
+                filesTotal: 3,
+                percent: 33,
+                chunksDone: 4,
+                tokensDone: 0,
+                elapsedMs: 100,
+                paused: false,
+                aligningExclusions: false,
+                report: {
+                    mode: 'full-reindex',
+                    health: 'indexing',
+                    label: 'Reindexing…',
+                    compact: 'Reindexing',
+                    tone: 'accent',
+                    hydrateProgress: null,
+                },
+                job: { kind: 'full', done: 1, total: 3 },
+                speed: {
+                    done: 1, total: 3, chunksDone: 4, tokensDone: 0, elapsedMs: 100, paused: false, kind: 'full',
+                },
+                hydrate: null,
+            },
         });
 
         expect(snapshot.health).toBe('indexing');
+        expect(snapshot.progress.filesDone).toBe(1);
+        expect(snapshot.progress.filesTotal).toBe(3);
+        expect(snapshot.progress.chunksDone).toBe(4);
         expect(snapshot.job?.total).toBe(3);
         expect(snapshot.overall.total).toBe(3);
         expect(snapshot.overall.covered).toBe(1);

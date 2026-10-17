@@ -45,7 +45,7 @@ import {
 } from '../ui/index-status-settings';
 import { formatRecentSearchLine } from '../diagnostics/session-telemetry';
 import type { SettingsTelemetrySink } from '../main';
-import { formatRoughEta, indexPercent } from '../ui/index-eta';
+import { formatRoughEta } from '../ui/index-eta';
 import type { FolderCoverageNode, FolderCoverageSummary, FolderCoveragePathSets, CoveragePanelMessage } from '../index/folder-coverage';
 import {
     emptyFolderCoverage,
@@ -61,7 +61,9 @@ import {
     remainingFilesPreview,
     ownFilesRow,
     OWN_FILES_PATH,
+    coverageHeadlineFromProgress,
 } from '../index/folder-coverage';
+import type { IndexProgressSnapshot } from '../ui/index-progress-snapshot';
 import {
     getBackendOverride, setBackendOverride, isWebgpuDemoted, clearWebgpuDemoted,
     getStartupWarm, setStartupWarm, isMobilePlatform,
@@ -378,16 +380,20 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
 
     // ---- Index ---------------------------------------------------------------------
     private statusReport(): IndexStatusReport {
-        return this.plugin.getIndexStatusReport();
+        return this.progressSnapshot().report;
+    }
+
+    private progressSnapshot(): IndexProgressSnapshot {
+        return this.plugin.getIndexProgressSnapshot(this.coverageCache?.overall ?? null);
     }
 
     private statusState(): IndexStatusHealth {
-        return this.statusReport().health;
+        return this.progressSnapshot().health;
     }
 
     private activeFullJob() {
-        const job = this.plugin.getIndexJob();
-        return job?.kind === 'full' ? job : null;
+        const snap = this.progressSnapshot();
+        return snap.kind === 'full' ? snap.job : null;
     }
 
     private showIndexingProgress(): boolean {
@@ -413,8 +419,8 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         if (health === 'stuck' || health === 'locked') return true;
         if (!this.plugin.getStartupTimingView().bootComplete) return true;
         // Live embed rates on the status card while any index job is active.
-        const job = this.plugin.getIndexJob();
-        return job != null && job.done < job.total;
+        const snap = this.progressSnapshot();
+        return snap.phase === 'embed' || snap.phase === 'hydrate';
     }
 
     private startStartupPoll(): void {
@@ -756,14 +762,18 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         host.empty();
         this.paintRecoveryRow();
         const startup = this.plugin.getStartupTimingView();
-        const report = this.statusReport();
+        const snap = this.progressSnapshot();
+        const report = snap.report;
+        const stats = this.stats && snap.phase === 'idle'
+            ? { ...this.stats, files: snap.filesDone, chunks: snap.chunksDone }
+            : this.stats;
         renderSettingsIndexStatusCard(host, {
-            health: report.health,
-            mode: report.mode,
+            health: snap.health,
+            mode: snap.mode,
             label: report.label,
-            hydrateProgress: report.hydrateProgress,
-            stats: this.stats,
-            job: this.plugin.getIndexJob(),
+            hydrateProgress: snap.hydrate,
+            stats,
+            job: snap.job,
             startup,
             liveElapsedMs: startup.bootComplete ? null : this.plugin.getStartupLiveElapsedMs(),
             prevBoot: this.plugin.getPreviousStartupBoot(),
@@ -774,7 +784,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                     this.embedDiagOpen = !this.embedDiagOpen;
                     this.paintStatusCard();
                 },
-                live: this.plugin.getIndexJobSpeedView(),
+                live: snap.speed,
                 lastComplete: this.plugin.getLastIndexComplete(),
                 lastLoad: this.plugin.getLastLoadEntry(),
             },
@@ -789,11 +799,12 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             if (!this.containerEl.isConnected) { this.stopCoveragePoll(); return; }
             void this.paintCoverage({ refresh: true });
             this.paintExclusionBanner();
-            const job = this.plugin.getIndexJob();
+            const snap = this.progressSnapshot();
             const o = this.coverageCache?.overall;
-            const live = (job != null && job.done < job.total)
+            const live = snap.phase === 'embed'
+                || snap.phase === 'hydrate'
                 || (o != null && (o.remaining > 0 || o.catchingUp > 0));
-            if (job != null && job.done < job.total) this.paintStatusCard();
+            if (snap.phase === 'embed' || snap.phase === 'hydrate') this.paintStatusCard();
             this.coveragePoll = window.setTimeout(tick, live ? COVERAGE_LIVE_POLL_MS : COVERAGE_POLL_MS);
         };
         this.coveragePoll = window.setTimeout(tick, COVERAGE_LIVE_POLL_MS);
@@ -837,11 +848,11 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
     }
 
     private liveCoverageSummary(pathSets: FolderCoveragePathSets): FolderCoverageSummary {
-        const job = this.plugin.getIndexJob();
+        const snap = this.progressSnapshot();
         return computeFolderCoverage({
             ...pathSets,
             pendingPaths: this.plugin.getIndexDeltaSnapshot().pendingPaths,
-            fullJobActive: job?.kind === 'full' && job.done < job.total,
+            fullJobActive: snap.kind === 'full' && snap.filesDone < snap.filesTotal,
         });
     }
 
@@ -865,10 +876,11 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         host.empty();
 
         const pendingPaths = this.plugin.getIndexDeltaSnapshot().pendingPaths;
-        const job = this.plugin.getIndexJob();
+        const snap = this.plugin.getIndexProgressSnapshot(summary.overall);
+        const job = snap.job;
         const view = resolveCoveragePanelView({
             summary,
-            health: this.statusState(),
+            health: snap.health,
             job,
             orchestratorReady: this.plugin.isCoverageSourceReady,
             loadFailed,
@@ -881,9 +893,12 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         const head = wrap.createDiv({ cls: 'seek-coverage-head' });
         const titles = head.createDiv({ cls: 'seek-coverage-head-text' });
         titles.createSpan({ cls: 'seek-coverage-title', text: 'Index coverage by folder' });
+        const liveHeadline = coverageHeadlineFromProgress(summary.overall, snap);
         titles.createDiv({
             cls: 'seek-coverage-sub',
-            text: 'Share of notes already searchable. Cells show what Seek is doing now.',
+            text: liveHeadline.live
+                ? 'Overall counts match the status bar for this restore. Folder cells still show which notes are already searchable.'
+                : 'Share of notes already searchable. Same counts as the status bar and Settings Index.',
         });
         if (loadFailed) {
             const warn = head.createSpan({ cls: 'seek-coverage-stale' });
@@ -901,31 +916,38 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         if (!view.showTree) return;
 
         const o = view.summary.overall;
-        const overallTone = coverageBarTone(o);
-        const overallTip = formatCoverageCountTip(o);
+        const headline = liveHeadline;
+        const overallTone = headline.live ? (headline.percent >= 100 ? 'good' : 'warn') : coverageBarTone(o);
+        const overallTip = headline.live
+            ? `${headline.done.toLocaleString()} of ${headline.total.toLocaleString()} notes ${headline.caption} · ${headline.percent}%.`
+            : formatCoverageCountTip(o);
         const overall = wrap.createDiv({
-            cls: 'seek-coverage-overall' + (o.remaining > 0 || o.indexing > 0 ? ' is-indexing' : ''),
+            cls: 'seek-coverage-overall' + (o.remaining > 0 || o.indexing > 0 || headline.live ? ' is-indexing' : ''),
         });
         this.renderCoverageCells(overall, o);
         const overallPctWrap = overall.createDiv({ cls: 'seek-coverage-pct-wrap' });
         const overallPct = overallPctWrap.createSpan({
             cls: 'seek-coverage-pct is-' + overallTone,
-            text: formatCoveragePercent(o),
+            text: headline.live
+                ? `${headline.percent}%`
+                : formatCoveragePercent(o),
         });
-        if (o.total > 0) {
-            overallPctWrap.createSpan({ cls: 'seek-coverage-pct-caption', text: 'in the index' });
+        if (headline.total > 0 || o.total > 0) {
+            overallPctWrap.createSpan({ cls: 'seek-coverage-pct-caption', text: headline.caption });
         }
         overallPct.setAttr('aria-label', overallTip);
         setTooltip(overallPct, overallTip, { delay: 300 });
         const overallMeta = overall.createSpan({
             cls: 'seek-coverage-overall-meta',
-            text: formatCoverageMeta(o),
+            text: headline.live
+                ? `${headline.done.toLocaleString()} / ${headline.total.toLocaleString()}`
+                : formatCoverageMeta(o),
         });
         overallMeta.setAttr('aria-label', overallTip);
         setTooltip(overallMeta, overallTip, { delay: 300 });
 
         this.renderCoverageLegend(wrap);
-        this.renderRemainingFiles(wrap, pendingPaths, job);
+        this.renderRemainingFiles(wrap, pendingPaths, snap);
 
         const rows = wrap.createDiv({ cls: 'seek-coverage-rows' });
         const rootOwn = view.summary.root.children.length > 0 ? ownFilesRow(view.summary.root) : null;
@@ -963,7 +985,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
     private renderRemainingFiles(
         parent: HTMLElement,
         pendingPaths: readonly string[],
-        job: ReturnType<SeekPlugin['getIndexJob']>,
+        snap: IndexProgressSnapshot,
     ): void {
         if (pendingPaths.length > 0) {
             const fold = parent.createEl('details', { cls: 'seek-coverage-remaining' });
@@ -986,8 +1008,8 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             }
             return;
         }
-        if (!job || job.kind !== 'full' || job.done >= job.total) return;
-        const rem = Math.max(0, job.total - job.done);
+        if (snap.kind !== 'full' || snap.filesDone >= snap.filesTotal) return;
+        const rem = Math.max(0, snap.filesTotal - snap.filesDone);
         if (rem <= 0) return;
         parent.createDiv({
             cls: 'seek-coverage-remaining-count',
@@ -1270,7 +1292,8 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
     }
 
     private paintProgress(): void {
-        const job = this.activeFullJob();
+        const snap = this.progressSnapshot();
+        const job = snap.kind === 'full' ? snap.job : null;
         if (!job) {
             if (!this.reindexStarting) {
                 this.stopProgressPoll();
@@ -1282,14 +1305,14 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             return;
         }
         if (this.jobStartedAt === 0) this.jobStartedAt = performance.now();
-        const pct = indexPercent(job.done, job.total);
-        const eta = formatRoughEta(job.done, job.total, performance.now() - this.jobStartedAt);
+        const pct = snap.percent;
+        const eta = formatRoughEta(snap.filesDone, snap.filesTotal, snap.elapsedMs || (performance.now() - this.jobStartedAt));
         if (this.progressFillEl) this.progressFillEl.style.width = `${pct}%`;
         if (this.progressLabelEl) {
-            const line = `${job.done.toLocaleString()} / ${job.total.toLocaleString()} notes · ${pct}%`;
+            const line = `${snap.filesDone.toLocaleString()} / ${snap.filesTotal.toLocaleString()} notes · ${pct}%`;
             this.progressLabelEl.setText(eta ? `${line} · ${eta} left` : line);
         }
-        if (job.done >= job.total) {
+        if (snap.filesDone >= snap.filesTotal) {
             this.reindexStarting = false;
             this.stopProgressPoll();
             this.rerender();

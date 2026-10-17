@@ -7,6 +7,10 @@
 //
 import type { IndexStatusHealth, IndexStatusJob } from '../ui/index-status-card';
 import { INDEX_STATUS_COPY } from '../ui/index-status-report';
+import type { IndexProgressSnapshot } from '../ui/index-progress-snapshot';
+import { coverageHeadlineFromProgress } from '../ui/index-progress-snapshot';
+
+export { coverageHeadlineFromProgress };
 
 // Pure and dependency-injected (no Obsidian / model coupling) so the math and the
 // change detection are unit-testable. The plugin supplies the three live path sets
@@ -99,6 +103,8 @@ export interface FlatFolderCoverageItem {
 }
 
 export interface LiveCoverageSnapshot {
+    /** Shared chrome snapshot — status bar and Settings Index read this too. */
+    progress: IndexProgressSnapshot;
     health: IndexStatusHealth;
     job: IndexStatusJob | null;
     overall: {
@@ -822,14 +828,14 @@ export function flattenCoverageTree(node: FolderCoverageNode, depth = 0): FlatFo
 
 export function createLiveCoverageSnapshot(input: {
     summary: FolderCoverageSummary;
-    health: IndexStatusHealth;
-    job: IndexStatusJob | null;
+    progress: IndexProgressSnapshot;
 }): LiveCoverageSnapshot {
-    const { summary, health, job } = input;
+    const { summary, progress } = input;
     const { total, covered, remaining, excluded, percent } = summary.overall;
     return {
-        health,
-        job,
+        progress,
+        health: progress.health,
+        job: progress.job,
         overall: {
             total,
             covered,
