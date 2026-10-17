@@ -1,6 +1,6 @@
 // GPU embed vs IndexedDB persist pipeline and uncapped full-reindex batch size.
-// The iframe RPC stays single-flight; this pins the parent coordinator: batch
-// N+1's embedBatch starts while batch N's putBatchQuantized is still in flight.
+// Parent coordinator: batch N+1's embedBatch starts while batch N's
+// putBatchQuantized is still in flight, and two embedBatches may overlap.
 import 'fake-indexeddb/auto';
 import { describe, it, expect, afterEach } from 'vitest';
 import { Scenario } from '../test-harness/scenario';
@@ -69,6 +69,28 @@ describe('embed vs IndexedDB pipeline', () => {
         expect(entry.inflightHighWater).toBeGreaterThanOrEqual(2);
     });
 
+    it('starts a second embedBatch before the first embed RPC returns', async () => {
+        const s = await boot();
+        for (let i = 0; i < 16; i++) s.vault.write(`n${i}.md`, `${BODY} ${i}`, 2000 + i);
+        let inflight = 0;
+        let maxInflight = 0;
+        const realEmbed = s.embedder.embedBatch.bind(s.embedder);
+        s.embedder.embedBatch = async (texts, bucket) => {
+            inflight++;
+            maxInflight = Math.max(maxInflight, inflight);
+            await new Promise(r => setTimeout(r, 25));
+            try {
+                return await realEmbed(texts, bucket);
+            } finally {
+                inflight--;
+            }
+        };
+        const entry = await s.orch.reindexAll();
+        expect(entry.pass).toBe(true);
+        expect(maxInflight).toBeGreaterThanOrEqual(2);
+        expect(entry.committedFilePaths).toHaveLength(16);
+    });
+
     it('full reindex flushes long-bucket chunks at 8; incremental catch-up stays on the token budget', async () => {
         const s = await boot();
         s.vault.write('seed.md', `${BODY} seed`, 1);
@@ -94,6 +116,38 @@ describe('embed vs IndexedDB pipeline', () => {
         expect(incrSizes.length).toBeGreaterThan(0);
         expect(Math.max(...incrSizes)).toBe(3);
         expect(incrSizes).toContain(3);
+    });
+
+    it('tokenCounts later files while a full-reindex embedBatch is in flight', async () => {
+        const s = await boot();
+        for (let i = 0; i < 16; i++) s.vault.write(`n${i}.md`, `${BODY} ${i}`, 1000 + i);
+
+        let releaseEmbed!: () => void;
+        const embedHold = new Promise<void>(r => { releaseEmbed = r; });
+        let embedInFlight = 0;
+        let tokenCountsDuringEmbed = 0;
+        const realEmbed = s.embedder.embedBatch.bind(s.embedder);
+        s.embedder.embedBatch = async (texts, bucket) => {
+            embedInFlight++;
+            try {
+                await embedHold;
+                return realEmbed(texts, bucket);
+            } finally {
+                embedInFlight--;
+            }
+        };
+        s.embedder.tokenCounts = async (texts: string[]) => {
+            if (embedInFlight > 0) tokenCountsDuringEmbed++;
+            return texts.map(() => LONG_BUCKET);
+        };
+
+        const pass = s.orch.reindexAll();
+        await until(() => tokenCountsDuringEmbed > 0, 'tokenCounts overlapped in-flight embedBatch');
+        releaseEmbed();
+        const entry = await pass;
+        expect(entry.pass).toBe(true);
+        expect(entry.committedFilePaths).toHaveLength(16);
+        expect(tokenCountsDuringEmbed).toBeGreaterThan(0);
     });
 
     it('a multi-batch file still commits one coherent record', async () => {

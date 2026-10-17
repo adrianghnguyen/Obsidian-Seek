@@ -55,18 +55,18 @@ describe('consumer hydrate completing → good-enough / not stuck', () => {
     });
 });
 
-describe('no embed catch-up when mayFullReindex is false', () => {
+describe('no embed catch-up when mayEmbedCatchUp is false', () => {
     it('schedules lexical-only catch-up on a desktop consumer', () => {
         expect(resolveConsumerCatchUpKind({
-            mayFullReindex: false,
+            mayEmbedCatchUp: false,
             catchUpPending: true,
             mobile: false,
         })).toBe('lexical');
     });
 
-    it('still schedules GPU/embed catch-up on a producer', () => {
+    it('still schedules GPU/embed catch-up on a producer or contributor', () => {
         expect(resolveConsumerCatchUpKind({
-            mayFullReindex: true,
+            mayEmbedCatchUp: true,
             catchUpPending: true,
             mobile: false,
         })).toBe('embed');
@@ -74,12 +74,12 @@ describe('no embed catch-up when mayFullReindex is false', () => {
 
     it('does not schedule catch-up when nothing is pending', () => {
         expect(resolveConsumerCatchUpKind({
-            mayFullReindex: false,
+            mayEmbedCatchUp: false,
             catchUpPending: false,
             mobile: false,
         })).toBe('none');
         expect(resolveConsumerCatchUpKind({
-            mayFullReindex: true,
+            mayEmbedCatchUp: true,
             catchUpPending: true,
             mobile: true,
         })).toBe('none');

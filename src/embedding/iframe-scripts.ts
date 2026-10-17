@@ -941,7 +941,7 @@ async function loadModel(modelId, requestedDevice, requestedDtype, skipWarmup, r
 async function embedText(text) {
     if (!pipeline) throw new Error('Model not loaded');
     const t0 = performance.now();
-    // QUERY path (single-embed is query-only; indexing uses embedBatch below).
+    // QUERY path (single-embed is query-only; indexing uses runEmbedBatch).
     // Tokenize the cleaned query and bucket off its EXACT token length on the
     // small-floor, top-trimmed query ladder (QUERY_SEQ_BUCKETS). Because the
     // bucket is ≥ the real token count, max_length never truncates — the whole
@@ -977,47 +977,136 @@ async function embedText(text) {
     return { vector, latencyMs: performance.now() - t0 };
 }
 
-async function embedBatch(texts, explicitBucket) {
+// tx.js FeatureExtractionPipeline._call drops padding/max_length (only pooling
+// / normalize / quantize are read). Calling pipeline(texts, { max_length })
+// therefore padded to the batch max, not the warmed bucket, and Dawn recompiled
+// or idled between shapes. Tokenize ourselves with the bucket, then model().
+function tokenizeEmbedBatch(texts, explicitBucket) {
     if (!pipeline) throw new Error('Model not loaded');
-    const t0 = performance.now();
-    // INDEX path. The parent routes chunks into per-bucket buffers by EXACT
-    // token count (token-counts RPC + selectIndexBucket) and passes the bucket
-    // here, so max_length always holds every input — truncation:true below is
-    // a pure safety cap that the token-budget packer keeps unreachable.
-    // Fallback to the char estimate only for legacy callers that omit the
-    // bucket (the estimate under-buckets dense text — see selectBucket).
     let bucket = explicitBucket;
     if (!bucket || !SEQ_BUCKETS.includes(bucket)) {
-        const maxChars = texts.reduce((m, t) => Math.max(m, t.length), 0);
+        const maxChars = texts.reduce(function (m, t) { return Math.max(m, t.length); }, 0);
         bucket = selectBucket(maxChars);
     }
-    // wasm: pad to the longest sequence in the batch (HF padding:true), not
-    // the bucket rung — chunks in a buffer share a bucket so the intra-batch
-    // spread is bounded by it, and every pad column saved is CPU work saved.
-    // webgpu: 'max_length' (= the bucket) is load-bearing — Dawn's shader
-    // cache and the SafeInt discipline are keyed to the warmed shape set.
-    const output = await pipeline(texts, {
-        pooling: POOLING, normalize: true,
-        padding: currentDevice === 'wasm' ? true : 'max_length',
-        truncation: true, max_length: bucket,
-    });
-    const dims = output.dims;
-    const dim = dims[dims.length - 1];
-    // Fail loud on a model/dim misconfig (see embedText): a model narrower than
-    // OUTPUT_DIM would have sliceAndRenormalize emit short vectors per row.
-    if (dim < OUTPUT_DIM) throw new Error('embedBatch: model output dim ' + dim + ' < OUTPUT_DIM ' + OUTPUT_DIM + ' - model/dim misconfig');
-    const data = output.data;
+    const tokOpts = currentDevice === 'wasm'
+        ? { padding: true, truncation: true }
+        : { padding: 'max_length', truncation: true, max_length: bucket };
+    const enc = pipeline.tokenizer(texts, tokOpts);
+    if (enc && typeof enc.then === 'function') {
+        return enc.then(function (e) { return { enc: e, bucket: bucket }; });
+    }
+    return { enc: enc, bucket: bucket };
+}
+
+function meanPoolRows(lhs, attentionMask) {
+    const data = lhs.data;
+    const mask = attentionMask.data;
+    const batchSize = lhs.dims[0];
+    const seqLength = lhs.dims[1];
+    const embedDim = lhs.dims[2];
+    const out = new Float32Array(batchSize * embedDim);
+    let outIndex = 0;
+    for (let i = 0; i < batchSize; ++i) {
+        const offset = i * embedDim * seqLength;
+        for (let k = 0; k < embedDim; ++k) {
+            let sum = 0;
+            let count = 0;
+            const attnMaskOffset = i * seqLength;
+            const offset2 = offset + k;
+            for (let j = 0; j < seqLength; ++j) {
+                const attn = Number(mask[attnMaskOffset + j]);
+                count += attn;
+                sum += data[offset2 + j * embedDim] * attn;
+            }
+            out[outIndex++] = count > 0 ? sum / count : 0;
+        }
+    }
+    return { data: out, batch: batchSize, dim: embedDim };
+}
+
+function clsPoolRows(lhs) {
+    const data = lhs.data;
+    const batchSize = lhs.dims[0];
+    const seqLength = lhs.dims[1];
+    const embedDim = lhs.dims[2];
+    const out = new Float32Array(batchSize * embedDim);
+    for (let i = 0; i < batchSize; ++i) {
+        const src = i * seqLength * embedDim;
+        for (let k = 0; k < embedDim; ++k) out[i * embedDim + k] = data[src + k];
+    }
+    return { data: out, batch: batchSize, dim: embedDim };
+}
+
+function l2NormalizeRows(pooled) {
+    const data = pooled.data;
+    for (let i = 0; i < pooled.batch; ++i) {
+        let n = 0;
+        const o = i * pooled.dim;
+        for (let k = 0; k < pooled.dim; ++k) n += data[o + k] * data[o + k];
+        n = Math.sqrt(n);
+        if (n > 0) for (let k = 0; k < pooled.dim; ++k) data[o + k] /= n;
+    }
+}
+
+function poolEmbedBatch(outputs, enc, t0) {
+    const lhs = outputs.last_hidden_state || outputs.logits || outputs.token_embeddings;
+    if (!lhs || !lhs.dims || lhs.dims.length < 3) {
+        throw new Error('embedBatch: model output missing last_hidden_state');
+    }
+    const pooled = POOLING === 'mean' ? meanPoolRows(lhs, enc.attention_mask) : clsPoolRows(lhs);
+    l2NormalizeRows(pooled);
+    if (pooled.dim < OUTPUT_DIM) throw new Error('embedBatch: model output dim ' + pooled.dim + ' < OUTPUT_DIM ' + OUTPUT_DIM + ' - model/dim misconfig');
+    if (typeof lhs.dispose === 'function') lhs.dispose();
     const vectors = [];
-    for (let i = 0; i < texts.length; i++) {
-        const row = new Float32Array(data.buffer, data.byteOffset + i * dim * 4, dim);
+    for (let i = 0; i < pooled.batch; i++) {
+        const row = pooled.data.subarray(i * pooled.dim, (i + 1) * pooled.dim);
         vectors.push(sliceAndRenormalize(row, OUTPUT_DIM));
     }
-    // Dispose AFTER the loop — each row above is a view into output.data.buffer,
-    // not a copy; sliceAndRenormalize materializes a fresh OUTPUT_DIM-wide Float32Array per row,
-    // so by the time we get here the tensor's storage is no longer referenced.
-    // Releases the WebGPU readback buffer that would otherwise stay alive until V8 GC.
-    if (typeof output.dispose === 'function') output.dispose();
-    return { vectors, latencyMs: performance.now() - t0 };
+    return { vectors: vectors, latencyMs: performance.now() - t0 };
+}
+
+// Tokenize as soon as the parent posts (CPU, overlaps the in-flight GPU
+// forward). Serialize only pipeline.model() — release that lock when the
+// kernel returns so N+1 can run while this batch is pooled and posted
+// (~15–30 ms of JS that was leaving SM% at ~74%).
+let embedBatchTail = Promise.resolve();
+let tokChain = Promise.resolve();
+function withTokenizer(fn) {
+    const run = tokChain.then(fn, fn);
+    tokChain = run.then(function () {}, function () {});
+    return run;
+}
+function runEmbedBatch(texts, bucket) {
+    const t0 = performance.now();
+    const prepared = withTokenizer(function () { return tokenizeEmbedBatch(texts, bucket); });
+    let releaseGpu = function () {};
+    const gpuDone = new Promise(function (r) { releaseGpu = r; });
+    const start = embedBatchTail.then(
+        function () { return prepared; },
+        function () { return prepared; },
+    );
+    embedBatchTail = gpuDone;
+    return start.then(function (p) {
+        // Release the GPU lock as soon as the forward resolves; defer pooling
+        // to a macrotask so every microtask from releaseGpu (N+1 model()) runs
+        // before lhs.data readback — microtask-only defer still left ~76% SM%.
+        return pipeline.model(p.enc).then(function (outputs) {
+            releaseGpu();
+            const enc = p.enc;
+            return new Promise(function (resolve, reject) {
+                setTimeout(function () {
+                    try {
+                        resolve(poolEmbedBatch(outputs, enc, t0));
+                    } catch (err) {
+                        reject(err);
+                    }
+                }, 0);
+            });
+        }, function (e) {
+            releaseGpu();
+            throw e;
+        });
+    });
 }
 
 // Exact token counts for the parent's index-path bucket routing and the
@@ -1025,20 +1114,23 @@ async function embedBatch(texts, explicitBucket) {
 // accessor the query path uses (embedText above), specials included — so
 // "count <= bucket" is exactly "the forward pass sees every token". Tokenizer
 // only; never touches the model, so it is safe on both WebGPU and WASM and
-// adds no GPU-session pressure (no recycle interplay).
+// adds no GPU-session pressure (no recycle interplay). The parent may post
+// this RPC while embed-batch is awaiting pipeline/model (JS yields there).
 async function tokenCounts(texts) {
     // Prefer the full pipeline's tokenizer; fall back to a standalone tokenizer
     // loaded via load-tokenizer (hydrate path, no model). Same AutoTokenizer +
     // modelId either way, so counts are identical.
     const tokenizer = (pipeline && pipeline.tokenizer) || standaloneTokenizer;
     if (!tokenizer) throw new Error('no tokenizer available — load the model or call load-tokenizer first');
-    const counts = [];
-    for (const t of texts) {
-        const enc = await tokenizer(t);
-        const dims = enc.input_ids.dims;
-        counts.push(dims[dims.length - 1]);
-    }
-    return counts;
+    return withTokenizer(async function () {
+        const counts = [];
+        for (const t of texts) {
+            const enc = await tokenizer(t);
+            const dims = enc.input_ids.dims;
+            counts.push(dims[dims.length - 1]);
+        }
+        return counts;
+    });
 }
 
 // ── T8 spike: nested dedicated-worker probe ─────────────────────────────
@@ -1254,7 +1346,7 @@ function makeProfileText(targetTokens) {
 // pipeline.model (standard transformers.js FeatureExtractionPipeline surface)
 // to put a clock between the stages. Deliberately does NOT dispose the output
 // tensor — this harness is a NON-disposing baseline for diagnostic comparison
-// against the production embedText/embedBatch paths (which DO dispose, see
+// against the production embedText/runEmbedBatch paths (which DO dispose, see
 // 2026-05-19 bog-down diagnosis). The heap delta the parent records around
 // this run is the cost of a single embed's tensors NOT being released.
 // (No backticks anywhere in this child block: it lives inside a template
@@ -1317,7 +1409,7 @@ async function profileRuntime(batchSizes, seqBuckets, reps) {
 // batch x 384 x 4 bytes, paid once per dispatch (1245 dispatches @ budget 512).
 //
 // MUST dedup: at 384-d sliceAndRenormalize is a pass-through, so every row in
-// a batch is a view into the SAME tensor buffer (embedBatch above) — adding
+// a batch is a view into the SAME tensor buffer (poolEmbedBatch above) — adding
 // that buffer once per row would transfer it N times and throw DataCloneError.
 // A Set also covers the future MRL case where each sliced row owns its buffer
 // (then the Set simply holds N distinct buffers). Strings (the request payload)
@@ -1355,7 +1447,7 @@ window.addEventListener('message', async (event) => {
         } else if (data.type === 'embed') {
             result = await embedText(data.payload.text);
         } else if (data.type === 'embed-batch') {
-            result = await embedBatch(data.payload.texts, data.payload.bucket);
+            result = await runEmbedBatch(data.payload.texts, data.payload.bucket);
         } else if (data.type === 'token-counts') {
             result = await tokenCounts(data.payload.texts);
         } else if (data.type === 'load-tokenizer') {

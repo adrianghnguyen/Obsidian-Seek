@@ -7,8 +7,8 @@ file: dev-log-history.md
 
 ## standing
 
-branch: main
-remote: origin/main
+branch: cursor/hydrate-status-progress-5903
+remote: origin/cursor/hydrate-status-progress-5903
 status: open
 tag: catch-up
 tag: unload
@@ -21,6 +21,14 @@ file: src/search.ts
 file: src/logger.ts
 file: src/index-store.ts
 file: src/cache-manager.ts
+file: src/ui/index-progress-snapshot.ts
+file: src/ui/index-status-bar.ts
+file: src/ui/index-status-settings.ts
+file: src/index/folder-coverage.ts
+file: src/settings/settings-tab.ts
+sym: buildIndexProgressSnapshot
+sym: getIndexProgressSnapshot
+sym: coverageHeadlineFromProgress
 sym: runCatchUp
 sym: onunload
 sym: startPostLayoutBoot
@@ -31,9 +39,12 @@ found: vault console flooded by zombie runCatchUp after plugin:reload
 found: computeDelta mass-delete warn is boot race live=0 not a real wipe
 found: production boot-ifi hangs after vault hide; search totalChunks 0
 found: 16 sidecar deviceIds from clone regen; this device jsonl is 3 rows
+found: live snapshot filesDone still used files-started until coverage overlay was preferred
 open: stop catch-up self-chain on unloading or STORE_NOT_OPENED
 open: re-enable Seek in vault and confirm no mass-delete warn on cold restart
 open: production 600s not-ready lock after hide/evict + sidecar identity churn
+open: sandbox health stuck so live coverage vs bar counts not compared
+open: no commit or PR update yet
 exclude: idb-cross-device
 exclude: sidecar-protocol
 exclude: webgpu-device-lost-mobile
@@ -472,3 +483,66 @@ did: disk NDJSON RCA on C:\Obsidian\.obsidian\plugins\seek\logs\seek-log-desktop
 did: killed hung production getIndexStats eval
 open: single-window tray-quit recovery or IDB reset if boot-ifi still never ends
 open: timeout first store.open and do not set vaultIndexEventsReady until hydrate ends
+
+---
+
+## 2026-10-16 hydrate-status-desync
+
+id: 2026-10-16-hydrate-status-desync
+date: 2026-10-16
+status: open
+tag: index
+tag: ui
+tag: hydrate
+file: src/ui/index-progress-snapshot.ts
+file: src/ui/index-status-bar.ts
+file: src/ui/index-status-settings.ts
+file: src/index/folder-coverage.ts
+file: src/settings/settings-tab.ts
+file: src/main.ts
+file: src/search/search.ts
+sym: buildIndexProgressSnapshot
+sym: getIndexProgressSnapshot
+sym: coverageHeadlineFromProgress
+sym: computeFolderCoverage
+sym: IndexStatusBar.progressSnapshot
+sym: getIndexJob
+sym: getIndexJobSpeedView
+found: folder coverage overall used FileRecords vs vault paths (persist inventory)
+found: Settings Index card used getIndexJob plus getIndexJobSpeedView plus getIndexStats independently
+found: status bar painted its own done/total/chunks then mixed report.hydrateProgress
+found: coverage poll recomputed tree from IDB path sets while status used files-started plus GPU chunks
+found: idle Settings files were raw IDB inventory not coverage covered/total
+rca: three chrome surfaces read different counters so persist vs GPU vs hydrate vs inventory disagreed
+did: add buildIndexProgressSnapshot as the sole files/chunks/tokens/kind/phase object
+did: wire status bar Settings Index coverage headline and reindex row to getIndexProgressSnapshot
+did: keep per-folder cells on FileRecords; overall caption this pass/this restore during live work
+open: sandbox identity-gate deploy and visual verify
+open: no commit unless asked
+open: do not auto-promote production Obsidian
+
+---
+
+## 2026-10-16 coverage-consumer
+
+id: 2026-10-16-coverage-consumer
+date: 2026-10-16
+status: done
+tag: index
+tag: ui
+file: src/ui/index-progress-snapshot.ts
+file: src/ui/index-status-bar.ts
+file: src/main.ts
+file: src/settings/settings-tab.ts
+sym: buildIndexProgressSnapshot
+sym: getIndexProgressSnapshot
+sym: coverageHeadlineFromProgress
+sym: IndexStatusBarHooks.getSnapshot
+found: status bar rebuilt its own snapshot without inventory or coverage
+found: embed filesDone used files-started even when coverage FileRecords existed
+rca: folder coverage was the persist consumer; bar and Settings Index still painted the GPU pass
+did: prefer coverage FileRecords for snapshot files; keep files-started on speed for embed diag
+did: status bar getSnapshot hook calls plugin.getIndexProgressSnapshot
+did: typecheck and 1957 tests; sandbox copy hash match; identity gate; plugin reload
+did: Settings Seek tab is a detached document; main-window screenshot misses it; DOM text Startup stuck
+open: sandbox still stuck so live folder vs bar counts were not compared on a running pass

@@ -85,6 +85,23 @@ describe('putBatchQuantized + fileRecord — one atomic transaction (Tier-1)', (
         expect((await store.listAllMeta())).toEqual([]);
     });
 
+    it('writes several file records in the same readwrite tx as leftover chunks', async () => {
+        const { store, rwCalls } = await boot();
+        await store.putBatchQuantized(
+            [chunk('a1', 'alpha', 'a.md'), chunk('b1', 'beta', 'b.md')],
+            [tier(1), tier(2)],
+            [
+                { note_path: 'a.md', mtimeMs: 1, chunk_ids: ['a1'] },
+                { note_path: 'b.md', mtimeMs: 2, chunk_ids: ['b1'] },
+            ],
+        );
+        expect(rwCalls()).toHaveLength(1);
+        expect([...rwCalls()[0][0] as string[]].sort())
+            .toEqual(['binary', 'chunk_body', 'chunk_meta', 'embeddings', 'files']);
+        expect((await store.getFileRecord('a.md'))?.chunk_ids).toEqual(['a1']);
+        expect((await store.getFileRecord('b.md'))?.chunk_ids).toEqual(['b1']);
+    });
+
     it('no chunks + no record stays a silent no-op (the pre-S1 contract)', async () => {
         const { store, rwCalls } = await boot();
         await store.putBatchQuantized([], []);

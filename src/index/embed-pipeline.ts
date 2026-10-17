@@ -1,10 +1,11 @@
 // Producer-consumer bound between GPU embed dispatches and IndexedDB persists.
 //
-// The iframe child is still single-flight (one WebGPU forward at a time). The
-// parent used to wait for the IDB transaction of batch N before posting batch
-// N+1, so the GPU sat idle for the disk round-trip. This semaphore lets the
-// next embed start as soon as vectors return, while persist of N runs in the
-// background, and pauses dispatch if disk falls more than maxInFlight behind.
+// The iframe child serializes WebGPU forwards, but the parent may post the next
+// embed-batch before the previous reply so N+1 starts as N returns. The parent
+// used to wait for the IDB transaction of batch N before posting batch N+1, so
+// the GPU sat idle for the disk round-trip. This semaphore lets persist of N
+// run in the background and pauses dispatch if disk falls more than maxInFlight
+// behind.
 
 export const DEFAULT_EMBED_IN_FLIGHT = 10;
 export const EMBED_IN_FLIGHT_MIN = 1;
@@ -15,6 +16,16 @@ export const MAX_EMBED_IN_FLIGHT = DEFAULT_EMBED_IN_FLIGHT;
 export function clampEmbedInFlightMax(n: number): number {
     if (!Number.isFinite(n)) return DEFAULT_EMBED_IN_FLIGHT;
     return Math.max(EMBED_IN_FLIGHT_MIN, Math.min(EMBED_IN_FLIGHT_MAX, Math.round(n)));
+}
+
+// Full reindex only: how many embed flushes may sit on the GPU tail so the
+// parent can read/chunk/tokenize later notes while batch N is in the iframe.
+// Catch-up still awaits each flush so typing stays smooth.
+export const GPU_AHEAD_MIN = 2;
+export const GPU_AHEAD_MAX = 8;
+
+export function gpuAheadCap(inflightMax: number): number {
+    return Math.max(GPU_AHEAD_MIN, Math.min(GPU_AHEAD_MAX, clampEmbedInFlightMax(inflightMax)));
 }
 
 export class InFlightSemaphore {

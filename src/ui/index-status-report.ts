@@ -16,6 +16,7 @@ import {
     type IndexUiStatus,
     type IndexUiStatusInput,
 } from './index-notice';
+import { indexPercent } from './index-eta';
 export type IndexStatusHealth = 'none' | 'starting' | 'restoring' | 'ok' | 'indexing' | 'error' | 'locked' | 'stuck';
 type ReporterJobKind = 'full' | 'delta' | 'catchup';
 
@@ -60,23 +61,74 @@ export const INDEX_STATUS_HEALTH: Record<IndexStatusHealth, IndexStatusCopy> = {
     stuck: INDEX_STATUS_COPY.stuck,
 };
 
+/** Sidecar hydrate / wait-for-producer file progress — not an embed catch-up job. */
+export interface IndexHydrateProgress {
+    done: number;
+    total: number;
+    /** Integer 0–100 from `indexPercent` — consumers must not recompute. */
+    percent: number;
+}
+
 export interface IndexStatusReport {
     mode: IndexStatusMode;
     health: IndexStatusHealth;
     label: string;
     compact: string;
     tone: string;
+    /** Present while hydrate/restore is the active job and a file total is known. */
+    hydrateProgress: IndexHydrateProgress | null;
 }
 
 export interface IndexStatusReporterInput extends IndexUiStatusInput {
     jobKind?: ReporterJobKind | null;
+    /**
+     * Live sidecar hydrate (greedy files walked, needed/hydrated notes, or
+     * wait-for-producer inventory vs vault files). Ignored for stuck/locked.
+     */
+    hydrateProgress?: { done: number; total: number; percent?: number } | null;
+}
+
+export function normalizeHydrateProgress(
+    progress: { done: number; total: number; percent?: number } | null | undefined,
+): IndexHydrateProgress | null {
+    if (!progress) return null;
+    const total = Math.floor(progress.total);
+    if (!Number.isFinite(total) || total <= 0) return null;
+    const done = Math.min(total, Math.max(0, Math.floor(progress.done) || 0));
+    return { done, total, percent: indexPercent(done, total) };
+}
+
+function hydrateCopyApplies(
+    mode: IndexStatusMode,
+    hydrating: boolean,
+    waitingForSidecar: boolean,
+): boolean {
+    if (!(hydrating || waitingForSidecar)) return false;
+    if (mode === 'starting' || mode === 'restoring') return true;
+    return mode === 'indexing' && hydrating;
+}
+
+export function withHydrateProgressCopy(
+    copy: IndexStatusCopy,
+    progress: IndexHydrateProgress,
+): IndexStatusCopy {
+    const compactCounts = `${progress.done.toLocaleString()}/${progress.total.toLocaleString()} · ${progress.percent}%`;
+    const labelCounts = `${progress.done.toLocaleString()} / ${progress.total.toLocaleString()} · ${progress.percent}%`;
+    return {
+        ...copy,
+        compact: `${copy.compact} ${compactCounts}`,
+        label: `${copy.label} ${labelCounts}`,
+    };
 }
 
 export function indexStatusModeFromUi(
     ui: IndexUiStatus,
     jobKind?: ReporterJobKind | null,
 ): IndexStatusMode {
-    if (ui === 'indexing' && jobKind === 'full') return 'full-reindex';
+    if (ui === 'locked' || ui === 'stuck') return ui;
+    // Clean-slate identity is degraded until the first FileRecords commit; a
+    // live full job must still paint Reindexing, not Index error.
+    if (jobKind === 'full') return 'full-reindex';
     return ui;
 }
 
@@ -84,13 +136,18 @@ export class IndexStatusReporter {
     static compute(input: IndexStatusReporterInput): IndexStatusReport {
         const ui = resolveIndexUiStatus(input);
         const mode = indexStatusModeFromUi(ui, input.jobKind);
-        const copy = INDEX_STATUS_COPY[mode];
+        const base = INDEX_STATUS_COPY[mode];
+        const live = hydrateCopyApplies(mode, !!input.hydrating, !!input.waitingForSidecar)
+            ? normalizeHydrateProgress(input.hydrateProgress)
+            : null;
+        const copy = live ? withHydrateProgressCopy(base, live) : base;
         return {
             mode,
             health: indexStatusHealth(mode),
             label: copy.label,
             compact: copy.compact,
             tone: copy.tone,
+            hydrateProgress: live,
         };
     }
 }

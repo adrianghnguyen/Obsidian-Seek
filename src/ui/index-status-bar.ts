@@ -11,9 +11,13 @@ import {
     type IndexStatusHealth,
     type IndexStatusJob,
     type IndexJobKind,
+    type IndexJobSpeedView,
 } from './index-status-card';
 import type { IndexStatusReport } from './index-status-report';
-import { formatRoughEta, indexPercent } from './index-eta';
+import { formatRoughEta } from './index-eta';
+import { buildIndexProgressSnapshot, type IndexProgressSnapshot } from './index-progress-snapshot';
+
+export type { IndexJobSpeedView };
 
 export function parseIndexedProgress(msg: string): { files: number; chunks: number | null; tokens: number | null } | null {
     const m = msg.match(
@@ -40,17 +44,6 @@ export function indexChunksPerSec(chunks: number, elapsedMs: number): number {
     if (chunks <= 0 || elapsedMs <= 0) return 0;
     const sec = elapsedMs / 1000;
     return sec > 0 ? chunks / sec : 0;
-}
-
-/** Live pass throughput inputs for Settings embed diagnostics (not status-bar chrome). */
-export interface IndexJobSpeedView {
-    chunksDone: number;
-    tokensDone: number;
-    done: number;
-    total: number;
-    elapsedMs: number;
-    paused: boolean;
-    kind?: IndexJobKind;
 }
 
 export function indexFilesPerSec(done: number, elapsedMs: number): number {
@@ -81,6 +74,8 @@ export function extendIndexPassTotal(committed: number, passTotal: number, dirty
 export interface IndexStatusBarHooks {
     getStats: () => Promise<IndexStatusCardStats>;
     getReport: () => IndexStatusReport;
+    /** Plugin snapshot — same object Settings Index and folder coverage read. */
+    getSnapshot?: () => IndexProgressSnapshot;
     onOpenSettings: () => void;
     /** One-click recovery for a wedged startup (stuck/locked) — retries the index. */
     onRecover: () => void;
@@ -107,6 +102,9 @@ export class IndexStatusBar {
     private label = '';
     private aligningExclusions = false;
     private jobStartedAt = 0;
+    /** Encode-active time only — catch-up pauses between bursts must not dilute ch/s. */
+    private elapsedAccumMs = 0;
+    private elapsedTicking = false;
     private paintedDone = -1;
     private paintedTotal = -1;
     private paintedChunks = -1;
@@ -156,6 +154,8 @@ export class IndexStatusBar {
         this.tokensDone = 0;
         this.label = label;
         this.jobStartedAt = performance.now();
+        this.elapsedAccumMs = 0;
+        this.elapsedTicking = true;
         this.paintedDone = -1;
         this.paintedTotal = -1;
         this.paintedChunks = -1;
@@ -212,6 +212,8 @@ export class IndexStatusBar {
         this.total = 0;
         this.label = '';
         this.jobStartedAt = 0;
+        this.elapsedAccumMs = 0;
+        this.elapsedTicking = false;
         this.paintedDone = -1;
         this.paintedTotal = -1;
         this.paintedChunks = -1;
@@ -256,19 +258,28 @@ export class IndexStatusBar {
         });
     }
 
-    private jobTooltip(): string {
-        const pct = indexPercent(this.done, this.total);
-        const elapsedMs = performance.now() - this.jobStartedAt;
-        const eta = formatRoughEta(this.done, this.total, elapsedMs);
-        const files = `${this.done.toLocaleString()} / ${this.total.toLocaleString()} files · ${pct}%`;
-        const tail = eta ? ` · ${eta} left` : '';
-        const report = this.hooks?.getReport();
-        const verb = this.aligningExclusions
-            ? 'Aligning with exclusions'
-            : (report?.mode === 'full-reindex' || report?.mode === 'indexing'
-                ? report.compact
-                : 'Indexing');
-        return `Seek: ${verb} ${files}${tail}`;
+    /** Stop the encode clock while catch-up waits for the next burst. */
+    pauseElapsed(): void {
+        if (!this.jobActive || !this.elapsedTicking) return;
+        this.elapsedAccumMs += Math.max(0, performance.now() - this.jobStartedAt);
+        this.elapsedTicking = false;
+        this.jobPaused = true;
+        this.schedulePaintJob(true);
+    }
+
+    /** Resume the encode clock when a catch-up burst starts encoding again. */
+    resumeElapsed(): void {
+        if (!this.jobActive || this.elapsedTicking) return;
+        this.jobStartedAt = performance.now();
+        this.elapsedTicking = true;
+        this.jobPaused = /paused/i.test(this.label);
+        this.schedulePaintJob(true);
+    }
+
+    private liveElapsedMs(): number {
+        if (!this.jobActive) return 0;
+        const extra = this.elapsedTicking ? Math.max(0, performance.now() - this.jobStartedAt) : 0;
+        return this.elapsedAccumMs + extra;
     }
 
     /** Live encode-speed inputs for Settings — status bar no longer shows ch/s. */
@@ -279,59 +290,125 @@ export class IndexStatusBar {
             tokensDone: this.tokensDone,
             done: this.done,
             total: this.total,
-            elapsedMs: Math.max(0, performance.now() - this.jobStartedAt),
+            elapsedMs: this.liveElapsedMs(),
             paused: this.jobPaused,
             kind: this.jobKind ?? undefined,
         };
     }
 
-    private paintJob(force: boolean): void {
-        if (!this.root) return;
-        const report = this.hooks?.getReport();
-        const canonical = report?.mode;
-        if (canonical === 'starting' || canonical === 'restoring' || canonical === 'locked' || canonical === 'stuck') {
-            this.paintedDone = -1;
-            this.paintedTotal = -1;
-            this.paintedChunks = -1;
-            this.paintedPercent = -1;
-            this.labelEl?.removeClass('is-hidden');
-            this.filesEl?.setText('Seek');
-            this.chunksEl?.addClass('is-hidden');
-            this.progressEl?.addClass('is-hidden');
-            this.paintChrome(report!.health, null);
-            this.setStatusLabel(`Seek: ${report!.compact}`);
-            return;
-        }
-        const pct = indexPercent(this.done, this.total);
-        if (!force && this.done === this.paintedDone && this.total === this.paintedTotal
-            && this.chunksDone === this.paintedChunks && pct === this.paintedPercent) return;
-        this.paintedDone = this.done;
-        this.paintedTotal = this.total;
-        this.paintedChunks = this.chunksDone;
+    /** Same snapshot Settings Index and folder coverage consume. */
+    progressSnapshot(): IndexProgressSnapshot {
+        if (this.hooks?.getSnapshot) return this.hooks.getSnapshot();
+        const report = this.hooks?.getReport() ?? {
+            mode: 'ok' as const,
+            health: 'ok' as const,
+            label: 'Up to date',
+            compact: 'Ready',
+            tone: 'good',
+            hydrateProgress: null,
+        };
+        return buildIndexProgressSnapshot({
+            report,
+            job: this.job(),
+            speed: this.jobSpeedView(),
+        });
+    }
+
+    private jobTooltipFromSnapshot(snap: IndexProgressSnapshot): string {
+        const pct = snap.percent;
+        const eta = formatRoughEta(snap.filesDone, snap.filesTotal, snap.elapsedMs);
+        const files = `${snap.filesDone.toLocaleString()} / ${snap.filesTotal.toLocaleString()} files · ${pct}%`;
+        const tail = eta ? ` · ${eta} left` : '';
+        const verb = snap.aligningExclusions
+            ? 'Aligning with exclusions'
+            : (snap.mode === 'full-reindex' || snap.mode === 'indexing'
+                ? snap.report.compact
+                : 'Indexing');
+        return `Seek: ${verb} ${files}${tail}`;
+    }
+
+    private paintCounts(snap: IndexProgressSnapshot, remaining: number | null, label: string): void {
+        const pct = snap.percent;
+        this.paintedDone = snap.filesDone;
+        this.paintedTotal = snap.filesTotal;
+        this.paintedChunks = snap.chunksDone;
         this.paintedPercent = pct;
-        const remaining = jobRemaining(this.job()) ?? 0;
-        this.paintChrome('indexing', remaining);
         this.labelEl?.removeClass('is-hidden');
-        this.filesEl?.setText(`${this.done.toLocaleString()}/${this.total.toLocaleString()}`);
+        this.filesEl?.setText(`${snap.filesDone.toLocaleString()}/${snap.filesTotal.toLocaleString()}`);
         this.chunksEl?.addClass('is-hidden');
         if (this.progressEl) {
             this.progressEl.removeClass('is-hidden');
             this.progressEl.max = 100;
             this.progressEl.value = pct;
         }
-        this.setStatusLabel(this.jobTooltip());
+        const chromeHealth = snap.phase === 'embed' ? 'indexing' : snap.health;
+        this.paintChrome(chromeHealth, remaining);
+        this.setStatusLabel(label);
     }
 
-    private paintIdle(): void {
-        if (!this.root) return;
+    private paintBare(snap: IndexProgressSnapshot): void {
+        this.paintedDone = -1;
+        this.paintedTotal = -1;
+        this.paintedChunks = -1;
+        this.paintedPercent = -1;
         this.labelEl?.removeClass('is-hidden');
         this.filesEl?.setText('Seek');
         this.chunksEl?.addClass('is-hidden');
         this.progressEl?.addClass('is-hidden');
-        const report = this.hooks?.getReport();
-        const health = report?.health ?? 'ok';
-        this.paintChrome(health, null);
-        this.setStatusLabel(`Seek: ${report?.compact ?? 'Ready'}`);
+        this.paintChrome(snap.health, null);
+        this.setStatusLabel(`Seek: ${snap.report.compact}`);
+    }
+
+    /** Coverage counts without a live-walk meter — idle Ready must not look like a pass. */
+    private paintIdleCoverage(snap: IndexProgressSnapshot): void {
+        this.paintedDone = snap.filesDone;
+        this.paintedTotal = snap.filesTotal;
+        this.paintedChunks = snap.chunksDone;
+        this.paintedPercent = -1;
+        this.labelEl?.removeClass('is-hidden');
+        this.filesEl?.setText(`${snap.filesDone.toLocaleString()}/${snap.filesTotal.toLocaleString()}`);
+        this.chunksEl?.addClass('is-hidden');
+        this.progressEl?.addClass('is-hidden');
+        this.paintChrome(snap.health, null);
+        this.setStatusLabel(`Seek: ${snap.report.compact}`);
+    }
+
+    private paintFromSnapshot(snap: IndexProgressSnapshot, force: boolean): void {
+        if (snap.phase === 'hydrate' && snap.filesTotal > 0) {
+            const remaining = snap.health === 'indexing' ? Math.max(0, snap.filesTotal - snap.filesDone) : null;
+            this.paintCounts(snap, remaining, `Seek: ${snap.report.compact}`);
+            return;
+        }
+        if (snap.phase === 'starting' || snap.phase === 'locked' || snap.phase === 'error') {
+            this.paintBare(snap);
+            return;
+        }
+        if (snap.phase === 'embed' && snap.filesTotal > 0) {
+            if (!force && snap.filesDone === this.paintedDone && snap.filesTotal === this.paintedTotal
+                && snap.chunksDone === this.paintedChunks && snap.percent === this.paintedPercent) return;
+            this.paintCounts(snap, jobRemaining(snap.job) ?? 0, this.jobTooltipFromSnapshot(snap));
+            return;
+        }
+        if (snap.filesTotal > 0) {
+            // Fully indexed Ready is the green dot + "Seek" — not 3,854/3,854.
+            if (snap.health === 'ok' && snap.filesDone >= snap.filesTotal) {
+                this.paintBare(snap);
+                return;
+            }
+            this.paintIdleCoverage(snap);
+            return;
+        }
+        this.paintBare(snap);
+    }
+
+    private paintJob(force: boolean): void {
+        if (!this.root) return;
+        this.paintFromSnapshot(this.progressSnapshot(), force);
+    }
+
+    private paintIdle(): void {
+        if (!this.root) return;
+        this.paintFromSnapshot(this.progressSnapshot(), true);
     }
 
     private paintChrome(health: IndexStatusHealth, remaining: number | null): void {
@@ -356,17 +433,19 @@ export class IndexStatusBar {
         const stats = await hooks.getStats();
         if (gen !== this.hoverGen) return;
         hover.empty();
-        const report = hooks.getReport();
+        const snap = this.progressSnapshot();
         renderIndexStatusCard(hover, {
-            health: report.health,
-            mode: report.mode,
+            health: snap.health,
+            mode: snap.mode,
+            label: snap.report.label,
+            hydrateProgress: snap.hydrate,
             stats,
-            job: this.job(),
-            eta: this.jobActive && report.health === 'indexing'
-                ? formatRoughEta(this.done, this.total, performance.now() - this.jobStartedAt)
+            job: snap.job,
+            eta: snap.phase === 'embed'
+                ? formatRoughEta(snap.filesDone, snap.filesTotal, snap.elapsedMs)
                 : null,
         });
-        const health = report.health;
+        const health = snap.health;
         // One-click recovery lives on the hover card so a wedged startup is fixable
         // without opening Settings. Destructive rebuild stays in Settings; this is the
         // non-destructive Retry (same action as the command palette / Settings row).

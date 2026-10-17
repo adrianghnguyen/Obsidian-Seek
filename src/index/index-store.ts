@@ -1015,14 +1015,15 @@ export class IndexStore {
     // repair — and one transaction per file replaces the old two (S1). A record
     // with ZERO chunks is legal (a fully-quarantined file commits no chunks but
     // must still pin its failure-marker record) and writes just the FILES store.
-    async putBatchQuantized(chunks: Chunk[], tiers: { q: QuantVec; bin: Uint8Array }[], fileRecord?: FileRecord): Promise<void> {
-        if (chunks.length === 0 && fileRecord === undefined) return;
+    async putBatchQuantized(chunks: Chunk[], tiers: { q: QuantVec; bin: Uint8Array }[], fileRecord?: FileRecord | FileRecord[]): Promise<void> {
+        const records = fileRecord == null ? [] : Array.isArray(fileRecord) ? fileRecord : [fileRecord];
+        if (chunks.length === 0 && records.length === 0) return;
         if (chunks.length !== tiers.length) {
             throw new Error(`chunks/tiers length mismatch: ${chunks.length} vs ${tiers.length}`);
         }
         const db = this.requireDb();
         const scope = chunks.length > 0
-            ? [STORE_CHUNK_META, STORE_CHUNK_BODY, STORE_EMBEDDINGS, STORE_BINARY, ...(fileRecord ? [STORE_FILES] : [])]
+            ? [STORE_CHUNK_META, STORE_CHUNK_BODY, STORE_EMBEDDINGS, STORE_BINARY, ...(records.length > 0 ? [STORE_FILES] : [])]
             : [STORE_FILES];
         const tx = db.transaction(scope, 'readwrite');
         if (chunks.length > 0) {
@@ -1037,7 +1038,10 @@ export class IndexStore {
                 embStore.put(tiers[i].q, chunks[i].chunk_id);
             }
         }
-        if (fileRecord) tx.objectStore(STORE_FILES).put(fileRecord);
+        if (records.length > 0) {
+            const files = tx.objectStore(STORE_FILES);
+            for (const rec of records) files.put(rec);
+        }
         await awaitTx(tx);
     }
 

@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+    FULL_REINDEX_STALL_TIMEOUT_MS,
     INDEXING_STALL_TIMEOUT_MS,
     indexingProgressKey,
     indexingStallDetected,
     indexingWorkActive,
+    stallTimeoutMs,
     type IndexingStallSnapshot,
 } from './indexing-stall-guard';
 
@@ -37,6 +39,32 @@ describe('indexing-stall-guard', () => {
     it('progress key changes when job counters move', () => {
         const a = indexingProgressKey({ ...idle, catchUpRunning: true, jobDone: 0, jobTotal: 10 });
         const b = indexingProgressKey({ ...idle, catchUpRunning: true, jobDone: 1, jobTotal: 10 });
+        expect(a).not.toBe(b);
+    });
+
+    it('progress key changes when chunks move with files unchanged', () => {
+        const a = indexingProgressKey({ ...idle, writing: true, jobDone: 60, jobTotal: 3646, jobChunks: 100 });
+        const b = indexingProgressKey({ ...idle, writing: true, jobDone: 60, jobTotal: 3646, jobChunks: 108 });
+        expect(a).not.toBe(b);
+    });
+
+    it('uses a longer stall timeout for a full reindex job', () => {
+        expect(stallTimeoutMs({ ...idle, jobKind: 'full' })).toBe(FULL_REINDEX_STALL_TIMEOUT_MS);
+        expect(stallTimeoutMs({ ...idle, jobKind: 'catchup' })).toBe(INDEXING_STALL_TIMEOUT_MS);
+        expect(stallTimeoutMs(idle)).toBe(INDEXING_STALL_TIMEOUT_MS);
+    });
+
+    it('treats a large catch-up like a full pass for stall timeout', () => {
+        expect(stallTimeoutMs({ ...idle, jobKind: 'catchup', jobTotal: 3853 })).toBe(FULL_REINDEX_STALL_TIMEOUT_MS);
+    });
+
+    it('progress key changes when committed inventory moves with job.done frozen', () => {
+        const a = indexingProgressKey({
+            ...idle, catchUpRunning: true, jobDone: 30, jobTotal: 3730, inventoryFiles: 123,
+        });
+        const b = indexingProgressKey({
+            ...idle, catchUpRunning: true, jobDone: 30, jobTotal: 3730, inventoryFiles: 200,
+        });
         expect(a).not.toBe(b);
     });
 });

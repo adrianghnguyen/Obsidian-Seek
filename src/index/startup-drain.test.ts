@@ -101,4 +101,26 @@ describe('catchUpBurstLimits', () => {
             budgetMs: 8000,
         });
     });
+
+    it('uses a 200-file / 5-minute burst when thousands of notes are still missing', () => {
+        expect(catchUpBurstLimits({
+            mobile: false,
+            burstMaxFiles: 30,
+            remainingFiles: 3262,
+        })).toEqual({
+            maxFiles: 200,
+            budgetMs: 300_000,
+        });
+    });
+
+    it('keeps the capped burst below the large remaining threshold', () => {
+        expect(catchUpBurstLimits({
+            mobile: false,
+            burstMaxFiles: 30,
+            remainingFiles: 199,
+        })).toEqual({
+            maxFiles: 30,
+            budgetMs: 8000,
+        });
+    });
 });

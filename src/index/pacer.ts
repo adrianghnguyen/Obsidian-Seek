@@ -54,21 +54,21 @@ export function cheapYield(): Promise<void> {
     return new Promise<void>(resolve => window.setTimeout(() => resolve(), 0));
 }
 
-// Between embed dispatches. A full reindex always cheap-yields. Desktop
-// catch-up opts in (`queryInFlight` is true or false, not null) and cheap-yields
-// until a search query is actually in flight, then idle-paces so that query
-// can cut in. `null` keeps the historical incremental idle pace (flush, workflow,
-// mobile catch-up — callers that did not opt in).
+// Between embed dispatches. A full reindex does not yield — scheduler.yield /
+// setTimeout(0) after every batch was leaving the GPU idle (SM% ~68% on a
+// 165 W RTX 2070 pass). Catch-up still cheap-yields until a search query is
+// in flight, then idle-paces so that query can cut in. `null` keeps the
+// historical incremental idle pace (flush, workflow, mobile catch-up).
 //
 // Persist is not gated here: embedAndCommitFiles overlaps the next GPU dispatch
 // with IndexedDB of the previous batch (InFlightSemaphore in embed-pipeline.ts).
-// This yield only sits between iframe RPCs so the compositor/query can cut in.
 export async function yieldAfterEmbedDispatch(
     pacer: CompositorPacer,
     mode: 'full' | 'incremental',
     queryInFlight: boolean | null,
 ): Promise<void> {
-    if (mode === 'full' || queryInFlight === false) return cheapYield();
+    if (mode === 'full') return;
+    if (queryInFlight === false) return cheapYield();
     return pacer.pace();
 }
 

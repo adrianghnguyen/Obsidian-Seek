@@ -233,15 +233,25 @@ export interface AppLocalFetchResult {
     error: string | null;
 }
 
+export type IframeRpcLane = 'gpu' | 'tok' | 'exclusive';
+
+/** token-counts may overlap embed-batch; query embed and load stay exclusive. */
+export function iframeRpcLane(type: string): IframeRpcLane {
+    if (type === 'token-counts') return 'tok';
+    if (type === 'embed-batch') return 'gpu';
+    return 'exclusive';
+}
+
 interface Pending {
     resolve: (value: unknown) => void;
     reject: (error: Error) => void;
     // Per-RPC timeout handle, cleared when the reply lands (or on dispose).
     // number is window.setTimeout's DOM return (clearTimeout takes it).
     timer?: number;
+    lane: IframeRpcLane;
 }
 
-// A send() that is waiting for the single-flight pump. `start` posts the RPC;
+// A send() that is waiting for the pump. `start` posts the RPC;
 // until then the Promise lives only here, so dispose/failInflight must reject
 // it explicitly — clearing the array alone would leave callers hanging.
 interface QueuedRpc {
@@ -249,6 +259,7 @@ interface QueuedRpc {
     reject: (error: Error) => void;
     cleanupAbort: () => void;
     started: boolean;
+    lane: IframeRpcLane;
 }
 
 function rejectQueued(queue: QueuedRpc[], error: Error): void {
@@ -329,16 +340,56 @@ export class IframeRunner {
     // embedder re-wires it across teardown() which swaps the runner.
     onEvent: ((event: IframeEvent) => void) | null = null;
 
-    // Single-flight RPC pump with query priority. The child pipeline is not safe
-    // for concurrent forwards: an in-flight embed-batch (catch-up) + a query
-    // embed used to contend and hang seek:search for 30s+ (G_catchup_ux). Queue
-    // model RPCs one-at-a-time; `embed` jumps ahead of index traffic.
-    // Parent-side IDB persist is pipelined separately (embed-pipeline.ts,
-    // Settings → Index → Advanced → Prepared embed batches) — this flag only
-    // serializes GPU/tokenizer RPCs, not disk.
-    private rpcBusy = false;
+    // Dual-lane RPC pump with query priority. embed-batch may post up to
+    // GPU_POST_MAX=3 so a tokenized N+1 is waiting while N's forward runs.
+    // The child serializes pipeline.model() and starts N+1 before pooling N.
+    // token-counts may post while a forward is in flight. Query `embed` and
+    // load are exclusive. A waiting query blocks further GPU posts so search
+    // is not starved for the whole reindex. Tests may assign rpcBusy to hold
+    // the pump. Parent-side IDB persist is pipelined separately.
+    private pumpHeld = false;
+    private gpuBusy = false;
+    private gpuCount = 0;
+    private tokBusy = false;
+    private exclusiveBusy = false;
+    /** Two extra posts so a tokenized N+1 is waiting while N runs and N-1 pools. */
+    private static readonly GPU_POST_MAX = 3;
     private queryRpcQueue: QueuedRpc[] = [];
     private indexRpcQueue: QueuedRpc[] = [];
+
+    /** Any lane busy, or the test pump hold. */
+    get rpcBusy(): boolean {
+        return this.pumpHeld || this.gpuBusy || this.tokBusy || this.exclusiveBusy;
+    }
+    set rpcBusy(v: boolean) {
+        this.pumpHeld = v;
+    }
+
+    private setLaneBusy(lane: IframeRpcLane, busy: boolean): void {
+        if (lane === 'gpu') {
+            this.gpuCount = Math.max(0, this.gpuCount + (busy ? 1 : -1));
+            this.gpuBusy = this.gpuCount > 0;
+        } else if (lane === 'tok') this.tokBusy = busy;
+        else this.exclusiveBusy = busy;
+    }
+
+    private canStartLane(lane: IframeRpcLane): boolean {
+        if (this.pumpHeld || this.exclusiveBusy) return false;
+        if (lane === 'exclusive') return this.gpuCount === 0 && !this.tokBusy;
+        if (lane === 'gpu') {
+            if (this.queryRpcQueue.some(q => q.lane === 'exclusive' && !q.started)) return false;
+            return this.gpuCount < IframeRunner.GPU_POST_MAX;
+        }
+        return !this.tokBusy;
+    }
+
+    private clearLanes(): void {
+        this.pumpHeld = false;
+        this.gpuBusy = false;
+        this.gpuCount = 0;
+        this.tokBusy = false;
+        this.exclusiveBusy = false;
+    }
     // buildIframe() READY_TIMEOUT_MS handle. Cleared on __ready / __error and
     // on dispose so a mid-init teardown cannot reject 30s later.
     private readyTimeout: number | null = null;
@@ -469,6 +520,7 @@ export class IframeRunner {
         }
         if (signal?.aborted) return Promise.reject(queryAbortError());
         const priority: 'query' | 'index' = type === 'embed' ? 'query' : 'index';
+        const lane = iframeRpcLane(type);
         return new Promise<T>((resolve, reject) => {
             let started = false;
             let aborted = false;
@@ -487,7 +539,7 @@ export class IframeRunner {
                     : `id-${Date.now()}-${Math.random()}`;
                 const timer = window.setTimeout(() => {
                     if (!this.pending.delete(id)) return;
-                    this.rpcBusy = false;
+                    this.setLaneBusy(lane, false);
                     this.pumpRpc();
                     cleanupAbort();
                     if (aborted) reject(queryAbortError());
@@ -500,20 +552,21 @@ export class IframeRunner {
                 }, timeoutMs);
                 this.pending.set(id, {
                     resolve: (v: unknown) => {
-                        this.rpcBusy = false;
+                        this.setLaneBusy(lane, false);
                         this.pumpRpc();
                         cleanupAbort();
                         if (aborted) reject(queryAbortError());
                         else resolve(v as T);
                     },
                     reject: (e: Error) => {
-                        this.rpcBusy = false;
+                        this.setLaneBusy(lane, false);
                         this.pumpRpc();
                         cleanupAbort();
                         if (aborted) reject(queryAbortError());
                         else reject(e);
                     },
                     timer,
+                    lane,
                 });
                 this.iframe!.contentWindow!.postMessage({ id, type, payload }, '*');
             };
@@ -530,6 +583,7 @@ export class IframeRunner {
                 reject: (error: Error) => { reject(error); },
                 cleanupAbort,
                 started: false,
+                lane,
             };
             signal?.addEventListener('abort', onAbort, { once: true });
             queue.push(queued);
@@ -538,11 +592,16 @@ export class IframeRunner {
     }
 
     private pumpRpc(): void {
-        if (this.rpcBusy) return;
-        const next = this.queryRpcQueue.shift() ?? this.indexRpcQueue.shift();
+        const take = (q: QueuedRpc[]): QueuedRpc | undefined => {
+            const i = q.findIndex(item => this.canStartLane(item.lane));
+            if (i < 0) return undefined;
+            return q.splice(i, 1)[0];
+        };
+        const next = take(this.queryRpcQueue) ?? take(this.indexRpcQueue);
         if (!next) return;
-        this.rpcBusy = true;
+        this.setLaneBusy(next.lane, true);
         next.start();
+        this.pumpRpc();
     }
 
     // skipWarmup: parent decision based on the localStorage fingerprint cache
@@ -569,8 +628,9 @@ export class IframeRunner {
     // Exact token counts (specials included — the same count the forward pass
     // sees) for each text, from the iframe pipeline's own tokenizer. Tokenizer
     // only, no model forward: cheap (~µs-ms per text) and device-independent.
-    // The single source of tokenizer truth stays inside the iframe; the parent
-    // never re-implements or approximates it.
+    // May overlap an in-flight embed-batch (tok lane). The single source of
+    // tokenizer truth stays inside the iframe; the parent never re-implements
+    // or approximates it.
     tokenCounts(texts: string[]): Promise<number[]> {
         return this.send<number[]>('token-counts', { texts });
     }
@@ -661,7 +721,7 @@ export class IframeRunner {
         rejectQueued(this.indexRpcQueue, disposed);
         this.queryRpcQueue = [];
         this.indexRpcQueue = [];
-        this.rpcBusy = false;
+        this.clearLanes();
         for (const [, p] of this.pending) {
             if (p.timer) window.clearTimeout(p.timer);
             p.reject(Object.assign(new Error('iframe disposed'), { code: 'DISPOSED' }));
@@ -695,7 +755,7 @@ export class IframeRunner {
         rejectQueued(this.indexRpcQueue, new Error(message));
         this.queryRpcQueue = [];
         this.indexRpcQueue = [];
-        this.rpcBusy = false;
+        this.clearLanes();
         for (const [, p] of this.pending) {
             if (p.timer) window.clearTimeout(p.timer);
             p.reject(new Error(message));

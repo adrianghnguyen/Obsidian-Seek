@@ -45,7 +45,7 @@ import {
 } from '../ui/index-status-settings';
 import { formatRecentSearchLine } from '../diagnostics/session-telemetry';
 import type { SettingsTelemetrySink } from '../main';
-import { formatRoughEta, indexPercent } from '../ui/index-eta';
+import { formatRoughEta } from '../ui/index-eta';
 import type { FolderCoverageNode, FolderCoverageSummary, FolderCoveragePathSets, CoveragePanelMessage } from '../index/folder-coverage';
 import {
     emptyFolderCoverage,
@@ -61,7 +61,9 @@ import {
     remainingFilesPreview,
     ownFilesRow,
     OWN_FILES_PATH,
+    coverageHeadlineFromProgress,
 } from '../index/folder-coverage';
+import type { IndexProgressSnapshot } from '../ui/index-progress-snapshot';
 import {
     getBackendOverride, setBackendOverride, isWebgpuDemoted, clearWebgpuDemoted,
     getStartupWarm, setStartupWarm, isMobilePlatform,
@@ -378,16 +380,20 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
 
     // ---- Index ---------------------------------------------------------------------
     private statusReport(): IndexStatusReport {
-        return this.plugin.getIndexStatusReport();
+        return this.progressSnapshot().report;
+    }
+
+    private progressSnapshot(): IndexProgressSnapshot {
+        return this.plugin.getIndexProgressSnapshot(this.coverageCache?.overall ?? null);
     }
 
     private statusState(): IndexStatusHealth {
-        return this.statusReport().health;
+        return this.progressSnapshot().health;
     }
 
     private activeFullJob() {
-        const job = this.plugin.getIndexJob();
-        return job?.kind === 'full' ? job : null;
+        const snap = this.progressSnapshot();
+        return snap.kind === 'full' ? snap.job : null;
     }
 
     private showIndexingProgress(): boolean {
@@ -413,8 +419,8 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         if (health === 'stuck' || health === 'locked') return true;
         if (!this.plugin.getStartupTimingView().bootComplete) return true;
         // Live embed rates on the status card while any index job is active.
-        const job = this.plugin.getIndexJob();
-        return job != null && job.done < job.total;
+        const snap = this.progressSnapshot();
+        return snap.phase === 'embed' || snap.phase === 'hydrate';
     }
 
     private startStartupPoll(): void {
@@ -453,7 +459,9 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         if (this.plugin.indexHealthState === 'degraded') {
             const warn = containerEl.createDiv({ cls: 'seek-inline-warn' });
             warn.setText(this.fleetStatus && !this.fleetStatus.mayFullReindex
-                ? 'Index degraded — search still works. This device will not re-embed; wait for producer sidecar files, or set this device’s index role to Producer.'
+                ? (this.fleetStatus.role === 'contributor'
+                    ? 'Index degraded — search still works. This computer can still index new notes. A full rebuild stays on the lead computer.'
+                    : 'Index degraded — search still works. This device copies the shared index and will not re-embed; wait for lead files, or set this device’s index role to Producer.')
                 : 'Index degraded — search still works but ranking may be off. A full reindex is recommended.');
         }
 
@@ -519,7 +527,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
 
         new Setting(adv)
             .setName('Prepared embed batches')
-            .setDesc(`How many embedding batches can wait on disk writes while the GPU starts the next one. Higher keeps the GPU busy; too high uses more memory. Manual override when auto-tune is off.`)
+            .setDesc(`How many embedding batches can wait on disk writes while the GPU starts the next one. Full reindex also tokenizes the next GPU batch inside the iframe while the current forward runs, starts the next kernel before pooling (pooling waits a macrotask so WebGPU readback does not stall the encoder), and keeps three embed-batches in flight so the encoder is not idle. Higher keeps the GPU busy; too high uses more memory. Manual override when auto-tune is off.`)
             .addSlider(slider => slider
                 .setLimits(EMBED_IN_FLIGHT_MIN, EMBED_IN_FLIGHT_MAX, 1)
                 .setValue(this.s.embedInFlightAuto
@@ -609,11 +617,11 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         if (this.s.sidecarEnabled) {
             const roleRow = new Setting(adv)
                 .setName('This device’s index role')
-                .setDesc('On this device only (not synced). Producer writes the shared index files. Consumer hydrates them and will not full-reindex or delete another device’s shards.');
+                .setDesc('On this device only (not synced). Auto: the computer with the newest full rebuild is lead; other computers add new notes; phones only copy. Producer = lead. Consumer = copy only.');
             roleRow.addDropdown(dd => dd
                 .addOption('auto', 'Auto')
-                .addOption('producer', 'Producer — this device writes the index')
-                .addOption('consumer', 'Consumer — hydrate only')
+                .addOption('producer', 'Producer — lead (can full rebuild)')
+                .addOption('consumer', 'Consumer — copy the shared index only')
                 .setValue(getSidecarIndexRole())
                 .onChange(v => {
                     setSidecarIndexRole(v as SidecarIndexRole);
@@ -756,12 +764,18 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         host.empty();
         this.paintRecoveryRow();
         const startup = this.plugin.getStartupTimingView();
-        const report = this.statusReport();
+        const snap = this.progressSnapshot();
+        const report = snap.report;
+        const stats = this.stats && snap.phase === 'idle'
+            ? { ...this.stats, files: snap.filesDone, chunks: snap.chunksDone }
+            : this.stats;
         renderSettingsIndexStatusCard(host, {
-            health: report.health,
-            mode: report.mode,
-            stats: this.stats,
-            job: this.plugin.getIndexJob(),
+            health: snap.health,
+            mode: snap.mode,
+            label: report.label,
+            hydrateProgress: snap.hydrate,
+            stats,
+            job: snap.job,
             startup,
             liveElapsedMs: startup.bootComplete ? null : this.plugin.getStartupLiveElapsedMs(),
             prevBoot: this.plugin.getPreviousStartupBoot(),
@@ -772,7 +786,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                     this.embedDiagOpen = !this.embedDiagOpen;
                     this.paintStatusCard();
                 },
-                live: this.plugin.getIndexJobSpeedView(),
+                live: snap.speed,
                 lastComplete: this.plugin.getLastIndexComplete(),
                 lastLoad: this.plugin.getLastLoadEntry(),
             },
@@ -787,11 +801,12 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             if (!this.containerEl.isConnected) { this.stopCoveragePoll(); return; }
             void this.paintCoverage({ refresh: true });
             this.paintExclusionBanner();
-            const job = this.plugin.getIndexJob();
+            const snap = this.progressSnapshot();
             const o = this.coverageCache?.overall;
-            const live = (job != null && job.done < job.total)
+            const live = snap.phase === 'embed'
+                || snap.phase === 'hydrate'
                 || (o != null && (o.remaining > 0 || o.catchingUp > 0));
-            if (job != null && job.done < job.total) this.paintStatusCard();
+            if (snap.phase === 'embed' || snap.phase === 'hydrate') this.paintStatusCard();
             this.coveragePoll = window.setTimeout(tick, live ? COVERAGE_LIVE_POLL_MS : COVERAGE_POLL_MS);
         };
         this.coveragePoll = window.setTimeout(tick, COVERAGE_LIVE_POLL_MS);
@@ -835,11 +850,11 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
     }
 
     private liveCoverageSummary(pathSets: FolderCoveragePathSets): FolderCoverageSummary {
-        const job = this.plugin.getIndexJob();
+        const snap = this.progressSnapshot();
         return computeFolderCoverage({
             ...pathSets,
             pendingPaths: this.plugin.getIndexDeltaSnapshot().pendingPaths,
-            fullJobActive: job?.kind === 'full' && job.done < job.total,
+            fullJobActive: snap.kind === 'full' && snap.filesDone < snap.filesTotal,
         });
     }
 
@@ -863,25 +878,30 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         host.empty();
 
         const pendingPaths = this.plugin.getIndexDeltaSnapshot().pendingPaths;
-        const job = this.plugin.getIndexJob();
+        const snap = this.plugin.getIndexProgressSnapshot(summary.overall);
+        const job = snap.job;
         const view = resolveCoveragePanelView({
             summary,
-            health: this.statusState(),
+            health: snap.health,
             job,
             orchestratorReady: this.plugin.isCoverageSourceReady,
             loadFailed,
             aligningExclusions: !!this.plugin.getExclusionChange(),
             pendingCount: pendingPaths.length,
             reindexLocked: !!(this.fleetStatus && !this.fleetStatus.mayFullReindex),
+            fleetRole: this.fleetStatus?.role,
         });
 
         const wrap = host.createDiv({ cls: 'seek-coverage-panel' });
         const head = wrap.createDiv({ cls: 'seek-coverage-head' });
         const titles = head.createDiv({ cls: 'seek-coverage-head-text' });
         titles.createSpan({ cls: 'seek-coverage-title', text: 'Index coverage by folder' });
+        const liveHeadline = coverageHeadlineFromProgress(summary.overall, snap);
         titles.createDiv({
             cls: 'seek-coverage-sub',
-            text: 'Share of notes already searchable. Cells show what Seek is doing now.',
+            text: liveHeadline.live
+                ? 'Overall counts match the status bar for this restore. Folder cells still show which notes are already searchable.'
+                : 'Share of notes already searchable. Same counts as the status bar and Settings Index.',
         });
         if (loadFailed) {
             const warn = head.createSpan({ cls: 'seek-coverage-stale' });
@@ -899,31 +919,38 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         if (!view.showTree) return;
 
         const o = view.summary.overall;
-        const overallTone = coverageBarTone(o);
-        const overallTip = formatCoverageCountTip(o);
+        const headline = liveHeadline;
+        const overallTone = headline.live ? (headline.percent >= 100 ? 'good' : 'warn') : coverageBarTone(o);
+        const overallTip = headline.live
+            ? `${headline.done.toLocaleString()} of ${headline.total.toLocaleString()} notes ${headline.caption} · ${headline.percent}%.`
+            : formatCoverageCountTip(o);
         const overall = wrap.createDiv({
-            cls: 'seek-coverage-overall' + (o.remaining > 0 || o.indexing > 0 ? ' is-indexing' : ''),
+            cls: 'seek-coverage-overall' + (o.remaining > 0 || o.indexing > 0 || headline.live ? ' is-indexing' : ''),
         });
         this.renderCoverageCells(overall, o);
         const overallPctWrap = overall.createDiv({ cls: 'seek-coverage-pct-wrap' });
         const overallPct = overallPctWrap.createSpan({
             cls: 'seek-coverage-pct is-' + overallTone,
-            text: formatCoveragePercent(o),
+            text: headline.live
+                ? `${headline.percent}%`
+                : formatCoveragePercent(o),
         });
-        if (o.total > 0) {
-            overallPctWrap.createSpan({ cls: 'seek-coverage-pct-caption', text: 'in the index' });
+        if (headline.total > 0 || o.total > 0) {
+            overallPctWrap.createSpan({ cls: 'seek-coverage-pct-caption', text: headline.caption });
         }
         overallPct.setAttr('aria-label', overallTip);
         setTooltip(overallPct, overallTip, { delay: 300 });
         const overallMeta = overall.createSpan({
             cls: 'seek-coverage-overall-meta',
-            text: formatCoverageMeta(o),
+            text: headline.live
+                ? `${headline.done.toLocaleString()} / ${headline.total.toLocaleString()}`
+                : formatCoverageMeta(o),
         });
         overallMeta.setAttr('aria-label', overallTip);
         setTooltip(overallMeta, overallTip, { delay: 300 });
 
         this.renderCoverageLegend(wrap);
-        this.renderRemainingFiles(wrap, pendingPaths, job);
+        this.renderRemainingFiles(wrap, pendingPaths, snap);
 
         const rows = wrap.createDiv({ cls: 'seek-coverage-rows' });
         const rootOwn = view.summary.root.children.length > 0 ? ownFilesRow(view.summary.root) : null;
@@ -961,7 +988,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
     private renderRemainingFiles(
         parent: HTMLElement,
         pendingPaths: readonly string[],
-        job: ReturnType<SeekPlugin['getIndexJob']>,
+        snap: IndexProgressSnapshot,
     ): void {
         if (pendingPaths.length > 0) {
             const fold = parent.createEl('details', { cls: 'seek-coverage-remaining' });
@@ -984,8 +1011,8 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             }
             return;
         }
-        if (!job || job.kind !== 'full' || job.done >= job.total) return;
-        const rem = Math.max(0, job.total - job.done);
+        if (snap.kind !== 'full' || snap.filesDone >= snap.filesTotal) return;
+        const rem = Math.max(0, snap.filesTotal - snap.filesDone);
         if (rem <= 0) return;
         parent.createDiv({
             cls: 'seek-coverage-remaining-count',
@@ -1125,8 +1152,9 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
      * Recovery affordance for a wedged startup: shown ONLY when the canonical health is
      * 'stuck' (boot watchdog fired) or 'locked' (IDB refused to open). Puts the recovery
      * action next to the state that needs it, instead of relying on the command palette.
-     *   - Retry    → re-attempt the store open / resume boot (non-destructive).
-     *   - Rebuild  → two-step confirm, then nuke + full reindex (re-embeds everything).
+     *   - Resume indexing → abort in-flight work and release the index hold in-plugin.
+     *   - Retry           → re-open the store when locked (non-destructive).
+     *   - Rebuild         → two-step confirm, then nuke + full reindex (re-embeds everything).
      */
     private renderRecoveryRow(containerEl: HTMLElement): void {
         const health = this.statusState();
@@ -1152,17 +1180,18 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                 }));
             return;
         }
-        new Setting(containerEl)
+        const row = new Setting(containerEl)
             .setName(INDEX_RECOVERY_NAME)
             .setDesc(health === 'locked'
                 ? INDEX_RECOVERY_LOCKED_DESC
-                : (this.plugin.isIndexingStalled ? INDEX_RECOVERY_STALL_DESC : INDEX_RECOVERY_STUCK_DESC))
-            .addButton(b => b
-                .setButtonText(this.recoveryBusy ? 'Rebuilding…' : 'Rebuild index')
-                .setWarning()
-                .setDisabled(this.recoveryBusy)
-                .onClick(() => { this.recoveryRebuildConfirm = true; this.rerender(); }))
-            .addButton(b => b
+                : (this.plugin.isIndexingStalled ? INDEX_RECOVERY_STALL_DESC : INDEX_RECOVERY_STUCK_DESC));
+        row.addButton(b => b
+            .setButtonText(this.recoveryBusy ? 'Rebuilding…' : 'Rebuild index')
+            .setWarning()
+            .setDisabled(this.recoveryBusy)
+            .onClick(() => { this.recoveryRebuildConfirm = true; this.rerender(); }));
+        if (health === 'locked') {
+            row.addButton(b => b
                 .setButtonText(this.recoveryBusy ? 'Retrying…' : 'Retry')
                 .setCta()
                 .setDisabled(this.recoveryBusy)
@@ -1175,6 +1204,20 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                         void this.loadData();
                     });
                 }));
+        } else {
+            row.addButton(b => b
+                .setButtonText(this.recoveryBusy ? 'Resuming…' : 'Resume indexing')
+                .setCta()
+                .setDisabled(this.recoveryBusy)
+                .onClick(() => {
+                    this.recoveryBusy = true;
+                    this.rerender();
+                    void this.plugin.reloadSeekFromSettings().finally(() => {
+                        this.recoveryBusy = false;
+                        this.rerender();
+                    });
+                }));
+        }
     }
 
     private renderReindexRow(containerEl: HTMLElement): void {
@@ -1232,7 +1275,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
 
         new Setting(containerEl)
             .setName('Full reindex')
-            .setDesc('Rebuild the whole search index from scratch.')
+            .setDesc('Stops any current indexing, clears the index hold, and rebuilds from scratch — all inside Seek.')
             .addButton(b => b.setButtonText('Reindex…').setWarning().onClick(() => { this.reindexPhase = 'confirm'; this.rerender(); }));
         this.renderReindexNote(containerEl);
     }
@@ -1246,7 +1289,9 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         containerEl.createDiv({
             cls: 'seek-hint',
             text: this.fleetStatus && !this.fleetStatus.mayFullReindex
-                ? 'This device hydrates the producer’s index files. It will not re-embed the vault while that role is set.'
+                ? (this.fleetStatus.role === 'contributor'
+                    ? 'This computer can add new notes to the shared index. Full reindex stays on the lead computer.'
+                    : 'This device copies the lead computer’s index files. It will not re-embed the vault while that role is set.')
                 : 'Building the index re-embeds every note and isn’t recommended on a mobile phone. Run it on a computer, and your phone will sync the finished index automatically.',
         });
     }
@@ -1256,7 +1301,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         this.jobStartedAt = performance.now();
         this.rerender();
 
-        void this.plugin.runFullReindex({ skipConfirm: true }).then(() => {
+        void this.plugin.runFullReindex({ skipConfirm: true, takeover: true }).then(() => {
             this.reindexStarting = false;
             this.stats = null;
             this.rerender();
@@ -1268,7 +1313,8 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
     }
 
     private paintProgress(): void {
-        const job = this.activeFullJob();
+        const snap = this.progressSnapshot();
+        const job = snap.kind === 'full' ? snap.job : null;
         if (!job) {
             if (!this.reindexStarting) {
                 this.stopProgressPoll();
@@ -1280,14 +1326,14 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             return;
         }
         if (this.jobStartedAt === 0) this.jobStartedAt = performance.now();
-        const pct = indexPercent(job.done, job.total);
-        const eta = formatRoughEta(job.done, job.total, performance.now() - this.jobStartedAt);
+        const pct = snap.percent;
+        const eta = formatRoughEta(snap.filesDone, snap.filesTotal, snap.elapsedMs || (performance.now() - this.jobStartedAt));
         if (this.progressFillEl) this.progressFillEl.style.width = `${pct}%`;
         if (this.progressLabelEl) {
-            const line = `${job.done.toLocaleString()} / ${job.total.toLocaleString()} notes · ${pct}%`;
+            const line = `${snap.filesDone.toLocaleString()} / ${snap.filesTotal.toLocaleString()} notes · ${pct}%`;
             this.progressLabelEl.setText(eta ? `${line} · ${eta} left` : line);
         }
-        if (job.done >= job.total) {
+        if (snap.filesDone >= snap.filesTotal) {
             this.reindexStarting = false;
             this.stopProgressPoll();
             this.rerender();
@@ -1680,14 +1726,14 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         const selected = MODEL_REGISTRY[selectedKey];
         new Setting(containerEl)
             .setName('Embedding model')
-            .setDesc('Turns notes into meaning for semantic search. Changing the model asks you to reindex; keyword search keeps working until you do. A consumer device waits for the producer’s matching index files instead of embedding here.')
+            .setDesc('Turns notes into meaning for semantic search. Changing the model asks you to reindex; keyword search keeps working until you do. Phones and copy-only devices wait for the lead computer’s matching index files.')
             .addDropdown(dd => dd
                 .addOptions(modelOptions)
                 .setValue(selectedKey)
                 .onChange(async v => {
                     if (this.fleetStatus && !this.fleetStatus.mayFullReindex) {
                         setPendingEmbeddingModel({ key: v, dim: this.s.embeddingOutputDim });
-                        new Notice('Seek: this device hydrates the shared index. Change the embedding model on the producer, then wait for those files to arrive.', 8000);
+                        new Notice('Seek: change the embedding model on the lead computer, then wait for those files to arrive.', 8000);
                         this.rerender();
                         return;
                     }
@@ -1718,7 +1764,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                     .onChange(async v => {
                         if (this.fleetStatus && !this.fleetStatus.mayFullReindex) {
                             setPendingEmbeddingModel({ key: this.s.embeddingModelKey, dim: Number(v) });
-                            new Notice('Seek: this device hydrates the shared index. Change the vector size on the producer, then wait for those files to arrive.', 8000);
+                            new Notice('Seek: change the vector size on the lead computer, then wait for those files to arrive.', 8000);
                             this.rerender();
                             return;
                         }

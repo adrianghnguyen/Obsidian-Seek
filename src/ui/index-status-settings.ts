@@ -81,7 +81,7 @@ export const EMBED_METRIC_HELP: Record<string, string> = {
 };
 
 const EMBED_VS_PASS_HELP =
-    'While indexing, the header speed is live. Phase, batch, and health rows stay on the last completed pass until this run finishes.';
+    'While indexing, files, chunks, tokens, and header speed are this run. Phase, batch, and health rows from a previous run stay hidden until this pass finishes.';
 
 /** Phase / cold durations: ms, seconds, or m+s for longer passes. */
 export function fmtPhaseDuration(ms: number): string {
@@ -98,6 +98,7 @@ export function fmtPhaseDuration(ms: number): string {
 
 export function fmtRate(n: number): string {
     if (!Number.isFinite(n) || n <= 0) return '—';
+    if (n < 1) return n.toFixed(2);
     return n >= 10 ? n.toFixed(0) : n.toFixed(1);
 }
 
@@ -240,6 +241,7 @@ export function renderEmbedDiagnostic(card: HTMLElement, view: EmbedDiagView): v
         if (live.tokensDone > 0) {
             rows.push({ key: 'tokens', value: live.tokensDone.toLocaleString(), label: 'Tokens' });
         }
+        rows.push({ key: 'total', value: fmtPhaseDuration(live.elapsedMs), label: 'Elapsed' });
         kvGrid(passSec, rows);
     } else if (complete) {
         const kind = jobKindLabel(undefined, complete.mode);
@@ -256,12 +258,7 @@ export function renderEmbedDiagnostic(card: HTMLElement, view: EmbedDiagView): v
         passSec.createDiv({ cls: 'seek-status-embed-line seek-status-embed-empty', text: '—' });
     }
 
-    if (complete) {
-        if (jobActive) {
-            const note = body.createDiv({ cls: 'seek-status-embed-stale' });
-            helpLabel(note, 'last completed', 'From last completed pass');
-        }
-
+    if (complete && !jobActive) {
         const phases = body.createDiv({ cls: 'seek-status-embed-section' });
         sectionHead(phases, 'phases', 'Phases');
         kvGrid(phases, [
@@ -321,7 +318,7 @@ export function renderEmbedDiagnostic(card: HTMLElement, view: EmbedDiagView): v
             { key: 'quarantined', value: String(complete.filesQuarantined ?? 0), label: 'Quarantined' },
             { key: 'recycles', value: String(complete.embedRecycles), label: 'Recycles' },
         ]);
-    } else {
+    } else if (!complete && !jobActive) {
         const empty = body.createDiv({ cls: 'seek-status-embed-section' });
         empty.createDiv({ cls: 'seek-status-embed-line seek-status-embed-empty', text: 'No completed pass yet' });
     }
@@ -347,6 +344,8 @@ export function renderSettingsIndexStatusCard(
     opts: {
         health: IndexStatusHealth;
         mode?: IndexStatusMode;
+        label?: string;
+        hydrateProgress?: import('./index-status-report').IndexHydrateProgress | null;
         stats: IndexStatusCardStats | null;
         job?: IndexStatusJob | null;
         startup?: StartupTimingView | null;
@@ -359,6 +358,8 @@ export function renderSettingsIndexStatusCard(
     const card = renderIndexStatusCard(parent, {
         health: opts.health,
         mode: opts.mode,
+        label: opts.label,
+        hydrateProgress: opts.hydrateProgress,
         stats: opts.stats,
         job: opts.job,
     });

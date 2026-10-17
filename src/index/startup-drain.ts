@@ -37,12 +37,30 @@ export function clampCatchUpBurstMaxFiles(n: number): number {
     return Math.max(CATCHUP_BURST_MAX_FILES_MIN, Math.min(CATCHUP_BURST_MAX_FILES_MAX, Math.round(n)));
 }
 
-export function catchUpBurstLimits(opts: { mobile: boolean; burstMaxFiles: number }): {
-    maxFiles: number;
+/** Dirty remaining notes at or above this skip the 30-file / 8s interactive cap. */
+export const LARGE_CATCHUP_REMAINING = 200;
+/**
+ * Files per burst when thousands remain. Unbounded (the whole dirty set) spends
+ * minutes in sidecar/carry-over hydrate before the GPU reports the first chunk.
+ */
+export const LARGE_CATCHUP_MAX_FILES = 200;
+/** Wall-clock budget for a large remaining catch-up — matches full-reindex stall window. */
+export const LARGE_CATCHUP_BUDGET_MS = 300_000;
+
+export function catchUpBurstLimits(opts: {
+    mobile: boolean;
+    burstMaxFiles: number;
+    remainingFiles?: number;
+}): {
+    maxFiles: number | undefined;
     budgetMs: number;
 } {
     if (opts.mobile) {
         return { maxFiles: CATCHUP_MAX_FILES_PER_BURST, budgetMs: CATCHUP_BURST_BUDGET_MS };
+    }
+    const remaining = Math.max(0, opts.remainingFiles ?? 0);
+    if (remaining >= LARGE_CATCHUP_REMAINING) {
+        return { maxFiles: LARGE_CATCHUP_MAX_FILES, budgetMs: LARGE_CATCHUP_BUDGET_MS };
     }
     return {
         maxFiles: clampCatchUpBurstMaxFiles(opts.burstMaxFiles),

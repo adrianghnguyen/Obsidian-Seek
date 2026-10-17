@@ -27,6 +27,7 @@ const consumerFleet = {
     waitingForProducer: false,
     matchingReady: true,
     mayFullReindex: false,
+    mayEmbedCatchUp: false,
     copy: 'Hydrating from the producer index.',
 };
 
@@ -101,6 +102,7 @@ describe('SeekPlugin consumer hydrate boot wiring', () => {
             ensureModelLoaded,
             runCatchUp,
             lastMayFullReindex: false,
+            lastMayEmbedCatchUp: false,
         });
 
         plugin.scheduleStartupCatchUp();
@@ -127,6 +129,7 @@ describe('SeekPlugin consumer hydrate boot wiring', () => {
             catchUpJob: null,
             loadGeneration: 1,
             lastMayFullReindex: false,
+            lastMayEmbedCatchUp: false,
             settings: { catchUpBurstMaxFiles: 30 },
             embedder: { loaded: false },
             orchestrator: {
@@ -143,7 +146,7 @@ describe('SeekPlugin consumer hydrate boot wiring', () => {
             finishCatchUpJob: vi.fn(),
             clearExclusionChange: vi.fn(),
             runStartupWarm: vi.fn(),
-            indexProgress: { refreshIdle: vi.fn(), update: vi.fn() },
+            indexProgress: { refreshIdle: vi.fn(), update: vi.fn(), pauseElapsed: vi.fn(), resumeElapsed: vi.fn() },
             bumpIndexingProgressHeartbeat: vi.fn(),
             notifyIndexActivityChanged: vi.fn(),
             noteIndexDeltaFromCompute: vi.fn(),
