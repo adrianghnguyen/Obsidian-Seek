@@ -5,6 +5,7 @@
   "repositoryDependencies": [
     "github.com/adrianghnguyen/obsidian-agent-client",
     "github.com/adrianghnguyen/obsidian-seek",
-    "github.com/adrianghnguyen/whisper-obsidian-plugin"
+    "github.com/adrianghnguyen/whisper-obsidian-plugin",
+    "github.com/adrianghnguyen/obsidian-book-search-plugin"
   ]
 }
