@@ -49,7 +49,7 @@ import {
 } from '../ui/index-status-settings';
 import { formatRecentSearchLine } from '../diagnostics/session-telemetry';
 import type { SettingsTelemetrySink } from '../main';
-import { formatRoughEta } from '../ui/index-eta';
+import { formatStableLabelProgress } from '../ui/index-progress-format';
 import type { FolderCoverageNode, FolderCoverageSummary, FolderCoveragePathSets, CoveragePanelMessage } from '../index/folder-coverage';
 import {
     emptyFolderCoverage,
@@ -65,7 +65,6 @@ import {
     remainingFilesPreview,
     ownFilesRow,
     OWN_FILES_PATH,
-    coverageHeadlineFromProgress,
 } from '../index/folder-coverage';
 import type { IndexProgressSnapshot } from '../ui/index-progress-snapshot';
 import {
@@ -230,6 +229,8 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
     // Independent of advancedOpen (Relevance) so the Index disclosure toggles on its own.
     private indexAdvancedOpen = false;
     private embedDiagOpen = false;
+    /** null = follow live-pass default (open while embed/hydrate/verify). */
+    private coverageOpenUser: boolean | null = null;
     // Nested under Advanced relevance — BM25 field-weight sliders stay folded by default.
     private bm25WeightsOpen = false;
     private reindexPhase: 'idle' | 'confirm' = 'idle';
@@ -244,7 +245,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
     private jobStartedAt = 0;
     // Live-progress DOM refs, repointed on each display() so the runFullReindex
     // onProgress callback always paints the current node (robust to close/reopen).
-    private progressFillEl: HTMLElement | null = null;
+    private progressMeterEl: HTMLProgressElement | null = null;
     private progressLabelEl: HTMLElement | null = null;
     // Transient "downloading…" flag for the model section (no byte progress available).
     private modelDownloading = false;
@@ -428,7 +429,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         if (!this.plugin.getStartupTimingView().bootComplete) return true;
         // Live embed rates on the status card while any index job is active.
         const snap = this.progressSnapshot();
-        return snap.phase === 'embed' || snap.phase === 'hydrate';
+        return snap.phase === 'embed' || snap.phase === 'hydrate' || snap.phase === 'verify' || snap.phase === 'starting';
     }
 
     private startStartupPoll(): void {
@@ -457,12 +458,6 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         // Obsidian's "Excluded files" is running (e.g. a folder was un-excluded).
         this.exclusionBannerHost = containerEl.createDiv({ cls: 'seek-exclusion-banner-host' });
         this.paintExclusionBanner();
-
-        // Per-folder embedder-pipeline coverage (which folders have been run through
-        // the embedder, and how completely). Repaints live during a backfill.
-        this.coverageHost = containerEl.createDiv({ cls: 'seek-coverage-host' });
-        if (this.coveragePathSets || this.coverageCache) this.paintCoverage({ refresh: false });
-        void this.paintCoverage({ refresh: true });
 
         if (this.plugin.indexHealthState === 'degraded') {
             const warn = containerEl.createDiv({ cls: 'seek-inline-warn' });
@@ -768,11 +763,16 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         const stats = this.stats && snap.phase === 'idle'
             ? { ...this.stats, files: snap.filesDone, chunks: snap.chunksDone }
             : this.stats;
+        const coverageOpen = this.coverageFolderOpen(snap);
         renderSettingsIndexStatusCard(host, {
             health: snap.health,
             mode: snap.mode,
             label: report.label,
             hydrateProgress: snap.hydrate,
+            progress: snap.indicator,
+            percent: snap.percent,
+            remaining: snap.remaining,
+            eta: snap.eta,
             stats,
             job: snap.job,
             startup,
@@ -788,8 +788,38 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                 live: snap.speed,
                 lastComplete: this.plugin.getLastIndexComplete(),
                 lastLoad: this.plugin.getLastLoadEntry(),
+                derived: snap.embed,
+                rates: snap.rates,
+            },
+            coverage: {
+                open: coverageOpen,
+                onToggle: () => {
+                    this.coverageOpenUser = !coverageOpen;
+                    this.paintStatusCard();
+                },
+                headline: snap.coverageHeadline,
+                roleHint: this.coverageRoleHint(),
+                attachBody: (el) => {
+                    this.coverageHost = el;
+                    if (this.coveragePathSets || this.coverageCache) this.paintCoverage({ refresh: false });
+                    void this.paintCoverage({ refresh: true });
+                },
             },
         });
+    }
+
+    private coverageFolderOpen(snap: IndexProgressSnapshot): boolean {
+        if (this.coverageOpenUser != null) return this.coverageOpenUser;
+        return snap.phase === 'embed' || snap.phase === 'hydrate' || snap.phase === 'verify';
+    }
+
+    private coverageRoleHint(): string {
+        if (this.fleetStatus && !this.fleetStatus.mayFullReindex) {
+            return this.fleetStatus.role === 'contributor'
+                ? 'This computer can add notes to the shared index. Folder cells are notes already searchable — a full rebuild stays on the lead computer.'
+                : 'This device copies the lead computer’s index files. Folder cells are notes already searchable, not a local embed pass.';
+        }
+        return 'Share of notes already searchable. Same counts as the status bar.';
     }
 
     // ── Per-folder coverage + exclusion-change banner ────────────────────────────
@@ -895,7 +925,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         const head = wrap.createDiv({ cls: 'seek-coverage-head' });
         const titles = head.createDiv({ cls: 'seek-coverage-head-text' });
         titles.createSpan({ cls: 'seek-coverage-title', text: 'Index coverage by folder' });
-        const liveHeadline = coverageHeadlineFromProgress(summary.overall, snap);
+        const liveHeadline = snap.coverageHeadline;
         titles.createDiv({
             cls: 'seek-coverage-sub',
             text: liveHeadline.live
@@ -1010,9 +1040,8 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             }
             return;
         }
-        if (snap.kind !== 'full' || snap.filesDone >= snap.filesTotal) return;
-        const rem = Math.max(0, snap.filesTotal - snap.filesDone);
-        if (rem <= 0) return;
+        if (snap.kind !== 'full' || snap.remaining == null || snap.remaining <= 0) return;
+        const rem = snap.remaining;
         parent.createDiv({
             cls: 'seek-coverage-remaining-count',
             text: remainingFilesFoldLabel(rem),
@@ -1225,12 +1254,12 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             const head = row.createDiv({ cls: 'seek-progress-head' });
             head.createDiv({ cls: 'setting-item-name', text: this.statusReport().label });
             this.progressLabelEl = head.createDiv({ cls: 'seek-progress-count' });
-            const bar = row.createDiv({ cls: 'seek-progress-track' });
-            this.progressFillEl = bar.createDiv({ cls: 'seek-progress-fill' });
+            this.progressMeterEl = row.createEl('progress', { cls: 'seek-status-meter' }) as HTMLProgressElement;
+            this.progressMeterEl.max = 100;
             this.paintProgress();
             return;
         }
-        this.progressFillEl = null;
+        this.progressMeterEl = null;
         this.progressLabelEl = null;
 
         if (this.reindexPhase === 'confirm') {
@@ -1406,15 +1435,22 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                 return;
             }
             if (this.progressLabelEl) this.progressLabelEl.setText('…');
-            if (this.progressFillEl) this.progressFillEl.style.width = '0%';
+            if (this.progressMeterEl) {
+                this.progressMeterEl.addClass('is-indeterminate');
+                this.progressMeterEl.removeAttribute('value');
+            }
             return;
         }
         if (this.jobStartedAt === 0) this.jobStartedAt = performance.now();
         const pct = snap.percent;
-        const eta = formatRoughEta(snap.filesDone, snap.filesTotal, snap.elapsedMs || (performance.now() - this.jobStartedAt));
-        if (this.progressFillEl) this.progressFillEl.style.width = `${pct}%`;
+        const eta = snap.eta;
+        if (this.progressMeterEl) {
+            this.progressMeterEl.removeClass('is-indeterminate');
+            this.progressMeterEl.max = 100;
+            this.progressMeterEl.value = pct;
+        }
         if (this.progressLabelEl) {
-            const line = `${snap.filesDone.toLocaleString()} / ${snap.filesTotal.toLocaleString()} notes · ${pct}%`;
+            const line = formatStableLabelProgress(snap.filesDone, snap.filesTotal, pct);
             this.progressLabelEl.setText(eta ? `${line} · ${eta} left` : line);
         }
         if (snap.filesDone >= snap.filesTotal) {

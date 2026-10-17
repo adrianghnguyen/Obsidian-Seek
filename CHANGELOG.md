@@ -5,7 +5,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 ## [Unreleased]
 
 ### Added
-- **Settings → Index → Danger Zone.** Recover search index (Resume indexing) and Force reset search index sit next to Full reindex, with Reset to defaults in the same card. Both recovery buttons call the existing self-heal paths (`recoverIndexFromSettings` / `forceResetIndexFromSettings`) and refresh the status bar. A Consumer does not start a producer full reindex from Force reset — it restores from the lead computer’s sidecar files.
+- **Index progress submodule** (`src/ui/index-progress-indicator.ts` + `buildIndexProgressSnapshot`). Status bar, Settings Index, search footer, embed diagnostics, coverage headlines, and Danger Zone refresh all **read** percent, remaining, rates, ETA, GPU occupancy, effective batch, and coverage headline from one snapshot. Settings and the status card format only — they do not call `indexPercent` / rate helpers / `formatRoughEta`. Verify-only sidecar walks (`needed: 0` on a full IDB) paint **Verifying**, not Restoring 0%. `catchUpPending` paints **Catching up**, not Ready. Recover / Force reset latches **Recovering**. Stuck/locked/error drop units.
+
+### Changed
+- **Index coverage by folder** is a disclosure immediately below **Embedding pass**, collapsed by default (opens while a hydrate/embed/verify pass is live unless you toggled it). Consumer vs Producer copy stays honest. Last-updated and numeric slots right-align and stay in-box (labels ellipsize; stamp no longer appends duration).
 
 ## 1.15.0-rc.5
 

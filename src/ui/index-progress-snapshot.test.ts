@@ -25,6 +25,7 @@ function reportOf(
         compact: copy.compact,
         tone: copy.tone,
         hydrateProgress: null,
+        progress: { phase: 'ready', units: null },
         ...over,
     };
 }
@@ -194,41 +195,117 @@ describe('buildIndexProgressSnapshot', () => {
         expect(snap.job).toBeNull();
         expect(snap.speed).toBeNull();
     });
+
+    it('precomputes remaining, rates, ETA, GPU occupancy, batch, and idle coverage headline', () => {
+        const live = buildIndexProgressSnapshot({
+            report: reportOf('indexing', { mode: 'full-reindex' }),
+            job: { done: 50, total: 200, kind: 'full' },
+            speed: {
+                done: 50, total: 200, chunksDone: 100, tokensDone: 50_000,
+                elapsedMs: 20_000, paused: false, kind: 'full',
+            },
+            lastComplete: {
+                chunksPerSec: 12,
+                filesPerSec: 3,
+                tokensPerSec: 900,
+                totalDurationMs: 100_000,
+                gpuBusyMs: 40_000,
+                vectorsWritten: 790,
+                embedBatchLatencyMs: { n: 100 },
+            },
+        });
+        expect(live.percent).toBe(indexPercent(50, 200));
+        expect(live.remaining).toBe(150);
+        expect(live.eta).toBe('~2 min');
+        expect(live.rates?.chunksPerSec).toBe(5);
+        expect(live.rates?.filesPerSec).toBe(2.5);
+        expect(live.rates?.tokensPerSec).toBe(2500);
+        expect(live.embed.pill).toBe('live');
+        expect(live.embed.gpuOccupancyPct).toBe(40);
+        expect(live.embed.effectiveBatch).toBe(7.9);
+
+        const idle = buildIndexProgressSnapshot({
+            report: reportOf('ok'),
+            job: null,
+            speed: null,
+            coverage: { covered: 80, total: 100 },
+        });
+        expect(idle.percent).toBe(indexPercent(80, 100));
+        expect(idle.coverageHeadline.percent).toBe(idle.percent);
+        expect(idle.coverageHeadline.caption).toBe('in the index');
+        expect(idle.coverageHeadline.live).toBe(false);
+    });
+});
+
+describe('status card formats snapshot percent and remaining', () => {
+    it('does not recompute percent from job.done/total', () => {
+        const card = stubEl();
+        renderIndexStatusCard(card as unknown as HTMLElement, {
+            health: 'indexing',
+            mode: 'indexing',
+            stats: { files: 5, chunks: 18, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null },
+            job: { done: 1, total: 100, kind: 'catchup' },
+            percent: 42,
+            remaining: 7,
+        });
+        const blob = textOf(card);
+        expect(blob).toContain('42%');
+        expect(blob).toMatch(/7/);
+        expect(blob).not.toContain('1%');
+    });
 });
 
 describe('coverageHeadlineFromProgress', () => {
     it('keeps in-the-index FileRecords during an embed pass', () => {
-        const headline = coverageHeadlineFromProgress(
-            { covered: 200, total: 3037 },
-            { phase: 'embed', filesDone: 500, filesTotal: 2998, percent: indexPercent(500, 2998) },
-        );
+        const snap = buildIndexProgressSnapshot({
+            report: reportOf('indexing', { mode: 'full-reindex' }),
+            job: { done: 500, total: 2998, kind: 'full' },
+            speed: {
+                done: 500, total: 2998, chunksDone: 1, tokensDone: 1,
+                elapsedMs: 20_000, paused: false, kind: 'full',
+            },
+            coverage: { covered: 200, total: 3037 },
+        });
+        const headline = coverageHeadlineFromProgress(snap);
         expect(headline.live).toBe(false);
         expect(headline.caption).toBe('in the index');
         expect(headline.done).toBe(200);
         expect(headline.total).toBe(3037);
+        expect(headline.percent).toBe(snap.percent);
         expect(headline.percent).toBe(indexPercent(200, 3037));
     });
 
     it('uses hydrate walk counts for this restore', () => {
-        const headline = coverageHeadlineFromProgress(
-            { covered: 0, total: 3037 },
-            { phase: 'hydrate', filesDone: 21, filesTotal: 80, percent: 26 },
-        );
+        const snap = buildIndexProgressSnapshot({
+            report: reportOf('restoring', {
+                mode: 'restoring',
+                hydrateProgress: { done: 21, total: 80, percent: 26 },
+                progress: { phase: 'hydrating', units: { done: 21, total: 80, percent: 26, determinate: true } },
+            }),
+            job: null,
+            speed: null,
+        });
+        const headline = coverageHeadlineFromProgress(snap);
         expect(headline.live).toBe(true);
         expect(headline.caption).toBe('this restore');
         expect(headline.done).toBe(21);
         expect(headline.total).toBe(80);
+        expect(headline.percent).toBe(26);
     });
 
     it('keeps in-the-index FileRecords when idle', () => {
-        const headline = coverageHeadlineFromProgress(
-            { covered: 3024, total: 3037 },
-            { phase: 'idle', filesDone: 3024, filesTotal: 3037, percent: 0 },
-        );
+        const snap = buildIndexProgressSnapshot({
+            report: reportOf('ok'),
+            job: null,
+            speed: null,
+            coverage: { covered: 3024, total: 3037 },
+        });
+        const headline = coverageHeadlineFromProgress(snap);
         expect(headline.live).toBe(false);
         expect(headline.caption).toBe('in the index');
         expect(headline.done).toBe(3024);
         expect(headline.total).toBe(3037);
+        expect(headline.percent).toBe(snap.percent);
     });
 });
 
@@ -262,7 +339,7 @@ describe('three surfaces read the same snapshot', () => {
             excludedPaths: [],
         });
         const coverageSnap = createLiveCoverageSnapshot({ summary, progress: snap });
-        const headline = coverageHeadlineFromProgress(summary.overall, coverageSnap.progress);
+        const headline = coverageHeadlineFromProgress(coverageSnap.progress);
 
         const root = stubEl();
         const bar = new IndexStatusBar();
@@ -284,6 +361,9 @@ describe('three surfaces read the same snapshot', () => {
             hydrateProgress: snap.hydrate,
             stats: { files: 1, chunks: 2, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null },
             job: snap.job,
+            percent: snap.percent,
+            remaining: snap.remaining,
+            eta: snap.eta,
         });
 
         expect(countsOf(bar.progressSnapshot())).toEqual(countsOf(snap));

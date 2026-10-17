@@ -4,9 +4,11 @@ import {
     fmtPhaseDuration,
     fmtRate,
     renderEmbedDiagnostic,
+    renderCoverageDiagnostic,
     renderSettingsIndexStatusCard,
 } from './index-status-settings';
 import type { IndexCompleteEntry, LoadEntry } from '../types/types';
+import { embedDerivedFromInputs } from './index-progress-snapshot';
 
 interface StubEl {
     tagName: string;
@@ -165,12 +167,14 @@ describe('EMBED_METRIC_HELP', () => {
 describe('renderEmbedDiagnostic', () => {
     it('folded header shows last-pass rates without body', () => {
         const card = stubEl();
+        const complete = sampleComplete();
         renderEmbedDiagnostic(card as unknown as HTMLElement, {
             open: false,
             onToggle: () => {},
             live: null,
-            lastComplete: sampleComplete(),
+            lastComplete: complete,
             lastLoad: sampleLoad(),
+            derived: embedDerivedFromInputs(null, complete),
         });
         const blob = textOf(card);
         expect(blob).toContain('Embedding pass');
@@ -185,20 +189,22 @@ describe('renderEmbedDiagnostic', () => {
 
     it('unrolled live pass shows this-run files and hides last-pass phases', () => {
         const card = stubEl();
+        const live = {
+            chunksDone: 18402,
+            tokensDone: 920_100,
+            done: 2856,
+            total: 2998,
+            elapsedMs: 60_000,
+            paused: false,
+            kind: 'catchup' as const,
+        };
         renderEmbedDiagnostic(card as unknown as HTMLElement, {
             open: true,
             onToggle: () => {},
-            live: {
-                chunksDone: 18402,
-                tokensDone: 920_100,
-                done: 2856,
-                total: 2998,
-                elapsedMs: 60_000,
-                paused: false,
-                kind: 'catchup',
-            },
+            live,
             lastComplete: sampleComplete(),
             lastLoad: sampleLoad(),
+            derived: embedDerivedFromInputs(live, sampleComplete()),
         });
         const blob = textOf(card);
         expect(blob).toContain('Live');
@@ -217,12 +223,14 @@ describe('renderEmbedDiagnostic', () => {
 
     it('folded header always includes tok/s slot (dash when unknown)', () => {
         const card = stubEl();
+        const complete = sampleComplete({ tokensPerSec: undefined, paddedTokens: undefined });
         renderEmbedDiagnostic(card as unknown as HTMLElement, {
             open: false,
             onToggle: () => {},
             live: null,
-            lastComplete: sampleComplete({ tokensPerSec: undefined, paddedTokens: undefined }),
+            lastComplete: complete,
             lastLoad: null,
+            derived: embedDerivedFromInputs(null, complete),
         });
         const blob = textOf(card);
         expect(blob).toContain('tok/s');
@@ -232,16 +240,18 @@ describe('renderEmbedDiagnostic', () => {
 
     it('derives last-pass tok/s from paddedTokens when tokensPerSec missing', () => {
         const card = stubEl();
+        const complete = sampleComplete({
+            tokensPerSec: undefined,
+            paddedTokens: 258_000,
+            totalDurationMs: 258_000,
+        });
         renderEmbedDiagnostic(card as unknown as HTMLElement, {
             open: false,
             onToggle: () => {},
             live: null,
-            lastComplete: sampleComplete({
-                tokensPerSec: undefined,
-                paddedTokens: 258_000,
-                totalDurationMs: 258_000,
-            }),
+            lastComplete: complete,
             lastLoad: null,
+            derived: embedDerivedFromInputs(null, complete),
         });
         expect(textOf(card)).toContain('1000');
         expect(textOf(card)).toContain('tok/s');
@@ -249,18 +259,20 @@ describe('renderEmbedDiagnostic', () => {
 
     it('unrolled shows encoder-feed occupancy when pipeline fields are present', () => {
         const card = stubEl();
+        const complete = sampleComplete({
+            gpuBusyMs: 129_000,
+            persistWaitMs: 800,
+            inflightHighWater: 8,
+            embedInFlightMax: 10,
+            effectiveBatch: 7.9,
+        });
         renderEmbedDiagnostic(card as unknown as HTMLElement, {
             open: true,
             onToggle: () => {},
             live: null,
-            lastComplete: sampleComplete({
-                gpuBusyMs: 129_000,
-                persistWaitMs: 800,
-                inflightHighWater: 8,
-                embedInFlightMax: 10,
-                effectiveBatch: 7.9,
-            }),
+            lastComplete: complete,
             lastLoad: sampleLoad(),
+            derived: embedDerivedFromInputs(null, complete),
         });
         const blob = textOf(card);
         expect(blob).toContain('Encoder feed');
@@ -283,6 +295,51 @@ describe('renderEmbedDiagnostic', () => {
         });
         expect(root.querySelector('.seek-status-startup')).not.toBeNull();
         expect(root.querySelector('.seek-status-embed')).not.toBeNull();
+    });
+
+    it('coverage disclosure sits below embed and stays collapsed by default', () => {
+        const root = stubEl();
+        renderSettingsIndexStatusCard(root as unknown as HTMLElement, {
+            health: 'ok',
+            stats: { files: 10, chunks: 40, lastFullAt: '2026-10-17T13:42:00.000Z', lastFullDurationMs: 12_300, lastUpdatedAt: null },
+            embedDiag: {
+                open: false,
+                onToggle: () => {},
+                live: null,
+                lastComplete: sampleComplete(),
+                lastLoad: null,
+                derived: embedDerivedFromInputs(null, sampleComplete()),
+            },
+            coverage: {
+                open: false,
+                onToggle: () => {},
+                headline: { done: 80, total: 80, caption: 'in the index', live: false, percent: 100 },
+                roleHint: 'This device copies the lead computer’s index files. Folder cells are notes already searchable, not a local embed pass.',
+                attachBody: () => { throw new Error('collapsed coverage must not attach the tree'); },
+            },
+        });
+        expect(root.querySelector('.seek-status-coverage')).not.toBeNull();
+        expect(textOf(root)).toContain('Index coverage by folder');
+        expect(root.querySelector('.seek-status-coverage-body')).toBeNull();
+        expect(textOf(root.querySelector('.seek-status-last') as StubEl)).not.toMatch(/12\.3s/);
+    });
+
+    it('expanded coverage disclosure mounts the folder host', () => {
+        const root = stubEl();
+        let attached = false;
+        renderCoverageDiagnostic(root as unknown as HTMLElement, {
+            open: true,
+            onToggle: () => {},
+            headline: { done: 12, total: 40, caption: 'this restore', live: true, percent: 30 },
+            roleHint: 'Share of notes already searchable. Same counts as the status bar.',
+            attachBody: (host) => {
+                attached = true;
+                host.createDiv({ cls: 'seek-coverage-panel', text: 'tree' });
+            },
+        });
+        expect(attached).toBe(true);
+        expect(root.querySelector('.seek-coverage-host')).not.toBeNull();
+        expect(textOf(root)).toContain('12 / 40 · 30%');
     });
 });
 

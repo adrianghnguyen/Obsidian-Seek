@@ -974,6 +974,8 @@ describe('createLiveCoverageSnapshot and flattenCoverageTree', () => {
                 filesDone: 1,
                 filesTotal: 3,
                 percent: 33,
+                remaining: 2,
+                eta: null,
                 chunksDone: 4,
                 tokensDone: 0,
                 elapsedMs: 100,
@@ -986,12 +988,29 @@ describe('createLiveCoverageSnapshot and flattenCoverageTree', () => {
                     compact: 'Reindexing',
                     tone: 'accent',
                     hydrateProgress: null,
+                    progress: { phase: 'indexing', units: null },
                 },
                 job: { kind: 'full', done: 1, total: 3 },
                 speed: {
                     done: 1, total: 3, chunksDone: 4, tokensDone: 0, elapsedMs: 100, paused: false, kind: 'full',
                 },
                 hydrate: null,
+                indicator: { phase: 'indexing', units: null },
+                rates: null,
+                embed: {
+                    pill: 'live',
+                    liveRates: null,
+                    lastRates: null,
+                    gpuOccupancyPct: null,
+                    effectiveBatch: null,
+                },
+                coverageHeadline: {
+                    done: 1,
+                    total: 3,
+                    caption: 'in the index',
+                    live: false,
+                    percent: 33,
+                },
             },
         });
 

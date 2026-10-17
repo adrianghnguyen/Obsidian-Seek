@@ -174,6 +174,7 @@ describe('applyPostBootIndexScheduling coverage resume', () => {
             catchUpPending: false,
             catchUpRunning: false,
             fullReindexInFlight: false,
+            indexProgressWalk: { snapshot: () => null, clear() {} },
             indexableNoteCount: () => 4864,
             scheduleIndexBuild,
             refreshIndexStatusBar: vi.fn(),
@@ -198,11 +199,11 @@ describe('applyPostBootIndexScheduling coverage resume', () => {
     it('aborts leftover 1/1 hydrate then schedules catch-up', () => {
         const abortInflightSessionWork = vi.fn(function (this: Record<string, unknown>) {
             this.sidecarHydrating = false;
-            this.sidecarHydrateProgress = null;
+            this.indexProgressWalk = { snapshot: () => null, clear() {} };
         });
         const h = bootHarness({
             sidecarHydrating: true,
-            sidecarHydrateProgress: { done: 1, total: 1 },
+            indexProgressWalk: { snapshot: () => ({ done: 1, total: 1 }), clear() {} },
             abortInflightSessionWork,
         });
         h.plugin.applyPostBootIndexScheduling();

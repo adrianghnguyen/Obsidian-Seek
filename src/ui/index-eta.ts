@@ -13,6 +13,26 @@ export function formatRoughEta(done: number, total: number, elapsedMs: number): 
     return `~${Math.round(remainingSec / 3600)} hr`;
 }
 
+/** Rolling chunks/s for the current pass — zero until chunks and elapsed time are known. */
+export function indexChunksPerSec(chunks: number, elapsedMs: number): number {
+    if (chunks <= 0 || elapsedMs <= 0) return 0;
+    const sec = elapsedMs / 1000;
+    return sec > 0 ? chunks / sec : 0;
+}
+
+export function indexFilesPerSec(done: number, elapsedMs: number): number {
+    if (done <= 0 || elapsedMs <= 0) return 0;
+    const sec = elapsedMs / 1000;
+    return sec > 0 ? done / sec : 0;
+}
+
+/** Rolling padded-token throughput for the current pass. */
+export function indexTokensPerSec(tokens: number, elapsedMs: number): number {
+    if (tokens <= 0 || elapsedMs <= 0) return 0;
+    const sec = elapsedMs / 1000;
+    return sec > 0 ? tokens / sec : 0;
+}
+
 /** Integer 0–100 that never claims 100% before done, or 0% after work has started. */
 export function indexPercent(done: number, total: number): number {
     if (total <= 0) return 0;
