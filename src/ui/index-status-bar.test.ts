@@ -18,6 +18,7 @@ import {
     INDEX_STATUS_HEALTH,
 } from './index-status-card';
 import { INDEX_STATUS_COPY, type IndexStatusReport } from './index-status-report';
+import { buildIndexProgressSnapshot } from './index-progress-snapshot';
 import type { IndexStatusHealth, IndexStatusMode } from './index-status-card';
 
 function reportOf(health: IndexStatusHealth, mode?: IndexStatusMode): IndexStatusReport {
@@ -252,8 +253,49 @@ describe('IndexStatusBar', () => {
         bar.hide();
         expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe('Seek');
         expect(root.querySelector('.seek-status-bar-chunks')?.className).toContain('is-hidden');
+        expect(root.querySelector('progress')?.className).toContain('is-hidden');
         expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-good');
         expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)).toBeNull();
+    });
+
+    it('hides file counts and the progress meter when Ready coverage is complete', () => {
+        const snap = buildIndexProgressSnapshot({
+            report: reportOf('ok'),
+            job: null,
+            speed: null,
+            coverage: { covered: 3854, total: 3854 },
+            inventoryFiles: 3854,
+            inventoryChunks: 15456,
+        });
+        const root = stubEl();
+        const bar = new IndexStatusBar();
+        bar.mount(root as unknown as HTMLElement, { ...hooks, getSnapshot: () => snap });
+        bar.show(3854, 'Seek: indexing…');
+        bar.hide();
+        expect(snap.phase).toBe('idle');
+        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe('Seek');
+        expect(root.querySelector('progress')?.className).toContain('is-hidden');
+        expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-good');
+        expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)).toBeNull();
+    });
+
+    it('keeps coverage counts without a meter when idle Ready is incomplete', () => {
+        const snap = buildIndexProgressSnapshot({
+            report: reportOf('ok'),
+            job: null,
+            speed: null,
+            coverage: { covered: 3024, total: 3854 },
+            inventoryFiles: 3024,
+            inventoryChunks: 12000,
+        });
+        const root = stubEl();
+        const bar = new IndexStatusBar();
+        bar.mount(root as unknown as HTMLElement, { ...hooks, getSnapshot: () => snap });
+        bar.hide();
+        expect(snap.phase).toBe('idle');
+        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe('3,024/3,854');
+        expect(root.querySelector('progress')?.className).toContain('is-hidden');
+        expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-good');
     });
 
     it('paints idle from getHealth after the job ends, not the in-flight indexing state', () => {
@@ -317,6 +359,22 @@ describe('IndexStatusBar', () => {
         expect(bar.job()?.total).toBe(10);
         bar.hide(1);
         expect(bar.job()).toBeNull();
+    });
+
+    it('pauseElapsed freezes encode time so idle gaps do not dilute throughput', () => {
+        const root = stubEl();
+        const bar = new IndexStatusBar();
+        bar.mount(root as unknown as HTMLElement, hooks);
+        bar.show(100, 'Seek: indexing…');
+        bar.update(30, 100, undefined, undefined, 11, 3904);
+        expect(bar.jobSpeedView()?.paused).toBe(false);
+        bar.pauseElapsed();
+        const paused = bar.jobSpeedView();
+        expect(paused?.paused).toBe(true);
+        const frozen = paused?.elapsedMs ?? -1;
+        expect(bar.jobSpeedView()?.elapsedMs).toBe(frozen);
+        bar.resumeElapsed();
+        expect(bar.jobSpeedView()?.paused).toBe(false);
     });
 });
 

@@ -64,6 +64,8 @@ export interface IndexProgressSnapshotInput {
     speed: IndexJobSpeedView | null;
     inventoryFiles?: number | null;
     inventoryChunks?: number | null;
+    /** Live vault notes — idle inventory must not paint 123/123 as 100%. */
+    indexableNotes?: number | null;
     coverage?: IndexProgressCoverageOverlay | null;
 }
 
@@ -185,7 +187,7 @@ export function buildIndexProgressSnapshot(input: IndexProgressSnapshotInput): I
         chunksDone = inventoryChunks;
     } else if (inventoryFiles > 0 || inventoryChunks > 0) {
         filesDone = inventoryFiles;
-        filesTotal = inventoryFiles;
+        filesTotal = Math.max(inventoryFiles, clampCount(input.indexableNotes ?? 0));
         chunksDone = inventoryChunks;
     }
 

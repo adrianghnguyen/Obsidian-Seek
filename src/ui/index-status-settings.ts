@@ -98,6 +98,7 @@ export function fmtPhaseDuration(ms: number): string {
 
 export function fmtRate(n: number): string {
     if (!Number.isFinite(n) || n <= 0) return '—';
+    if (n < 1) return n.toFixed(2);
     return n >= 10 ? n.toFixed(0) : n.toFixed(1);
 }
 

@@ -161,6 +161,22 @@ describe('buildIndexProgressSnapshot', () => {
         expect(snap.percent).toBe(indexPercent(500, 2998));
     });
 
+    it('idle inventory does not paint 123/123 as complete against a large vault', () => {
+        const snap = buildIndexProgressSnapshot({
+            report: reportOf('ok'),
+            job: null,
+            speed: null,
+            inventoryFiles: 123,
+            inventoryChunks: 450,
+            indexableNotes: 4864,
+        });
+        expect(snap.phase).toBe('idle');
+        expect(snap.filesDone).toBe(123);
+        expect(snap.filesTotal).toBe(4864);
+        expect(snap.percent).toBe(indexPercent(123, 4864));
+        expect(snap.percent).toBeLessThan(100);
+    });
+
     it('idle overlay uses coverage FileRecords, not raw inventory', () => {
         const snap = buildIndexProgressSnapshot({
             report: reportOf('ok'),

@@ -127,6 +127,21 @@ describe('IndexStatusReporter hydrate progress', () => {
         expect(report.label).toContain('0 / 63');
     });
 
+    it('does not keep a leftover 1/1 hydrate walk after hydrate has stopped', () => {
+        const report = IndexStatusReporter.compute({
+            ...idle,
+            booting: true,
+            hydrating: false,
+            goodEnough: true,
+            searchableChunks: 450,
+            inventoryFiles: 123,
+            hydrateProgress: { done: 1, total: 1 },
+        });
+        expect(report.hydrateProgress).toBeNull();
+        expect(report.compact).not.toMatch(/1\/1/);
+        expect(report.label).not.toMatch(/100%/);
+    });
+
     it('does not invent numbers when hydrate has no total yet', () => {
         const report = IndexStatusReporter.compute({
             ...idle,

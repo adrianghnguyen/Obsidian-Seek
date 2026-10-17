@@ -102,6 +102,9 @@ export class IndexStatusBar {
     private label = '';
     private aligningExclusions = false;
     private jobStartedAt = 0;
+    /** Encode-active time only — catch-up pauses between bursts must not dilute ch/s. */
+    private elapsedAccumMs = 0;
+    private elapsedTicking = false;
     private paintedDone = -1;
     private paintedTotal = -1;
     private paintedChunks = -1;
@@ -151,6 +154,8 @@ export class IndexStatusBar {
         this.tokensDone = 0;
         this.label = label;
         this.jobStartedAt = performance.now();
+        this.elapsedAccumMs = 0;
+        this.elapsedTicking = true;
         this.paintedDone = -1;
         this.paintedTotal = -1;
         this.paintedChunks = -1;
@@ -207,6 +212,8 @@ export class IndexStatusBar {
         this.total = 0;
         this.label = '';
         this.jobStartedAt = 0;
+        this.elapsedAccumMs = 0;
+        this.elapsedTicking = false;
         this.paintedDone = -1;
         this.paintedTotal = -1;
         this.paintedChunks = -1;
@@ -251,6 +258,30 @@ export class IndexStatusBar {
         });
     }
 
+    /** Stop the encode clock while catch-up waits for the next burst. */
+    pauseElapsed(): void {
+        if (!this.jobActive || !this.elapsedTicking) return;
+        this.elapsedAccumMs += Math.max(0, performance.now() - this.jobStartedAt);
+        this.elapsedTicking = false;
+        this.jobPaused = true;
+        this.schedulePaintJob(true);
+    }
+
+    /** Resume the encode clock when a catch-up burst starts encoding again. */
+    resumeElapsed(): void {
+        if (!this.jobActive || this.elapsedTicking) return;
+        this.jobStartedAt = performance.now();
+        this.elapsedTicking = true;
+        this.jobPaused = /paused/i.test(this.label);
+        this.schedulePaintJob(true);
+    }
+
+    private liveElapsedMs(): number {
+        if (!this.jobActive) return 0;
+        const extra = this.elapsedTicking ? Math.max(0, performance.now() - this.jobStartedAt) : 0;
+        return this.elapsedAccumMs + extra;
+    }
+
     /** Live encode-speed inputs for Settings — status bar no longer shows ch/s. */
     jobSpeedView(): IndexJobSpeedView | null {
         if (!this.jobActive || this.total <= 0) return null;
@@ -259,7 +290,7 @@ export class IndexStatusBar {
             tokensDone: this.tokensDone,
             done: this.done,
             total: this.total,
-            elapsedMs: Math.max(0, performance.now() - this.jobStartedAt),
+            elapsedMs: this.liveElapsedMs(),
             paused: this.jobPaused,
             kind: this.jobKind ?? undefined,
         };
@@ -328,13 +359,27 @@ export class IndexStatusBar {
         this.setStatusLabel(`Seek: ${snap.report.compact}`);
     }
 
+    /** Coverage counts without a live-walk meter — idle Ready must not look like a pass. */
+    private paintIdleCoverage(snap: IndexProgressSnapshot): void {
+        this.paintedDone = snap.filesDone;
+        this.paintedTotal = snap.filesTotal;
+        this.paintedChunks = snap.chunksDone;
+        this.paintedPercent = -1;
+        this.labelEl?.removeClass('is-hidden');
+        this.filesEl?.setText(`${snap.filesDone.toLocaleString()}/${snap.filesTotal.toLocaleString()}`);
+        this.chunksEl?.addClass('is-hidden');
+        this.progressEl?.addClass('is-hidden');
+        this.paintChrome(snap.health, null);
+        this.setStatusLabel(`Seek: ${snap.report.compact}`);
+    }
+
     private paintFromSnapshot(snap: IndexProgressSnapshot, force: boolean): void {
         if (snap.phase === 'hydrate' && snap.filesTotal > 0) {
             const remaining = snap.health === 'indexing' ? Math.max(0, snap.filesTotal - snap.filesDone) : null;
             this.paintCounts(snap, remaining, `Seek: ${snap.report.compact}`);
             return;
         }
-        if (snap.phase === 'starting' || snap.phase === 'locked' || snap.phase === 'stuck' || snap.phase === 'error') {
+        if (snap.phase === 'starting' || snap.phase === 'locked' || snap.phase === 'error') {
             this.paintBare(snap);
             return;
         }
@@ -342,6 +387,15 @@ export class IndexStatusBar {
             if (!force && snap.filesDone === this.paintedDone && snap.filesTotal === this.paintedTotal
                 && snap.chunksDone === this.paintedChunks && snap.percent === this.paintedPercent) return;
             this.paintCounts(snap, jobRemaining(snap.job) ?? 0, this.jobTooltipFromSnapshot(snap));
+            return;
+        }
+        if (snap.filesTotal > 0) {
+            // Fully indexed Ready is the green dot + "Seek" — not 3,854/3,854.
+            if (snap.health === 'ok' && snap.filesDone >= snap.filesTotal) {
+                this.paintBare(snap);
+                return;
+            }
+            this.paintIdleCoverage(snap);
             return;
         }
         this.paintBare(snap);

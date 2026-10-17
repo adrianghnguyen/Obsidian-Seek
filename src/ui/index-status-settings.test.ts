@@ -285,3 +285,12 @@ describe('renderEmbedDiagnostic', () => {
         expect(root.querySelector('.seek-status-embed')).not.toBeNull();
     });
 });
+
+describe('fmtRate', () => {
+    it('keeps sub-1 rates readable instead of rounding to 0.0', () => {
+        expect(fmtRate(0.048)).toBe('0.05');
+        expect(fmtRate(0)).toBe('—');
+        expect(fmtRate(6.1)).toBe('6.1');
+        expect(fmtRate(12.4)).toBe('12');
+    });
+});

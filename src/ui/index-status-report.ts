@@ -98,7 +98,12 @@ export function normalizeHydrateProgress(
     return { done, total, percent: indexPercent(done, total) };
 }
 
-function hydrateCopyApplies(mode: IndexStatusMode, hydrating: boolean): boolean {
+function hydrateCopyApplies(
+    mode: IndexStatusMode,
+    hydrating: boolean,
+    waitingForSidecar: boolean,
+): boolean {
+    if (!(hydrating || waitingForSidecar)) return false;
     if (mode === 'starting' || mode === 'restoring') return true;
     return mode === 'indexing' && hydrating;
 }
@@ -120,7 +125,10 @@ export function indexStatusModeFromUi(
     ui: IndexUiStatus,
     jobKind?: ReporterJobKind | null,
 ): IndexStatusMode {
-    if (ui === 'indexing' && jobKind === 'full') return 'full-reindex';
+    if (ui === 'locked' || ui === 'stuck') return ui;
+    // Clean-slate identity is degraded until the first FileRecords commit; a
+    // live full job must still paint Reindexing, not Index error.
+    if (jobKind === 'full') return 'full-reindex';
     return ui;
 }
 
@@ -129,7 +137,7 @@ export class IndexStatusReporter {
         const ui = resolveIndexUiStatus(input);
         const mode = indexStatusModeFromUi(ui, input.jobKind);
         const base = INDEX_STATUS_COPY[mode];
-        const live = hydrateCopyApplies(mode, !!input.hydrating)
+        const live = hydrateCopyApplies(mode, !!input.hydrating, !!input.waitingForSidecar)
             ? normalizeHydrateProgress(input.hydrateProgress)
             : null;
         const copy = live ? withHydrateProgressCopy(base, live) : base;
