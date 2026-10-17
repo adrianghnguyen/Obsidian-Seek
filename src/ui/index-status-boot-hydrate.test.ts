@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest';
 import { IndexStatusReporter, INDEX_STATUS_COPY, type IndexStatusReporterInput } from './index-status-report';
 import { indexFooterStatus, resolveIndexUiStatus } from './index-notice';
 import { indexPercent } from './index-eta';
+import { visibleProgressText } from './index-progress-format';
 
 const populated: IndexStatusReporterInput = {
     booting: false,
@@ -41,8 +42,8 @@ describe('boot copy: hydrating vs stuck vs ready', () => {
         })).toBe('restoring');
         expect(report.mode).toBe('restoring');
         expect(report.health).toBe('restoring');
-        expect(report.compact).toBe(`Restoring 12/63 · ${indexPercent(12, 63)}%`);
-        expect(report.label).toMatch(/12 \/ 63/);
+        expect(visibleProgressText(report.compact)).toBe(`Restoring 12/63 · ${indexPercent(12, 63)}%`);
+        expect(visibleProgressText(report.label)).toMatch(/12 \/ 63/);
         expect(report.compact).not.toBe(INDEX_STATUS_COPY.starting.compact);
         expect(report.label).not.toBe(INDEX_STATUS_COPY.starting.label);
         const footer = indexFooterStatus({

@@ -17,6 +17,7 @@ import {
     type IndexUiStatusInput,
 } from './index-notice';
 import { indexPercent } from './index-eta';
+import { formatStableCompactProgress, formatStableLabelProgress } from './index-progress-format';
 export type IndexStatusHealth = 'none' | 'starting' | 'restoring' | 'ok' | 'indexing' | 'error' | 'locked' | 'stuck';
 type ReporterJobKind = 'full' | 'delta' | 'catchup';
 
@@ -115,8 +116,8 @@ export function withHydrateProgressCopy(
     copy: IndexStatusCopy,
     progress: IndexHydrateProgress,
 ): IndexStatusCopy {
-    const compactCounts = `${progress.done.toLocaleString()}/${progress.total.toLocaleString()} · ${progress.percent}%`;
-    const labelCounts = `${progress.done.toLocaleString()} / ${progress.total.toLocaleString()} · ${progress.percent}%`;
+    const compactCounts = formatStableCompactProgress(progress.done, progress.total, progress.percent);
+    const labelCounts = formatStableLabelProgress(progress.done, progress.total, progress.percent);
     return {
         ...copy,
         compact: `${copy.compact} ${compactCounts}`,

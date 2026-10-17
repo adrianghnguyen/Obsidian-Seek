@@ -4,6 +4,11 @@
 // compete with that number.
 
 import { indexPercent } from './index-eta';
+import {
+    formatStableIndexCount,
+    formatStableLabelProgress,
+    formatIndexCountPlain,
+} from './index-progress-format';
 import { INDEX_STATUS_COPY, normalizeHydrateProgress, type IndexHydrateProgress, type IndexStatusHealth, type IndexStatusMode } from './index-status-report';
 
 export type { IndexStatusHealth, IndexStatusMode };
@@ -118,6 +123,87 @@ export function renderIndexStatusBadge(
     return parent.createSpan({ cls: `${INDEX_STATUS_DOT_CLS} seek-dot-${st.tone}` });
 }
 
+interface StatusMetricSlot {
+    value: string;
+    label: string;
+    cls?: string;
+}
+
+function emptySlots(): [StatusMetricSlot, StatusMetricSlot, StatusMetricSlot] {
+    return [
+        { value: '—', label: 'files' },
+        { value: '—', label: 'chunks' },
+        { value: '—', label: 'last full index', cls: 'seek-status-last' },
+    ];
+}
+
+function lastSlotFromStats(stats: IndexStatusCardStats | null): StatusMetricSlot {
+    if (!stats) return { value: '—', label: 'last full index', cls: 'seek-status-last' };
+    if (stats.lastFullAt) {
+        const dur = stats.lastFullDurationMs != null
+            ? ` · ${(stats.lastFullDurationMs / 1000).toFixed(1)}s` : '';
+        return {
+            value: `${fmtIndexStamp(stats.lastFullAt)}${dur}`,
+            label: 'last full index',
+            cls: 'seek-status-last',
+        };
+    }
+    if (stats.lastUpdatedAt) {
+        return {
+            value: fmtIndexStamp(stats.lastUpdatedAt),
+            label: 'last updated',
+            cls: 'seek-status-last',
+        };
+    }
+    return { value: 'never', label: 'last full index', cls: 'seek-status-last' };
+}
+
+function metricSlots(model: ReturnType<typeof indexWaitCardModel>, eta?: string | null): [StatusMetricSlot, StatusMetricSlot, StatusMetricSlot] {
+    if (model.hydrate) {
+        const pct = indexPercent(model.hydrate.done, model.hydrate.total);
+        return [
+            {
+                value: formatStableLabelProgress(model.hydrate.done, model.hydrate.total, pct),
+                label: 'this restore',
+                cls: 'seek-status-job',
+            },
+            { value: '—', label: 'chunks' },
+            lastSlotFromStats(model.stats),
+        ];
+    }
+    if (model.job) {
+        const remaining = jobRemaining(model.job) ?? 0;
+        const pct = indexPercent(model.job.done, model.job.total);
+        const progressLine = formatStableLabelProgress(model.job.done, model.job.total, pct);
+        const aligning = !!model.job.aligningExclusions;
+        return [
+            {
+                value: formatStableIndexCount(remaining, model.job.total),
+                label: 'remaining',
+            },
+            {
+                value: eta ? `${progressLine} · ${eta} left` : progressLine,
+                label: model.job.paused
+                    ? 'paused this pass'
+                    : aligning
+                        ? INDEX_ALIGNING_EXCLUSIONS_PASS
+                        : 'this pass',
+                cls: 'seek-status-job',
+            },
+            lastSlotFromStats(model.stats),
+        ];
+    }
+    if (model.stats) {
+        const width = Math.max(model.stats.files, model.stats.chunks, 1);
+        return [
+            { value: formatStableIndexCount(model.stats.files, width), label: 'files' },
+            { value: formatIndexCountPlain(model.stats.chunks), label: 'chunks' },
+            lastSlotFromStats(model.stats),
+        ];
+    }
+    return emptySlots();
+}
+
 export function renderIndexStatusCard(
     parent: HTMLElement,
     opts: {
@@ -126,7 +212,7 @@ export function renderIndexStatusCard(
         job?: IndexStatusJob | null;
         eta?: string | null;
         mode?: IndexStatusMode;
-        /** Live reporter heading (includes hydrate counts when restoring). */
+        /** Optional heading override (aligning). Hydrate counts live in the metric slot. */
         label?: string;
         hydrateProgress?: { done: number; total: number; percent?: number } | null;
     },
@@ -137,86 +223,25 @@ export function renderIndexStatusCard(
     const st = INDEX_STATUS_COPY[mode] ?? INDEX_STATUS_HEALTH[model.health];
 
     const aligning = !!model.job?.aligningExclusions && model.health === 'indexing';
-    const health = card.createDiv({ cls: 'seek-status-health' });
+    const main = card.createDiv({ cls: 'seek-status-card-main' });
+    const health = main.createDiv({ cls: 'seek-status-health' });
     const remaining = model.hydrate && model.health === 'indexing'
         ? Math.max(0, model.hydrate.total - model.hydrate.done)
         : jobRemaining(model.job);
     renderIndexStatusBadge(health, { health: model.health, remaining });
     health.createSpan({
         cls: 'seek-status-label',
-        text: aligning ? INDEX_ALIGNING_EXCLUSIONS_LABEL : (opts.label ?? st.label),
+        text: aligning ? INDEX_ALIGNING_EXCLUSIONS_LABEL : st.label,
     });
 
-    card.createDiv({ cls: 'seek-status-sep' });
-
-    const metric = (value: string, label: string) => {
-        const m = card.createDiv({ cls: 'seek-status-metric' });
-        m.createDiv({ cls: 'seek-status-value', text: value });
-        m.createDiv({ cls: 'seek-status-mlabel', text: label });
-    };
-
-    if (model.hydrate) {
-        const pct = indexPercent(model.hydrate.done, model.hydrate.total);
-        const progressLine = `${fmtCount(model.hydrate.done)} / ${fmtCount(model.hydrate.total)} · ${pct}%`;
-        const job = card.createDiv({ cls: 'seek-status-metric seek-status-job' });
-        job.createDiv({ cls: 'seek-status-value', text: progressLine });
-        job.createDiv({ cls: 'seek-status-mlabel', text: 'this restore' });
-        return card;
-    }
-
-    if (model.job) {
-        const remaining = jobRemaining(model.job) ?? 0;
-        const pct = indexPercent(model.job.done, model.job.total);
-        metric(fmtCount(remaining), 'remaining');
-        const job = card.createDiv({ cls: 'seek-status-metric seek-status-job' });
-        const progressLine = `${fmtCount(model.job.done)} / ${fmtCount(model.job.total)} · ${pct}%`;
-        job.createDiv({ cls: 'seek-status-value', text: opts.eta ? `${progressLine} · ${opts.eta} left` : progressLine });
-        job.createDiv({
-            cls: 'seek-status-mlabel',
-            text: model.job.paused
-                ? 'paused this pass'
-                : aligning
-                    ? INDEX_ALIGNING_EXCLUSIONS_PASS
-                    : 'this pass',
+    main.createDiv({ cls: 'seek-status-sep' });
+    const metrics = main.createDiv({ cls: 'seek-status-metrics' });
+    for (const slot of metricSlots(model, opts.eta)) {
+        const m = metrics.createDiv({
+            cls: slot.cls ? `seek-status-metric ${slot.cls}` : 'seek-status-metric',
         });
-        if (model.stats?.lastUpdatedAt) {
-            const last = card.createDiv({ cls: 'seek-status-metric seek-status-last' });
-            last.createDiv({ cls: 'seek-status-mlabel', text: 'last updated' });
-            last.createDiv({
-                cls: 'seek-status-value seek-status-stamp',
-                text: fmtIndexStamp(model.stats.lastUpdatedAt),
-            });
-        }
-        return card;
-    }
-
-    if (model.stats) {
-        metric(fmtCount(model.stats.files), 'files');
-        metric(fmtCount(model.stats.chunks), 'chunks');
-        const last = card.createDiv({ cls: 'seek-status-metric seek-status-last' });
-        if (model.stats.lastFullAt) {
-            const dur = model.stats.lastFullDurationMs != null
-                ? ` · ${(model.stats.lastFullDurationMs / 1000).toFixed(1)}s` : '';
-            last.createDiv({ cls: 'seek-status-mlabel', text: 'last full index' });
-            last.createDiv({
-                cls: 'seek-status-value seek-status-stamp',
-                text: `${fmtIndexStamp(model.stats.lastFullAt)}${dur}`,
-            });
-            if (model.stats.lastUpdatedAt && model.stats.lastUpdatedAt > model.stats.lastFullAt) {
-                last.createDiv({ cls: 'seek-status-updated', text: `updated ${fmtIndexStamp(model.stats.lastUpdatedAt)}` });
-            }
-        } else if (model.stats.lastUpdatedAt) {
-            last.createDiv({ cls: 'seek-status-mlabel', text: 'last updated' });
-            last.createDiv({
-                cls: 'seek-status-value seek-status-stamp',
-                text: fmtIndexStamp(model.stats.lastUpdatedAt),
-            });
-        } else {
-            last.createDiv({ cls: 'seek-status-mlabel', text: 'last full index' });
-            last.createDiv({ cls: 'seek-status-value seek-status-stamp', text: 'never' });
-        }
-    } else {
-        metric('…', 'loading');
+        m.createDiv({ cls: 'seek-status-value', text: slot.value });
+        m.createDiv({ cls: 'seek-status-mlabel', text: slot.label });
     }
 
     return card;

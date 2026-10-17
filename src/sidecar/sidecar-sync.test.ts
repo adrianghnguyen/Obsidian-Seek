@@ -672,6 +672,8 @@ describe('probePeerAhead', () => {
         expect(ticks.at(-1)?.done).toBe(2);
         expect(ticks.at(-1)?.total).toBe(2);
         expect(ticks.some(t => t.done > 0 && t.done < t.total)).toBe(true);
+        expect(ticks.some(t => t.done === 1 && t.total === 1)).toBe(false);
+        expect(ticks.every(t => t.total === 2)).toBe(true);
     });
 
     it('WARM index (nothing to hydrate) releases the gate without re-chunking the vault', async () => {

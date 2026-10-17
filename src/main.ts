@@ -53,7 +53,8 @@ import {
 } from './app/indexing-stall-guard';
 import {
     coverageGap,
-    hydrateProgressAgainstVault,
+    applySidecarHydrateProgressUpdate,
+    resolveSidecarHydrateProgress,
     shouldResumeIndexing,
     staleCompleteHydrateWalk,
     vaultCoverageIncomplete,
@@ -544,20 +545,16 @@ export default class SeekPlugin extends Plugin {
     }
 
     private resolveHydrateProgress(): { done: number; total: number } | null {
-        const notes = Math.max(this.lastIndexableNotes, this.indexableNoteCount());
-        if (this.sidecarHydrateProgress && this.sidecarHydrateProgress.total > 0) {
-            return hydrateProgressAgainstVault(this.sidecarHydrateProgress, notes);
-        }
-        if (!(
-            this.waitingForSidecar
-            || this.sidecarHydrating
-            || this.indexDropRecovering
-            || (this.indexBootPending && !this.indexGoodEnough)
-        )) return null;
-        const done = this.indexInventoryFiles ?? 0;
-        const total = Math.max(done, notes);
-        if (total <= 0) return null;
-        return { done, total };
+        return resolveSidecarHydrateProgress({
+            walk: this.sidecarHydrateProgress,
+            hydrating: this.sidecarHydrating,
+            waitingForSidecar: this.waitingForSidecar,
+            dropRecovering: this.indexDropRecovering,
+            bootPending: this.indexBootPending,
+            goodEnough: this.indexGoodEnough,
+            inventoryFiles: this.indexInventoryFiles,
+            indexableNotes: Math.max(this.lastIndexableNotes, this.indexableNoteCount()),
+        });
     }
 
     /** Coordinator pass currently shown on the status-bar badge, or null. */
@@ -722,8 +719,10 @@ export default class SeekPlugin extends Plugin {
         this.orchestrator.setPersistentDriftHandler(() => this.onPersistentDrift());
         this.orchestrator.setGoodEnoughHandler(() => this.markIndexGoodEnough());
         this.orchestrator.setHydrateProgressHandler((detail) => {
-            if (detail.total <= 0) return;
-            this.sidecarHydrateProgress = { done: detail.done, total: detail.total };
+            const inFlight = this.sidecarHydrating || this.waitingForSidecar || this.indexDropRecovering;
+            const next = applySidecarHydrateProgressUpdate(this.sidecarHydrateProgress, detail, inFlight);
+            if (next === this.sidecarHydrateProgress) return;
+            this.sidecarHydrateProgress = next;
             this.refreshIndexStatusBar();
         });
         this.orchestrator.setIndexDroppedHandler(() => this.noteIndexDropped());

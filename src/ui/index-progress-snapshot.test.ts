@@ -8,6 +8,7 @@ import {
 import { INDEX_STATUS_COPY, type IndexStatusReport } from './index-status-report';
 import { indexPercent } from './index-eta';
 import { renderIndexStatusCard } from './index-status-card';
+import { formatStableFileFraction } from './index-progress-format';
 import { IndexStatusBar } from './index-status-bar';
 import { computeFolderCoverage, createLiveCoverageSnapshot } from '../index/folder-coverage';
 
@@ -290,7 +291,7 @@ describe('three surfaces read the same snapshot', () => {
         expect(headline.done).toBe(snap.filesDone);
         expect(headline.total).toBe(snap.filesTotal);
         expect(headline.caption).toBe('in the index');
-        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe('40/216');
+        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe(formatStableFileFraction(40, 216));
         expect(textOf(card)).toMatch(/40/);
         expect(textOf(card)).toMatch(/216/);
         expect(snap.speed?.done).toBe(34);

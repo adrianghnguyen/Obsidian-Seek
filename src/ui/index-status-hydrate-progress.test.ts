@@ -15,6 +15,8 @@ import {
 } from './index-status-bar';
 import { renderIndexStatusCard } from './index-status-card';
 import { indexPercent } from './index-eta';
+import { formatStableFileFraction, formatStableLabelProgress, visibleProgressText } from './index-progress-format';
+import { resolveSidecarHydrateProgress } from '../app/index-self-heal';
 
 const idle: IndexStatusReporterInput = {
     booting: false,
@@ -58,17 +60,18 @@ function stubEl(tagName = 'div'): any {
             (el.events[type] ??= []).push(fn as (e: unknown) => void);
         },
         querySelector(sel: string) {
-            const walk = (n: any): any => {
+            return el.querySelectorAll(sel)[0] ?? null;
+        },
+        querySelectorAll(sel: string) {
+            const out: any[] = [];
+            const walk = (n: any) => {
                 if (sel.startsWith('.')) {
-                    if (n.className.split(/\s+/).includes(sel.slice(1))) return n;
-                } else if (n.tagName === sel) return n;
-                for (const c of n.children) {
-                    const hit = walk(c);
-                    if (hit) return hit;
-                }
-                return null;
+                    if (n.className.split(/\s+/).includes(sel.slice(1))) out.push(n);
+                } else if (n.tagName === sel) out.push(n);
+                for (const c of n.children) walk(c);
             };
-            return walk(el);
+            walk(el);
+            return out;
         },
     };
     return el;
@@ -90,9 +93,9 @@ describe('IndexStatusReporter hydrate progress', () => {
         expect(report.mode).toBe('restoring');
         expect(report.health).toBe('restoring');
         expect(report.hydrateProgress).toEqual({ done: 12, total: 40, percent: 30 });
-        expect(report.compact).toBe(`${INDEX_STATUS_COPY.restoring.compact} 12/40 · 30%`);
-        expect(report.label).toContain('12 / 40');
-        expect(report.label).toContain('30%');
+        expect(visibleProgressText(report.compact)).toBe(`${INDEX_STATUS_COPY.restoring.compact} 12/40 · 30%`);
+        expect(visibleProgressText(report.label)).toContain('12 / 40');
+        expect(visibleProgressText(report.label)).toContain('30%');
         expect(report.compact).toMatch(/\d/);
         expect(report.label).not.toBe(INDEX_STATUS_COPY.restoring.label);
     });
@@ -108,8 +111,8 @@ describe('IndexStatusReporter hydrate progress', () => {
             hydrateProgress: { done: 3, total: 63 },
         });
         expect(report.mode).toBe('restoring');
-        expect(report.compact).toBe(`${INDEX_STATUS_COPY.restoring.compact} 3/63 · ${indexPercent(3, 63)}%`);
-        expect(report.label).toMatch(/3 \/ 63/);
+        expect(visibleProgressText(report.compact)).toBe(`${INDEX_STATUS_COPY.restoring.compact} 3/63 · ${indexPercent(3, 63)}%`);
+        expect(visibleProgressText(report.label)).toMatch(/3 \/ 63/);
         expect(report.compact).not.toMatch(/Starting/i);
         expect(report.label).not.toMatch(/Starting/i);
     });
@@ -125,7 +128,7 @@ describe('IndexStatusReporter hydrate progress', () => {
             hydrateProgress: { done: 12, total: 63 },
         });
         expect(report.mode).toBe('restoring');
-        expect(report.compact).toBe(`${INDEX_STATUS_COPY.restoring.compact} 12/63 · ${indexPercent(12, 63)}%`);
+        expect(visibleProgressText(report.compact)).toBe(`${INDEX_STATUS_COPY.restoring.compact} 12/63 · ${indexPercent(12, 63)}%`);
         expect(report.hydrateProgress).toEqual({ done: 12, total: 63, percent: indexPercent(12, 63) });
     });
 
@@ -139,8 +142,8 @@ describe('IndexStatusReporter hydrate progress', () => {
             hydrateProgress: { done: 0, total: 63 },
         });
         expect(report.mode).toBe('restoring');
-        expect(report.compact).toBe('Restoring 0/63 · 0%');
-        expect(report.label).toContain('0 / 63');
+        expect(visibleProgressText(report.compact)).toBe('Restoring 0/63 · 0%');
+        expect(visibleProgressText(report.label)).toContain('0 / 63');
     });
 
     it('does not keep a leftover 1/1 hydrate walk after hydrate has stopped', () => {
@@ -198,7 +201,7 @@ describe('IndexStatusReporter hydrate progress', () => {
             hydrateProgress: { done: 21, total: 80 },
         });
         expect(report.mode).toBe('indexing');
-        expect(report.compact).toBe(`${INDEX_STATUS_COPY.indexing.compact} 21/80 · 26%`);
+        expect(visibleProgressText(report.compact)).toBe(`${INDEX_STATUS_COPY.indexing.compact} 21/80 · 26%`);
         expect(report.hydrateProgress).toEqual({ done: 21, total: 80, percent: 26 });
     });
 
@@ -234,10 +237,10 @@ describe('footer + Settings card read reporter hydrate copy', () => {
         });
         expect(footer.kind).toBe('restoring');
         expect(footer.label).toBe(report.compact);
-        expect(footer.label).toContain('12/40');
+        expect(visibleProgressText(footer.label)).toContain('12/40');
     });
 
-    it('Settings Index card heading uses report.label with counts', () => {
+    it('Settings Index card keeps a short heading and puts counts in the metric slot', () => {
         const report = IndexStatusReporter.compute({
             ...idle,
             hydrating: true,
@@ -253,11 +256,59 @@ describe('footer + Settings card read reporter hydrate copy', () => {
             hydrateProgress: report.hydrateProgress,
             stats: { files: 0, chunks: 0, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null },
         });
-        const blob = textOf(root);
-        expect(blob).toContain('Restoring');
-        expect(blob).toMatch(/12/);
-        expect(blob).toMatch(/40/);
-        expect(blob).not.toContain('Indexing');
+        expect(root.querySelector('.seek-status-card-main')).not.toBeNull();
+        expect(root.querySelectorAll('.seek-status-metric').length).toBe(3);
+        expect(root.querySelector('.seek-status-label')?.textContent).toBe(INDEX_STATUS_COPY.restoring.label);
+        expect(visibleProgressText(textOf(root))).toContain(visibleProgressText(formatStableLabelProgress(12, 40, 30)));
+        expect(textOf(root)).not.toContain('Indexing');
+    });
+
+    it('bar compact and Settings do not paint 1/3132 · 1% after a batch {1,1}', () => {
+        const progress = resolveSidecarHydrateProgress({
+            walk: { done: 1, total: 1 },
+            hydrating: true,
+            waitingForSidecar: false,
+            dropRecovering: false,
+            bootPending: true,
+            goodEnough: false,
+            inventoryFiles: 839,
+            indexableNotes: 3132,
+        });
+        expect(progress).toEqual({ done: 839, total: 3132 });
+        const report = IndexStatusReporter.compute({
+            ...idle,
+            hydrating: true,
+            mayFullReindex: false,
+            searchableChunks: 839,
+            inventoryFiles: 839,
+            hydrateProgress: progress,
+        });
+        expect(visibleProgressText(report.compact)).not.toMatch(/1\/3,132|1\/3132/);
+        expect(visibleProgressText(report.compact)).toContain('839');
+        expect(visibleProgressText(report.compact)).not.toMatch(/· 1%/);
+        const card = stubEl();
+        renderIndexStatusCard(card as unknown as HTMLElement, {
+            health: report.health,
+            mode: report.mode,
+            label: report.label,
+            hydrateProgress: report.hydrateProgress,
+            stats: { files: 839, chunks: 0, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null },
+        });
+        expect(visibleProgressText(textOf(card))).toContain(visibleProgressText(formatStableLabelProgress(839, 3132, indexPercent(839, 3132))));
+        expect(visibleProgressText(textOf(card))).not.toMatch(/1 \/ 3,132|1 \/ 3132/);
+        const labels: string[] = [];
+        const root = stubEl();
+        root.setAttr = (key: string, value: string) => { if (key === 'aria-label') labels.push(value); };
+        const bar = new IndexStatusBar();
+        bar.mount(root as unknown as HTMLElement, {
+            getStats: async () => ({ files: 839, chunks: 0, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null }),
+            getReport: () => report,
+            onOpenSettings: () => {},
+            onRecover: () => {},
+        });
+        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe(formatStableFileFraction(839, 3132));
+        expect(labels.at(-1)).not.toMatch(/1\/3,132|1\/3132/);
+        expect(labels.at(-1)).toMatch(/839/);
     });
 });
 
@@ -280,7 +331,7 @@ describe('status bar compact label while hydrating', () => {
             onOpenSettings: () => {},
             onRecover: () => {},
         });
-        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe('12/40');
+        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe(formatStableFileFraction(12, 40));
         expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-info');
         expect(labels.at(-1)).toBe(`Seek: ${report.compact}`);
         expect(labels.at(-1)).toMatch(/12\/40/);
@@ -311,7 +362,7 @@ describe('status bar compact label while hydrating', () => {
             onOpenSettings: () => {},
             onRecover: () => {},
         });
-        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe('18/63');
+        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe(formatStableFileFraction(18, 63));
         expect(labels.at(-1)).toMatch(/Restoring/);
         expect(labels.at(-1)).toMatch(/18\/63/);
         expect(labels.at(-1)).not.toMatch(/Starting/);
@@ -341,7 +392,7 @@ describe('status bar compact label while hydrating', () => {
             onRecover: () => {},
         });
         bar.show(80, 'Seek: indexing…', { id: 1, kind: 'catchup' });
-        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe('5/80');
+        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe(formatStableFileFraction(5, 80));
         expect(labels.at(-1)).toMatch(/Restoring/);
         expect(labels.at(-1)).toMatch(/5\/80/);
         expect(labels.at(-1)).not.toMatch(/Indexing 0 \/ 80/);
