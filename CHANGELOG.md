@@ -4,8 +4,12 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.15.0-rc.6
+
+Index chrome reads one progress snapshot; first tagged build that also includes Sync index everywhere (#75 / 1.15.0-rc.5, untagged on main).
+
 ### Added
-- **Index progress submodule** (`src/ui/index-progress-indicator.ts` + `buildIndexProgressSnapshot`). Status bar, Settings Index, search footer, embed diagnostics, coverage headlines, and Danger Zone refresh all **read** percent, remaining, rates, ETA, GPU occupancy, effective batch, and coverage headline from one snapshot. Settings and the status card format only — they do not call `indexPercent` / rate helpers / `formatRoughEta`. Verify-only sidecar walks (`needed: 0` on a full IDB) paint **Verifying**, not Restoring 0%. `catchUpPending` paints **Catching up**, not Ready. Recover / Force reset latches **Recovering**. Stuck/locked/error drop units.
+- **Index progress submodule** (#74). Status bar, Settings Index, search footer, embed diagnostics, coverage headlines, and Danger Zone refresh all **read** percent, remaining, rates, ETA, GPU occupancy, effective batch, and coverage headline from one snapshot (`IndexProgressWalk` + `computeIndexProgressIndicator` + `buildIndexProgressSnapshot`). Settings and the status card format only. Verify-only sidecar walks (`needed: 0` on a full IDB) paint **Verifying**, not Restoring 0%. `catchUpPending` paints **Catching up**, not Ready. Recover / Force reset latches **Recovering**. Stuck/locked/error drop units.
 
 ### Changed
 - **Index coverage by folder** is a disclosure immediately below **Embedding pass**, collapsed by default (opens while a hydrate/embed/verify pass is live unless you toggled it). Consumer vs Producer copy stays honest. Last-updated and numeric slots right-align and stay in-box (labels ellipsize; stamp no longer appends duration).
@@ -22,6 +26,9 @@ One toggle for cross-device index sharing — no folder choice.
 ## 1.15.0-rc.4
 
 Consumer boot hydrate chrome — Restoring file progress instead of empty Starting up.
+
+### Added
+- **Settings → Index → Danger Zone.** Recover search index (Resume indexing) and Force reset search index sit next to Full reindex, with Reset to defaults in the same card. Both recovery buttons call the existing self-heal paths (`recoverIndexFromSettings` / `forceResetIndexFromSettings`) and refresh the status bar. A Consumer does not start a producer full reindex from Force reset — it restores from the lead computer’s sidecar files.
 
 ### Fixed
 - **Consumer boot no longer shows a static Starting up while sidecar hydrate (or fleet restore) is in progress.** Status bar, Settings Index, and the search-modal footer use the same Restoring `done/total · percent` snapshot as an active hydrate job. A hydrate-only device (`mayFullReindex` false) stays Restoring during boot even before the hydrate flag latches. Startup stuck still says Stuck (no Starting up). Consumer stays Consumer — no embed catch-up or full reindex.
