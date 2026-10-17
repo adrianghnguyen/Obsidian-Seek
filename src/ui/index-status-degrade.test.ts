@@ -158,6 +158,22 @@ describe('corrupt / torn sidecar → not healthy', () => {
         expect(INDEX_STATUS_HEALTH[afterWipe.health].compact).toBe('None');
     });
 
+    it('a live full reindex outranks empty-index identity error', () => {
+        const report = IndexStatusReporter.compute({
+            ...idle,
+            health: 'degraded',
+            reason: 'version',
+            indexing: true,
+            jobKind: 'full',
+            job: { done: 120, total: 3854 },
+            searchableChunks: 0,
+            inventoryFiles: 0,
+        });
+        expect(report.mode).toBe('full-reindex');
+        expect(report.health).toBe('indexing');
+        expect(report.label).toBe(INDEX_STATUS_COPY['full-reindex'].label);
+    });
+
     it('partial IDB after interrupted full reindex is Indexing/Reindexing or Ready with chunks, never ok at 0/0', () => {
         const midNuke = IndexStatusReporter.compute({
             ...idle,

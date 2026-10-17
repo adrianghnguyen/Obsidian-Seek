@@ -79,11 +79,14 @@ import {
     type ReChunkedNote,
     type HydrateResult,
     type HydrateDeps,
+    type HydrateProgressDetail,
 } from './sidecar-sync';
+import { CatchUpHydrateCatalog } from './hydrate-catalog';
 import { preflightSidecar, type SidecarPreflight } from './sidecar-preflight';
 import {
     resolveFleetRole,
     mayFullReindex,
+    mayEmbedCatchUp,
     mayReapPeerSidecars,
     mayWriteSidecar,
     mayCompactOwnSidecar,
@@ -105,12 +108,15 @@ export interface SidecarFleetSnapshot {
     matchingReady: boolean;
     waitingForProducer: boolean;
     mayFullReindex: boolean;
+    mayEmbedCatchUp: boolean;
     mayReapPeers: boolean;
     mayWriteSidecar: boolean;
     mayCompact: boolean;
     copy: string;
     preflight: SidecarPreflight;
     peerDeviceIds: string[];
+    localFileCount: number;
+    indexableNotes: number;
 }
 
 const EMPTY_HYDRATE: HydrateResult = {
@@ -131,6 +137,8 @@ export interface SidecarCoordinatorDeps {
     indexableFiles: () => TFile[];
     shouldIndex: (path: string) => boolean;
     onGoodEnough?: () => void;
+    /** Live sidecar hydrate file progress for status chrome. */
+    onHydrateProgress?: (detail: HydrateProgressDetail) => void;
     /** Fired after clearAllStores in rebuildFromSidecar so UI inventory/health can drop. */
     onIndexDropped?: () => void;
     /** Dual-open: a hidden window must not write or compact over a peer. */
@@ -151,12 +159,14 @@ export class SidecarCoordinator {
     private shouldIndex: (path: string) => boolean;
     private isHidden: () => boolean;
     onGoodEnough?: () => void;
+    onHydrateProgress?: (detail: HydrateProgressDetail) => void;
     onIndexDropped?: () => void;
 
     private _peerAhead = false;
     private lastReconcileSig: string | null = null;
     private warnedRefusals = new Set<string>();
     private warnedStranded = false;
+    readonly hydrateCatalog = new CatchUpHydrateCatalog();
 
     constructor(deps: SidecarCoordinatorDeps) {
         this.app = deps.app;
@@ -172,6 +182,7 @@ export class SidecarCoordinator {
         this.shouldIndex = deps.shouldIndex;
         this.isHidden = deps.isHidden ?? (() => typeof document !== 'undefined' && !!document.hidden);
         this.onGoodEnough = deps.onGoodEnough;
+        this.onHydrateProgress = deps.onHydrateProgress;
         this.onIndexDropped = deps.onIndexDropped;
     }
 
@@ -226,6 +237,7 @@ export class SidecarCoordinator {
             matchingReady,
             waitingForProducer,
             mayFullReindex: mayFullReindex(role),
+            mayEmbedCatchUp: mayEmbedCatchUp(role),
             mayReapPeers: mayReapPeerSidecars(role),
             mayWriteSidecar: mayWriteSidecar(role, hidden, anyPeerPresent, waitingForProducer),
             mayCompact: mayCompactOwnSidecar(role, hidden, anyPeerPresent),
@@ -240,6 +252,8 @@ export class SidecarCoordinator {
             }),
             preflight,
             peerDeviceIds: peers.map(p => p.deviceId),
+            localFileCount,
+            indexableNotes,
         };
     }
 
@@ -287,6 +301,10 @@ export class SidecarCoordinator {
         const fleet = await this.inspectFleet();
         if (!opts?.skipProducerWait
             && fleet && (fleet.waitingForProducer || (fleet.preflight.matchingProducers > 0 && !fleet.preflight.ready))) {
+            const total = Math.max(fleet.localFileCount, fleet.indexableNotes);
+            if (total > 0) {
+                this.onHydrateProgress?.({ done: fleet.localFileCount, total });
+            }
             return this.hydrateBlockedResult(fleet);
         }
         const result = await hydrateFromSidecar(this.hydrateDepsGreedy());
@@ -363,7 +381,10 @@ export class SidecarCoordinator {
                 return fleet ? this.hydrateBlockedResult(fleet) : { ...EMPTY_HYDRATE };
             }
             return continueAfterStoreWipe({
-                wipe: () => this.store.clearAllStores(),
+                wipe: () => {
+                    this.hydrateCatalog.invalidate();
+                    return this.store.clearAllStores();
+                },
                 onDropped: () => this.onIndexDropped?.(),
                 hydrate: async () => {
                     const id = pluginIdentity();
@@ -856,13 +877,15 @@ export class SidecarCoordinator {
             indexDir: this.coord.dir!,
             expect: expectationFor(),
             reChunk,
-            existingIds: async () => new Set((await this.store.listAllMeta()).map(c => c.chunk_id)),
-            putQuantized: async (chunks, tiers) => {
-                await this.store.putBatchQuantized(chunks, tiers);
-                if (addsSink) pushDeltaAdds(addsSink, chunks, tiers);
+            catalog: this.hydrateCatalog,
+            existingIds: async () => new Set(await this.store.getAllChunkIds()),
+            putQuantized: async (chunks, tiers, recs) => {
+                await this.store.putBatchQuantized(chunks, tiers, recs);
+                if (addsSink && chunks.length > 0) pushDeltaAdds(addsSink, chunks, tiers);
             },
             putFileRecord: rec => this.store.putFileRecord(rec),
             onRefusedProducer: (dev, meta, expect) => this.warnRefusedProducer(dev, meta, expect),
+            onHydrateProgress: detail => this.onHydrateProgress?.(detail),
             log: (msg, detail) => {
                 const flat: Record<string, string | number | boolean | null> = {};
                 if (detail && typeof detail === 'object') {

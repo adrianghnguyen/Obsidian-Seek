@@ -248,7 +248,7 @@ describe('SidecarCoordinator', () => {
             expect(await coordinator.peerSidecarPresent()).toBe(true);
         });
 
-        it('inspectFleet locks a desktop with a stale peer as consumer (no reap, no full reindex)', async () => {
+        it('inspectFleet locks a desktop with a stale peer as contributor (no reap, no full reindex)', async () => {
             const settings = structuredClone(DEFAULT_SETTINGS);
             settings.sidecarEnabled = true;
             const indexDir = '.seek-test-index';
@@ -273,8 +273,9 @@ describe('SidecarCoordinator', () => {
             });
 
             const fleet = await coordinator.inspectFleet();
-            expect(fleet?.role).toBe('consumer');
+            expect(fleet?.role).toBe('contributor');
             expect(fleet?.mayFullReindex).toBe(false);
+            expect(fleet?.mayEmbedCatchUp).toBe(true);
             expect(fleet?.mayReapPeers).toBe(false);
             expect(fleet?.waitingForProducer).toBe(true);
             expect(fleet?.copy).toMatch(/will not re-embed or delete/);

@@ -65,13 +65,13 @@ import { quantizeInt8, dequantizeInt8, type QuantVec } from '../embedding/quant'
 import { VecReservoir, denseBgStats, BG_RESERVOIR, MIN_BG_SAMPLE } from './dense-stats';
 import { bulkAppend, clearDevice, sidecarDirSignature, shouldReconcileSidecar, staleSidecarFormat, SIDECAR_FORMAT, bm25PathFor, writeBytesAtomic, ensureDir, listSidecarDeviceIds, listDeviceShards, compactDevice, coalesceSmallShards, type CompactResult, type CoalesceResult, type TierBytes } from '../sidecar/sidecar';
 import { writeDeviceMeta, readDeviceMeta, metaAccepts, expectationFor, type SidecarMeta, type MetaExpectation } from '../sidecar/sidecar-meta';
-import { hydrateFromSidecar, rankAcceptedProducers, probePeerAhead, type ReChunkedNote, type HydrateResult, type HydrateDeps } from '../sidecar/sidecar-sync';
+import { hydrateFromSidecar, rankAcceptedProducers, probePeerAhead, type ReChunkedNote, type HydrateResult, type HydrateDeps, type HydrateProgressDetail } from '../sidecar/sidecar-sync';
 import { pluginIdentity, shouldStampLiveIdentity, identityHealEligibility, type IndexIdentity } from '../index/identity';
 import { gzipString, gunzipToString, gzipAvailable } from '../sidecar/gzip';
 import { IndexCoordinator } from '../index/index-coordinator';
 import { CompositorPacer, yieldAfterEmbedDispatch } from '../index/pacer';
 import { rollingBatchFor, clampRollingBatchMax, clampRollingTokenBudget } from '../index/rolling-batch';
-import { InFlightSemaphore, createExclusiveChain, gpuOccupancyPct, effectiveBatchSize } from '../index/embed-pipeline';
+import { InFlightSemaphore, createExclusiveChain, gpuOccupancyPct, effectiveBatchSize, gpuAheadCap } from '../index/embed-pipeline';
 import { recordEmbedPipelineTelemetry, resolveEmbedInFlightMax } from '../index/embed-auto-caps';
 import { beginLongTaskPass } from '../app/observers';
 import { isMobilePlatform, residentInt8Enabled } from '../embedding/platform';
@@ -322,6 +322,7 @@ export class SearchOrchestrator {
             indexableFiles: () => this.indexableFiles(),
             shouldIndex: (path) => this.shouldIndex(path),
             onGoodEnough: () => this.onGoodEnough?.(),
+            onHydrateProgress: (detail) => this.onHydrateProgress?.(detail),
             onIndexDropped: () => this.onIndexDropped?.(),
         });
         this.workflowCoordinator = new WorkflowCoordinator({
@@ -389,10 +390,10 @@ export class SearchOrchestrator {
 
     // Full reindex. Drops the database, walks all markdown, re-embeds everything.
     // Serialized against deltas via the write mutex (a delta mid-nuke would throw).
-    async reindexAll(onProgress?: (msg: string) => void, opts: { shouldContinue?: () => boolean } = {}): Promise<IndexCompleteEntry> {
+    async reindexAll(onProgress?: (msg: string) => void, opts: { shouldContinue?: () => boolean; storeAlreadyReset?: boolean } = {}): Promise<IndexCompleteEntry> {
         let result: IndexCompleteEntry;
         try {
-            const inner = await this.coord.runExclusive(() => this.reindexAllInner(onProgress, opts.shouldContinue));
+            const inner = await this.coord.runExclusive(() => this.reindexAllInner(onProgress, opts.shouldContinue, opts.storeAlreadyReset));
             result = inner.entry;
             // 1C: the pass only PACKAGED its sidecar flush; run it now that the
             // mutex has released, still awaited so "reindexAll resolved ⇒ sidecar
@@ -541,7 +542,7 @@ export class SearchOrchestrator {
         }
     }
 
-    private async reindexAllInner(onProgress?: (msg: string) => void, shouldContinue?: () => boolean): Promise<{ entry: IndexCompleteEntry; sidecarJob: SidecarFlushJob | null }> {
+    private async reindexAllInner(onProgress?: (msg: string) => void, shouldContinue?: () => boolean, storeAlreadyReset?: boolean): Promise<{ entry: IndexCompleteEntry; sidecarJob: SidecarFlushJob | null }> {
         const overallStart = performance.now();
         const memBefore = await snapshotMemory();
 
@@ -550,11 +551,24 @@ export class SearchOrchestrator {
         // iCloud placeholder that finished downloading) isn't skipped here too.
         this.unreadableQuarantine.clear();
 
-        // Reset. Clear stores on the live connection — do not deleteDatabase.
-        // A second vault window holding the same IDB blocks delete forever and
-        // can freeze Electron if a later open races a pending delete.
         const resetStart = performance.now();
-        const pre = await this.store.clearAllStores();
+        let pre = { chunks: 0, embeddings: 0, binary: 0, files: 0 };
+        let resetChecks: string[];
+        if (storeAlreadyReset) {
+            resetChecks = [
+                `✅ clean-slate reset already applied for "${this.store.dbName}"`,
+                'ℹ️ skipped clearAllStores (deleteDatabase or fallback clear ran in-plugin)',
+            ];
+        } else {
+            // Reset. Clear stores on the live connection — do not deleteDatabase.
+            // A second vault window holding the same IDB blocks delete forever and
+            // can freeze Electron if a later open races a pending delete.
+            pre = await this.store.clearAllStores();
+            resetChecks = [
+                `✅ cleared stores on "${this.store.dbName}"`,
+                `ℹ️ removed ${pre.chunks} chunks, ${pre.embeddings} vectors, ${pre.files} file records`,
+            ];
+        }
         await this.store.setMeta({
             embeddingDim: pluginIdentity().dim,
             lastIndexedAt: null,
@@ -569,10 +583,7 @@ export class SearchOrchestrator {
             vectorsDeleted: pre.embeddings,
             durationMs: parseFloat((performance.now() - resetStart).toFixed(2)),
             pass: true,
-            checks: [
-                `✅ dropped database "${this.store.dbName}"`,
-                `ℹ️ removed ${pre.chunks} chunks, ${pre.embeddings} vectors, ${pre.files} file records`,
-            ],
+            checks: resetChecks,
         };
         await this.logger.append(resetEntry);
 
@@ -675,6 +686,8 @@ export class SearchOrchestrator {
         // ROLLING_BUDGET comment above for the why (45%→85% padding efficiency,
         // overflow-safe warmed shapes, budgeted per-bucket flush to cap stalls).
         let totalChunks = 0;
+        /** GPU chunks returned this pass — can lead persisted totalChunks during overlap. */
+        let gpuChunks = 0;
         // Chunks reconciled WITHOUT embedding (chunk-diff, issue #5): id-stable
         // rows a diff kept (untouched / meta-patch / reindex-row). A pure
         // metadata pass commits files with totalChunks 0 — a legitimate success
@@ -699,6 +712,16 @@ export class SearchOrchestrator {
         let processedFiles = 0;   // files we STARTED (for the incremental burst budget + filesDeferred)
         let lastProgress = 0;
         let lastProgressAt = performance.now();
+        let lastUiFiles = -1;
+        let lastUiChunks = -1;
+        const emitLiveProgress = (): void => {
+            const filesForUi = mode === 'full' ? processedFiles : filesCommitted;
+            const chunksForUi = Math.max(gpuChunks, totalChunks);
+            if (filesForUi === lastUiFiles && chunksForUi === lastUiChunks) return;
+            lastUiFiles = filesForUi;
+            lastUiChunks = chunksForUi;
+            onProgress?.(`Indexed ${filesForUi} files · ${chunksForUi} chunks · ${fPaddedTokens} tokens`);
+        };
         let tokenBudgetSplits = 0;
         let tokenBudgetOverBudget = 0;
         // Embed-failure quarantine accounting (issue #4): files committed WITH a
@@ -834,8 +857,10 @@ export class SearchOrchestrator {
         // dispatches: consecutive fast flushes can share a single idle window
         // instead of each paying a full yield (pacer.ts / PR #1).
         const pacer = new CompositorPacer();
-        // GPU RPC is still single-flight (iframe rpcBusy). Persist of batch N
-        // overlaps the next embed: semaphore caps unwritten batches in RAM.
+        // Token-counts overlap an in-flight embed-batch (iframe tok vs gpu lanes).
+        // Persist of batch N overlaps the next embed: semaphore caps unwritten
+        // batches in RAM. Full reindex posts up to two embed-batches so the child
+        // starts N+1 as N's forward returns, and tokenizes later notes on the tail.
         const inflightCap = resolveEmbedInFlightMax(this.settings);
         const rollingOpts = {
             rollingBatchMax: clampRollingBatchMax(this.settings.rollingBatchMax),
@@ -843,6 +868,11 @@ export class SearchOrchestrator {
         };
         const inflight = new InFlightSemaphore(inflightCap);
         const persistChain = createExclusiveChain();
+        // Full reindex: IndexedDB commits are per-file atomic — serializing every
+        // putBatchQuantized on one chain left the GPU idle while disk drained.
+        const runPersist = mode === 'full'
+            ? <T>(fn: () => Promise<T>): Promise<T> => Promise.resolve().then(fn)
+            : <T>(fn: () => Promise<T>): Promise<T> => persistChain.run(fn);
         const persistJobs: Promise<void>[] = [];
         let persistFatal: unknown = null;
         const isDisposedErr = (e: unknown): boolean => (e as { code?: string } | null)?.code === 'DISPOSED';
@@ -898,6 +928,8 @@ export class SearchOrchestrator {
                 result = await this.embedder.embedBatch(inputs, bucket);
             }
             embedBatchLatencyMs.push(result.iframeLatencyMs);
+            gpuChunks += result.vectors.length;
+            emitLiveProgress();
             // Pace between dispatches. A full reindex cheap-yields. Desktop catch-up
             // does too until a search query is actually in flight, then idle-paces
             // (rIC, ~1s timeout) so that query can cut in. Other incremental callers
@@ -1046,59 +1078,111 @@ export class SearchOrchestrator {
 
         // Flush up to rollingBatchFor(bucket, mode) chunks as one GPU dispatch.
         // Persist is enqueued on the exclusive chain and does not block the next
-        // embed — inflight (max 2) pauses dispatch if disk falls behind.
+        // embed — inflight caps unwritten batches in RAM after the GPU returns.
+        // Acquire runs after embed so a full reindex does not park the GPU while
+        // IndexedDB catches up (SM% valleys on production).
         // On dispatch failure (after embedOneBatch's recycle+retry rethrows),
         // isolate each chunk with a solo embed so one genuinely-bad chunk skips
         // only its own file instead of poisoning the whole batch's files.
+        const flushPrepared = async (batch: Pending[], bucket: number): Promise<void> => {
+            if (batch.length === 0) return;
+            if (persistFatal) { longTaskPass.stop(); throw persistFatal; }
+            const embedStart = performance.now();
+            let vectors: Float32Array[] | null = null;
+            try {
+                vectors = await embedOneBatch(batch.map(p => p.input), bucket, `b${bucket}`, batch.map(p => p.tokens));
+            } catch (e) {
+                // Intentional teardown must unwind the whole pass, never reach the
+                // solo/quarantine path — a DISPOSED batch's chunks would otherwise
+                // all solo-fail DISPOSED too and quarantine healthy files against
+                // a store that is about to close. Mirrors embedOneBatch's own
+                // DISPOSED contract.
+                if (isDisposedErr(e)) throw e;
+                await this.logger.appendError(`flushBucket:${bucket}${dispatchInfo(batch.map(p => p.input), bucket, batch.map(p => p.tokens))}`, e);
+            }
+            if (vectors) {
+                await inflight.acquire();
+                const committed = vectors;
+                const job = runPersist(async () => {
+                    for (let i = 0; i < batch.length; i++) await resolveChunk(batch[i], committed[i]);
+                }).catch((e: unknown) => {
+                    persistFatal ??= e;
+                    throw e;
+                }).finally(() => inflight.release());
+                persistJobs.push(job.then(() => undefined, () => undefined));
+                embedMs += performance.now() - embedStart;
+                return;
+            }
+            // Solo retries stay on the GPU path (they are embed RPCs). Rare.
+            for (const p of batch) {
+                try {
+                    const v = await embedOneBatch([p.input], bucket, `b${bucket}-solo`, [p.tokens]);
+                    await inflight.acquire();
+                    try {
+                        await runPersist(() => resolveChunk(p, v[0]));
+                    } finally {
+                        inflight.release();
+                    }
+                } catch (se) {
+                    if (isDisposedErr(se)) throw se;
+                    await this.logger.appendError(`soloChunk:${p.fs.file.path}${dispatchInfo([p.input], bucket, [p.tokens])}`, se);
+                    await inflight.acquire();
+                    try {
+                        await runPersist(() => resolveChunk(p, null));
+                    } finally {
+                        inflight.release();
+                    }
+                }
+            }
+            embedMs += performance.now() - embedStart;
+        };
+
         const flushBucket = async (bucket: number): Promise<void> => {
             const buf = buffers.get(bucket);
             if (!buf || buf.length === 0) return;
-            if (persistFatal) { longTaskPass.stop(); throw persistFatal; }
             const batch = buf.splice(0, rollingBatchFor(bucket, mode, rollingOpts));
-            await inflight.acquire();
-            let persistOwnsSlot = false;
-            const embedStart = performance.now();
-            try {
-                let vectors: Float32Array[] | null = null;
+            await flushPrepared(batch, bucket);
+        };
+
+        // Full reindex: splice a batch now, then post up to 3 embed-batch RPCs so
+        // the iframe has a tokenized N+1 waiting while N runs. Catch-up still
+        // awaits each flush (token budget / typing).
+        const aheadCap = mode === 'full' ? gpuAheadCap(inflightCap) : 1;
+        const embedSlots = new InFlightSemaphore(3);
+        let pendingFlushes = 0;
+        const inflightFlushes: Promise<void>[] = [];
+        const enqueueFlush = (bucket: number): Promise<void> => {
+            const buf = buffers.get(bucket);
+            if (!buf || buf.length === 0) return Promise.resolve();
+            const batch = buf.splice(0, rollingBatchFor(bucket, mode, rollingOpts));
+            const p = (async () => {
+                if (this.disposed) return;
+                if (persistFatal) throw persistFatal;
+                await embedSlots.acquire();
                 try {
-                    vectors = await embedOneBatch(batch.map(p => p.input), bucket, `b${bucket}`, batch.map(p => p.tokens));
-                } catch (e) {
-                    // Intentional teardown must unwind the whole pass, never reach the
-                    // solo/quarantine path — a DISPOSED batch's chunks would otherwise
-                    // all solo-fail DISPOSED too and quarantine healthy files against
-                    // a store that is about to close. Mirrors embedOneBatch's own
-                    // DISPOSED contract.
-                    if (isDisposedErr(e)) throw e;
-                    await this.logger.appendError(`flushBucket:${bucket}${dispatchInfo(batch.map(p => p.input), bucket, batch.map(p => p.tokens))}`, e);
+                    await flushPrepared(batch, bucket);
+                } finally {
+                    embedSlots.release();
                 }
-                if (vectors) {
-                    persistOwnsSlot = true;
-                    const committed = vectors;
-                    const job = persistChain.run(async () => {
-                        for (let i = 0; i < batch.length; i++) await resolveChunk(batch[i], committed[i]);
-                    }).catch((e: unknown) => {
-                        persistFatal ??= e;
-                        throw e;
-                    }).finally(() => inflight.release());
-                    persistJobs.push(job.then(() => undefined, () => undefined));
-                    embedMs += performance.now() - embedStart;
-                    return;
+            })();
+            pendingFlushes++;
+            const tracked = p.then(() => undefined, (e: unknown) => {
+                persistFatal ??= e;
+            }).finally(() => { pendingFlushes--; });
+            inflightFlushes.push(tracked);
+            return p;
+        };
+        const flushWhenReady = async (bucket: number): Promise<void> => {
+            if (mode === 'full') {
+                enqueueFlush(bucket);
+                while (pendingFlushes >= aheadCap) {
+                    const oldest = inflightFlushes.shift();
+                    if (!oldest) break;
+                    await oldest;
                 }
-                // Solo retries stay on the GPU path (they are embed RPCs). Rare.
-                for (const p of batch) {
-                    try {
-                        const v = await embedOneBatch([p.input], bucket, `b${bucket}-solo`, [p.tokens]);
-                        await resolveChunk(p, v[0]);
-                    } catch (se) {
-                        if (isDisposedErr(se)) throw se;
-                        await this.logger.appendError(`soloChunk:${p.fs.file.path}${dispatchInfo([p.input], bucket, [p.tokens])}`, se);
-                        await resolveChunk(p, null);
-                    }
-                }
-                embedMs += performance.now() - embedStart;
-            } finally {
-                if (!persistOwnsSlot) inflight.release();
+                return;
             }
+            await flushBucket(bucket);
         };
 
         for (const file of files) {
@@ -1123,6 +1207,7 @@ export class SearchOrchestrator {
                 break;
             }
             processedFiles++;
+            if (mode === 'full') emitLiveProgress();
             const fileStart = performance.now();
             // Snapshot mtime BEFORE the read so the committed file-record reflects
             // the version we actually index, even if the file is edited mid-pass
@@ -1300,14 +1385,12 @@ export class SearchOrchestrator {
                 let buf = buffers.get(bucket);
                 if (!buf) { buf = []; buffers.set(bucket, buf); }
                 buf.push({ fs, slot, input, tokens: embedCounts[slot] });
-                if (buf.length >= rollingBatchFor(bucket, mode, rollingOpts)) await flushBucket(bucket);
+                if (buf.length >= rollingBatchFor(bucket, mode, rollingOpts)) await flushWhenReady(bucket);
             }
 
-            // UI progress: every newly committed file (status bar + Settings).
-            // NDJSON index-progress stays on the file-or-time cadence below.
-            if (filesCommitted > lastProgress) {
-                onProgress?.(`Indexed ${filesCommitted} files · ${totalChunks} chunks · ${fPaddedTokens} tokens`);
-            }
+            // UI progress: full reindex paints files as they start + GPU chunks as
+            // they return; catch-up still reports committed files for drain math.
+            emitLiveProgress();
             const progressOverdue = performance.now() - lastProgressAt >= PROGRESS_MAX_SILENCE_MS;
             if (filesCommitted > lastProgress && (filesCommitted - lastProgress >= PROGRESS_EVERY || progressOverdue)) {
                 lastProgress = filesCommitted;
@@ -1321,6 +1404,8 @@ export class SearchOrchestrator {
         // warmed). This is where the last chunk of most files lands and commits.
         // Skipped when disposed: the store is closing, so flushing buffered chunks
         // would just throw STORE_NOT_OPENED per bucket; the next reindex repairs.
+        await Promise.all(inflightFlushes);
+        if (persistFatal) { longTaskPass.stop(); throw persistFatal; }
         if (!this.disposed) for (const bucket of buffers.keys()) {
             while ((buffers.get(bucket)?.length ?? 0) > 0) await flushBucket(bucket);
         }
@@ -1378,7 +1463,7 @@ export class SearchOrchestrator {
             this.forensics?.beat('index-quota-exhausted', { files: filesSkippedQuota, mode });
             this.quotaToast();
         }
-        onProgress?.(`Indexed ${filesCommitted} files · ${totalChunks} chunks · ${fPaddedTokens} tokens`);
+        emitLiveProgress();
         await this.emitProgress('embed', files.length, files.length, totalChunks, performance.now() - overallStart);
 
         // Corpus dense-cosine background (dense-stats.ts). A FULL pass saw every
@@ -2482,6 +2567,11 @@ export class SearchOrchestrator {
     private onGoodEnough?: () => void;
     setGoodEnoughHandler(fn: () => void): void {
         this.onGoodEnough = fn;
+    }
+    private onHydrateProgress?: (detail: HydrateProgressDetail) => void;
+    setHydrateProgressHandler(fn: (detail: HydrateProgressDetail) => void): void {
+        this.onHydrateProgress = fn;
+        if (this.sidecarCoordinator) this.sidecarCoordinator.onHydrateProgress = fn;
     }
     /** Fired when rebuildFromSidecar actually empties IndexedDB. */
     private onIndexDropped?: () => void;

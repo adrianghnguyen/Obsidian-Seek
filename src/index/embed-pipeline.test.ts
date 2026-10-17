@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { InFlightSemaphore, createExclusiveChain, clampEmbedInFlightMax, DEFAULT_EMBED_IN_FLIGHT, gpuOccupancyPct, effectiveBatchSize } from './embed-pipeline';
+import { InFlightSemaphore, createExclusiveChain, clampEmbedInFlightMax, DEFAULT_EMBED_IN_FLIGHT, gpuOccupancyPct, effectiveBatchSize, gpuAheadCap, GPU_AHEAD_MIN, GPU_AHEAD_MAX } from './embed-pipeline';
 
 describe('clampEmbedInFlightMax', () => {
     it('clamps to 1–16 and falls back to the default', () => {
@@ -7,6 +7,15 @@ describe('clampEmbedInFlightMax', () => {
         expect(clampEmbedInFlightMax(0)).toBe(1);
         expect(clampEmbedInFlightMax(99)).toBe(16);
         expect(clampEmbedInFlightMax(Number.NaN)).toBe(DEFAULT_EMBED_IN_FLIGHT);
+    });
+});
+
+describe('gpuAheadCap', () => {
+    it('keeps at least two flushes on the GPU tail and never more than eight', () => {
+        expect(gpuAheadCap(1)).toBe(GPU_AHEAD_MIN);
+        expect(gpuAheadCap(10)).toBe(GPU_AHEAD_MAX);
+        expect(gpuAheadCap(3)).toBe(3);
+        expect(GPU_AHEAD_MAX).toBe(8);
     });
 });
 

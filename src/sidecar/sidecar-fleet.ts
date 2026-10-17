@@ -1,13 +1,14 @@
 /**
  * Cross-device sidecar fleet roles. Vectors are a portable byte layout; the
- * live IndexedDB is not. One device produces vault sidecar files, everyone
- * else hydrates. Pure so unit tests do not boot Obsidian.
+ * live IndexedDB is not. Auto picks a lead (newest matching full reindex).
+ * Other desktops contribute new notes; phones hydrate only. Pure so unit
+ * tests do not boot Obsidian.
  */
 
 import { metaAccepts, fullReindexEpoch, type MetaExpectation, type SidecarMeta } from './sidecar-meta';
 
 export type SidecarIndexRole = 'auto' | 'producer' | 'consumer';
-export type ResolvedSidecarRole = 'producer' | 'consumer';
+export type ResolvedSidecarRole = 'producer' | 'contributor' | 'consumer';
 
 export interface FleetPeer {
     deviceId: string;
@@ -33,11 +34,12 @@ export function stalePeers(peers: FleetPeer[], expect: MetaExpectation): FleetPe
 }
 
 /**
- * Auto: phones hydrate; a desktop that finished a full pass and is fresher
- * than matching peers produces; any other-device sidecar (even a stale model)
- * keeps this device a consumer so it cannot reap or re-embed over the peer.
- * A non-empty local stub with no peer files on disk is also a consumer — the
- * laptop whose Sync/Drive copy never arrived.
+ * Auto: phones hydrate only. A desktop whose matching full-reindex stamp is
+ * newer than every peer is the lead (producer). Any other desktop that can
+ * see peer sidecar files is a contributor: it may encode new/changed notes
+ * into its own shards, but must not full-reindex or delete a peer's files.
+ * A non-empty local stub with no peer files on disk stays a consumer — the
+ * laptop whose Sync/Drive copy never arrived must not re-embed the vault.
  */
 export function resolveFleetRole(input: ResolveFleetRoleInput): ResolvedSidecarRole {
     if (input.roleSetting === 'producer') return 'producer';
@@ -47,7 +49,7 @@ export function resolveFleetRole(input: ResolveFleetRoleInput): ResolvedSidecarR
     const ownEpoch = fullReindexEpoch(input.ownMeta);
     const peerMax = matching.reduce((m, p) => Math.max(m, fullReindexEpoch(p.meta)), -Infinity);
     if (matching.length > 0 && ownEpoch > peerMax) return 'producer';
-    if (input.peers.length > 0) return 'consumer';
+    if (input.peers.length > 0) return 'contributor';
     if (ownEpoch > -Infinity) return 'producer';
     if (input.localFileCount > 0) return 'consumer';
     return 'producer';
@@ -59,6 +61,11 @@ export function mayFullReindex(role: ResolvedSidecarRole): boolean {
 
 export function mayReapPeerSidecars(role: ResolvedSidecarRole): boolean {
     return role === 'producer';
+}
+
+/** GPU catch-up / incremental sidecar append. Phones stay hydrate-only. */
+export function mayEmbedCatchUp(role: ResolvedSidecarRole): boolean {
+    return role === 'producer' || role === 'contributor';
 }
 
 /** Dual-open: a hidden window with a peer present must not write or compact. */
@@ -94,12 +101,12 @@ export interface WaitForProducerInput {
 }
 
 /**
- * Consumers wait instead of catch-up-embedding when the producer shards are
- * missing, dataless, or still copying. A warm consumer whose local IDB already
+ * Non-lead devices wait instead of catch-up-embedding when the lead shards are
+ * missing, dataless, or still copying. A warm device whose local IDB already
  * covers most notes keeps serving search if the folder is temporarily gone.
  */
 export function shouldWaitForProducer(input: WaitForProducerInput): boolean {
-    if (input.role !== 'consumer') return false;
+    if (input.role === 'producer') return false;
     if (input.matchingReady) return false;
     if (input.incomplete || input.dataless) return true;
     if (input.indexableNotes <= 0) return false;
@@ -121,10 +128,13 @@ export interface SidecarWaitCopyInput {
 /** One-sentence Settings / toast copy. */
 export function sidecarWaitCopy(input: SidecarWaitCopyInput): string {
     if (input.role === 'producer') {
-        return 'This device writes the shared index. Other devices hydrate from it.';
+        return 'This computer is the lead index. It can rebuild everything; other computers add new notes and copy from it.';
+    }
+    if (input.matchingReady && input.role === 'contributor') {
+        return 'This computer adds new and changed notes to the shared index. A full rebuild stays on the lead computer.';
     }
     if (input.matchingReady) {
-        return 'Hydrating from the producer index. This device will not run a full reindex.';
+        return 'Copying the shared index from the lead computer. This device will not run a full reindex.';
     }
     if (input.dataless) {
         return 'Shared index files are still placeholders (empty or not downloaded). Waiting until the real files are on this disk.';

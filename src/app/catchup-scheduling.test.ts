@@ -58,6 +58,10 @@ function makeHarness(hidden: boolean): CatchUpHarness {
         catchUpJob: null,
         loadGeneration: 1,
         settings: { catchUpBurstMaxFiles: 30 },
+        indexInventoryFiles: 0,
+        indexableNoteCount: () => 0,
+        unloading: false,
+        scheduleStartupCatchUp: vi.fn(),
         embedder: { loaded: true },
         // runCatchUp's compute/reindex wrappers touch Settings delta overlay + dirtyQueue.
         // `schedulers` is a prototype getter — set the lazy backing field the getter reads.
@@ -86,7 +90,7 @@ function makeHarness(hidden: boolean): CatchUpHarness {
         finishCatchUpJob: vi.fn(),
         clearExclusionChange: vi.fn(),
         runStartupWarm: vi.fn(),
-        indexProgress: { refreshIdle: vi.fn() },
+        indexProgress: { refreshIdle: vi.fn(), pauseElapsed: vi.fn(), resumeElapsed: vi.fn() },
         touchIndexInventory: () => {
             inventoryCalls++;
             activeInventory++;
@@ -147,5 +151,62 @@ describe('runCatchUp pending-work scheduling', () => {
         expect(h.computeCalls()).toBe(1);
         expect(h.reindexCalls()).toBe(1);
         expect(h.inventoryCalls()).toBe(1);
+    });
+});
+
+describe('applyPostBootIndexScheduling coverage resume', () => {
+    function bootHarness(over: Record<string, unknown> = {}) {
+        Platform.isMobile = false;
+        Platform.isDesktop = true;
+        const scheduleIndexBuild = vi.fn();
+        const plugin = Object.create(SeekPlugin.prototype) as Record<string, unknown> & {
+            applyPostBootIndexScheduling(): void;
+        };
+        Object.assign(plugin, {
+            unloading: false,
+            waitingForSidecar: false,
+            sidecarHydrating: false,
+            indexBootDecisionPending: false,
+            indexDropRecovering: false,
+            settings: { sidecarEnabled: false },
+            indexInventoryChunks: 450,
+            indexInventoryFiles: 123,
+            catchUpPending: false,
+            catchUpRunning: false,
+            fullReindexInFlight: false,
+            indexableNoteCount: () => 4864,
+            scheduleIndexBuild,
+            refreshIndexStatusBar: vi.fn(),
+            ...over,
+        });
+        Object.defineProperty(plugin, 'isIndexing', { configurable: true, get: () => false });
+        return { plugin, scheduleIndexBuild };
+    }
+
+    it('schedules catch-up when FileRecords cover only a slice of the vault', () => {
+        const h = bootHarness();
+        h.plugin.applyPostBootIndexScheduling();
+        expect(h.scheduleIndexBuild).toHaveBeenCalledWith('catchup');
+    });
+
+    it('does not stack catch-up while hydrate is still in flight', () => {
+        const h = bootHarness({ sidecarHydrating: true });
+        h.plugin.applyPostBootIndexScheduling();
+        expect(h.scheduleIndexBuild).not.toHaveBeenCalled();
+    });
+
+    it('aborts leftover 1/1 hydrate then schedules catch-up', () => {
+        const abortInflightSessionWork = vi.fn(function (this: Record<string, unknown>) {
+            this.sidecarHydrating = false;
+            this.sidecarHydrateProgress = null;
+        });
+        const h = bootHarness({
+            sidecarHydrating: true,
+            sidecarHydrateProgress: { done: 1, total: 1 },
+            abortInflightSessionWork,
+        });
+        h.plugin.applyPostBootIndexScheduling();
+        expect(abortInflightSessionWork).toHaveBeenCalledWith('stale-hydrate');
+        expect(h.scheduleIndexBuild).toHaveBeenCalledWith('catchup');
     });
 });

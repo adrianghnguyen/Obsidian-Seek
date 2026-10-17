@@ -4,6 +4,7 @@ import type { SidecarMeta } from './sidecar-meta';
 import {
     resolveFleetRole,
     mayFullReindex,
+    mayEmbedCatchUp,
     mayReapPeerSidecars,
     mayWriteSidecar,
     mayCompactOwnSidecar,
@@ -55,7 +56,7 @@ describe('resolveFleetRole', () => {
         })).toBe('consumer');
     });
 
-    it('auto: any peer files (even a stale model) keep this device a consumer', () => {
+    it('auto: any peer files (even a stale model) keep a desktop as contributor, not lead', () => {
         const granite = meta({
             deviceId: 'desktop-win',
             modelId: 'granite',
@@ -69,9 +70,22 @@ describe('resolveFleetRole', () => {
             peers: [{ deviceId: 'desktop-win', meta: granite }],
             expect: EXPECT,
             localFileCount: 63,
-        })).toBe('consumer');
+        })).toBe('contributor');
         expect(stalePeers([{ deviceId: 'desktop-win', meta: granite }], EXPECT)).toHaveLength(1);
         expect(matchingPeers([{ deviceId: 'desktop-win', meta: granite }], EXPECT)).toHaveLength(0);
+    });
+
+    it('auto: a desktop with a matching peer but an older full pass is a contributor', () => {
+        const peer = meta({ deviceId: 'desktop-lead', lastFullReindex: '2026-10-14T00:00:00Z' });
+        const own = meta({ deviceId: 'laptop', lastFullReindex: '2026-10-01T00:00:00Z' });
+        expect(resolveFleetRole({
+            roleSetting: 'auto',
+            isMobile: false,
+            ownMeta: own,
+            peers: [{ deviceId: 'desktop-lead', meta: peer }],
+            expect: EXPECT,
+            localFileCount: 3000,
+        })).toBe('contributor');
     });
 
     it('auto: a desktop whose full pass is newer than matching peers is the producer', () => {
@@ -89,11 +103,20 @@ describe('resolveFleetRole', () => {
 });
 
 describe('consumer lock gates', () => {
-    it('consumers must not full-reindex or reap peer files', () => {
+    it('consumers must not full-reindex, reap, or GPU catch-up', () => {
         expect(mayFullReindex('consumer')).toBe(false);
         expect(mayReapPeerSidecars('consumer')).toBe(false);
+        expect(mayEmbedCatchUp('consumer')).toBe(false);
         expect(mayFullReindex('producer')).toBe(true);
         expect(mayReapPeerSidecars('producer')).toBe(true);
+        expect(mayEmbedCatchUp('producer')).toBe(true);
+    });
+
+    it('contributors may encode new notes but not full-reindex or reap peers', () => {
+        expect(mayFullReindex('contributor')).toBe(false);
+        expect(mayReapPeerSidecars('contributor')).toBe(false);
+        expect(mayEmbedCatchUp('contributor')).toBe(true);
+        expect(mayCompactOwnSidecar('contributor', false, true)).toBe(true);
     });
 
     it('skips sidecar writes while waiting or when a hidden window shares a peer', () => {
@@ -133,6 +156,17 @@ describe('shouldWaitForProducer', () => {
         })).toBe(true);
     });
 
+    it('waits on a contributor until matching shards are ready', () => {
+        expect(shouldWaitForProducer({
+            role: 'contributor', matchingReady: false, incomplete: false, dataless: false,
+            localFileCount: 0, indexableNotes: 100,
+        })).toBe(true);
+        expect(shouldWaitForProducer({
+            role: 'contributor', matchingReady: true, incomplete: false, dataless: false,
+            localFileCount: 0, indexableNotes: 100,
+        })).toBe(false);
+    });
+
     it('does not wait on a producer, a ready matching peer, or a warm consumer whose sidecar is briefly gone', () => {
         expect(shouldWaitForProducer({
             role: 'producer', matchingReady: false, incomplete: false, dataless: false,
@@ -166,7 +200,11 @@ describe('sidecarWaitCopy', () => {
         expect(sidecarWaitCopy({
             role: 'producer', matchingReady: false, incomplete: false, dataless: false,
             matchingProducers: 0, stalePeerCount: 0,
-        })).toMatch(/writes the shared index/);
+        })).toMatch(/lead index/);
+        expect(sidecarWaitCopy({
+            role: 'contributor', matchingReady: true, incomplete: false, dataless: false,
+            matchingProducers: 1, stalePeerCount: 0,
+        })).toMatch(/adds new and changed notes/);
         expect(sidecarWaitCopy({
             role: 'consumer', matchingReady: false, incomplete: false, dataless: false,
             matchingProducers: 0, stalePeerCount: 0, waiting: false,

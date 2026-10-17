@@ -1069,12 +1069,19 @@ export class SeekSearchModal extends Modal {
 
     private paintIndexWaitCard(parent: HTMLElement, kind: IndexLoadKind): void {
         const load = this.getIndexLoadState?.() ?? { phase: 'idle' as const };
+        const report = load.statusReport;
         const model = indexWaitCardModel({
             health: this.modalIndexHealth(kind, load),
             job: load.job,
             stats: null,
+            hydrateProgress: report?.hydrateProgress ?? null,
         });
-        renderIndexStatusCard(parent, model);
+        renderIndexStatusCard(parent, {
+            ...model,
+            mode: report?.mode,
+            label: report?.label,
+            hydrateProgress: report?.hydrateProgress ?? null,
+        });
     }
 
     private currentLoadSpec() {

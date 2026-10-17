@@ -7,6 +7,10 @@
 //
 import type { IndexStatusHealth, IndexStatusJob } from '../ui/index-status-card';
 import { INDEX_STATUS_COPY } from '../ui/index-status-report';
+import type { IndexProgressSnapshot } from '../ui/index-progress-snapshot';
+import { coverageHeadlineFromProgress } from '../ui/index-progress-snapshot';
+
+export { coverageHeadlineFromProgress };
 
 // Pure and dependency-injected (no Obsidian / model coupling) so the math and the
 // change detection are unit-testable. The plugin supplies the three live path sets
@@ -99,6 +103,8 @@ export interface FlatFolderCoverageItem {
 }
 
 export interface LiveCoverageSnapshot {
+    /** Shared chrome snapshot — status bar and Settings Index read this too. */
+    progress: IndexProgressSnapshot;
     health: IndexStatusHealth;
     job: IndexStatusJob | null;
     overall: {
@@ -517,13 +523,20 @@ export function resolveCoveragePanelView(input: {
     pendingCount?: number;
     /** Consumer lock: do not tell the user to full-reindex. */
     reindexLocked?: boolean;
+    /** Auto contributor: can add notes, cannot full rebuild. */
+    fleetRole?: string;
 }): CoveragePanelView {
-    const { summary, health, job, orchestratorReady, loadFailed, aligningExclusions, pendingCount, reindexLocked } = input;
+    const { summary, health, job, orchestratorReady, loadFailed, aligningExclusions, pendingCount, reindexLocked, fleetRole } = input;
+    const contributeLocked = reindexLocked && fleetRole === 'contributor';
     const errorFix = reindexLocked
-        ? 'This device hydrates the producer’s index and will not re-embed. Wait for matching sidecar files, or set this device’s index role to Producer.'
+        ? (contributeLocked
+            ? 'This computer can index new notes. A full rebuild stays on the lead computer.'
+            : 'This device copies the lead computer’s index and will not re-embed. Wait for matching index files, or set this device’s index role to Producer.')
         : 'Fix the index (try a full reindex) to see embedder coverage by folder.';
     const errorFixTree = reindexLocked
-        ? 'This device hydrates the producer’s index and will not re-embed. Folder coverage is the last snapshot.'
+        ? (contributeLocked
+            ? 'This computer can index new notes. Folder coverage is the last snapshot. A full rebuild stays on the lead computer.'
+            : 'This device copies the lead computer’s index and will not re-embed. Folder coverage is the last snapshot.')
         : 'Fix the index (try a full reindex). Folder coverage is the last snapshot.';
     const { total, covered, excluded, remaining, refreshing } = summary.overall;
     const hasTree = total > 0;
@@ -822,14 +835,14 @@ export function flattenCoverageTree(node: FolderCoverageNode, depth = 0): FlatFo
 
 export function createLiveCoverageSnapshot(input: {
     summary: FolderCoverageSummary;
-    health: IndexStatusHealth;
-    job: IndexStatusJob | null;
+    progress: IndexProgressSnapshot;
 }): LiveCoverageSnapshot {
-    const { summary, health, job } = input;
+    const { summary, progress } = input;
     const { total, covered, remaining, excluded, percent } = summary.overall;
     return {
-        health,
-        job,
+        progress,
+        health: progress.health,
+        job: progress.job,
         overall: {
             total,
             covered,
