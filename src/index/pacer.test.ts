@@ -87,10 +87,12 @@ describe('yieldAfterEmbedDispatch', () => {
         return { calls: () => ricCalls };
     }
 
-    it('full reindex cheap-yields and never waits on requestIdleCallback', async () => {
+    it('full reindex does not yield and never waits on requestIdleCallback', async () => {
         const ric = hangingRic();
+        const start = Date.now();
         await yieldAfterEmbedDispatch(new CompositorPacer(), 'full', null);
         expect(ric.calls()).toBe(0);
+        expect(Date.now() - start).toBeLessThan(20);
     });
 
     it('incremental without the catch-up opt-in still idle-paces', async () => {

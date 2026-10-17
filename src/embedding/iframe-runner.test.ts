@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { IframeRunner, TRANSFORMERS_VERSION, buildChildScript, buildWorkerProbeScript, buildEmbedWorkerScript, isChromiumPowerPreferenceAdapterWarning, stripGpuPowerPreference, SOFT_DISPOSE_MS, WORKER_PROBE_TIMEOUT_MS } from './iframe-runner';
+import { IframeRunner, TRANSFORMERS_VERSION, buildChildScript, buildWorkerProbeScript, buildEmbedWorkerScript, isChromiumPowerPreferenceAdapterWarning, stripGpuPowerPreference, SOFT_DISPOSE_MS, WORKER_PROBE_TIMEOUT_MS, iframeRpcLane } from './iframe-runner';
 
 // F5 — per-RPC timeout. A jetsam-killed iframe child never replies; without the
 // timeout the parent promise hangs forever, stranding the embed catch's
@@ -206,6 +206,118 @@ describe('IframeRunner query-priority RPC queue (G_catchup_ux)', () => {
     });
 });
 
+describe('IframeRunner dual-lane token-counts vs embed-batch', () => {
+    it('classifies token-counts onto the tok lane and embed-batch onto gpu', () => {
+        expect(iframeRpcLane('token-counts')).toBe('tok');
+        expect(iframeRpcLane('embed-batch')).toBe('gpu');
+        expect(iframeRpcLane('embed')).toBe('exclusive');
+        expect(iframeRpcLane('load')).toBe('exclusive');
+    });
+
+    it('posts token-counts while embed-batch is still in flight', async () => {
+        const r = new IframeRunner();
+        const posted: Array<{ id: string; type: string }> = [];
+        (r as unknown as { iframe: { contentWindow: { postMessage: (msg: { id: string; type: string }) => void } } }).iframe = {
+            contentWindow: {
+                postMessage: (msg) => { posted.push({ id: msg.id, type: msg.type }); },
+            },
+        };
+        const batchP = r.embedBatch(['a']);
+        const tokP = r.tokenCounts(['b']);
+        expect(posted.map(p => p.type)).toEqual(['embed-batch', 'token-counts']);
+        const pending = (r as unknown as { pending: Map<string, { resolve: (v: unknown) => void }> }).pending;
+        pending.get(posted[0].id)?.resolve({ vectors: [new Float32Array(4)], latencyMs: 1 });
+        pending.get(posted[1].id)?.resolve([3]);
+        await expect(batchP).resolves.toMatchObject({ latencyMs: 1 });
+        await expect(tokP).resolves.toEqual([3]);
+    });
+
+    it('posts a second embed-batch while the first is still in flight', async () => {
+        const r = new IframeRunner();
+        const posted: Array<{ id: string; type: string }> = [];
+        (r as unknown as { iframe: { contentWindow: { postMessage: (msg: { id: string; type: string }) => void } } }).iframe = {
+            contentWindow: {
+                postMessage: (msg) => { posted.push({ id: msg.id, type: msg.type }); },
+            },
+        };
+        const a = r.embedBatch(['a']);
+        const b = r.embedBatch(['b']);
+        expect(posted.map(p => p.type)).toEqual(['embed-batch', 'embed-batch']);
+        const pending = (r as unknown as { pending: Map<string, { resolve: (v: unknown) => void }> }).pending;
+        pending.get(posted[0].id)?.resolve({ vectors: [new Float32Array(4)], latencyMs: 1 });
+        pending.get(posted[1].id)?.resolve({ vectors: [new Float32Array(4)], latencyMs: 1 });
+        await a;
+        await b;
+    });
+
+    it('posts a third embed-batch while two are still in flight', async () => {
+        const r = new IframeRunner();
+        const posted: Array<{ id: string; type: string }> = [];
+        (r as unknown as { iframe: { contentWindow: { postMessage: (msg: { id: string; type: string }) => void } } }).iframe = {
+            contentWindow: {
+                postMessage: (msg) => { posted.push({ id: msg.id, type: msg.type }); },
+            },
+        };
+        const a = r.embedBatch(['a']);
+        const b = r.embedBatch(['b']);
+        const c = r.embedBatch(['c']);
+        const d = r.embedBatch(['d']);
+        expect(posted.map(p => p.type)).toEqual(['embed-batch', 'embed-batch', 'embed-batch']);
+        const pending = (r as unknown as { pending: Map<string, { resolve: (v: unknown) => void }> }).pending;
+        pending.get(posted[0].id)?.resolve({ vectors: [new Float32Array(4)], latencyMs: 1 });
+        await a;
+        expect(posted.map(p => p.type)).toEqual(['embed-batch', 'embed-batch', 'embed-batch', 'embed-batch']);
+        pending.get(posted[1].id)?.resolve({ vectors: [new Float32Array(4)], latencyMs: 1 });
+        pending.get(posted[2].id)?.resolve({ vectors: [new Float32Array(4)], latencyMs: 1 });
+        pending.get(posted[3].id)?.resolve({ vectors: [new Float32Array(4)], latencyMs: 1 });
+        await b;
+        await c;
+        await d;
+    });
+
+    it('does not post a second embed-batch while a query embed is waiting', async () => {
+        const r = new IframeRunner();
+        const posted: Array<{ id: string; type: string }> = [];
+        (r as unknown as { iframe: { contentWindow: { postMessage: (msg: { id: string; type: string }) => void } } }).iframe = {
+            contentWindow: {
+                postMessage: (msg) => { posted.push({ id: msg.id, type: msg.type }); },
+            },
+        };
+        const batchP = r.embedBatch(['a']);
+        const queryP = r.embed('query');
+        const nextP = r.embedBatch(['b']);
+        expect(posted.map(p => p.type)).toEqual(['embed-batch']);
+        const pending = (r as unknown as { pending: Map<string, { resolve: (v: unknown) => void }> }).pending;
+        pending.get(posted[0].id)?.resolve({ vectors: [new Float32Array(4)], latencyMs: 1 });
+        await batchP;
+        expect(posted.map(p => p.type)).toEqual(['embed-batch', 'embed']);
+        pending.get(posted[1].id)?.resolve({ vector: new Float32Array(4), latencyMs: 1 });
+        await queryP;
+        expect(posted.map(p => p.type)).toEqual(['embed-batch', 'embed', 'embed-batch']);
+        pending.get(posted[2].id)?.resolve({ vectors: [new Float32Array(4)], latencyMs: 1 });
+        await nextP;
+    });
+
+    it('does not post a query embed until in-flight token-counts finishes', async () => {
+        const r = new IframeRunner();
+        const posted: Array<{ id: string; type: string }> = [];
+        (r as unknown as { iframe: { contentWindow: { postMessage: (msg: { id: string; type: string }) => void } } }).iframe = {
+            contentWindow: {
+                postMessage: (msg) => { posted.push({ id: msg.id, type: msg.type }); },
+            },
+        };
+        const tokP = r.tokenCounts(['x']);
+        const embedP = r.embed('query');
+        expect(posted.map(p => p.type)).toEqual(['token-counts']);
+        const pending = (r as unknown as { pending: Map<string, { resolve: (v: unknown) => void }> }).pending;
+        pending.get(posted[0].id)?.resolve([1]);
+        await tokP;
+        expect(posted.map(p => p.type)).toEqual(['token-counts', 'embed']);
+        pending.get(posted[1].id)?.resolve({ vector: new Float32Array(4), latencyMs: 1 });
+        await embedP;
+    });
+});
+
 describe('IframeRunner queued RPC rejection (R8)', () => {
     it('dispose rejects a queued embed with DISPOSED (does not hang)', async () => {
         const r = withDeadIframe();
@@ -313,6 +425,30 @@ describe('iframe child message handler — source check', () => {
         const dispatchIdx = script.indexOf("data.type === 'load'", handlerStart);
         expect(guardIdx).toBeGreaterThan(handlerStart);
         expect(guardIdx).toBeLessThan(dispatchIdx);
+    });
+
+    it('chains embed-batch so the next forward starts before the parent reply', () => {
+        const script = buildChildScript('https://example.com/cdn', 384);
+        expect(script).toContain('function runEmbedBatch');
+        expect(script).toContain('embedBatchTail');
+        const handlerStart = script.indexOf("addEventListener('message', async (event)");
+        const runCall = script.indexOf('await runEmbedBatch', handlerStart);
+        expect(runCall).toBeGreaterThan(handlerStart);
+    });
+
+    it('tokenizes the next GPU batch inside the iframe before the in-flight model() returns', () => {
+        const script = buildChildScript('https://example.com/cdn', 384);
+        expect(script).toContain('function tokenizeEmbedBatch');
+        expect(script).toContain('function poolEmbedBatch');
+        expect(script).toContain("padding: 'max_length'");
+        expect(script).toContain('pipeline.model(p.enc)');
+        const runIdx = script.indexOf('function runEmbedBatch');
+        expect(runIdx).toBeGreaterThan(-1);
+        expect(script.indexOf('withTokenizer(function () { return tokenizeEmbedBatch', runIdx)).toBeGreaterThan(runIdx);
+        expect(script.indexOf('releaseGpu()', runIdx)).toBeGreaterThan(runIdx);
+        expect(script).toContain('embedBatchTail = gpuDone');
+        expect(script.indexOf('setTimeout(function ()', runIdx)).toBeGreaterThan(runIdx);
+        expect(script.indexOf('poolEmbedBatch(outputs, enc, t0)', runIdx)).toBeGreaterThan(runIdx);
     });
 });
 
