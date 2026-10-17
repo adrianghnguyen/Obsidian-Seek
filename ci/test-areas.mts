@@ -16,6 +16,8 @@ export const CI_TEST_AREAS = {
         'src/app/index-self-heal.test.ts',
         'src/app/indexing-stall-guard.test.ts',
         'src/app/full-reindex-guard.test.ts',
+        'src/app/recovery-job-gate.test.ts',
+        'src/app/recovery-job-stacking.test.ts',
         'src/app/full-reindex-clean-slate.test.ts',
         'src/app/drift-recovery-coordinator.test.ts',
         'src/app/idb-lifecycle-lock.test.ts',

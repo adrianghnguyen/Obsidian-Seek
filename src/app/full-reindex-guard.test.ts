@@ -77,7 +77,7 @@ beforeEach(() => {
 // Model load is not isWriting(). A second full reindex in that gap used to
 // begin another status-bar job and queue a wipe behind the pass that was running.
 describe('runFullReindex stacking', () => {
-    it('refuses a second full reindex while the first is still loading the model', async () => {
+    it('joins a second full reindex onto the in-flight pass while the model is still loading', async () => {
         let releaseLoad!: () => void;
         const loadGate = new Promise<void>(resolve => { releaseLoad = resolve; });
         const reindexAll = vi.fn(async () => ({
@@ -91,26 +91,28 @@ describe('runFullReindex stacking', () => {
             runFullReindex(opts?: { skipConfirm?: boolean }): Promise<boolean>;
             fullReindexInFlight: boolean;
             ensureModelLoaded: () => Promise<void>;
+            abortInflightSessionWork: ReturnType<typeof vi.fn>;
         };
         Object.assign(plugin, baseFullReindexHost(reindexAll));
         wireSchedulersStub(plugin);
         plugin.ensureModelLoaded = () => loadGate;
 
         const first = plugin.runFullReindex({ skipConfirm: true });
-        const second = await plugin.runFullReindex({ skipConfirm: true });
-        expect(second).toBe(false);
+        const second = plugin.runFullReindex({ skipConfirm: true });
+        expect(plugin.abortInflightSessionWork).not.toHaveBeenCalled();
         expect(reindexAll).not.toHaveBeenCalled();
         expect(plugin.fullReindexInFlight).toBe(true);
 
         releaseLoad();
         await expect(first).resolves.toBe(true);
+        await expect(second).resolves.toBe(true);
         expect(reindexAll).toHaveBeenCalledTimes(1);
         expect(plugin.fullReindexInFlight).toBe(false);
     });
 });
 
 describe('runFullReindex takeover', () => {
-    it('aborts catch-up and runs clean slate before reindexAll', async () => {
+    it('joins a healthy catch-up instead of stacking a full reindex', async () => {
         const reindexAll = vi.fn(async () => ({
             pass: true,
             filesIndexed: 2,
@@ -130,6 +132,31 @@ describe('runFullReindex takeover', () => {
 
         const ok = await plugin.runFullReindex({ skipConfirm: true });
         expect(ok).toBe(true);
+        expect(plugin.abortInflightSessionWork).not.toHaveBeenCalled();
+        expect(executeFullReindexCleanSlate).not.toHaveBeenCalled();
+        expect(reindexAll).not.toHaveBeenCalled();
+    });
+
+    it('aborts a stalled catch-up and runs clean slate before reindexAll', async () => {
+        const reindexAll = vi.fn(async () => ({
+            pass: true,
+            filesIndexed: 2,
+            chunksIndexed: 4,
+            totalDurationMs: 500,
+            chunksPerSec: 8,
+        }));
+        const plugin = Object.create(SeekPlugin.prototype) as {
+            runFullReindex(opts?: { skipConfirm?: boolean }): Promise<boolean>;
+            abortInflightSessionWork: ReturnType<typeof vi.fn>;
+        };
+        const host = baseFullReindexHost(reindexAll);
+        host.catchUpRunning = true;
+        host.orchestrator.isWriting = () => true;
+        Object.assign(plugin, host, { indexIndexingStalled: true });
+        wireSchedulersStub(plugin);
+
+        const ok = await plugin.runFullReindex({ skipConfirm: true });
+        expect(ok).toBe(true);
         expect(plugin.abortInflightSessionWork).toHaveBeenCalledWith(
             'full-reindex-takeover',
             { keepFullReindexLatch: true, releaseIndexHold: true },
@@ -141,7 +168,7 @@ describe('runFullReindex takeover', () => {
         );
     });
 
-    it('a user takeover aborts the in-flight full reindex and starts a clean pass', async () => {
+    it('a user takeover aborts a stalled full reindex and starts a clean pass', async () => {
         let releaseLoad!: () => void;
         const loadGate = new Promise<void>(resolve => { releaseLoad = resolve; });
         const reindexAll = vi.fn(async () => ({
@@ -154,6 +181,7 @@ describe('runFullReindex takeover', () => {
         const plugin = Object.create(SeekPlugin.prototype) as {
             runFullReindex(opts?: { skipConfirm?: boolean; takeover?: boolean }): Promise<boolean>;
             fullReindexInFlight: boolean;
+            indexIndexingStalled: boolean;
             ensureModelLoaded: () => Promise<void>;
             abortInflightSessionWork: ReturnType<typeof vi.fn>;
         };
@@ -164,6 +192,7 @@ describe('runFullReindex takeover', () => {
         plugin.ensureModelLoaded = () => loadGate;
 
         const first = plugin.runFullReindex({ skipConfirm: true });
+        plugin.indexIndexingStalled = true;
         const second = plugin.runFullReindex({ skipConfirm: true, takeover: true });
         const secondOk = await second;
         const firstOk = await first;

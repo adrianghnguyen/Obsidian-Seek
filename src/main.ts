@@ -59,6 +59,10 @@ import {
     vaultCoverageIncomplete,
 } from './app/index-self-heal';
 import {
+    planIndexUserJob,
+    type RecoveryJobActivity,
+} from './app/recovery-job-gate';
+import {
     createStoreOpenRetryScheduler,
     isRetryIndexStoreCommandEnabled,
     resolveStoreRecoveryMode,
@@ -344,6 +348,9 @@ export default class SeekPlugin extends Plugin {
     private fullReindexInFlight = false;
     private fullReindexGen = 0;
     private fullReindexRun: Promise<boolean> | null = null;
+    /** Settings Recover / Resume / Force reset — distinct from fullReindexInFlight. */
+    private recoverInFlight = false;
+    private recoverRun: Promise<void> | null = null;
     private persistCacheRestoredThisBoot = false; // restorePersistedCachesBeforeReconcile once
     /** Live catch-up pass shown on the status bar — survives burst pauses and self-chains. */
     private catchUpJob: { id: number; passTotal: number; committed: number; chunksCommitted: number; tokensCommitted: number } | null = null;
@@ -744,7 +751,10 @@ export default class SeekPlugin extends Plugin {
         this.sidecarHydrating = false;
         this.indexProgressWalk.clear();
         this.bootContinuationDone = false;
-        if (!opts?.keepFullReindexLatch) this.fullReindexInFlight = false;
+        if (!opts?.keepFullReindexLatch) {
+            this.fullReindexInFlight = false;
+            this.fullReindexGen++;
+        }
         this.driftRecoveryRunning = false;
         if (this.catchUpJob != null) this.finishCatchUpJob();
         this.taskCtx.closeOpen(['catchup', 'indexing']);
@@ -1309,8 +1319,7 @@ export default class SeekPlugin extends Plugin {
                 const enabled = this.indexRecoveryCommandsEnabled();
                 if (checking) return enabled;
                 if (!enabled) return false;
-                const bootGen = this.loadGeneration;
-                void this.forceResetAndReindex(bootGen);
+                void this.forceResetIndexFromSettings();
                 return true;
             },
         });
@@ -1737,12 +1746,68 @@ export default class SeekPlugin extends Plugin {
         await this.forceResetAndReindex(bootGen);
     }
 
+    private recoveryActivity(): RecoveryJobActivity {
+        return {
+            recoverInFlight: this.recoverInFlight,
+            dropRecoveryInFlight: this.dropRecoveryInFlight,
+            fullReindexInFlight: this.fullReindexInFlight,
+            catchUpRunning: this.catchUpRunning,
+            sidecarHydrating: this.sidecarHydrating,
+            writing: this.orchestrator?.isWriting() ?? false,
+            stalled: this.indexIndexingStalled,
+            stuck: this.indexBootStuck,
+            locked: this.indexStoreLocked,
+            wedged: this.indexStoreWedged,
+        };
+    }
+
+    private async joinActiveIndexWork(): Promise<void> {
+        const recover = this.recoverRun;
+        if (recover) await recover.catch(() => undefined);
+        const full = this.fullReindexRun;
+        if (full) await full.catch(() => undefined);
+    }
+
     /**
      * Settings recovery affordance: retry opening the index and resume boot.
      * Public so the Settings tab can offer the same one-click recovery the command
      * palette exposes when startup is stuck or the store is locked.
      */
     async recoverIndexFromSettings(): Promise<void> {
+        await this.recoverIndexFromSettingsWithIntent('recover');
+    }
+
+    /**
+     * Settings recovery: abort in-flight work and release the index hold in-plugin
+     * (no plugin disable/enable, no Obsidian quit).
+     */
+    async reloadSeekFromSettings(): Promise<void> {
+        await this.recoverIndexFromSettingsWithIntent('resume');
+    }
+
+    private async recoverIndexFromSettingsWithIntent(intent: 'recover' | 'resume'): Promise<void> {
+        const plan = planIndexUserJob(intent, this.recoveryActivity());
+        if (plan.action === 'noop' || plan.action === 'attach') {
+            new Notice(plan.notice, 4000);
+            this.refreshIndexStatusBar();
+            this.notifyIndexActivityChanged();
+            await this.joinActiveIndexWork();
+            return;
+        }
+        this.recoverInFlight = true;
+        const run = this.executeRecoverFromSettings();
+        this.recoverRun = run;
+        try {
+            await run;
+        } finally {
+            if (this.recoverRun === run) {
+                this.recoverRun = null;
+                this.recoverInFlight = false;
+            }
+        }
+    }
+
+    private async executeRecoverFromSettings(): Promise<void> {
         this.indexDropRecovering = true;
         this.refreshIndexStatusBar();
         this.notifyIndexActivityChanged();
@@ -1762,22 +1827,39 @@ export default class SeekPlugin extends Plugin {
     }
 
     /**
-     * Settings recovery: abort in-flight work and release the index hold in-plugin
-     * (no plugin disable/enable, no Obsidian quit).
-     */
-    async reloadSeekFromSettings(): Promise<void> {
-        await this.recoverIndexFromSettings();
-    }
-
-    /**
      * Settings recovery affordance: nuke the index and rebuild it from scratch.
      * Public wrapper around the self-heal path, which already clears the stuck/locked
      * state and schedules a full reindex.
      */
     async forceResetIndexFromSettings(): Promise<void> {
+        const plan = planIndexUserJob('force-reset', this.recoveryActivity());
+        if (plan.action === 'noop' || plan.action === 'attach') {
+            new Notice(plan.notice, 4000);
+            this.refreshIndexStatusBar();
+            this.notifyIndexActivityChanged();
+            await this.joinActiveIndexWork();
+            return;
+        }
+        this.recoverInFlight = true;
+        const run = this.executeForceResetFromSettings();
+        this.recoverRun = run;
+        try {
+            await run;
+        } finally {
+            if (this.recoverRun === run) {
+                this.recoverRun = null;
+                this.recoverInFlight = false;
+            }
+        }
+    }
+
+    private async executeForceResetFromSettings(): Promise<void> {
         this.indexDropRecovering = true;
         this.refreshIndexStatusBar();
         this.notifyIndexActivityChanged();
+        this.abortInflightSessionWork('user-force-reset', { releaseIndexHold: true });
+        const prior = this.fullReindexRun;
+        if (prior) await prior.catch(() => false);
         await this.forceResetAndReindex(this.loadGeneration);
         this.refreshIndexStatusBar();
         this.notifyIndexActivityChanged();
@@ -3689,21 +3771,22 @@ export default class SeekPlugin extends Plugin {
     // ladder it is allowed to embed — the embed-free guarantee covers only the auto path.
     // opts.skipConfirm: the caller already confirmed (the settings Index section has its
     // own inline two-button confirm, so it suppresses the blocking confirm dialog).
-    // opts.takeover: abort an in-flight full reindex and release the IDB/GPU hold
-    // in-plugin (no plugin reload / Obsidian quit). Default true after a confirm
-    // dialog; false for skipConfirm callers (cold build) unless they pass true.
+    // opts.takeover: kept for callers; a healthy in-flight job is joined instead of
+    // replaced. Takeover (abort + new pass) runs only when that job is stuck/stalled.
     // opts.onProgress: a second progress sink (besides the Notice) — the settings status
     // card subscribes to drive its live "N / TOTAL notes" bar. Arg-less callers (command
     // palette main.ts:496, degraded-health button) keep the confirm + Notice unchanged.
     // Returns whether a reindex actually RAN — false when refused (cold build while a
     // user pass is running), declined at the confirm, superseded, or if it threw.
     async runFullReindex(opts?: { skipConfirm?: boolean; takeover?: boolean; onProgress?: (msg: string) => void }): Promise<boolean> {
-        const takeover = opts?.takeover === true || (opts?.takeover !== false && !opts?.skipConfirm);
-        const didTakeover = this.fullReindexInFlight && takeover;
-        if (this.fullReindexInFlight && !takeover) {
-            new Notice('Seek: a reindex is already running.', 4000);
-            return false;
+        const plan = planIndexUserJob('full-reindex', this.recoveryActivity());
+        if (plan.action === 'attach' || plan.action === 'noop') {
+            new Notice(plan.notice, 4000);
+            if (this.fullReindexRun) return this.fullReindexRun;
+            await this.joinActiveIndexWork();
+            return true;
         }
+        const didTakeover = plan.action === 'takeover';
         this.fullReindexGen++;
         const gen = this.fullReindexGen;
         if (didTakeover) {
@@ -3718,6 +3801,8 @@ export default class SeekPlugin extends Plugin {
                     new Promise<void>(resolve => window.setTimeout(resolve, 5000)),
                 ]);
             }
+            const priorRecover = this.recoverRun;
+            if (priorRecover) await priorRecover.catch(() => undefined);
             if (gen !== this.fullReindexGen) return false;
             if (!this.store.isOpen()) await this.store.open().catch(() => {});
             this.attachOrchestrator(this.resolveSidecarIndexDir());
