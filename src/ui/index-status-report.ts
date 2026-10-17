@@ -2,6 +2,7 @@
 // (status bar, Settings Index card / reindex heading, coverage health titles).
 // Coarse precedence still lives in resolveIndexUiStatus; this layer adds
 // full-reindex vs catch-up and the copy both UIs must share.
+// Progress units live in index-progress-indicator — the only producer chrome reads.
 
 import {
     resolveIndexUiStatus,
@@ -17,14 +18,30 @@ import {
     type IndexUiStatusInput,
 } from './index-notice';
 import { indexPercent } from './index-eta';
-import { formatStableCompactProgress, formatStableLabelProgress } from './index-progress-format';
+import { formatStableCompactProgress, formatStableFileFraction, formatStableFileFractionSpaced, formatStableLabelProgress } from './index-progress-format';
+import {
+    computeIndexProgressIndicator,
+    isVerifyOnlyWalk,
+    type IndexProgressIndicator,
+    type IndexProgressUnits,
+    type IndexProgressWalkState,
+} from './index-progress-indicator';
+
 export type IndexStatusHealth = 'none' | 'starting' | 'restoring' | 'ok' | 'indexing' | 'error' | 'locked' | 'stuck';
 type ReporterJobKind = 'full' | 'delta' | 'catchup';
 
 export const INDEX_FULL_REINDEX_LABEL = 'Reindexing';
+export const INDEX_CATCHING_UP_LABEL = 'Catching up';
+export const INDEX_VERIFYING_LABEL = 'Verifying';
+export const INDEX_RECOVERING_LABEL = 'Recovering';
 
 /** High-level mode. Restoring covers drop, hydrate, and wait-for-producer. */
-export type IndexStatusMode = IndexUiStatus | 'full-reindex';
+export type IndexStatusMode =
+    | IndexUiStatus
+    | 'full-reindex'
+    | 'catching-up'
+    | 'recovering'
+    | 'verifying';
 
 export interface IndexStatusCopy {
     tone: string;
@@ -38,7 +55,10 @@ export const INDEX_STATUS_COPY: Record<IndexStatusMode, IndexStatusCopy> = {
     none: { tone: 'mid', label: 'No index', compact: INDEX_NO_INDEX_LABEL },
     starting: { tone: 'pending', label: 'Starting up…', compact: INDEX_STARTING_LABEL },
     restoring: { tone: 'info', label: 'Restoring…', compact: INDEX_RESTORING_LABEL },
+    verifying: { tone: 'pending', label: 'Verifying sidecar…', compact: INDEX_VERIFYING_LABEL },
+    recovering: { tone: 'info', label: 'Recovering…', compact: INDEX_RECOVERING_LABEL },
     'full-reindex': { tone: 'accent', label: 'Reindexing…', compact: INDEX_FULL_REINDEX_LABEL },
+    'catching-up': { tone: 'accent', label: 'Catching up…', compact: INDEX_CATCHING_UP_LABEL },
     indexing: { tone: 'accent', label: 'Indexing…', compact: INDEX_INDEXING_LABEL },
     ok: { tone: 'good', label: 'Up to date', compact: INDEX_UP_TO_DATE_LABEL },
     error: { tone: 'bad', label: 'Index error', compact: INDEX_ERROR_LABEL },
@@ -48,7 +68,10 @@ export const INDEX_STATUS_COPY: Record<IndexStatusMode, IndexStatusCopy> = {
 
 /** Badge/dot chrome — full-reindex still uses the numbered indexing badge. */
 export function indexStatusHealth(mode: IndexStatusMode): IndexStatusHealth {
-    return mode === 'full-reindex' ? 'indexing' : mode;
+    if (mode === 'full-reindex' || mode === 'catching-up') return 'indexing';
+    if (mode === 'recovering') return 'restoring';
+    if (mode === 'verifying') return 'starting';
+    return mode;
 }
 
 export const INDEX_STATUS_HEALTH: Record<IndexStatusHealth, IndexStatusCopy> = {
@@ -61,6 +84,8 @@ export const INDEX_STATUS_HEALTH: Record<IndexStatusHealth, IndexStatusCopy> = {
     locked: INDEX_STATUS_COPY.locked,
     stuck: INDEX_STATUS_COPY.stuck,
 };
+
+export const IDLE_PROGRESS: IndexProgressIndicator = { phase: 'ready', units: null };
 
 /** Sidecar hydrate / wait-for-producer file progress — not an embed catch-up job. */
 export interface IndexHydrateProgress {
@@ -78,6 +103,8 @@ export interface IndexStatusReport {
     tone: string;
     /** Present while hydrate/restore is the active job and a file total is known. */
     hydrateProgress: IndexHydrateProgress | null;
+    /** Sole progress snapshot for status chrome. */
+    progress: IndexProgressIndicator;
 }
 
 export interface IndexStatusReporterInput extends IndexUiStatusInput {
@@ -86,7 +113,10 @@ export interface IndexStatusReporterInput extends IndexUiStatusInput {
      * Live sidecar hydrate (greedy files walked, needed/hydrated notes, or
      * wait-for-producer inventory vs vault files). Ignored for stuck/locked.
      */
-    hydrateProgress?: { done: number; total: number; percent?: number } | null;
+    hydrateProgress?: IndexProgressWalkState | null;
+    indexableNotes?: number;
+    coverage?: { covered: number; total: number } | null;
+    stuckWhy?: 'startup' | 'indexing';
 }
 
 export function normalizeHydrateProgress(
@@ -97,19 +127,6 @@ export function normalizeHydrateProgress(
     if (!Number.isFinite(total) || total <= 0) return null;
     const done = Math.min(total, Math.max(0, Math.floor(progress.done) || 0));
     return { done, total, percent: indexPercent(done, total) };
-}
-
-function hydrateCopyApplies(
-    mode: IndexStatusMode,
-    hydrating: boolean,
-    waitingForSidecar: boolean,
-    booting: boolean,
-    mayFullReindex?: boolean | null,
-): boolean {
-    const fleetRestore = booting && mayFullReindex === false;
-    if (!(hydrating || waitingForSidecar || fleetRestore)) return false;
-    if (mode === 'starting' || mode === 'restoring') return true;
-    return mode === 'indexing' && hydrating;
 }
 
 export function withHydrateProgressCopy(
@@ -125,39 +142,103 @@ export function withHydrateProgressCopy(
     };
 }
 
+export function withIndicatorCopy(copy: IndexStatusCopy, units: IndexProgressUnits): IndexStatusCopy {
+    if (!units.determinate) {
+        return {
+            ...copy,
+            compact: `${copy.compact} ${formatStableFileFraction(units.done, units.total)}`,
+            label: `${copy.label} ${formatStableFileFractionSpaced(units.done, units.total)}`,
+        };
+    }
+    return withHydrateProgressCopy(copy, units);
+}
+
 export function indexStatusModeFromUi(
     ui: IndexUiStatus,
     jobKind?: ReporterJobKind | null,
+    extras?: {
+        dropRecovering?: boolean;
+        verifying?: boolean;
+        catchUpPending?: boolean;
+        hydrating?: boolean;
+    },
 ): IndexStatusMode {
     if (ui === 'locked' || ui === 'stuck') return ui;
-    // Clean-slate identity is degraded until the first FileRecords commit; a
-    // live full job must still paint Reindexing, not Index error.
+    if (extras?.verifying) return 'verifying';
+    if (extras?.dropRecovering && (ui === 'restoring' || ui === 'starting')) return 'recovering';
     if (jobKind === 'full') return 'full-reindex';
+    if (ui === 'indexing' && jobKind === 'catchup' && !extras?.hydrating) return 'catching-up';
+    if (ui === 'ok' && extras?.catchUpPending) return 'catching-up';
     return ui;
+}
+
+function hydrateLegacyFromProgress(
+    progress: IndexProgressIndicator,
+    hydrating: boolean,
+    mode: IndexStatusMode,
+): IndexHydrateProgress | null {
+    const units = progress.units;
+    if (!units?.determinate) return null;
+    const restoreLike = progress.phase === 'hydrating'
+        || progress.phase === 'restoring'
+        || progress.phase === 'recovering'
+        || (mode === 'indexing' && hydrating);
+    if (!restoreLike) return null;
+    return { done: units.done, total: units.total, percent: units.percent };
 }
 
 export class IndexStatusReporter {
     static compute(input: IndexStatusReporterInput): IndexStatusReport {
         const ui = resolveIndexUiStatus(input);
-        const mode = indexStatusModeFromUi(ui, input.jobKind);
-        const base = INDEX_STATUS_COPY[mode];
-        const live = hydrateCopyApplies(
+        const notes = Math.max(0, Math.floor(input.indexableNotes ?? 0) || 0);
+        const verifyOnly = isVerifyOnlyWalk({
+            needed: input.hydrateProgress?.needed,
+            inventoryFiles: input.inventoryFiles ?? null,
+            indexableNotes: notes,
+            waitingForSidecar: !!input.waitingForSidecar,
+            dropRecovering: !!input.dropRecovering,
+        });
+        let mode = indexStatusModeFromUi(ui, input.jobKind, {
+            dropRecovering: !!input.dropRecovering,
+            verifying: verifyOnly && (ui === 'restoring' || ui === 'starting' || (!!input.hydrating && !input.goodEnough)),
+            catchUpPending: !!input.catchUpPending,
+            hydrating: !!input.hydrating,
+        });
+        const progress = computeIndexProgressIndicator({
             mode,
-            !!input.hydrating,
-            !!input.waitingForSidecar,
-            !!input.booting,
-            input.mayFullReindex,
-        )
-            ? normalizeHydrateProgress(input.hydrateProgress)
-            : null;
-        const copy = live ? withHydrateProgressCopy(base, live) : base;
+            hydrating: !!input.hydrating,
+            waitingForSidecar: !!input.waitingForSidecar,
+            dropRecovering: !!input.dropRecovering,
+            booting: !!input.booting,
+            goodEnough: !!input.goodEnough,
+            catchUpPending: !!input.catchUpPending,
+            mayFullReindex: input.mayFullReindex,
+            walk: input.hydrateProgress ?? null,
+            job: input.job ?? null,
+            jobKind: input.jobKind ?? null,
+            inventoryFiles: input.inventoryFiles ?? null,
+            indexableNotes: notes,
+            coverage: input.coverage ?? null,
+        });
+        if (progress.phase === 'verifying') mode = 'verifying';
+        if (progress.phase === 'catching-up' && (mode === 'ok' || mode === 'starting')) mode = 'catching-up';
+        if (progress.phase === 'recovering' && (mode === 'restoring' || mode === 'starting')) mode = 'recovering';
+        const health = indexStatusHealth(mode);
+        let copy = INDEX_STATUS_COPY[mode];
+        if (mode === 'stuck' && input.stuckWhy === 'indexing') {
+            copy = { ...copy, label: 'Indexing stuck' };
+        }
+        const blocked = mode === 'stuck' || mode === 'locked' || mode === 'error' || mode === 'ok' || mode === 'none';
+        const units = blocked ? null : progress.units;
+        if (units) copy = withIndicatorCopy(copy, units);
         return {
             mode,
-            health: indexStatusHealth(mode),
+            health,
             label: copy.label,
             compact: copy.compact,
             tone: copy.tone,
-            hydrateProgress: live,
+            hydrateProgress: hydrateLegacyFromProgress({ ...progress, units }, !!input.hydrating, mode),
+            progress: { phase: progress.phase, units: blocked ? null : progress.units },
         };
     }
 }

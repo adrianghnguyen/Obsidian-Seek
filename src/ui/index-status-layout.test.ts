@@ -113,6 +113,11 @@ function paintSettingsCard(report: ReturnType<typeof hydrateReport>, extra?: { h
         mode: report.mode,
         label: report.label,
         hydrateProgress: report.hydrateProgress,
+        progress: report.progress,
+        percent: report.progress.units?.percent ?? report.hydrateProgress?.percent,
+        remaining: report.progress.units
+            ? Math.max(0, report.progress.units.total - report.progress.units.done)
+            : null,
         stats: { files: 0, chunks: 0, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null },
         job: extra?.job ?? null,
     });

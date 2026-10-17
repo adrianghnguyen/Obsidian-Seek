@@ -41,9 +41,9 @@ import {
     renderIndexStatusCard,
     renderIndexStatusBadge,
     indexWaitCardModel,
-    jobRemaining,
     type IndexStatusHealth,
 } from './index-status-card';
+import type { IndexProgressIndicator } from './index-progress-indicator';
 import {
     nextPipelineStage,
     initialPipelineStageState,
@@ -823,6 +823,7 @@ export class SeekSearchModal extends Modal {
             peerSyncPending: load.peerSyncPending,
             waitingForSidecar: load.waitingForSidecar,
             job: load.job,
+            remaining: load.remaining,
             uiHealth: load.uiHealth,
             statusReport: load.statusReport,
         });
@@ -832,7 +833,7 @@ export class SeekSearchModal extends Modal {
         if (spec.kind === 'indexing') {
             renderIndexStatusBadge(this.footStatusIconEl, {
                 health: 'indexing',
-                remaining: spec.badgeCount ?? jobRemaining(load.job),
+                remaining: spec.badgeCount ?? load.remaining ?? null,
             });
         } else {
             setIcon(this.footStatusIconEl, spec.icon);
@@ -1075,12 +1076,15 @@ export class SeekSearchModal extends Modal {
             job: load.job,
             stats: null,
             hydrateProgress: report?.hydrateProgress ?? null,
+            progress: (report?.progress as IndexProgressIndicator | null | undefined) ?? null,
         });
         renderIndexStatusCard(parent, {
             ...model,
             mode: report?.mode,
             label: report?.label,
             hydrateProgress: report?.hydrateProgress ?? null,
+            progress: (report?.progress as IndexProgressIndicator | null | undefined) ?? null,
+            percent: report?.hydrateProgress?.percent,
         });
     }
 
@@ -1180,7 +1184,7 @@ export class SeekSearchModal extends Modal {
         const prevKind = this.loadKind;
         if (chunks != null) this.lastChunkCount = chunks;
         const spec = this.currentLoadSpec();
-        const remaining = jobRemaining(this.getIndexLoadState?.()?.job);
+        const remaining = this.getIndexLoadState?.()?.remaining ?? null;
         const remainingChanged = remaining !== this.lastJobRemaining;
         this.loadKind = spec.kind;
         this.lastJobRemaining = remaining;

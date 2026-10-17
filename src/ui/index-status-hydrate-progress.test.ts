@@ -212,8 +212,8 @@ describe('IndexStatusReporter hydrate progress', () => {
             jobKind: 'catchup',
             job: { done: 2, total: 8 },
         });
-        expect(report.mode).toBe('indexing');
-        expect(report.compact).toBe(INDEX_STATUS_COPY.indexing.compact);
+        expect(report.mode).toBe('catching-up');
+        expect(report.compact.startsWith(INDEX_STATUS_COPY['catching-up'].compact)).toBe(true);
         expect(report.hydrateProgress).toBeNull();
     });
 });

@@ -177,6 +177,8 @@ export interface IndexLoadState {
     peerSyncPending?: boolean;
     /** Coordinator pass currently driving the status-bar badge, or null. */
     job?: { done: number; total: number; paused?: boolean; kind?: 'full' | 'delta' | 'catchup' } | null;
+    /** Snapshot remaining — footer formats this, does not recompute from job. */
+    remaining?: number | null;
     /** Canonical UI status — every surface must show this, not a local remapping. */
     uiHealth?: IndexUiStatus;
     /** Status-bar inventory; modal may use when uiHealth is ok and the store probe lags. */
@@ -193,15 +195,17 @@ export interface IndexFooterInput {
     peerSyncPending?: boolean;
     waitingForSidecar?: boolean;
     job?: { done: number; total: number; paused?: boolean } | null;
+    remaining?: number | null;
     uiHealth?: IndexUiStatus;
     /** Authoritative snapshot — footer labels must match status bar + Settings. */
     statusReport?: {
-        mode: IndexUiStatus | 'full-reindex';
+        mode: IndexUiStatus | 'full-reindex' | 'catching-up' | 'recovering' | 'verifying';
         compact: string;
         tone: string;
         health: IndexUiStatus;
         label?: string;
         hydrateProgress?: { done: number; total: number; percent?: number } | null;
+        progress?: { phase: string; units: { done: number; total: number; percent: number; determinate: boolean } | null };
     };
 }
 
@@ -473,6 +477,15 @@ export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
         if (report.mode === 'stuck' || report.health === 'stuck') {
             return { kind: 'stuck', label: report.compact, icon: 'alert-triangle', tone: 'bad' };
         }
+        if (report.mode === 'verifying') {
+            return { kind: 'starting', label: report.compact, icon: 'search', tone: 'info' };
+        }
+        if (report.mode === 'recovering') {
+            return { kind: 'restoring', label: report.compact, icon: 'refresh-cw', tone: report.tone as IndexFooterTone };
+        }
+        if (report.mode === 'catching-up') {
+            return { kind: 'indexing', label: report.compact, icon: '', tone: 'accent' };
+        }
         if (report.mode === 'restoring' || report.health === 'restoring') {
             return { kind: 'restoring', label: report.compact, icon: 'refresh-cw', tone: report.tone as IndexFooterTone };
         }
@@ -483,9 +496,9 @@ export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
             return { kind: 'error', label: report.compact, icon: 'alert-triangle', tone: 'bad' };
         }
         if (report.mode === 'full-reindex' || report.mode === 'indexing' || report.health === 'indexing') {
-            const remaining = input.job && input.job.total > 0
+            const remaining = input.remaining ?? (input.job && input.job.total > 0
                 ? Math.max(0, input.job.total - input.job.done)
-                : null;
+                : null);
             return {
                 kind: 'indexing',
                 label: report.compact,
@@ -529,9 +542,9 @@ export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
             || input.phase === 'indexing'
             || (input.job != null && input.job.total > 0)
         ))) {
-        const remaining = input.job && input.job.total > 0
+        const remaining = input.remaining ?? (input.job && input.job.total > 0
             ? Math.max(0, input.job.total - input.job.done)
-            : null;
+            : null);
         return {
             kind: 'indexing',
             label: INDEX_INDEXING_LABEL,

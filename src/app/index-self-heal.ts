@@ -14,38 +14,65 @@ export function vaultCoverageIncomplete(indexedFiles: number | null, indexableNo
     return coverageGap(indexedFiles, indexableNotes) > 0;
 }
 
+export interface SidecarHydrateWalk {
+    done: number;
+    total: number;
+    needed?: number;
+    hydrated?: number;
+}
+
 /**
  * Keep a vault-scale hydrate walk. A batch-local total (1/1, N-notes-in-this-call)
  * must not be stretched onto the vault denominator — that paints 1/3132 · 1%.
  * Drop the event so the caller can fall back to inventory coverage.
+ * A verify-only walk (`needed === 0`) keeps its own file total (3-day tier).
  */
 export function hydrateProgressAgainstVault(
-    progress: { done: number; total: number } | null | undefined,
+    progress: SidecarHydrateWalk | null | undefined,
     indexableNotes: number,
-): { done: number; total: number } | null {
+    needed?: number,
+): SidecarHydrateWalk | null {
     if (!progress) return null;
     const vault = Math.max(0, Math.floor(indexableNotes) || 0);
     const reportedTotal = Math.floor(progress.total);
     if (!Number.isFinite(reportedTotal) || reportedTotal <= 0) return null;
-    if (vault > 0 && reportedTotal < vault) return null;
+    const walkNeeded = needed ?? progress.needed;
+    if (walkNeeded !== 0 && vault > 0 && reportedTotal < vault) return null;
     const done = Math.min(reportedTotal, Math.max(0, Math.floor(progress.done) || 0));
-    return { done, total: reportedTotal };
+    return {
+        done,
+        total: reportedTotal,
+        needed: walkNeeded,
+        hydrated: progress.hydrated,
+    };
 }
 
-/** In-flight restore: never replace a larger vault total with a smaller batch total. */
+/**
+ * In-flight restore: never replace a larger vault total with a smaller batch total.
+ * A verify-only update (`needed === 0`) may shrink vault-wide 0/N to the 3-day tier.
+ */
 export function applySidecarHydrateProgressUpdate(
-    current: { done: number; total: number } | null,
-    incoming: { done: number; total: number },
+    current: SidecarHydrateWalk | null,
+    incoming: SidecarHydrateWalk,
     inFlight: boolean,
-): { done: number; total: number } | null {
+): SidecarHydrateWalk | null {
     const total = Math.floor(incoming.total);
     if (!Number.isFinite(total) || total <= 0) return current;
-    if (inFlight && current && current.total > 0 && total < current.total) return current;
-    return { done: Math.max(0, Math.floor(incoming.done) || 0), total };
+    const next: SidecarHydrateWalk = {
+        done: Math.max(0, Math.floor(incoming.done) || 0),
+        total,
+    };
+    if (incoming.needed !== undefined) next.needed = incoming.needed;
+    if (incoming.hydrated !== undefined) next.hydrated = incoming.hydrated;
+    if (inFlight && current && current.total > 0 && total < current.total) {
+        if ((incoming.needed ?? -1) === 0) return next;
+        return current;
+    }
+    return next;
 }
 
 export function resolveSidecarHydrateProgress(input: {
-    walk: { done: number; total: number } | null;
+    walk: SidecarHydrateWalk | null;
     hydrating: boolean;
     waitingForSidecar: boolean;
     dropRecovering: boolean;
@@ -53,11 +80,11 @@ export function resolveSidecarHydrateProgress(input: {
     goodEnough: boolean;
     inventoryFiles: number | null;
     indexableNotes: number;
-}): { done: number; total: number } | null {
+}): SidecarHydrateWalk | null {
     const notes = Math.max(0, Math.floor(input.indexableNotes) || 0);
     const liveWalk = input.hydrating || input.waitingForSidecar || input.dropRecovering;
     if (liveWalk && input.walk && input.walk.total > 0) {
-        const fromWalk = hydrateProgressAgainstVault(input.walk, notes);
+        const fromWalk = hydrateProgressAgainstVault(input.walk, notes, input.walk.needed);
         if (fromWalk) return fromWalk;
     }
     if (!(

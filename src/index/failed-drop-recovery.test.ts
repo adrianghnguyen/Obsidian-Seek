@@ -102,9 +102,10 @@ describe('failed-drop status: Restoring not wedged None/error', () => {
         const input: IndexUiStatusInput = { ...emptyIdle, dropRecovering: true };
         expect(resolveIndexUiStatus(input)).toBe('restoring');
         const report = IndexStatusReporter.compute(input);
-        expect(report.mode).toBe('restoring');
-        expect(report.compact).toBe(INDEX_STATUS_COPY.restoring.compact);
-        expect(report.label).toBe(INDEX_STATUS_COPY.restoring.label);
+        expect(report.mode).toBe('recovering');
+        expect(report.health).toBe('restoring');
+        expect(report.compact.startsWith(INDEX_STATUS_COPY.recovering.compact)).toBe(true);
+        expect(report.label.startsWith(INDEX_STATUS_COPY.recovering.label)).toBe(true);
         const footer = indexFooterStatus({
             kind: 'onboarding',
             modelReady: true,
@@ -115,7 +116,7 @@ describe('failed-drop status: Restoring not wedged None/error', () => {
         });
         expect(footer.kind).toBe('restoring');
         expect(footer.label).toBe(report.compact);
-        expect(footer.label).toBe('Restoring');
+        expect(footer.label.startsWith('Recovering')).toBe(true);
     });
 
     it('empty after a finished drop with no recovery in flight stays None, never ok', () => {
@@ -130,7 +131,7 @@ describe('failed-drop status: Restoring not wedged None/error', () => {
             health: 'degraded',
             reason: 'drift',
         });
-        expect(report.mode).toBe('restoring');
+        expect(report.mode).toBe('recovering');
         expect(report.mode).not.toBe('error');
     });
 });

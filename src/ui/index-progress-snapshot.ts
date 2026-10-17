@@ -3,7 +3,14 @@
 // File counts prefer FileRecords ∩ vault (the folder-coverage consumer). GPU
 // files-started live on `speed` only. Surfaces must not mix those independently.
 
-import { indexPercent } from './index-eta';
+import {
+    formatRoughEta,
+    indexChunksPerSec,
+    indexFilesPerSec,
+    indexPercent,
+    indexTokensPerSec,
+} from './index-eta';
+import { effectiveBatchSize, gpuOccupancyPct } from '../index/embed-pipeline';
 import type {
     IndexJobKind,
     IndexJobSpeedView,
@@ -12,28 +19,67 @@ import type {
     IndexStatusMode,
 } from './index-status-card';
 import {
+    IDLE_PROGRESS,
     normalizeHydrateProgress,
     type IndexHydrateProgress,
     type IndexStatusReport,
 } from './index-status-report';
+import type { IndexProgressIndicator } from './index-progress-indicator';
 
 export type IndexProgressPhase =
     | 'idle'
     | 'starting'
     | 'hydrate'
+    | 'verify'
     | 'embed'
     | 'error'
     | 'locked'
     | 'stuck';
 
-export type IndexProgressKind = IndexJobKind | 'hydrate';
+export type IndexProgressKind = IndexJobKind | 'hydrate' | 'verify';
 
-export type CoverageHeadlineCaption = 'in the index' | 'this pass' | 'this restore';
+export type CoverageHeadlineCaption = 'in the index' | 'this pass' | 'this restore' | 'this check';
 
 /** Optional idle overlay from folder coverage (FileRecords ∩ live vault). */
 export interface IndexProgressCoverageOverlay {
     covered: number;
     total: number;
+}
+
+export interface IndexProgressRates {
+    chunksPerSec: number;
+    filesPerSec: number;
+    tokensPerSec: number;
+}
+
+export interface IndexProgressCoverageHeadline {
+    done: number;
+    total: number;
+    caption: CoverageHeadlineCaption;
+    live: boolean;
+    percent: number;
+}
+
+export type IndexProgressEmbedPill = 'live' | 'paused' | 'last pass';
+
+export interface IndexProgressEmbedDerived {
+    pill: IndexProgressEmbedPill | null;
+    liveRates: IndexProgressRates | null;
+    lastRates: IndexProgressRates | null;
+    gpuOccupancyPct: number | null;
+    effectiveBatch: number | null;
+}
+
+/** Logger fields the snapshot needs to precompute embed-diag rates / occupancy. */
+export interface IndexProgressLastComplete {
+    chunksPerSec: number;
+    filesPerSec: number;
+    tokensPerSec?: number;
+    paddedTokens?: number;
+    totalDurationMs: number;
+    gpuBusyMs?: number | null;
+    vectorsWritten: number;
+    embedBatchLatencyMs?: { n: number } | null;
 }
 
 export interface IndexProgressSnapshot {
@@ -45,9 +91,13 @@ export interface IndexProgressSnapshot {
     filesTotal: number;
     /** Integer 0–100 for the live job/hydrate walk; 0 when idle. */
     percent: number;
+    /** Notes still outstanding on the display walk; null when there is no total. */
+    remaining: number | null;
     chunksDone: number;
     tokensDone: number;
     elapsedMs: number;
+    /** Rough remaining-time bucket, or null when throughput is unknown. */
+    eta: string | null;
     paused: boolean;
     aligningExclusions: boolean;
     report: IndexStatusReport;
@@ -56,6 +106,10 @@ export interface IndexProgressSnapshot {
     /** Embed-pass speed; null during hydrate / idle. */
     speed: IndexJobSpeedView | null;
     hydrate: IndexHydrateProgress | null;
+    indicator: IndexProgressIndicator;
+    rates: IndexProgressRates | null;
+    embed: IndexProgressEmbedDerived;
+    coverageHeadline: IndexProgressCoverageHeadline;
 }
 
 export interface IndexProgressSnapshotInput {
@@ -67,20 +121,27 @@ export interface IndexProgressSnapshotInput {
     /** Live vault notes — idle inventory must not paint 123/123 as 100%. */
     indexableNotes?: number | null;
     coverage?: IndexProgressCoverageOverlay | null;
+    lastComplete?: IndexProgressLastComplete | null;
 }
 
 export function resolveIndexProgressPhase(input: {
     health: IndexStatusHealth;
     hydrate: { done: number; total: number } | null;
     job: IndexStatusJob | null;
+    indicator?: IndexProgressIndicator | null;
 }): IndexProgressPhase {
-    const { health, hydrate, job } = input;
-    if (health === 'error') return 'error';
-    if (health === 'locked') return 'locked';
-    if (health === 'stuck') return 'stuck';
+    const { health, hydrate, job, indicator } = input;
+    if (health === 'error' || indicator?.phase === 'error') return 'error';
+    if (health === 'locked' || indicator?.phase === 'locked') return 'locked';
+    if (health === 'stuck' || indicator?.phase === 'stuck') return 'stuck';
+    if (indicator?.phase === 'verifying') return 'verify';
+    if (indicator?.phase === 'hydrating' || indicator?.phase === 'restoring' || indicator?.phase === 'recovering') {
+        return 'hydrate';
+    }
     if (hydrate && hydrate.total > 0) return 'hydrate';
-    if (health === 'starting') return 'starting';
+    if (indicator?.phase === 'starting' || health === 'starting') return 'starting';
     if (health === 'restoring') return 'hydrate';
+    if (indicator?.phase === 'catching-up' || indicator?.phase === 'indexing') return 'embed';
     if (job && job.total > 0 && (health === 'indexing' || job.done < job.total)) return 'embed';
     if (health === 'indexing') return 'embed';
     return 'idle';
@@ -89,6 +150,12 @@ export function resolveIndexProgressPhase(input: {
 function clampCount(n: number): number {
     if (!Number.isFinite(n) || n < 0) return 0;
     return Math.floor(n);
+}
+
+/** Notes still outstanding — snapshot field, not a Settings/card helper. */
+export function remainingFromCounts(done: number, total: number): number | null {
+    if (total <= 0) return null;
+    return Math.max(0, total - done);
 }
 
 function coverageIndexFiles(
@@ -108,13 +175,19 @@ function coverageIndexFiles(
  */
 export function buildIndexProgressSnapshot(input: IndexProgressSnapshotInput): IndexProgressSnapshot {
     const report = input.report;
-    const hydrate = normalizeHydrateProgress(report.hydrateProgress);
+    const indicator = report.progress ?? IDLE_PROGRESS;
+    const hydrate = indicator.phase === 'hydrating' || indicator.phase === 'restoring' || indicator.phase === 'recovering'
+        ? (indicator.units && indicator.units.total > 0
+            ? { done: indicator.units.done, total: indicator.units.total, percent: indicator.units.percent }
+            : normalizeHydrateProgress(report.hydrateProgress))
+        : normalizeHydrateProgress(report.hydrateProgress);
     const rawJob = input.job && input.job.total > 0 ? input.job : null;
     const speed = input.speed;
     const phase = resolveIndexProgressPhase({
         health: report.health,
         hydrate,
         job: rawJob,
+        indicator,
     });
 
     const inventoryFiles = clampCount(input.inventoryFiles ?? 0);
@@ -133,11 +206,12 @@ export function buildIndexProgressSnapshot(input: IndexProgressSnapshotInput): I
     let job: IndexStatusJob | null = null;
     let speedOut: IndexJobSpeedView | null = null;
 
-    if (phase === 'hydrate' && hydrate) {
-        filesDone = clampCount(hydrate.done);
-        filesTotal = clampCount(hydrate.total);
+    if ((phase === 'hydrate' || phase === 'verify') && (indicator.units || hydrate)) {
+        const units = indicator.units;
+        filesDone = clampCount(units?.done ?? hydrate?.done ?? 0);
+        filesTotal = clampCount(units?.total ?? hydrate?.total ?? 0);
         chunksDone = inventoryChunks;
-        kind = 'hydrate';
+        kind = phase === 'verify' ? 'verify' : 'hydrate';
         job = {
             done: filesDone,
             total: filesTotal,
@@ -145,7 +219,7 @@ export function buildIndexProgressSnapshot(input: IndexProgressSnapshotInput): I
             kind: rawJob?.kind,
             id: rawJob?.id,
         };
-    } else if (phase === 'embed' && (rawJob || (speed && speed.total > 0))) {
+    } else if (phase === 'embed' && (rawJob || (speed && speed.total > 0) || indicator.units)) {
         const passDone = clampCount(speed?.done ?? rawJob?.done ?? 0);
         const passTotal = clampCount(speed?.total ?? rawJob?.total ?? 0);
         if (coverageFiles && coverageFiles.filesTotal > 0) {
@@ -191,9 +265,27 @@ export function buildIndexProgressSnapshot(input: IndexProgressSnapshotInput): I
         chunksDone = inventoryChunks;
     }
 
-    const percent = filesTotal > 0
-        ? (phase === 'hydrate' && hydrate ? hydrate.percent : indexPercent(filesDone, filesTotal))
-        : 0;
+    if (phase === 'embed' && indicator.units && filesTotal <= 0) {
+        filesDone = indicator.units.done;
+        filesTotal = indicator.units.total;
+    }
+
+    const percent = indicator.units && !indicator.units.determinate
+        ? 0
+        : filesTotal > 0
+            ? (phase === 'hydrate' && hydrate ? hydrate.percent : (indicator.units?.percent ?? indexPercent(filesDone, filesTotal)))
+            : 0;
+    const remaining = remainingFromCounts(filesDone, filesTotal);
+    const eta = formatRoughEta(filesDone, filesTotal, elapsedMs);
+    const embed = embedDerivedFromInputs(speedOut, input.lastComplete ?? null);
+    const liveRates = embed.liveRates;
+    const coverageHeadline = buildCoverageHeadline({
+        phase,
+        filesDone,
+        filesTotal,
+        percent,
+        coverage,
+    });
 
     return {
         phase,
@@ -203,38 +295,103 @@ export function buildIndexProgressSnapshot(input: IndexProgressSnapshotInput): I
         filesDone,
         filesTotal,
         percent,
+        remaining,
         chunksDone,
         tokensDone,
         elapsedMs,
+        eta,
         paused,
         aligningExclusions,
         report,
         job,
         speed: speedOut,
         hydrate,
+        indicator,
+        rates: liveRates ?? embed.lastRates,
+        embed,
+        coverageHeadline,
     };
 }
 
-export function coverageHeadlineFromProgress(
-    overall: { covered: number; total: number },
-    progress: Pick<IndexProgressSnapshot, 'phase' | 'filesDone' | 'filesTotal' | 'percent'>,
-): { done: number; total: number; caption: CoverageHeadlineCaption; live: boolean; percent: number } {
-    if (progress.phase === 'hydrate' && progress.filesTotal > 0) {
+export function embedDerivedFromInputs(
+    speed: IndexJobSpeedView | null,
+    lastComplete: IndexProgressLastComplete | null,
+): IndexProgressEmbedDerived {
+    const liveRates = speed
+        ? {
+            chunksPerSec: indexChunksPerSec(speed.chunksDone, speed.elapsedMs),
+            filesPerSec: indexFilesPerSec(speed.done, speed.elapsedMs),
+            tokensPerSec: indexTokensPerSec(speed.tokensDone, speed.elapsedMs),
+        }
+        : null;
+    const lastRates = lastPassRates(lastComplete);
+    const dispatches = lastComplete?.embedBatchLatencyMs?.n ?? 0;
+    return {
+        pill: speed ? (speed.paused ? 'paused' : 'live') : (lastRates ? 'last pass' : null),
+        liveRates,
+        lastRates,
+        gpuOccupancyPct: lastComplete && lastComplete.gpuBusyMs != null
+            ? gpuOccupancyPct(lastComplete.gpuBusyMs, lastComplete.totalDurationMs)
+            : null,
+        effectiveBatch: lastComplete && dispatches > 0
+            ? effectiveBatchSize(lastComplete.vectorsWritten, dispatches)
+            : null,
+    };
+}
+
+function lastPassRates(complete: IndexProgressLastComplete | null): IndexProgressRates | null {
+    if (!complete) return null;
+    const tokensPerSec = complete.tokensPerSec
+        ?? ((complete.paddedTokens ?? 0) > 0 && complete.totalDurationMs > 0
+            ? (complete.paddedTokens! / (complete.totalDurationMs / 1000))
+            : 0);
+    return {
+        chunksPerSec: complete.chunksPerSec,
+        filesPerSec: complete.filesPerSec,
+        tokensPerSec,
+    };
+}
+
+function buildCoverageHeadline(input: {
+    phase: IndexProgressPhase;
+    filesDone: number;
+    filesTotal: number;
+    percent: number;
+    coverage: IndexProgressCoverageOverlay | null;
+}): IndexProgressCoverageHeadline {
+    if ((input.phase === 'hydrate' || input.phase === 'verify') && input.filesTotal > 0) {
         return {
-            done: progress.filesDone,
-            total: progress.filesTotal,
-            caption: 'this restore',
+            done: input.filesDone,
+            total: input.filesTotal,
+            caption: input.phase === 'verify' ? 'this check' : 'this restore',
             live: true,
-            percent: progress.percent,
+            percent: input.percent,
         };
     }
-    const total = overall.total;
-    const done = overall.covered;
+    if (input.filesTotal > 0) {
+        return {
+            done: input.filesDone,
+            total: input.filesTotal,
+            caption: 'in the index',
+            live: false,
+            percent: input.percent,
+        };
+    }
+    const total = input.coverage?.total ?? 0;
+    const done = input.coverage?.covered ?? 0;
     return {
         done,
         total,
         caption: 'in the index',
         live: false,
-        percent: total > 0 ? indexPercent(done, total) : 0,
+        percent: 0,
     };
+}
+
+/** Thin reader — Settings must not recompute percent. */
+export function coverageHeadlineFromProgress(
+    progress: Pick<IndexProgressSnapshot, 'coverageHeadline'> | IndexProgressCoverageHeadline,
+): IndexProgressCoverageHeadline {
+    if ('coverageHeadline' in progress) return progress.coverageHeadline;
+    return progress;
 }

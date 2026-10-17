@@ -439,7 +439,6 @@ async function hydrateFromSidecarGreedy(
         if (filesTotal <= 0) return;
         deps.onHydrateProgress?.({ done: filesDone, total: filesTotal, needed, hydrated });
     };
-    emitFiles(0, 0);
     let freshIdsRemaining = new Set(freshIds);
     const processedPaths = new Set<string>();
     let tiersRun = 0;
@@ -504,9 +503,10 @@ async function hydrateFromSidecarGreedy(
             for (const ref of tierFiles) {
                 if (freshIdsRemaining.size === 0) break;
                 tierFilesWalked++;
+                filesDone++;
+                emitFiles(totalNeeded + tierNeeded, totalHydrated + tierHydrated);
                 const live = await deps.reChunkSubset!([ref], () => freshIdsRemaining.size === 0);
                 await processRechunked(live);
-                filesDone++;
                 emitFiles(totalNeeded + tierNeeded, totalHydrated + tierHydrated);
             }
         } else {

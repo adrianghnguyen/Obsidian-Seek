@@ -6,19 +6,23 @@ import { Platform, setTooltip } from 'obsidian';
 import {
     renderIndexStatusCard,
     renderIndexStatusBadge,
-    jobRemaining,
     type IndexStatusCardStats,
     type IndexStatusHealth,
     type IndexStatusJob,
     type IndexJobKind,
     type IndexJobSpeedView,
 } from './index-status-card';
-import type { IndexStatusReport } from './index-status-report';
-import { formatRoughEta } from './index-eta';
+import { IDLE_PROGRESS, type IndexStatusReport } from './index-status-report';
+import {
+    indexChunksPerSec,
+    indexFilesPerSec,
+    indexTokensPerSec,
+} from './index-eta';
 import { formatStableFileFraction } from './index-progress-format';
 import { buildIndexProgressSnapshot, type IndexProgressSnapshot } from './index-progress-snapshot';
 
 export type { IndexJobSpeedView };
+export { indexChunksPerSec, indexFilesPerSec, indexTokensPerSec };
 
 export function parseIndexedProgress(msg: string): { files: number; chunks: number | null; tokens: number | null } | null {
     const m = msg.match(
@@ -38,26 +42,6 @@ export function parseIndexedProgress(msg: string): { files: number; chunks: numb
 export function formatIndexedProgress(files: number, chunks: number, tokens?: number): string {
     const base = `Indexed ${files} files · ${chunks} chunks`;
     return tokens != null && tokens >= 0 ? `${base} · ${tokens} tokens` : base;
-}
-
-/** Rolling chunks/s for the current pass — zero until chunks and elapsed time are known. */
-export function indexChunksPerSec(chunks: number, elapsedMs: number): number {
-    if (chunks <= 0 || elapsedMs <= 0) return 0;
-    const sec = elapsedMs / 1000;
-    return sec > 0 ? chunks / sec : 0;
-}
-
-export function indexFilesPerSec(done: number, elapsedMs: number): number {
-    if (done <= 0 || elapsedMs <= 0) return 0;
-    const sec = elapsedMs / 1000;
-    return sec > 0 ? done / sec : 0;
-}
-
-/** Rolling padded-token throughput for the current pass. */
-export function indexTokensPerSec(tokens: number, elapsedMs: number): number {
-    if (tokens <= 0 || elapsedMs <= 0) return 0;
-    const sec = elapsedMs / 1000;
-    return sec > 0 ? tokens / sec : 0;
 }
 
 export function quantizePercent(done: number, total: number, step = 5): number {
@@ -307,6 +291,7 @@ export class IndexStatusBar {
             compact: 'Ready',
             tone: 'good',
             hydrateProgress: null,
+            progress: IDLE_PROGRESS,
         };
         return buildIndexProgressSnapshot({
             report,
@@ -317,7 +302,7 @@ export class IndexStatusBar {
 
     private jobTooltipFromSnapshot(snap: IndexProgressSnapshot): string {
         const pct = snap.percent;
-        const eta = formatRoughEta(snap.filesDone, snap.filesTotal, snap.elapsedMs);
+        const eta = snap.eta;
         const files = `${snap.filesDone.toLocaleString()} / ${snap.filesTotal.toLocaleString()} files · ${pct}%`;
         const tail = eta ? ` · ${eta} left` : '';
         const verb = snap.aligningExclusions
@@ -328,20 +313,40 @@ export class IndexStatusBar {
         return `Seek: ${verb} ${files}${tail}`;
     }
 
+    private paintMeter(opts: { hidden: boolean; determinate: boolean; percent: number }): void {
+        if (!this.progressEl) return;
+        if (opts.hidden) {
+            this.progressEl.addClass('is-hidden');
+            this.progressEl.removeClass('is-indeterminate');
+            return;
+        }
+        this.progressEl.removeClass('is-hidden');
+        if (!opts.determinate) {
+            this.progressEl.addClass('is-indeterminate');
+            if (typeof this.progressEl.removeAttribute === 'function') this.progressEl.removeAttribute('value');
+            return;
+        }
+        this.progressEl.removeClass('is-indeterminate');
+        this.progressEl.max = 100;
+        this.progressEl.value = opts.percent;
+    }
+
     private paintCounts(snap: IndexProgressSnapshot, remaining: number | null, label: string): void {
-        const pct = snap.percent;
+        const units = snap.indicator.units;
+        const determinate = units ? units.determinate : snap.filesTotal > 0;
+        const pct = determinate ? snap.percent : 0;
         this.paintedDone = snap.filesDone;
         this.paintedTotal = snap.filesTotal;
         this.paintedChunks = snap.chunksDone;
-        this.paintedPercent = pct;
+        this.paintedPercent = determinate ? pct : -2;
         this.labelEl?.removeClass('is-hidden');
-        this.filesEl?.setText(formatStableFileFraction(snap.filesDone, snap.filesTotal));
-        this.chunksEl?.addClass('is-hidden');
-        if (this.progressEl) {
-            this.progressEl.removeClass('is-hidden');
-            this.progressEl.max = 100;
-            this.progressEl.value = pct;
+        if (snap.filesTotal > 0) {
+            this.filesEl?.setText(formatStableFileFraction(snap.filesDone, snap.filesTotal));
+        } else {
+            this.filesEl?.setText(snap.report.compact);
         }
+        this.chunksEl?.addClass('is-hidden');
+        this.paintMeter({ hidden: false, determinate, percent: pct });
         const chromeHealth = snap.phase === 'embed' ? 'indexing' : snap.health;
         this.paintChrome(chromeHealth, remaining);
         this.setStatusLabel(label);
@@ -355,7 +360,22 @@ export class IndexStatusBar {
         this.labelEl?.removeClass('is-hidden');
         this.filesEl?.setText('Seek');
         this.chunksEl?.addClass('is-hidden');
-        this.progressEl?.addClass('is-hidden');
+        this.paintMeter({ hidden: true, determinate: true, percent: 0 });
+        this.paintChrome(snap.health, null);
+        this.setStatusLabel(`Seek: ${snap.report.compact}`);
+    }
+
+    private paintNamedWork(snap: IndexProgressSnapshot): void {
+        this.paintedDone = snap.filesDone;
+        this.paintedTotal = snap.filesTotal;
+        this.paintedChunks = snap.chunksDone;
+        this.paintedPercent = -2;
+        this.labelEl?.removeClass('is-hidden');
+        this.filesEl?.setText(snap.filesTotal > 0
+            ? formatStableFileFraction(snap.filesDone, snap.filesTotal)
+            : snap.report.compact);
+        this.chunksEl?.addClass('is-hidden');
+        this.paintMeter({ hidden: false, determinate: false, percent: 0 });
         this.paintChrome(snap.health, null);
         this.setStatusLabel(`Seek: ${snap.report.compact}`);
     }
@@ -369,29 +389,44 @@ export class IndexStatusBar {
         this.labelEl?.removeClass('is-hidden');
         this.filesEl?.setText(formatStableFileFraction(snap.filesDone, snap.filesTotal));
         this.chunksEl?.addClass('is-hidden');
-        this.progressEl?.addClass('is-hidden');
+        this.paintMeter({ hidden: true, determinate: true, percent: 0 });
         this.paintChrome(snap.health, null);
         this.setStatusLabel(`Seek: ${snap.report.compact}`);
     }
 
     private paintFromSnapshot(snap: IndexProgressSnapshot, force: boolean): void {
-        if (snap.phase === 'hydrate' && snap.filesTotal > 0) {
-            const remaining = snap.health === 'indexing' ? Math.max(0, snap.filesTotal - snap.filesDone) : null;
-            this.paintCounts(snap, remaining, `Seek: ${snap.report.compact}`);
-            return;
-        }
-        if (snap.phase === 'starting' && snap.filesTotal > 0 && snap.hydrate) {
-            this.paintCounts(snap, null, `Seek: ${snap.report.compact}`);
-            return;
-        }
-        if (snap.phase === 'starting' || snap.phase === 'locked' || snap.phase === 'error') {
+        if (snap.phase === 'stuck' || snap.phase === 'locked' || snap.phase === 'error') {
             this.paintBare(snap);
+            return;
+        }
+        if (snap.phase === 'verify') {
+            if (snap.filesTotal > 0 && snap.indicator.units?.determinate) {
+                this.paintCounts(snap, null, `Seek: ${snap.report.compact}`);
+            } else {
+                this.paintNamedWork(snap);
+            }
+            return;
+        }
+        if (snap.phase === 'hydrate' && snap.filesTotal > 0) {
+            this.paintCounts(snap, snap.health === 'indexing' ? snap.remaining : null, `Seek: ${snap.report.compact}`);
+            return;
+        }
+        if (snap.phase === 'hydrate' || snap.phase === 'starting') {
+            if (snap.filesTotal > 0 && (snap.hydrate || snap.indicator.units?.determinate)) {
+                this.paintCounts(snap, null, `Seek: ${snap.report.compact}`);
+                return;
+            }
+            this.paintNamedWork(snap);
             return;
         }
         if (snap.phase === 'embed' && snap.filesTotal > 0) {
             if (!force && snap.filesDone === this.paintedDone && snap.filesTotal === this.paintedTotal
                 && snap.chunksDone === this.paintedChunks && snap.percent === this.paintedPercent) return;
-            this.paintCounts(snap, jobRemaining(snap.job) ?? 0, this.jobTooltipFromSnapshot(snap));
+            this.paintCounts(snap, snap.remaining ?? 0, this.jobTooltipFromSnapshot(snap));
+            return;
+        }
+        if (snap.phase === 'embed') {
+            this.paintNamedWork(snap);
             return;
         }
         if (snap.filesTotal > 0) {
@@ -444,11 +479,12 @@ export class IndexStatusBar {
             mode: snap.mode,
             label: snap.report.label,
             hydrateProgress: snap.hydrate,
+            progress: snap.indicator,
             stats,
             job: snap.job,
-            eta: snap.phase === 'embed'
-                ? formatRoughEta(snap.filesDone, snap.filesTotal, snap.elapsedMs)
-                : null,
+            percent: snap.percent,
+            remaining: snap.remaining,
+            eta: snap.eta,
         });
         const health = snap.health;
         // One-click recovery lives on the hover card so a wedged startup is fixable

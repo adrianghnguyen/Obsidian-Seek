@@ -12,14 +12,13 @@ import {
     renderIndexStatusCard,
     renderIndexStatusBadge,
     indexWaitCardModel,
-    jobRemaining,
     INDEX_STATUS_BADGE_CLS,
     INDEX_STATUS_DOT_CLS,
     INDEX_STATUS_HEALTH,
 } from './index-status-card';
 import { INDEX_STATUS_COPY, type IndexStatusReport } from './index-status-report';
 import { formatStableFileFraction, visibleProgressText } from './index-progress-format';
-import { buildIndexProgressSnapshot } from './index-progress-snapshot';
+import { buildIndexProgressSnapshot, remainingFromCounts } from './index-progress-snapshot';
 import type { IndexStatusHealth, IndexStatusMode } from './index-status-card';
 
 function reportOf(health: IndexStatusHealth, mode?: IndexStatusMode): IndexStatusReport {
@@ -32,6 +31,7 @@ function reportOf(health: IndexStatusHealth, mode?: IndexStatusMode): IndexStatu
         compact: copy.compact,
         tone: copy.tone,
         hydrateProgress: null,
+        progress: { phase: 'ready', units: null },
     };
 }
 
@@ -381,13 +381,12 @@ describe('IndexStatusBar', () => {
     });
 });
 
-describe('jobRemaining', () => {
+describe('remainingFromCounts', () => {
     it('is total minus done for a live pass', () => {
-        expect(jobRemaining({ done: 0, total: 15 })).toBe(15);
-        expect(jobRemaining({ done: 5, total: 15 })).toBe(10);
-        expect(jobRemaining({ done: 15, total: 15 })).toBe(0);
-        expect(jobRemaining(null)).toBeNull();
-        expect(jobRemaining({ done: 0, total: 0 })).toBeNull();
+        expect(remainingFromCounts(0, 15)).toBe(15);
+        expect(remainingFromCounts(5, 15)).toBe(10);
+        expect(remainingFromCounts(15, 15)).toBe(0);
+        expect(remainingFromCounts(0, 0)).toBeNull();
     });
 });
 
@@ -398,17 +397,17 @@ describe('indexWaitCardModel', () => {
 
     it('drops stale inventory on the starting/restoring first paint', () => {
         expect(indexWaitCardModel({ health: 'starting', stats: inventory, job: { done: 0, total: 15 } }))
-            .toEqual({ health: 'starting', stats: null, job: null, hydrate: null });
+            .toEqual({ health: 'starting', stats: null, job: null, hydrate: null, progress: null });
         expect(indexWaitCardModel({ health: 'restoring', stats: inventory }))
-            .toEqual({ health: 'restoring', stats: null, job: null, hydrate: null });
+            .toEqual({ health: 'restoring', stats: null, job: null, hydrate: null, progress: null });
     });
 
     it('keeps the coordinator job as the indexing source of truth', () => {
         const model = indexWaitCardModel({ health: 'indexing', stats: inventory, job: { done: 0, total: 15 } });
         expect(model.health).toBe('indexing');
         expect(model.job).toEqual({ done: 0, total: 15 });
-        expect(jobRemaining(model.job)).toBe(15);
-        expect(jobRemaining(model.job)).not.toBe(model.stats?.files);
+        expect(remainingFromCounts(model.job!.done, model.job!.total)).toBe(15);
+        expect(remainingFromCounts(model.job!.done, model.job!.total)).not.toBe(model.stats?.files);
     });
 
     it('does not remap a Ready report to Indexing just because a leftover job object exists', () => {
@@ -439,6 +438,8 @@ describe('renderIndexStatusCard', () => {
             health: 'indexing',
             stats: { files: 5, chunks: 18, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null },
             job: { done: 0, total: 15 },
+            percent: 0,
+            remaining: 15,
         });
         const blob = textOf(root);
         expect(blob).toContain('15');
@@ -469,6 +470,8 @@ describe('renderIndexStatusCard', () => {
             health: 'indexing',
             stats: { files: 5, chunks: 18, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null },
             job: bar.job(),
+            percent: 20,
+            remaining: 12,
         });
 
         const badge = barRoot.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)?.textContent;
@@ -486,6 +489,8 @@ describe('renderIndexStatusCard', () => {
             health: 'indexing',
             stats: { files: 5, chunks: 18, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null },
             job: { done: 3, total: 15 },
+            percent: 20,
+            remaining: 12,
         });
         expect(root.querySelector(`.${INDEX_STATUS_DOT_CLS}`)).toBeNull();
         expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)?.textContent).toBe('12');
@@ -514,12 +519,35 @@ describe('renderIndexStatusCard', () => {
         expect(textOf(restore)).not.toMatch(/\b5\b/);
     });
 
+    it('keeps last-updated stamp in the last slot without duration overflow', () => {
+        const root = stubEl();
+        renderIndexStatusCard(root as unknown as HTMLElement, {
+            health: 'ok',
+            stats: {
+                files: 80,
+                chunks: 400,
+                lastFullAt: '2026-10-17T13:42:00.000Z',
+                lastFullDurationMs: 12_300,
+                lastUpdatedAt: '2026-10-17T13:50:00.000Z',
+            },
+        });
+        const last = root.querySelector('.seek-status-last');
+        expect(last).not.toBeNull();
+        expect(last?.className).toContain('seek-status-last');
+        const value = last?.querySelector?.('.seek-status-value')?.textContent ?? last?.children?.[0]?.textContent ?? '';
+        expect(value).not.toMatch(/12\.3s/);
+        expect(value).not.toMatch(/·/);
+        expect(textOf(root)).toMatch(/last full index/);
+    });
+
     it('labels an exclusion-aligning catch-up distinctly from a generic pass', () => {
         const root = stubEl();
         renderIndexStatusCard(root as unknown as HTMLElement, {
             health: 'indexing',
             stats: { files: 5, chunks: 18, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null },
             job: { kind: 'catchup', done: 2, total: 10, aligningExclusions: true },
+            percent: 20,
+            remaining: 8,
         });
         const blob = textOf(root);
         expect(blob).toContain('Aligning with exclusions');

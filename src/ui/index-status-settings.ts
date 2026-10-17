@@ -23,14 +23,13 @@ import {
     type IndexStatusJob,
     type IndexJobKind,
 } from './index-status-card';
-import {
-    indexChunksPerSec,
-    indexFilesPerSec,
-    indexTokensPerSec,
-    type IndexJobSpeedView,
-} from './index-status-bar';
+import type { IndexJobSpeedView } from './index-status-bar';
 import type { IndexCompleteEntry, LoadEntry } from '../types/types';
-import { gpuOccupancyPct } from '../index/embed-pipeline';
+import type {
+    IndexProgressEmbedDerived,
+    IndexProgressRates,
+    IndexProgressCoverageHeadline,
+} from './index-progress-snapshot';
 
 /** Novice glossary for embed-metric labels (hover target = muted label). */
 export const EMBED_METRIC_HELP: Record<string, string> = {
@@ -152,6 +151,18 @@ export interface EmbedDiagView {
     live: IndexJobSpeedView | null;
     lastComplete: IndexCompleteEntry | null;
     lastLoad: LoadEntry | null;
+    /** Precomputed on the progress snapshot — Settings only formats. */
+    derived?: IndexProgressEmbedDerived | null;
+    rates?: IndexProgressRates | null;
+}
+
+export interface CoverageDiagView {
+    open: boolean;
+    onToggle: () => void;
+    headline: IndexProgressCoverageHeadline;
+    /** Consumer vs Producer — honest copy, no reindex promise on hydrate-only devices. */
+    roleHint: string;
+    attachBody: (host: HTMLElement) => void;
 }
 
 /** Folded-by-default embedding disclosure — Settings status card only. */
@@ -159,26 +170,13 @@ export function renderEmbedDiagnostic(card: HTMLElement, view: EmbedDiagView): v
     const live = view.live;
     const complete = view.lastComplete;
     const load = view.lastLoad;
+    const derived = view.derived;
     const jobActive = live != null;
-
-    let chRate = 0;
-    let filesRate = 0;
-    let tokRate = 0;
-    let pillKey: 'live' | 'paused' | 'last pass' | null = null;
-    if (jobActive) {
-        chRate = indexChunksPerSec(live.chunksDone, live.elapsedMs);
-        filesRate = indexFilesPerSec(live.done, live.elapsedMs);
-        tokRate = indexTokensPerSec(live.tokensDone, live.elapsedMs);
-        pillKey = live.paused ? 'paused' : 'live';
-    } else if (complete) {
-        chRate = complete.chunksPerSec;
-        filesRate = complete.filesPerSec;
-        tokRate = complete.tokensPerSec
-            ?? ((complete.paddedTokens ?? 0) > 0 && complete.totalDurationMs > 0
-                ? (complete.paddedTokens! / (complete.totalDurationMs / 1000))
-                : 0);
-        pillKey = 'last pass';
-    }
+    const passRates = jobActive ? (derived?.liveRates ?? null) : (derived?.lastRates ?? view.rates ?? null);
+    const chRate = passRates?.chunksPerSec ?? 0;
+    const filesRate = passRates?.filesPerSec ?? 0;
+    const tokRate = passRates?.tokensPerSec ?? 0;
+    const pillKey: 'live' | 'paused' | 'last pass' | null = derived?.pill ?? null;
 
     const block = card.createDiv({ cls: 'seek-status-embed' });
     const head = block.createDiv({ cls: 'seek-status-embed-head' });
@@ -273,7 +271,7 @@ export function renderEmbedDiagnostic(card: HTMLElement, view: EmbedDiagView): v
         sectionHead(batch, 'batch', 'Batch');
         const dist = complete.embedBatchLatencyMs;
         const dispatches = dist?.n ?? 0;
-        const effectiveBatch = dispatches > 0 ? complete.vectorsWritten / dispatches : 0;
+        const effectiveBatch = derived?.effectiveBatch ?? 0;
         const batchRows: Array<{ key: string; value: string; label?: string }> = [
             { key: 'dispatches', value: dispatches.toLocaleString(), label: 'Dispatches' },
             { key: 'batch size', value: effectiveBatch > 0 ? effectiveBatch.toFixed(1) : '—', label: 'Avg batch' },
@@ -289,11 +287,11 @@ export function renderEmbedDiagnostic(card: HTMLElement, view: EmbedDiagView): v
         if (complete.gpuBusyMs != null || complete.persistWaitMs != null) {
             const feed = body.createDiv({ cls: 'seek-status-embed-section' });
             sectionHead(feed, 'feed', 'Encoder feed');
-            const occ = gpuOccupancyPct(complete.gpuBusyMs ?? 0, complete.totalDurationMs);
+            const occ = derived?.gpuOccupancyPct;
             const peak = complete.inflightHighWater;
             const cap = complete.embedInFlightMax;
             kvGrid(feed, [
-                { key: 'GPU busy', value: `${occ.toFixed(0)}%`, label: 'GPU busy' },
+                { key: 'GPU busy', value: occ != null ? `${occ.toFixed(0)}%` : '—', label: 'GPU busy' },
                 { key: 'persist wait', value: fmtPhaseDuration(complete.persistWaitMs ?? 0), label: 'Persist wait' },
                 {
                     key: 'queue peak',
@@ -346,8 +344,13 @@ export function renderSettingsIndexStatusCard(
         mode?: IndexStatusMode;
         label?: string;
         hydrateProgress?: import('./index-status-report').IndexHydrateProgress | null;
+        progress?: import('./index-progress-indicator').IndexProgressIndicator | null;
+        percent?: number;
+        remaining?: number | null;
+        eta?: string | null;
         stats: IndexStatusCardStats | null;
         job?: IndexStatusJob | null;
+        coverage?: CoverageDiagView | null;
         startup?: StartupTimingView | null;
         liveElapsedMs?: number | null;
         prevBoot?: { readyFromStartMs: number | null; warmSkipped: boolean } | null;
@@ -360,6 +363,10 @@ export function renderSettingsIndexStatusCard(
         mode: opts.mode,
         label: opts.label,
         hydrateProgress: opts.hydrateProgress,
+        progress: opts.progress,
+        percent: opts.percent,
+        remaining: opts.remaining,
+        eta: opts.eta,
         stats: opts.stats,
         job: opts.job,
     });
@@ -436,8 +443,38 @@ export function renderSettingsIndexStatusCard(
     }
 
     if (opts.embedDiag) renderEmbedDiagnostic(card, opts.embedDiag);
+    if (opts.coverage) renderCoverageDiagnostic(card, opts.coverage);
 
     return card;
+}
+
+/** Folder coverage disclosure — immediately below Embedding pass. Collapsed by default. */
+export function renderCoverageDiagnostic(card: HTMLElement, view: CoverageDiagView): void {
+    const block = card.createDiv({ cls: 'seek-status-coverage' });
+    const head = block.createDiv({ cls: 'seek-status-embed-head seek-status-coverage-head' });
+    head.setAttr('role', 'button');
+    head.setAttr('tabindex', '0');
+    head.setAttr('aria-expanded', view.open ? 'true' : 'false');
+    head.onclick = (e) => { e.preventDefault(); view.onToggle(); };
+    head.onkeydown = (e: KeyboardEvent) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            view.onToggle();
+        }
+    };
+    head.createSpan({ cls: 'seek-status-embed-chev', text: view.open ? '▾' : '▸' });
+    head.createSpan({ cls: 'seek-status-embed-title', text: 'Index coverage by folder' });
+    const hint = head.createSpan({ cls: 'seek-status-coverage-hint' });
+    const h = view.headline;
+    if (h.total > 0) {
+        hint.setText(`${h.done.toLocaleString()} / ${h.total.toLocaleString()} · ${h.percent}%`);
+    } else {
+        hint.setText(h.caption);
+    }
+    if (!view.open) return;
+    const body = block.createDiv({ cls: 'seek-status-coverage-body' });
+    body.createDiv({ cls: 'seek-status-coverage-role', text: view.roleHint });
+    view.attachBody(body.createDiv({ cls: 'seek-coverage-host' }));
 }
 
 export function renderRecentSearchConsole(parent: HTMLElement, lines: string[]): void {

@@ -3,13 +3,14 @@
 // is the source of truth — inventory files/chunks from getIndexStats() must not
 // compete with that number.
 
-import { indexPercent } from './index-eta';
 import {
     formatStableIndexCount,
     formatStableLabelProgress,
+    formatStableFileFractionSpaced,
     formatIndexCountPlain,
 } from './index-progress-format';
 import { INDEX_STATUS_COPY, normalizeHydrateProgress, type IndexHydrateProgress, type IndexStatusHealth, type IndexStatusMode } from './index-status-report';
+import type { IndexProgressIndicator } from './index-progress-indicator';
 
 export type { IndexStatusHealth, IndexStatusMode };
 
@@ -63,11 +64,6 @@ export const INDEX_STATUS_BADGE_CLS = 'seek-index-badge';
 /** Deprecated circular indexing glyph — must not appear while health is indexing. */
 export const INDEX_STATUS_DOT_CLS = 'seek-dot';
 
-export function jobRemaining(job: IndexStatusJob | null | undefined): number | null {
-    if (!job || job.total <= 0) return null;
-    return Math.max(0, job.total - job.done);
-}
-
 export function fmtIndexStamp(iso: string): string {
     const d = new Date(iso);
     const p = (n: number) => String(n).padStart(2, '0');
@@ -84,22 +80,26 @@ export function indexWaitCardModel(input: {
     job?: IndexStatusJob | null;
     stats?: IndexStatusCardStats | null;
     hydrateProgress?: { done: number; total: number; percent?: number } | null;
+    progress?: IndexProgressIndicator | null;
 }): {
     health: IndexStatusHealth;
     stats: IndexStatusCardStats | null;
     job: IndexStatusJob | null;
     hydrate: IndexHydrateProgress | null;
+    progress: IndexProgressIndicator | null;
 } {
-    const hydrate = normalizeHydrateProgress(input.hydrateProgress);
-    // Starting/Restoring/Locked/Stuck win over an in-flight job so hydrate/lock never paints Indexing.
+    const fromIndicator = input.progress?.units && (input.progress.phase === 'hydrating' || input.progress.phase === 'restoring' || input.progress.phase === 'recovering' || input.progress.phase === 'verifying')
+        ? { done: input.progress.units.done, total: input.progress.units.total, percent: input.progress.units.percent }
+        : null;
+    const hydrate = fromIndicator ?? normalizeHydrateProgress(input.hydrateProgress);
     if (input.health === 'starting' || input.health === 'restoring' || input.health === 'locked' || input.health === 'stuck') {
         const showHydrate = (input.health === 'starting' || input.health === 'restoring') ? hydrate : null;
-        return { health: input.health, stats: null, job: null, hydrate: showHydrate };
+        return { health: input.health, stats: null, job: null, hydrate: showHydrate, progress: input.progress ?? null };
     }
     const job = input.job && input.job.total > 0 && input.health === 'indexing' && !hydrate
         ? input.job
         : null;
-    return { health: input.health, stats: input.stats ?? null, job, hydrate };
+    return { health: input.health, stats: input.stats ?? null, job, hydrate, progress: input.progress ?? null };
 }
 
 /**
@@ -140,10 +140,8 @@ function emptySlots(): [StatusMetricSlot, StatusMetricSlot, StatusMetricSlot] {
 function lastSlotFromStats(stats: IndexStatusCardStats | null): StatusMetricSlot {
     if (!stats) return { value: '—', label: 'last full index', cls: 'seek-status-last' };
     if (stats.lastFullAt) {
-        const dur = stats.lastFullDurationMs != null
-            ? ` · ${(stats.lastFullDurationMs / 1000).toFixed(1)}s` : '';
         return {
-            value: `${fmtIndexStamp(stats.lastFullAt)}${dur}`,
+            value: fmtIndexStamp(stats.lastFullAt),
             label: 'last full index',
             cls: 'seek-status-last',
         };
@@ -158,13 +156,30 @@ function lastSlotFromStats(stats: IndexStatusCardStats | null): StatusMetricSlot
     return { value: 'never', label: 'last full index', cls: 'seek-status-last' };
 }
 
-function metricSlots(model: ReturnType<typeof indexWaitCardModel>, eta?: string | null): [StatusMetricSlot, StatusMetricSlot, StatusMetricSlot] {
+function metricSlots(
+    model: ReturnType<typeof indexWaitCardModel>,
+    eta?: string | null,
+    percent?: number,
+    remaining?: number | null,
+): [StatusMetricSlot, StatusMetricSlot, StatusMetricSlot] {
+    const verify = model.progress?.phase === 'verifying' ? model.progress.units : null;
+    if (verify) {
+        const value = verify.determinate
+            ? formatStableLabelProgress(verify.done, verify.total, verify.percent)
+            : formatStableFileFractionSpaced(verify.done, verify.total);
+        return [
+            { value, label: 'this check', cls: 'seek-status-job' },
+            { value: '—', label: 'chunks' },
+            lastSlotFromStats(model.stats),
+        ];
+    }
     if (model.hydrate) {
-        const pct = indexPercent(model.hydrate.done, model.hydrate.total);
+        const pct = model.hydrate.percent;
+        const restoreLabel = model.progress?.phase === 'recovering' ? 'this recover' : 'this restore';
         return [
             {
                 value: formatStableLabelProgress(model.hydrate.done, model.hydrate.total, pct),
-                label: 'this restore',
+                label: restoreLabel,
                 cls: 'seek-status-job',
             },
             { value: '—', label: 'chunks' },
@@ -172,13 +187,13 @@ function metricSlots(model: ReturnType<typeof indexWaitCardModel>, eta?: string 
         ];
     }
     if (model.job) {
-        const remaining = jobRemaining(model.job) ?? 0;
-        const pct = indexPercent(model.job.done, model.job.total);
+        const left = remaining ?? 0;
+        const pct = percent ?? 0;
         const progressLine = formatStableLabelProgress(model.job.done, model.job.total, pct);
         const aligning = !!model.job.aligningExclusions;
         return [
             {
-                value: formatStableIndexCount(remaining, model.job.total),
+                value: formatStableIndexCount(left, model.job.total),
                 label: 'remaining',
             },
             {
@@ -215,6 +230,10 @@ export function renderIndexStatusCard(
         /** Optional heading override (aligning). Hydrate counts live in the metric slot. */
         label?: string;
         hydrateProgress?: { done: number; total: number; percent?: number } | null;
+        progress?: IndexProgressIndicator | null;
+        /** From IndexProgressSnapshot — card formats only. */
+        percent?: number;
+        remaining?: number | null;
     },
 ): HTMLElement {
     const model = indexWaitCardModel(opts);
@@ -225,9 +244,7 @@ export function renderIndexStatusCard(
     const aligning = !!model.job?.aligningExclusions && model.health === 'indexing';
     const main = card.createDiv({ cls: 'seek-status-card-main' });
     const health = main.createDiv({ cls: 'seek-status-health' });
-    const remaining = model.hydrate && model.health === 'indexing'
-        ? Math.max(0, model.hydrate.total - model.hydrate.done)
-        : jobRemaining(model.job);
+    const remaining = opts.remaining ?? null;
     renderIndexStatusBadge(health, { health: model.health, remaining });
     health.createSpan({
         cls: 'seek-status-label',
@@ -236,12 +253,32 @@ export function renderIndexStatusCard(
 
     main.createDiv({ cls: 'seek-status-sep' });
     const metrics = main.createDiv({ cls: 'seek-status-metrics' });
-    for (const slot of metricSlots(model, opts.eta)) {
+    for (const slot of metricSlots(model, opts.eta, opts.percent, remaining)) {
         const m = metrics.createDiv({
             cls: slot.cls ? `seek-status-metric ${slot.cls}` : 'seek-status-metric',
         });
         m.createDiv({ cls: 'seek-status-value', text: slot.value });
         m.createDiv({ cls: 'seek-status-mlabel', text: slot.label });
+    }
+
+    const meter = card.createEl('progress', { cls: 'seek-status-meter' }) as HTMLProgressElement;
+    meter.max = 100;
+    const units = opts.progress?.units ?? (model.hydrate
+        ? { done: model.hydrate.done, total: model.hydrate.total, percent: model.hydrate.percent, determinate: true }
+        : null);
+    const working = opts.progress
+        && opts.progress.phase !== 'ready'
+        && opts.progress.phase !== 'none'
+        && opts.progress.phase !== 'stuck'
+        && opts.progress.phase !== 'locked'
+        && opts.progress.phase !== 'error';
+    if (!working && !model.hydrate && !model.job) {
+        meter.addClass('is-idle');
+    } else if (units && units.determinate) {
+        meter.value = units.percent;
+    } else {
+        meter.addClass('is-indeterminate');
+        if (typeof meter.removeAttribute === 'function') meter.removeAttribute('value');
     }
 
     return card;

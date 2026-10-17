@@ -47,10 +47,10 @@ describe('IndexStatusReporter — one snapshot for bar + Settings', () => {
         for (const input of modes) {
             const report = IndexStatusReporter.compute(input);
             const copy = INDEX_STATUS_COPY[report.mode];
-            expect(report.label, report.mode).toBe(copy.label);
-            expect(report.compact, report.mode).toBe(copy.compact);
-            expect(surfaces(report).bar).toBe(copy.compact);
-            expect(surfaces(report).settings).toBe(copy.label);
+            expect(report.label.startsWith(copy.label), report.mode).toBe(true);
+            expect(report.compact.startsWith(copy.compact), report.mode).toBe(true);
+            expect(surfaces(report).bar.startsWith(copy.compact)).toBe(true);
+            expect(surfaces(report).settings.startsWith(copy.label)).toBe(true);
         }
     });
 
@@ -93,11 +93,11 @@ describe('IndexStatusReporter — one snapshot for bar + Settings', () => {
         });
         expect(full.mode).toBe('full-reindex');
         expect(full.health).toBe('indexing');
-        expect(full.label).toBe('Reindexing…');
-        expect(full.compact).toBe('Reindexing');
-        expect(catchUp.mode).toBe('indexing');
-        expect(catchUp.label).toBe('Indexing…');
-        expect(catchUp.compact).toBe('Indexing');
+        expect(full.label.startsWith('Reindexing…')).toBe(true);
+        expect(full.compact.startsWith('Reindexing')).toBe(true);
+        expect(catchUp.mode).toBe('catching-up');
+        expect(catchUp.label.startsWith(INDEX_STATUS_COPY['catching-up'].label)).toBe(true);
+        expect(catchUp.compact.startsWith(INDEX_STATUS_COPY['catching-up'].compact)).toBe(true);
         expect(full.label).not.toBe(catchUp.label);
     });
 });
@@ -171,7 +171,7 @@ describe('corrupt / torn sidecar → not healthy', () => {
         });
         expect(report.mode).toBe('full-reindex');
         expect(report.health).toBe('indexing');
-        expect(report.label).toBe(INDEX_STATUS_COPY['full-reindex'].label);
+        expect(report.label.startsWith(INDEX_STATUS_COPY['full-reindex'].label)).toBe(true);
     });
 
     it('partial IDB after interrupted full reindex is Indexing/Reindexing or Ready with chunks, never ok at 0/0', () => {
