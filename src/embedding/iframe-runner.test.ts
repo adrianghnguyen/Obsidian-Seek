@@ -449,6 +449,8 @@ describe('iframe child message handler — source check', () => {
         expect(script).toContain('embedBatchTail = gpuDone');
         expect(script.indexOf('setTimeout(function ()', runIdx)).toBeGreaterThan(runIdx);
         expect(script.indexOf('poolEmbedBatch(outputs, enc, t0)', runIdx)).toBeGreaterThan(runIdx);
+        expect(script).not.toContain('async function embedBatch');
+        expect(script).not.toContain('function forwardEmbedBatch');
     });
 });
 

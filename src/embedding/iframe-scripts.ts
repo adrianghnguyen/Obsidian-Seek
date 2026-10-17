@@ -941,7 +941,7 @@ async function loadModel(modelId, requestedDevice, requestedDtype, skipWarmup, r
 async function embedText(text) {
     if (!pipeline) throw new Error('Model not loaded');
     const t0 = performance.now();
-    // QUERY path (single-embed is query-only; indexing uses embedBatch below).
+    // QUERY path (single-embed is query-only; indexing uses runEmbedBatch).
     // Tokenize the cleaned query and bucket off its EXACT token length on the
     // small-floor, top-trimmed query ladder (QUERY_SEQ_BUCKETS). Because the
     // bucket is ≥ the real token count, max_length never truncates — the whole
@@ -1063,17 +1063,6 @@ function poolEmbedBatch(outputs, enc, t0) {
         vectors.push(sliceAndRenormalize(row, OUTPUT_DIM));
     }
     return { vectors: vectors, latencyMs: performance.now() - t0 };
-}
-
-async function forwardEmbedBatch(prepared, t0) {
-    const outputs = await pipeline.model(prepared.enc);
-    return poolEmbedBatch(outputs, prepared.enc, t0);
-}
-
-async function embedBatch(texts, explicitBucket) {
-    const t0 = performance.now();
-    const prepared = await tokenizeEmbedBatch(texts, explicitBucket);
-    return forwardEmbedBatch(prepared, t0);
 }
 
 // Tokenize as soon as the parent posts (CPU, overlaps the in-flight GPU
@@ -1357,7 +1346,7 @@ function makeProfileText(targetTokens) {
 // pipeline.model (standard transformers.js FeatureExtractionPipeline surface)
 // to put a clock between the stages. Deliberately does NOT dispose the output
 // tensor — this harness is a NON-disposing baseline for diagnostic comparison
-// against the production embedText/embedBatch paths (which DO dispose, see
+// against the production embedText/runEmbedBatch paths (which DO dispose, see
 // 2026-05-19 bog-down diagnosis). The heap delta the parent records around
 // this run is the cost of a single embed's tensors NOT being released.
 // (No backticks anywhere in this child block: it lives inside a template
@@ -1420,7 +1409,7 @@ async function profileRuntime(batchSizes, seqBuckets, reps) {
 // batch x 384 x 4 bytes, paid once per dispatch (1245 dispatches @ budget 512).
 //
 // MUST dedup: at 384-d sliceAndRenormalize is a pass-through, so every row in
-// a batch is a view into the SAME tensor buffer (embedBatch above) — adding
+// a batch is a view into the SAME tensor buffer (poolEmbedBatch above) — adding
 // that buffer once per row would transfer it N times and throw DataCloneError.
 // A Set also covers the future MRL case where each sliced row owns its buffer
 // (then the Set simply holds N distinct buffers). Strings (the request payload)
