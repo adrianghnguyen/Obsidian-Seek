@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.15.0
+
+Hydrate progress on status chrome, in-plugin full-reindex takeover, and GPU overlap for production reindex.
+
 ### Changed
 - **Auto index role: the computer with the newest full rebuild is lead; other computers add new notes to the shared index.** Phones still copy only. A laptop no longer waits for the desktop to encode every new file — it encodes locally, writes its own sidecar files, and the lead copies them. Full reindex, deleting another device’s shards, and model/vector changes stay on the lead. Settings → Index → Advanced explains Auto / Producer / Consumer in those terms.
 - **Full reindex tokenizes the next GPU batch inside the iframe while the current forward runs, starts the next kernel before pooling, and does not yield the compositor between dispatches.** Pooling (WebGPU `.data` readback) runs on a macrotask after the GPU slot is released, so the next `model()` is not stuck behind the previous batch’s CPU pool. The iframe tokenizer pads to the warmed sequence bucket (transformers.js `pipeline()` was dropping `max_length`). Token-count RPCs share a separate iframe lane from embed-batch, the parent may have three embed-batches in flight, and full reindex skips the per-batch `scheduler.yield` that was leaving SM% in the 50–80% band. Catch-up still waits on each flush so typing stays smooth. Disk overlap (prepared embed batches) is unchanged. A waiting search query still blocks further GPU posts.
