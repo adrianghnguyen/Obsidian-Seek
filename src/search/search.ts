@@ -676,6 +676,8 @@ export class SearchOrchestrator {
         // ROLLING_BUDGET comment above for the why (45%→85% padding efficiency,
         // overflow-safe warmed shapes, budgeted per-bucket flush to cap stalls).
         let totalChunks = 0;
+        /** GPU chunks returned this pass — can lead persisted totalChunks during overlap. */
+        let gpuChunks = 0;
         // Chunks reconciled WITHOUT embedding (chunk-diff, issue #5): id-stable
         // rows a diff kept (untouched / meta-patch / reindex-row). A pure
         // metadata pass commits files with totalChunks 0 — a legitimate success
@@ -700,6 +702,16 @@ export class SearchOrchestrator {
         let processedFiles = 0;   // files we STARTED (for the incremental burst budget + filesDeferred)
         let lastProgress = 0;
         let lastProgressAt = performance.now();
+        let lastUiFiles = -1;
+        let lastUiChunks = -1;
+        const emitLiveProgress = (): void => {
+            const filesForUi = mode === 'full' ? processedFiles : filesCommitted;
+            const chunksForUi = Math.max(gpuChunks, totalChunks);
+            if (filesForUi === lastUiFiles && chunksForUi === lastUiChunks) return;
+            lastUiFiles = filesForUi;
+            lastUiChunks = chunksForUi;
+            onProgress?.(`Indexed ${filesForUi} files · ${chunksForUi} chunks · ${fPaddedTokens} tokens`);
+        };
         let tokenBudgetSplits = 0;
         let tokenBudgetOverBudget = 0;
         // Embed-failure quarantine accounting (issue #4): files committed WITH a
@@ -899,6 +911,8 @@ export class SearchOrchestrator {
                 result = await this.embedder.embedBatch(inputs, bucket);
             }
             embedBatchLatencyMs.push(result.iframeLatencyMs);
+            gpuChunks += result.vectors.length;
+            emitLiveProgress();
             // Pace between dispatches. A full reindex cheap-yields. Desktop catch-up
             // does too until a search query is actually in flight, then idle-paces
             // (rIC, ~1s timeout) so that query can cut in. Other incremental callers
@@ -1124,6 +1138,7 @@ export class SearchOrchestrator {
                 break;
             }
             processedFiles++;
+            if (mode === 'full') emitLiveProgress();
             const fileStart = performance.now();
             // Snapshot mtime BEFORE the read so the committed file-record reflects
             // the version we actually index, even if the file is edited mid-pass
@@ -1304,11 +1319,9 @@ export class SearchOrchestrator {
                 if (buf.length >= rollingBatchFor(bucket, mode, rollingOpts)) await flushBucket(bucket);
             }
 
-            // UI progress: every newly committed file (status bar + Settings).
-            // NDJSON index-progress stays on the file-or-time cadence below.
-            if (filesCommitted > lastProgress) {
-                onProgress?.(`Indexed ${filesCommitted} files · ${totalChunks} chunks · ${fPaddedTokens} tokens`);
-            }
+            // UI progress: full reindex paints files as they start + GPU chunks as
+            // they return; catch-up still reports committed files for drain math.
+            emitLiveProgress();
             const progressOverdue = performance.now() - lastProgressAt >= PROGRESS_MAX_SILENCE_MS;
             if (filesCommitted > lastProgress && (filesCommitted - lastProgress >= PROGRESS_EVERY || progressOverdue)) {
                 lastProgress = filesCommitted;
@@ -1379,7 +1392,7 @@ export class SearchOrchestrator {
             this.forensics?.beat('index-quota-exhausted', { files: filesSkippedQuota, mode });
             this.quotaToast();
         }
-        onProgress?.(`Indexed ${filesCommitted} files · ${totalChunks} chunks · ${fPaddedTokens} tokens`);
+        emitLiveProgress();
         await this.emitProgress('embed', files.length, files.length, totalChunks, performance.now() - overallStart);
 
         // Corpus dense-cosine background (dense-stats.ts). A FULL pass saw every

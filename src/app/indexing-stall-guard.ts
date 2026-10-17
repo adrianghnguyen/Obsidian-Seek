@@ -5,6 +5,8 @@
  */
 
 export const INDEXING_STALL_TIMEOUT_MS = 90_000;
+/** Full reindex GPU+IDB overlap can sit >90s between file commits on a large vault. */
+export const FULL_REINDEX_STALL_TIMEOUT_MS = 300_000;
 
 export interface IndexingStallSnapshot {
     catchUpRunning: boolean;
@@ -14,6 +16,9 @@ export interface IndexingStallSnapshot {
     /** Files done in the active job, or null when no job row yet. */
     jobDone: number | null;
     jobTotal: number | null;
+    /** Chunks painted on the live job (GPU progress can move while files stall). */
+    jobChunks?: number | null;
+    jobKind?: 'full' | 'delta' | 'catchup' | null;
 }
 
 export function indexingWorkActive(s: IndexingStallSnapshot): boolean {
@@ -31,6 +36,10 @@ export function indexingStallDetected(
     return now - lastProgressAt >= timeoutMs;
 }
 
+export function stallTimeoutMs(s: IndexingStallSnapshot): number {
+    return s.jobKind === 'full' ? FULL_REINDEX_STALL_TIMEOUT_MS : INDEXING_STALL_TIMEOUT_MS;
+}
+
 /** Progress signature used to bump the heartbeat when job counters move. */
 export function indexingProgressKey(s: IndexingStallSnapshot): string {
     return [
@@ -40,5 +49,7 @@ export function indexingProgressKey(s: IndexingStallSnapshot): string {
         s.writing ? '1' : '0',
         s.jobDone ?? 'n',
         s.jobTotal ?? 'n',
+        s.jobChunks ?? 'n',
+        s.jobKind ?? 'n',
     ].join(':');
 }

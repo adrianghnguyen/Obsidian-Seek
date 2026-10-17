@@ -183,7 +183,7 @@ describe('renderEmbedDiagnostic', () => {
         expect(card.querySelector('.seek-status-embed-body')).toBeNull();
     });
 
-    it('unrolled shows phases batch health model and last-completed note while live', () => {
+    it('unrolled live pass shows this-run files and hides last-pass phases', () => {
         const card = stubEl();
         renderEmbedDiagnostic(card as unknown as HTMLElement, {
             open: true,
@@ -203,11 +203,12 @@ describe('renderEmbedDiagnostic', () => {
         const blob = textOf(card);
         expect(blob).toContain('Live');
         expect(blob).toContain('Catch-up');
-        expect(blob).toContain('From last completed pass');
-        expect(blob).toContain('Phases');
-        expect(blob).toContain('3m 12s');
-        expect(blob).toContain('412');
-        expect(blob).not.toContain('Encoder feed');
+        expect(blob).toContain('2,856');
+        expect(blob).toContain('18,402');
+        expect(blob).toContain('1m 0s');
+        expect(blob).not.toContain('From last completed pass');
+        expect(blob).not.toContain('Phases');
+        expect(blob).not.toContain('3m 12s');
         expect(blob).toContain('webgpu');
         expect(blob).toContain('1.8s');
         expect(card.querySelector('.seek-status-embed-grid')).not.toBeNull();

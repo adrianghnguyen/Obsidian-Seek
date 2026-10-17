@@ -44,10 +44,10 @@ import { activeModelSpec, bindLiveModel, currentModelSpec, resolveOverrideSpec, 
 import { pluginIdentity, identityMatches, identityFromMeta } from './index/identity';
 import { isLoadGenerationCurrent, isSessionWorkCurrent } from './app/boot-session';
 import {
-    INDEXING_STALL_TIMEOUT_MS,
     indexingProgressKey,
     indexingStallDetected,
     indexingWorkActive,
+    stallTimeoutMs,
     type IndexingStallSnapshot,
 } from './app/indexing-stall-guard';
 import {
@@ -595,6 +595,7 @@ export default class SeekPlugin extends Plugin {
 
     private indexingStallSnapshot(): IndexingStallSnapshot {
         const job = this.indexProgress?.job?.() ?? null;
+        const speed = this.indexProgress?.jobSpeedView?.() ?? null;
         const orch = this.orchestrator;
         return {
             catchUpRunning: this.catchUpRunning,
@@ -603,6 +604,8 @@ export default class SeekPlugin extends Plugin {
             writing: typeof orch?.isWriting === 'function' ? orch.isWriting() : false,
             jobDone: job?.done ?? null,
             jobTotal: job?.total ?? null,
+            jobChunks: speed?.chunksDone ?? null,
+            jobKind: job?.kind ?? speed?.kind ?? null,
         };
     }
 
@@ -625,7 +628,7 @@ export default class SeekPlugin extends Plugin {
         }
         const now = performance.now();
         if (this.lastIndexingProgressAt === 0) this.lastIndexingProgressAt = now;
-        if (!indexingStallDetected(this.lastIndexingProgressAt, now, INDEXING_STALL_TIMEOUT_MS, snap)) return;
+        if (!indexingStallDetected(this.lastIndexingProgressAt, now, stallTimeoutMs(snap), snap)) return;
         void this.handleIndexingStall();
     }
 
