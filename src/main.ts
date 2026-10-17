@@ -69,7 +69,8 @@ import {
 } from './index/index-store-lock';
 import { sweepOrphanTmpFiles } from './sidecar/sidecar';
 import type { SeekSettings, IndexCompleteEntry, LoadEntry, ModelDeliveryEntry, ScoredChunk, SearchEntry } from './types/types';
-import { DEFAULT_SETTINGS, migrateSettings } from './types/types';
+import { DEFAULT_SETTINGS, migrateSettings, forceSharedSidecarLocation } from './types/types';
+import { moveSidecarFiles } from './sidecar/sidecar-location';
 import { IndexStore, indexDbPrefix, isTransientIdbUnavailable, isStoreOpTimeout } from './index/index-store';
 import { SeekLogger, REPORT_ARTIFACTS_DIR } from './diagnostics/logger';
 import { openDiagnosticReport } from './diagnostics/diagnostic-report';
@@ -1034,6 +1035,7 @@ export default class SeekPlugin extends Plugin {
         // migrated values win over the persisted ones rather than being overridden.
         migrateSettings(raw);
         Object.assign(this.settings, DEFAULT_SETTINGS, raw);
+        forceSharedSidecarLocation(this.settings);
         // Identity, sidecar stride, and the iframe script all read the live spec.
         // Bind before the boot identity check so a saved EmbeddingGemma choice is
         // the model this process actually compares the index against.
@@ -1789,9 +1791,11 @@ export default class SeekPlugin extends Plugin {
         let identityHandled = false;
         try {
             if (this.settings.sidecarEnabled && ctx.migrateSidecarPath
-                && this.settings.sidecarIndexLocation === 'config'
                 && ctx.legacySidecarDir && ctx.legacySidecarDir !== ctx.sidecarIndexDir) {
                 await this.migrateSidecarFiles(ctx.legacySidecarDir, ctx.sidecarIndexDir);
+            }
+            if (this.settings.sidecarEnabled && this.settings.sidecarIndexLocation === 'visible') {
+                await this.migrateSidecarFiles(this.sidecarConfigDir, this.sidecarVisibleDir, true);
             }
             if (this.settings.sidecarEnabled && ctx.sidecarIndexDir) {
                 await sweepOrphanTmpFiles(this.app.vault.adapter, ctx.sidecarIndexDir, this.logger.deviceId);
@@ -1911,22 +1915,40 @@ export default class SeekPlugin extends Plugin {
     // path into the literal path. Uses rename (a move) per file; idempotent and
     // non-fatal — a failed move leaves the source for the next reindex to
     // repopulate, never aborts hydrate.
-    private async migrateSidecarFiles(from: string, to: string): Promise<void> {
-        const adapter = this.app.vault.adapter;
-        const ls = await adapter.list(from).catch(() => null);
-        if (!ls || ls.files.length === 0) return; // nothing written under the old path
-        if (!(await adapter.exists(to).catch(() => false))) await adapter.mkdir(to).catch(() => {});
-        for (const path of ls.files) {
-            const dest = `${to}/${path.slice(path.lastIndexOf('/') + 1)}`;
-            // Never clobber the new location (a prior partial migration, or this
-            // device already wrote there) — the literal path is authoritative.
-            if (await adapter.exists(dest).catch(() => false)) continue;
-            try {
-                await adapter.rename(path, dest);
-            } catch (e) {
-                await this.logger.appendError('sidecar-migrate-file', e).catch(() => {});
-            }
+    private async migrateSidecarFiles(from: string, to: string, onlyIfDestEmpty = false): Promise<number> {
+        return moveSidecarFiles(this.app.vault.adapter, from, to, {
+            onlyIfDestEmpty,
+            onError: e => { void this.logger.appendError('sidecar-migrate-file', e).catch(() => {}); },
+        });
+    }
+
+    /**
+     * Settings toggle "Sync index across devices". ON pins the shared folder to the
+     * vault-root `Seek Index/` and moves any hidden-folder shards into it; the new IO
+     * path only applies after a Seek reload. OFF stops vault index writes/hydrate and
+     * leaves existing folders alone. Returns files moved (ON only).
+     */
+    async setSharedIndexEnabled(enabled: boolean): Promise<number> {
+        this.settings.sidecarEnabled = enabled;
+        let moved = 0;
+        if (enabled) {
+            this.settings.sidecarIndexLocation = 'visible';
+            this.settings.sidecarHiddenIndexExpert = false;
+            moved = await this.migrateSidecarFiles(this.sidecarConfigDir, this.sidecarVisibleDir);
         }
+        await this.saveSettings();
+        return moved;
+    }
+
+    /** Expert opt-in to the hidden `.obsidian` folder (not for vault sync). */
+    async setHiddenIndexExpert(hidden: boolean): Promise<number> {
+        this.settings.sidecarHiddenIndexExpert = hidden;
+        this.settings.sidecarIndexLocation = hidden ? 'config' : 'visible';
+        const moved = hidden
+            ? 0
+            : await this.migrateSidecarFiles(this.sidecarConfigDir, this.sidecarVisibleDir);
+        await this.saveSettings();
+        return moved;
     }
 
     // Steer the lone unreachable case to the visible folder: Obsidian Sync + a
