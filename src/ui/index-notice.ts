@@ -257,6 +257,11 @@ export interface IndexUiStatusInput {
      * not finished — empty inventory must not paint None/error.
      */
     dropRecovering?: boolean;
+    /**
+     * Fleet inspect: false = hydrate-only Consumer. Boot on that device is
+     * sidecar restore, not a local first-index "Starting up".
+     */
+    mayFullReindex?: boolean | null;
 }
 
 /**
@@ -280,13 +285,17 @@ export function resolveIndexUiStatus(input: IndexUiStatusInput): IndexUiStatus {
     const chunks = input.searchableChunks;
     const files = input.inventoryFiles ?? 0;
     const emptyInventory = (chunks ?? 0) === 0 && files === 0;
-    if (input.hydrating && !input.booting) {
-        // Drop+hydrate and empty restore beat catch-up chrome. Only a populated
-        // good-enough store (greedy background hydrate) stays Indexing.
+    if (input.hydrating) {
+        // Drop+hydrate, boot hydrate, and empty restore beat catch-up chrome.
+        // Booting must not hide an in-flight sidecar walk behind Starting up.
+        // Only a populated good-enough store (greedy background hydrate) stays Indexing.
         if (input.goodEnough && !emptyInventory && chunks != null) return 'indexing';
         return 'restoring';
     }
-    if (input.booting || input.hydrating) return 'starting';
+    // Consumer (and unknown-not-lead) boot is fleet restore even before the
+    // hydrate flag latches — never a static Starting up with no counts.
+    if (input.booting && input.mayFullReindex === false) return 'restoring';
+    if (input.booting) return 'starting';
     const jobActive = input.indexing || (input.job != null && input.job.total > 0);
     if (input.dropRecovering && !jobActive) return 'restoring';
     if (input.health === 'degraded' || input.reason === 'peer-ahead') return 'error';
@@ -502,7 +511,10 @@ export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
     if (input.uiHealth === 'restoring' || input.kind === 'restoring' || input.waitingForSidecar || input.peerSyncPending) {
         return { kind: 'restoring', label: INDEX_RESTORING_LABEL, icon: 'refresh-cw', tone: 'info' };
     }
-    if (input.uiHealth === 'starting' || input.kind === 'starting' || input.phase === 'hydrating') {
+    if (input.phase === 'hydrating') {
+        return { kind: 'restoring', label: INDEX_RESTORING_LABEL, icon: 'refresh-cw', tone: 'info' };
+    }
+    if (input.uiHealth === 'starting' || input.kind === 'starting') {
         return { kind: 'starting', label: INDEX_STARTING_LABEL, icon: 'refresh-cw', tone: 'info' };
     }
     if (input.uiHealth === 'error' || input.health === 'degraded' || input.reason === 'peer-ahead') {

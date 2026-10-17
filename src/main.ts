@@ -498,8 +498,13 @@ export default class SeekPlugin extends Plugin {
             if (this.waitingForSidecar) return 'restoring';
             return null;
         }
-        if (this.indexDropRecovering || this.waitingForSidecar || (this.sidecarHydrating && !this.indexBootPending)) return 'restoring';
-        if (this.indexBootPending || this.sidecarHydrating) return 'starting';
+        if (
+            this.indexDropRecovering
+            || this.waitingForSidecar
+            || this.sidecarHydrating
+            || (this.indexBootPending && this.settings.sidecarEnabled && this.lastMayFullReindex !== true)
+        ) return 'restoring';
+        if (this.indexBootPending) return 'starting';
         return null;
     }
     get isIndexWarmingUp(): boolean { return this.indexWarmPhase != null; }
@@ -518,8 +523,11 @@ export default class SeekPlugin extends Plugin {
             stuck: this.indexBootStuck || this.indexStoreWedged || this.indexIndexingStalled,
             booting: this.indexBootPending,
             bootDecisionPending: this.indexBootDecisionPending,
-            hydrating: this.sidecarHydrating,
+            hydrating: this.sidecarHydrating
+                || this.indexDropRecovering
+                || (this.indexBootPending && this.settings.sidecarEnabled && !this.indexGoodEnough),
             goodEnough: this.indexGoodEnough,
+            mayFullReindex: this.lastMayFullReindex,
             waitingForSidecar: this.waitingForSidecar,
             dropRecovering: this.indexDropRecovering,
             peerSyncPending: this.peerSyncPending,
@@ -540,7 +548,12 @@ export default class SeekPlugin extends Plugin {
         if (this.sidecarHydrateProgress && this.sidecarHydrateProgress.total > 0) {
             return hydrateProgressAgainstVault(this.sidecarHydrateProgress, notes);
         }
-        if (!(this.waitingForSidecar || this.sidecarHydrating || this.indexDropRecovering)) return null;
+        if (!(
+            this.waitingForSidecar
+            || this.sidecarHydrating
+            || this.indexDropRecovering
+            || (this.indexBootPending && !this.indexGoodEnough)
+        )) return null;
         const done = this.indexInventoryFiles ?? 0;
         const total = Math.max(done, notes);
         if (total <= 0) return null;

@@ -298,14 +298,14 @@ describe('indexFooterStatus', () => {
         });
     });
 
-    it('says Starting up while local boot is hydrating, even on a populated index', () => {
+    it('says Starting only for generic boot chrome, not an in-flight hydrate walk', () => {
         expect(indexFooterStatus({ ...idle, kind: 'starting' })).toMatchObject({
             kind: 'starting',
             label: INDEX_STARTING_LABEL,
         });
         expect(indexFooterStatus({ ...idle, phase: 'hydrating' })).toMatchObject({
-            kind: 'starting',
-            label: INDEX_STARTING_LABEL,
+            kind: 'restoring',
+            label: INDEX_RESTORING_LABEL,
             icon: 'refresh-cw',
             tone: 'info',
         });
@@ -403,7 +403,7 @@ describe('indexFooterStatus', () => {
         }).kind).toBe('starting');
         expect(indexFooterStatus({
             ...idle, phase: 'hydrating', health: 'degraded', modelReady: false,
-        }).kind).toBe('starting');
+        }).kind).toBe('restoring');
         expect(indexFooterStatus({
             ...idle, health: 'degraded', phase: 'indexing', modelReady: false,
         }).kind).toBe('error');
@@ -513,9 +513,21 @@ describe('resolveIndexUiStatus', () => {
         inventoryFiles: 40,
     };
 
-    it('hydrating + writing + job is Starting during boot, never Indexing', () => {
+    it('hydrating + writing + job is Restoring during boot, never Starting or Indexing', () => {
         expect(resolveIndexUiStatus({
             ...idle, booting: true, hydrating: true, indexing: true, job: { done: 0, total: 15 }, searchableChunks: 0, inventoryFiles: 0,
+        })).toBe('restoring');
+    });
+
+    it('Consumer boot without a hydrate job yet is Restoring, not Starting up', () => {
+        expect(resolveIndexUiStatus({
+            ...idle, booting: true, mayFullReindex: false, searchableChunks: null, inventoryFiles: 0,
+        })).toBe('restoring');
+    });
+
+    it('Producer boot without hydrate stays Starting', () => {
+        expect(resolveIndexUiStatus({
+            ...idle, booting: true, mayFullReindex: true, searchableChunks: null, inventoryFiles: 0,
         })).toBe('starting');
     });
 

@@ -4,6 +4,13 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.15.0-rc.4
+
+Consumer boot hydrate chrome — Restoring file progress instead of empty Starting up.
+
+### Fixed
+- **Consumer boot no longer shows a static Starting up while sidecar hydrate (or fleet restore) is in progress.** Status bar, Settings Index, and the search-modal footer use the same Restoring `done/total · percent` snapshot as an active hydrate job. A hydrate-only device (`mayFullReindex` false) stays Restoring during boot even before the hydrate flag latches. Startup stuck still says Stuck (no Starting up). Consumer stays Consumer — no embed catch-up or full reindex.
+
 ## 1.15.0-rc.3
 
 Hydrate progress on status chrome, in-plugin full-reindex takeover, and GPU overlap for production reindex. RC until this build is proven stable.

@@ -379,6 +379,10 @@ export class IndexStatusBar {
             this.paintCounts(snap, remaining, `Seek: ${snap.report.compact}`);
             return;
         }
+        if (snap.phase === 'starting' && snap.filesTotal > 0 && snap.hydrate) {
+            this.paintCounts(snap, null, `Seek: ${snap.report.compact}`);
+            return;
+        }
         if (snap.phase === 'starting' || snap.phase === 'locked' || snap.phase === 'error') {
             this.paintBare(snap);
             return;

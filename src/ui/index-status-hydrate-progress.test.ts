@@ -97,7 +97,7 @@ describe('IndexStatusReporter hydrate progress', () => {
         expect(report.label).not.toBe(INDEX_STATUS_COPY.restoring.label);
     });
 
-    it('appends the same counts while boot hydrate is Starting', () => {
+    it('appends the same counts while boot hydrate is Restoring, not Starting', () => {
         const report = IndexStatusReporter.compute({
             ...idle,
             booting: true,
@@ -107,10 +107,26 @@ describe('IndexStatusReporter hydrate progress', () => {
             inventoryFiles: 0,
             hydrateProgress: { done: 3, total: 63 },
         });
-        expect(report.mode).toBe('starting');
-        expect(report.compact).toBe(`${INDEX_STATUS_COPY.starting.compact} 3/63 · ${indexPercent(3, 63)}%`);
+        expect(report.mode).toBe('restoring');
+        expect(report.compact).toBe(`${INDEX_STATUS_COPY.restoring.compact} 3/63 · ${indexPercent(3, 63)}%`);
         expect(report.label).toMatch(/3 \/ 63/);
-        expect(report.compact).not.toBe(INDEX_STATUS_COPY.starting.compact);
+        expect(report.compact).not.toMatch(/Starting/i);
+        expect(report.label).not.toMatch(/Starting/i);
+    });
+
+    it('Consumer boot restore paints file counts before sidecarHydrating latches', () => {
+        const report = IndexStatusReporter.compute({
+            ...idle,
+            booting: true,
+            hydrating: false,
+            mayFullReindex: false,
+            searchableChunks: null,
+            inventoryFiles: 12,
+            hydrateProgress: { done: 12, total: 63 },
+        });
+        expect(report.mode).toBe('restoring');
+        expect(report.compact).toBe(`${INDEX_STATUS_COPY.restoring.compact} 12/63 · ${indexPercent(12, 63)}%`);
+        expect(report.hydrateProgress).toEqual({ done: 12, total: 63, percent: indexPercent(12, 63) });
     });
 
     it('wait-for-producer restoring uses inventory-vs-vault file counts', () => {
@@ -270,6 +286,36 @@ describe('status bar compact label while hydrating', () => {
         expect(labels.at(-1)).toMatch(/12\/40/);
         expect(root.querySelector('progress')?.className).not.toContain('is-hidden');
         expect(root.querySelector('progress')?.value).toBe(30);
+    });
+
+    it('Consumer boot hydrate paints Restoring counts, not a bare Starting up', () => {
+        const labels: string[] = [];
+        const root = stubEl();
+        root.setAttr = (key: string, value: string) => { if (key === 'aria-label') labels.push(value); };
+        const report = IndexStatusReporter.compute({
+            ...idle,
+            booting: true,
+            hydrating: true,
+            mayFullReindex: false,
+            bootDecisionPending: true,
+            searchableChunks: null,
+            inventoryFiles: 0,
+            hydrateProgress: { done: 18, total: 63 },
+        });
+        expect(report.mode).toBe('restoring');
+        expect(report.compact).toMatch(/18\/63/);
+        const bar = new IndexStatusBar();
+        bar.mount(root as unknown as HTMLElement, {
+            getStats: async () => ({ files: 0, chunks: 0, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null }),
+            getReport: () => report,
+            onOpenSettings: () => {},
+            onRecover: () => {},
+        });
+        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe('18/63');
+        expect(labels.at(-1)).toMatch(/Restoring/);
+        expect(labels.at(-1)).toMatch(/18\/63/);
+        expect(labels.at(-1)).not.toMatch(/Starting/);
+        expect(root.querySelector('progress')?.className).not.toContain('is-hidden');
     });
 
     it('leftover catch-up job during restoring still shows hydrate counts, not Indexing', () => {

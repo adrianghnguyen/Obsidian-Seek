@@ -70,6 +70,7 @@ export const CI_TEST_AREAS = {
         'src/ui/index-status-races.test.ts',
         'src/ui/index-status-degrade.test.ts',
         'src/ui/index-status-hydrate-progress.test.ts',
+        'src/ui/index-status-boot-hydrate.test.ts',
         'src/ui/index-status-settings.test.ts',
     ],
     'search': [
