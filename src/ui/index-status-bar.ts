@@ -395,6 +395,10 @@ export class IndexStatusBar {
     }
 
     private paintFromSnapshot(snap: IndexProgressSnapshot, force: boolean): void {
+        if (snap.health === 'updating') {
+            this.paintBare(snap);
+            return;
+        }
         if (snap.phase === 'stuck' || snap.phase === 'locked' || snap.phase === 'error') {
             this.paintBare(snap);
             return;

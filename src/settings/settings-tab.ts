@@ -453,6 +453,10 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         new Setting(containerEl).setName('Index').setHeading();
 
         this.renderStatusCard(containerEl);
+        containerEl.createEl('p', {
+            cls: 'setting-item-description',
+            text: 'Small note edits show a yellow status dot; larger catch-ups show the numbered indexing badge in the status bar.',
+        });
 
         // Exclusion-change banner: shows while a backfill for a detected change in
         // Obsidian's "Excluded files" is running (e.g. a folder was un-excluded).

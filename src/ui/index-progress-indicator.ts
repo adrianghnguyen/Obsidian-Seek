@@ -97,10 +97,12 @@ export function unitsFromCounts(
 export type IndexProgressModeHint =
     | IndexProgressWorkPhase
     | 'ok'
+    | 'updating'
     | 'full-reindex';
 
 export function workPhaseFromMode(mode: IndexProgressModeHint): IndexProgressWorkPhase {
     if (mode === 'ok') return 'ready';
+    if (mode === 'updating') return 'catching-up';
     if (mode === 'full-reindex') return 'indexing';
     return mode;
 }
@@ -152,7 +154,7 @@ export function computeIndexProgressIndicator(input: IndexProgressIndicatorInput
         dropRecovering: input.dropRecovering,
     });
 
-    if (input.mode === 'stuck' || input.mode === 'locked' || input.mode === 'error' || input.mode === 'none') {
+    if (input.mode === 'stuck' || input.mode === 'locked' || input.mode === 'error' || input.mode === 'none' || input.mode === 'updating') {
         return { phase: workPhaseFromMode(input.mode), units: null };
     }
 

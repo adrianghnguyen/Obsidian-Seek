@@ -66,7 +66,7 @@ function evaluateSnapshot(s: BootSnapshot) {
         reason: null,
         indexing: !!(s.catchUpRunning || s.flushing || s.indexing),
         catchUpPending: s.catchUpPending,
-        job: s.job ? { done: s.job.done, total: s.job.total } : null,
+        job: s.job ? { done: s.job.done, total: s.job.total, kind: s.job.kind } : null,
         searchableChunks: s.inventoryChunks,
         inventoryFiles: s.inventoryFiles,
         stuck: s.stuck,
@@ -106,7 +106,7 @@ function evaluateSnapshot(s: BootSnapshot) {
         reason: null,
         peerSyncPending: false,
         waitingForSidecar: false,
-        job: s.job ? { done: s.job.done, total: s.job.total } : null,
+        job: s.job ? { done: s.job.done, total: s.job.total, kind: s.job.kind } : null,
         uiHealth,
         statusReport: report,
     });
@@ -139,7 +139,7 @@ function evaluateSnapshotLocked(s: BootSnapshot) {
         reason: null,
         indexing: !!(s.catchUpRunning || s.flushing || s.indexing),
         catchUpPending: s.catchUpPending,
-        job: s.job ? { done: s.job.done, total: s.job.total } : null,
+        job: s.job ? { done: s.job.done, total: s.job.total, kind: s.job.kind } : null,
         searchableChunks: s.inventoryChunks,
         inventoryFiles: s.inventoryFiles,
         storeLocked: s.storeLocked,
@@ -179,7 +179,7 @@ function evaluateSnapshotLocked(s: BootSnapshot) {
         reason: null,
         peerSyncPending: false,
         waitingForSidecar: false,
-        job: s.job ? { done: s.job.done, total: s.job.total } : null,
+        job: s.job ? { done: s.job.done, total: s.job.total, kind: s.job.kind } : null,
         uiHealth,
         statusReport: report,
     });
@@ -253,20 +253,38 @@ describe('Ready means searchable (status contract)', () => {
         expect(isIndexWaitKind(r.loadSpec.kind)).toBe(true);
     });
 
-    it('incremental catch-up: populated index stays searchable (regression — sandbox T5 HOLD)', () => {
+    it('minor catch-up: populated hydrated vault uses quiet Updating chrome', () => {
         const snap: BootSnapshot = {
             label: 'catch-up with chunks',
             inventoryChunks: 10948,
             inventoryFiles: 3002,
             warmPhase: null,
+            goodEnough: true,
             catchUpRunning: true,
             job: { done: 3, total: 15, kind: 'catchup' },
         };
         const r = evaluateSnapshot(snap);
-        expect(r.uiHealth).toBe('indexing');
+        expect(r.uiHealth).toBe('updating');
+        expect(r.footer.kind).toBe('updating');
+        expect(r.footer.badgeCount).toBeUndefined();
         expect(r.cliGate).toBeNull();
         expect(r.loadSpec.kind).toBe('resting');
         expect(isIndexWaitKind(r.loadSpec.kind)).toBe(false);
+    });
+
+    it('catch-up at or above 1% of indexed files stays prominent Indexing', () => {
+        const snap: BootSnapshot = {
+            label: 'large catch-up pass',
+            inventoryChunks: 5000,
+            inventoryFiles: 3000,
+            warmPhase: null,
+            goodEnough: true,
+            catchUpRunning: true,
+            job: { done: 0, total: 30, kind: 'catchup' },
+        };
+        const r = evaluateSnapshot(snap);
+        expect(r.uiHealth).toBe('indexing');
+        expect(r.footer.kind).toBe('indexing');
     });
 
     it('full rebuild: never Ready; modal wait and CLI blocked', () => {

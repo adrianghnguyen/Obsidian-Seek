@@ -10,6 +10,7 @@ import {
     INDEX_STARTING_LABEL,
     INDEX_RESTORING_LABEL,
     INDEX_INDEXING_LABEL,
+    INDEX_UPDATING_LABEL,
     INDEX_UP_TO_DATE_LABEL,
     INDEX_ERROR_LABEL,
     INDEX_LOCKED_LABEL,
@@ -27,7 +28,7 @@ import {
     type IndexProgressWalkState,
 } from './index-progress-indicator';
 
-export type IndexStatusHealth = 'none' | 'starting' | 'restoring' | 'ok' | 'indexing' | 'error' | 'locked' | 'stuck';
+export type IndexStatusHealth = 'none' | 'starting' | 'restoring' | 'ok' | 'updating' | 'indexing' | 'error' | 'locked' | 'stuck';
 type ReporterJobKind = 'full' | 'delta' | 'catchup';
 
 export const INDEX_FULL_REINDEX_LABEL = 'Reindexing';
@@ -60,6 +61,7 @@ export const INDEX_STATUS_COPY: Record<IndexStatusMode, IndexStatusCopy> = {
     'full-reindex': { tone: 'accent', label: 'Reindexing…', compact: INDEX_FULL_REINDEX_LABEL },
     'catching-up': { tone: 'accent', label: 'Catching up…', compact: INDEX_CATCHING_UP_LABEL },
     indexing: { tone: 'accent', label: 'Indexing…', compact: INDEX_INDEXING_LABEL },
+    updating: { tone: 'warn', label: 'Updating…', compact: INDEX_UPDATING_LABEL },
     ok: { tone: 'good', label: 'Up to date', compact: INDEX_UP_TO_DATE_LABEL },
     error: { tone: 'bad', label: 'Index error', compact: INDEX_ERROR_LABEL },
     locked: { tone: 'bad', label: 'Index locked', compact: INDEX_LOCKED_LABEL },
@@ -68,6 +70,7 @@ export const INDEX_STATUS_COPY: Record<IndexStatusMode, IndexStatusCopy> = {
 
 /** Badge/dot chrome — full-reindex still uses the numbered indexing badge. */
 export function indexStatusHealth(mode: IndexStatusMode): IndexStatusHealth {
+    if (mode === 'updating') return 'updating';
     if (mode === 'full-reindex' || mode === 'catching-up') return 'indexing';
     if (mode === 'recovering') return 'restoring';
     if (mode === 'verifying') return 'starting';
@@ -79,6 +82,7 @@ export const INDEX_STATUS_HEALTH: Record<IndexStatusHealth, IndexStatusCopy> = {
     starting: INDEX_STATUS_COPY.starting,
     restoring: INDEX_STATUS_COPY.restoring,
     ok: INDEX_STATUS_COPY.ok,
+    updating: INDEX_STATUS_COPY.updating,
     indexing: INDEX_STATUS_COPY.indexing,
     error: INDEX_STATUS_COPY.error,
     locked: INDEX_STATUS_COPY.locked,
@@ -163,7 +167,7 @@ export function indexStatusModeFromUi(
         hydrating?: boolean;
     },
 ): IndexStatusMode {
-    if (ui === 'locked' || ui === 'stuck') return ui;
+    if (ui === 'locked' || ui === 'stuck' || ui === 'updating') return ui;
     if (extras?.verifying) return 'verifying';
     if (extras?.dropRecovering && (ui === 'restoring' || ui === 'starting')) return 'recovering';
     if (jobKind === 'full') return 'full-reindex';
@@ -228,7 +232,7 @@ export class IndexStatusReporter {
         if (mode === 'stuck' && input.stuckWhy === 'indexing') {
             copy = { ...copy, label: 'Indexing stuck' };
         }
-        const blocked = mode === 'stuck' || mode === 'locked' || mode === 'error' || mode === 'ok' || mode === 'none';
+        const blocked = mode === 'stuck' || mode === 'locked' || mode === 'error' || mode === 'ok' || mode === 'updating' || mode === 'none';
         const units = blocked ? null : progress.units;
         if (units) copy = withIndicatorCopy(copy, units);
         return {

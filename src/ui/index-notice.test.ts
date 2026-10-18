@@ -5,6 +5,8 @@ import {
     resolveIndexLoadPhase,
     resolveCliSearchGate,
     resolveIndexUiStatus,
+    isMinorCatchUpPresentation,
+    MINOR_CATCHUP_FRACTION,
     resolveSidecarWait,
     sidecarHydrateHealedIndex,
     retainIndexInventory,
@@ -568,8 +570,29 @@ describe('resolveIndexUiStatus', () => {
         expect(resolveIndexUiStatus({ ...idle, health: 'degraded', reason: 'version', indexing: true })).toBe('error');
     });
 
-    it('real catch-up with a job is Indexing', () => {
-        expect(resolveIndexUiStatus({ ...idle, indexing: true, job: { done: 3, total: 15 } })).toBe('indexing');
+    it('real catch-up with a job is Indexing when pass is large vs inventory', () => {
+        expect(resolveIndexUiStatus({
+            ...idle, goodEnough: true, indexing: true,
+            inventoryFiles: 40, job: { done: 3, total: 15, kind: 'catchup' },
+        })).toBe('indexing');
+    });
+
+    it('minor catch-up on a hydrated vault is Updating, not Indexing', () => {
+        expect(resolveIndexUiStatus({
+            ...idle, goodEnough: true, indexing: true,
+            inventoryFiles: 3000, job: { done: 0, total: 29, kind: 'catchup' },
+        })).toBe('updating');
+        expect(resolveIndexUiStatus({
+            ...idle, goodEnough: true, indexing: true,
+            inventoryFiles: 3000, job: { done: 0, total: 30, kind: 'catchup' },
+        })).toBe('indexing');
+    });
+
+    it('full reindex never uses quiet Updating', () => {
+        expect(resolveIndexUiStatus({
+            ...idle, goodEnough: true, indexing: true,
+            inventoryFiles: 3000, job: { done: 0, total: 5, kind: 'full' },
+        })).toBe('indexing');
     });
 
     it('queued catch-up on a populated index is Ready, not Indexing', () => {
@@ -626,6 +649,21 @@ describe('resolveIndexUiStatus', () => {
         expect(resolveIndexUiStatus({ ...idle, stuck: true, searchableChunks: null })).toBe('stuck');
         // Store-locked has its own recovery ladder and stays the more specific state.
         expect(resolveIndexUiStatus({ ...idle, stuck: true, storeLocked: true })).toBe('locked');
+    });
+});
+
+describe('isMinorCatchUpPresentation', () => {
+    it(`uses ${MINOR_CATCHUP_FRACTION} of indexed files as the threshold`, () => {
+        const base = {
+            goodEnough: true,
+            inventoryFiles: 3000,
+            indexingActive: true,
+            job: { done: 0, total: 29, kind: 'catchup' as const },
+        };
+        expect(isMinorCatchUpPresentation(base)).toBe(true);
+        expect(isMinorCatchUpPresentation({ ...base, job: { ...base.job!, total: 30 } })).toBe(false);
+        expect(isMinorCatchUpPresentation({ ...base, goodEnough: false })).toBe(false);
+        expect(isMinorCatchUpPresentation({ ...base, job: { ...base.job!, kind: 'full' } })).toBe(false);
     });
 });
 
