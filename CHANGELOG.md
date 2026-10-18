@@ -4,6 +4,30 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.15.0
+
+Index status, cross-device sync, consumer hydrate, recovery controls, one job at a time, and quieter catch-up on large vaults.
+
+### Added
+
+- **Index progress submodule.** Status bar, Settings Index, search footer, embed diagnostics, coverage headlines, and Danger Zone refresh read percent, remaining, rates, ETA, GPU occupancy, batch size, and coverage headline from one snapshot. Verify-only sidecar walks show **Verifying**; `catchUpPending` shows **Catching up**; recover/force reset latch **Recovering**.
+- **Settings → Index → Sync index across devices** is one toggle (no folder picker). Seek stores index files in vault-root **`Seek Index/`** for Obsidian Sync / iCloud; turning sync on migrates hidden index files safely. Hidden `.obsidian` index location is an Expert option with a multi-device warning.
+- **Settings → Index → Danger Zone.** **Recover search index** and **Force reset search index** beside Full reindex and Reset to defaults; both call existing self-heal paths and refresh status chrome. Consumer force reset restores from the lead device’s sidecar — it does not start a producer full reindex.
+
+### Changed
+
+- **Auto index role:** the device with the newest full rebuild leads; other computers encode new notes locally and write sidecar shards the lead can copy. Full reindex, shard deletion, and model/vector changes stay on the lead.
+- **Full reindex** overlaps GPU batches, tokenizes ahead of forward passes, and keeps the encoder busy while IndexedDB persists; live embed stats follow the current walk. Sidecar hydrate reuses one jsonl catalog and commits FileRecords with leftover chunks in one write.
+- **Index coverage by folder** sits under **Embedding pass**, collapsed by default; consumer vs producer copy stays honest; metrics right-align in-box.
+- **Quiet catch-up on hydrated vaults.** When catch-up touches less than 1% of indexed notes, the status bar shows a **yellow Updating dot** instead of the numbered indexing badge and 0% bar; search footer and Settings Index use the same **Updating** signal (hover still shows pass detail).
+
+### Fixed
+
+- **Consumer boot hydrate** shows **Restoring** `done/total · percent` on status bar, Settings Index, and search footer — not static **Starting up**. Hydrate-only devices stay consumer; sidecar hydrate no longer paints **1/vault · 1%** when IndexedDB already has hundreds of notes.
+- **One index job at a time.** Resume indexing, Recover, Full reindex, and Force reset join the live pass instead of stacking a second job; duplicate Recover while recovery runs is a no-op.
+- **Drop / restore races, startup stuck, and in-plugin full reindex** — confirmed full reindex aborts catch-up/hydrate without Obsidian quit; aborted reindex resumes catch-up instead of idle 100%; stall guard respects healthy GPU+disk overlap; status bar **Ready** is the green dot when coverage is complete.
+- **Shared status snapshot** on bar, Settings Index, and search modal footer (Reindexing / Indexing / Restoring labels match). Consumer boot after hydrate no longer sits on **Startup stuck** when fleet preflight is consumer-safe.
+
 ## 1.15.0-rc.8
 
 ### Changed
