@@ -9,6 +9,11 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 ### Changed
 - **Quiet catch-up on hydrated vaults.** When a catch-up pass touches less than 1% of indexed notes, the status bar shows a **yellow Updating dot** instead of the numbered indexing badge, 0% progress bar, and file fraction. Passes at or above 1% (and full reindexes) keep the prominent indexing chrome. Search modal footer and Settings Index use the same **Updating** signal; hover still shows pass detail.
 
+## 1.15.0-rc.7
+
+### Fixed
+- **One index job at a time.** Resume indexing, Recover search index, Full reindex, and Force reset join the live Recovering / Indexing / Restoring (or catch-up) pass instead of starting a second one. A second Recover while recovery is already running is a no-op. A new recover or reindex replaces a job only when that job is stuck, stalled, locked, or wedged.
+
 ## 1.15.0-rc.6
 
 Index chrome reads one progress snapshot; first tagged build that also includes Sync index everywhere (#75 / 1.15.0-rc.5, untagged on main).

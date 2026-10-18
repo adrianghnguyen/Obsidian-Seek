@@ -1418,7 +1418,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         this.jobStartedAt = performance.now();
         this.rerender();
 
-        void this.plugin.runFullReindex({ skipConfirm: true, takeover: true }).then(() => {
+        void this.plugin.runFullReindex({ skipConfirm: true }).then(() => {
             this.reindexStarting = false;
             this.stats = null;
             this.rerender();
