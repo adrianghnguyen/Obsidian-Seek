@@ -579,7 +579,7 @@ export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
         return { kind: 'updating', label: INDEX_UPDATING_LABEL, icon: 'refresh-cw', tone: 'warn' };
     }
     if (input.uiHealth === 'indexing'
-        || (input.uiHealth !== 'ok' && input.uiHealth !== 'updating' && (
+        || (input.uiHealth !== 'ok' && (
             input.kind === 'indexing'
             || input.phase === 'indexing'
             || (input.job != null && input.job.total > 0)
