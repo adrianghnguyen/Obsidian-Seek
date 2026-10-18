@@ -1303,6 +1303,10 @@
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-orange) 22%, transparent);
     animation: seek-dot-pulse 1.6s ease-in-out infinite;
 }
+.seek-dot-warn {
+    background: var(--color-yellow);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-yellow) 22%, transparent);
+}
 @keyframes seek-dot-pulse {
     0%, 100% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-orange) 22%, transparent); }
     50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--color-orange) 38%, transparent); }

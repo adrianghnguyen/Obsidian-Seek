@@ -4,6 +4,11 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.15.0-rc.8
+
+### Changed
+- **Quiet catch-up on hydrated vaults.** When a catch-up pass touches less than 1% of indexed notes, the status bar shows a **yellow Updating dot** instead of the numbered indexing badge, 0% progress bar, and file fraction. Passes at or above 1% (and full reindexes) keep the prominent indexing chrome. Search modal footer and Settings Index use the same **Updating** signal; hover still shows pass detail.
+
 ## 1.15.0-rc.7
 
 ### Fixed

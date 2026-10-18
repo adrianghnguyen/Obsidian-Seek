@@ -53,6 +53,7 @@ export const INDEX_STATUS_HEALTH = {
     starting: INDEX_STATUS_COPY.starting,
     restoring: INDEX_STATUS_COPY.restoring,
     ok: INDEX_STATUS_COPY.ok,
+    updating: INDEX_STATUS_COPY.updating,
     indexing: INDEX_STATUS_COPY.indexing,
     error: INDEX_STATUS_COPY.error,
     locked: INDEX_STATUS_COPY.locked,
@@ -96,7 +97,9 @@ export function indexWaitCardModel(input: {
         const showHydrate = (input.health === 'starting' || input.health === 'restoring') ? hydrate : null;
         return { health: input.health, stats: null, job: null, hydrate: showHydrate, progress: input.progress ?? null };
     }
-    const job = input.job && input.job.total > 0 && input.health === 'indexing' && !hydrate
+    const job = input.job && input.job.total > 0
+        && (input.health === 'indexing' || input.health === 'updating')
+        && !hydrate
         ? input.job
         : null;
     return { health: input.health, stats: input.stats ?? null, job, hydrate, progress: input.progress ?? null };

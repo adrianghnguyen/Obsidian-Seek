@@ -331,6 +331,25 @@ describe('IndexStatusBar', () => {
         expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-pending');
     });
 
+    it('paints yellow Updating dot without badge or progress for minor catch-up', () => {
+        const snap = buildIndexProgressSnapshot({
+            report: reportOf('updating', 'updating'),
+            job: { done: 0, total: 15, kind: 'catchup' },
+            speed: { done: 0, total: 15, chunksDone: 0, tokensDone: 0, elapsedMs: 0, paused: false, kind: 'catchup' },
+            inventoryFiles: 3000,
+            inventoryChunks: 9000,
+        });
+        const root = stubEl();
+        const bar = new IndexStatusBar();
+        bar.mount(root as unknown as HTMLElement, { ...hooks, getSnapshot: () => snap });
+        bar.show(15, 'Seek: indexing 15 notes…', { id: 1, kind: 'catchup' });
+        bar.update(0, 15, undefined, 1);
+        expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)).toBeNull();
+        expect(root.querySelector('progress')?.className).toContain('is-hidden');
+        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe('Seek');
+        expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-warn');
+    });
+
     it('paints the orange pending dot while canonical health is Starting', () => {
         let health: 'starting' | 'restoring' | 'ok' = 'starting';
         const root = stubEl();
@@ -400,6 +419,12 @@ describe('indexWaitCardModel', () => {
             .toEqual({ health: 'starting', stats: null, job: null, hydrate: null, progress: null });
         expect(indexWaitCardModel({ health: 'restoring', stats: inventory }))
             .toEqual({ health: 'restoring', stats: null, job: null, hydrate: null, progress: null });
+    });
+
+    it('keeps quiet Updating health while still exposing the coordinator job', () => {
+        const model = indexWaitCardModel({ health: 'updating', stats: inventory, job: { done: 2, total: 15 } });
+        expect(model.health).toBe('updating');
+        expect(model.job).toEqual({ done: 2, total: 15 });
     });
 
     it('keeps the coordinator job as the indexing source of truth', () => {

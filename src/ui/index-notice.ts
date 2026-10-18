@@ -120,6 +120,7 @@ export const INDEX_RESTORING_LABEL = 'Restoring';
 export const INDEX_MODEL_LOADING_LABEL = 'Loading';
 export const INDEX_ERROR_LABEL = 'Error';
 export const INDEX_INDEXING_LABEL = 'Indexing';
+export const INDEX_UPDATING_LABEL = 'Updating';
 export const INDEX_UP_TO_DATE_LABEL = 'Ready';
 export const INDEX_LOCKED_TITLE = 'Index locked';
 export const INDEX_LOCKED_MSG = 'Seek cannot open the search index database. Run **Recover search index** in Seek settings (Retry first; rebuild if it stays locked), or quit Obsidian if it stays locked.';
@@ -128,10 +129,34 @@ export const INDEX_STUCK_LABEL = 'Stuck';
 
 export type IndexLoadPhase = 'hydrating' | 'indexing' | 'idle';
 export type IndexLoadKind = 'resting' | 'starting' | 'restoring' | 'indexing' | 'onboarding' | 'locked' | 'stuck';
-export type IndexFooterKind = 'restoring' | 'starting' | 'error' | 'indexing' | 'model-loading' | 'no-index' | 'up-to-date' | 'locked' | 'stuck';
+export type IndexFooterKind = 'restoring' | 'starting' | 'error' | 'indexing' | 'updating' | 'model-loading' | 'no-index' | 'up-to-date' | 'locked' | 'stuck';
 export type IndexFooterTone = 'info' | 'accent' | 'bad' | 'warn' | 'mid' | 'good';
 /** Shared by status bar, settings card, modal, and CLI — one precedence tree. */
-export type IndexUiStatus = 'none' | 'starting' | 'restoring' | 'ok' | 'indexing' | 'error' | 'locked' | 'stuck';
+export type IndexUiStatus = 'none' | 'starting' | 'restoring' | 'ok' | 'updating' | 'indexing' | 'error' | 'locked' | 'stuck';
+
+/** Catch-up passes smaller than this fraction of indexed files use quiet chrome (yellow dot). */
+export const MINOR_CATCHUP_FRACTION = 0.01;
+
+export interface MinorCatchUpPresentationInput {
+    goodEnough?: boolean;
+    inventoryFiles: number | null;
+    job?: { done: number; total: number; kind?: 'full' | 'delta' | 'catchup' } | null;
+    /** Catch-up / flush / reindex embed activity, or an active coordinator job. */
+    indexingActive: boolean;
+}
+
+/** Quiet status-bar chrome for small catch-up on a hydrated vault (<1% of indexed files). */
+export function isMinorCatchUpPresentation(input: MinorCatchUpPresentationInput): boolean {
+    if (!input.indexingActive) return false;
+    const job = input.job;
+    if (!job || job.total <= 0) return false;
+    if (!input.goodEnough) return false;
+    const inventory = input.inventoryFiles ?? 0;
+    if (inventory <= 0) return false;
+    if (job.kind === 'full') return false;
+    if (job.kind != null && job.kind !== 'catchup' && job.kind !== 'delta') return false;
+    return job.total / inventory < MINOR_CATCHUP_FRACTION;
+}
 
 export interface IndexLoadFlags {
     hydrating: boolean;
@@ -194,7 +219,7 @@ export interface IndexFooterInput {
     reason?: DegradedReason;
     peerSyncPending?: boolean;
     waitingForSidecar?: boolean;
-    job?: { done: number; total: number; paused?: boolean } | null;
+    job?: { done: number; total: number; paused?: boolean; kind?: 'full' | 'delta' | 'catchup' } | null;
     remaining?: number | null;
     uiHealth?: IndexUiStatus;
     /** Authoritative snapshot — footer labels must match status bar + Settings. */
@@ -253,7 +278,7 @@ export interface IndexUiStatusInput {
     indexing: boolean;
     /** Queued catch-up. Not indexing until embeds run. Empty+pending → starting, not none. */
     catchUpPending?: boolean;
-    job?: { done: number; total: number } | null;
+    job?: { done: number; total: number; kind?: 'full' | 'delta' | 'catchup' } | null;
     searchableChunks: number | null;
     inventoryFiles: number | null;
     /**
@@ -303,7 +328,17 @@ export function resolveIndexUiStatus(input: IndexUiStatusInput): IndexUiStatus {
     const jobActive = input.indexing || (input.job != null && input.job.total > 0);
     if (input.dropRecovering && !jobActive) return 'restoring';
     if (input.health === 'degraded' || input.reason === 'peer-ahead') return 'error';
-    if (jobActive) return 'indexing';
+    if (jobActive) {
+        if (isMinorCatchUpPresentation({
+            goodEnough: input.goodEnough,
+            inventoryFiles: input.inventoryFiles,
+            job: input.job,
+            indexingActive: true,
+        })) {
+            return 'updating';
+        }
+        return 'indexing';
+    }
     if (input.bootDecisionPending || chunks == null) return 'starting';
     if (emptyInventory) {
         // Queued first build — not "no index", not "still indexing your notes".
@@ -345,7 +380,7 @@ export function sidecarHydrateHealedIndex(result: SidecarHydrateWaitResult | nul
 }
 
 /** CLI / headless search gate — null when the index checklist is satisfied. */
-export type CliSearchGateHealth = 'ok' | 'starting' | 'restoring' | 'indexing' | 'error' | 'none' | 'locked' | 'stuck';
+export type CliSearchGateHealth = 'ok' | 'updating' | 'starting' | 'restoring' | 'indexing' | 'error' | 'none' | 'locked' | 'stuck';
 
 export interface CliSearchGateInput {
     warmPhase: 'starting' | 'restoring' | null;
@@ -384,6 +419,7 @@ export function resolveCliSearchGate(input: CliSearchGateInput): string | null {
     if (populated) {
         if (input.warmPhase === 'starting' || input.uiHealth === 'starting') return CLI_SEARCH_WARMING;
         if (input.warmPhase === 'restoring' || input.uiHealth === 'restoring') return CLI_SEARCH_WARMING;
+        if (input.uiHealth === 'updating' || input.uiHealth === 'ok') return null;
     }
     if (populated) return null;
     // Starting/restoring with nothing to serve keeps the old refusal copy.
@@ -483,6 +519,9 @@ export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
         if (report.mode === 'recovering') {
             return { kind: 'restoring', label: report.compact, icon: 'refresh-cw', tone: report.tone as IndexFooterTone };
         }
+        if (report.mode === 'updating' || report.health === 'updating') {
+            return { kind: 'updating', label: report.compact, icon: 'refresh-cw', tone: 'warn' };
+        }
         if (report.mode === 'catching-up') {
             return { kind: 'indexing', label: report.compact, icon: '', tone: 'accent' };
         }
@@ -535,6 +574,9 @@ export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
     }
     if (input.health === 'recovering') {
         return { kind: 'starting', label: INDEX_STARTING_LABEL, icon: 'refresh-cw', tone: 'info' };
+    }
+    if (input.uiHealth === 'updating') {
+        return { kind: 'updating', label: INDEX_UPDATING_LABEL, icon: 'refresh-cw', tone: 'warn' };
     }
     if (input.uiHealth === 'indexing'
         || (input.uiHealth !== 'ok' && (
