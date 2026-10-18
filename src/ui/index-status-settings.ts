@@ -23,6 +23,12 @@ import {
     type IndexStatusJob,
     type IndexJobKind,
 } from './index-status-card';
+import {
+    INDEX_STATUS_HELP,
+    QUIET_CATCHUP_HINT,
+    resolveIndexStatusHelp,
+    type IndexUiStatus,
+} from './index-notice';
 import type { IndexJobSpeedView } from './index-status-bar';
 import type { IndexCompleteEntry, LoadEntry } from '../types/types';
 import type {
@@ -350,6 +356,7 @@ export function renderSettingsIndexStatusCard(
         eta?: string | null;
         stats: IndexStatusCardStats | null;
         job?: IndexStatusJob | null;
+        quietCatchUp?: boolean;
         coverage?: CoverageDiagView | null;
         startup?: StartupTimingView | null;
         liveElapsedMs?: number | null;
@@ -358,6 +365,12 @@ export function renderSettingsIndexStatusCard(
         embedDiag?: EmbedDiagView | null;
     },
 ): HTMLElement {
+    const statusHelp = opts.quietCatchUp
+        ? INDEX_STATUS_HELP['quiet-catchup']
+        : opts.mode === 'full-reindex' || opts.health === 'indexing'
+            ? INDEX_STATUS_HELP.indexing
+            : resolveIndexStatusHelp(opts.health as IndexUiStatus);
+    const contextHint = opts.quietCatchUp ? QUIET_CATCHUP_HINT : undefined;
     const card = renderIndexStatusCard(parent, {
         health: opts.health,
         mode: opts.mode,
@@ -369,6 +382,9 @@ export function renderSettingsIndexStatusCard(
         eta: opts.eta,
         stats: opts.stats,
         job: opts.job,
+        quietCatchUp: opts.quietCatchUp,
+        statusHelp,
+        contextHint,
     });
 
     const startup = opts.startup;

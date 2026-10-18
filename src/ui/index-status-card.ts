@@ -3,6 +3,7 @@
 // is the source of truth — inventory files/chunks from getIndexStats() must not
 // compete with that number.
 
+import { setIcon, setTooltip } from 'obsidian';
 import {
     formatStableIndexCount,
     formatStableLabelProgress,
@@ -112,7 +113,7 @@ export function indexWaitCardModel(input: {
  */
 export function renderIndexStatusBadge(
     parent: HTMLElement,
-    opts: { health: IndexStatusHealth; remaining?: number | null },
+    opts: { health: IndexStatusHealth; remaining?: number | null; quietCatchUp?: boolean },
 ): HTMLElement {
     if (opts.health === 'indexing') {
         const remaining = opts.remaining;
@@ -123,7 +124,8 @@ export function renderIndexStatusBadge(
         return badge;
     }
     const st = INDEX_STATUS_HEALTH[opts.health];
-    return parent.createSpan({ cls: `${INDEX_STATUS_DOT_CLS} seek-dot-${st.tone}` });
+    const glow = opts.quietCatchUp && opts.health === 'ok' ? ' seek-dot-glow' : '';
+    return parent.createSpan({ cls: `${INDEX_STATUS_DOT_CLS} seek-dot-${st.tone}${glow}` });
 }
 
 interface StatusMetricSlot {
@@ -237,6 +239,9 @@ export function renderIndexStatusCard(
         /** From IndexProgressSnapshot — card formats only. */
         percent?: number;
         remaining?: number | null;
+        quietCatchUp?: boolean;
+        statusHelp?: string;
+        contextHint?: string;
     },
 ): HTMLElement {
     const model = indexWaitCardModel(opts);
@@ -248,11 +253,25 @@ export function renderIndexStatusCard(
     const main = card.createDiv({ cls: 'seek-status-card-main' });
     const health = main.createDiv({ cls: 'seek-status-health' });
     const remaining = opts.remaining ?? null;
-    renderIndexStatusBadge(health, { health: model.health, remaining });
-    health.createSpan({
+    renderIndexStatusBadge(health, {
+        health: model.health,
+        remaining,
+        quietCatchUp: opts.quietCatchUp,
+    });
+    const labelRow = health.createDiv({ cls: 'seek-status-label-row' });
+    labelRow.createSpan({
         cls: 'seek-status-label',
         text: aligning ? INDEX_ALIGNING_EXCLUSIONS_LABEL : st.label,
     });
+    if (opts.statusHelp) {
+        const info = labelRow.createSpan({ cls: 'seek-status-info' });
+        setIcon(info, 'info');
+        info.setAttr('aria-label', opts.statusHelp);
+        setTooltip(info, opts.statusHelp, { delay: 300 });
+    }
+    if (opts.contextHint) {
+        card.createDiv({ cls: 'seek-status-context-hint', text: opts.contextHint });
+    }
 
     main.createDiv({ cls: 'seek-status-sep' });
     const metrics = main.createDiv({ cls: 'seek-status-metrics' });
