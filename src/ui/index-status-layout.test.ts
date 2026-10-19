@@ -155,7 +155,7 @@ describe('reporter compact chrome (bar + footer)', () => {
             .toBe(formatStableFileFraction(9, total));
         expect(barA.root.querySelector('.seek-status-bar-files')?.textContent?.length)
             .toBe(barB.root.querySelector('.seek-status-bar-files')?.textContent?.length);
-        expect(barA.labels.at(-1)).toBe(`Seek: ${a.compact}`);
+        expect(barA.labels.at(-1)).toBe(a.help);
         expect(barA.root.querySelector('progress')?.value).toBe(indexPercent(9, total));
     });
 

@@ -69,6 +69,7 @@ export const CI_TEST_AREAS = {
         'src/ui/index-eta.test.ts',
         'src/ui/index-notice.test.ts',
         'src/ui/index-status-bar.test.ts',
+        'src/ui/index-status-help.test.ts',
         'src/ui/index-progress-snapshot.test.ts',
         'src/ui/index-progress-indicator.test.ts',
         'src/ui/index-status-contract.test.ts',

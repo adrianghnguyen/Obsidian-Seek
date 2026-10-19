@@ -165,7 +165,13 @@ export function classifyCatchUpPresentation(input: CatchUpPresentationInput): Ca
 
 export const QUIET_CATCHUP_HINT = 'Re-embedding a few edited notes.';
 
-export type IndexStatusHelpKey = IndexUiStatus | 'quiet-catchup';
+export type IndexStatusHelpKey =
+    | IndexUiStatus
+    | 'quiet-catchup'
+    | 'catching-up'
+    | 'full-reindex'
+    | 'verifying'
+    | 'recovering';
 
 export const INDEX_STATUS_HELP: Record<IndexStatusHelpKey, string> = {
     none: 'This vault has no search index yet. Build one in Seek settings to search.',
@@ -174,6 +180,10 @@ export const INDEX_STATUS_HELP: Record<IndexStatusHelpKey, string> = {
     ok: 'Index matches your vault. Edits queue background catch-up automatically.',
     'quiet-catchup': 'Search is up to date. Seek is updating embeddings for a small number of edited notes in the background.',
     updating: 'Seek is catching up on a larger batch of edited notes. Search stays available; the yellow dot means a bigger background pass.',
+    'catching-up': 'Seek is embedding queued edits so search stays current. The orange badge shows files left in this pass.',
+    'full-reindex': 'Seek is rebuilding the whole vault index. Progress counts are for this full pass.',
+    verifying: 'Seek is walking the vault to verify sidecar index files — no re-embedding unless a mismatch is found.',
+    recovering: 'Seek is recovering index files after a failed drop or reset — restoring from disk before search catches up.',
     indexing: 'Seek is rebuilding or indexing a large share of notes. Progress and counts apply.',
     error: 'The index needs attention — check Settings → Seek for recovery options.',
     locked: 'Seek could not open the index database. Use Recover search index in Settings.',
@@ -259,6 +269,8 @@ export interface IndexFooterInput {
         tone: string;
         health: IndexUiStatus;
         label?: string;
+        /** Longer hover / aria copy — same producer as status bar tooltips. */
+        help?: string;
         hydrateProgress?: { done: number; total: number; percent?: number } | null;
         progress?: { phase: string; units: { done: number; total: number; percent: number; determinate: boolean } | null };
     };
@@ -271,6 +283,8 @@ export interface IndexFooterStatus {
     tone: IndexFooterTone;
     /** When set, footer paints the status-bar numbered badge instead of a lucide icon. */
     badgeCount?: number | null;
+    /** Descriptive tooltip — matches status bar / Settings (i) help. */
+    help?: string;
 }
 
 // Hydrate holds the write mutex, so `writing` must not win over an explicit hydrating
@@ -537,32 +551,33 @@ export function isIndexWaitKind(kind: IndexLoadKind): boolean {
 export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
     const report = input.statusReport;
     if (report) {
+        const footHelp = report.help;
         if (report.mode === 'locked' || report.health === 'locked') {
-            return { kind: 'locked', label: report.compact, icon: 'lock', tone: 'bad' };
+            return { kind: 'locked', label: report.compact, icon: 'lock', tone: 'bad', help: footHelp };
         }
         if (report.mode === 'stuck' || report.health === 'stuck') {
-            return { kind: 'stuck', label: report.compact, icon: 'alert-triangle', tone: 'bad' };
+            return { kind: 'stuck', label: report.compact, icon: 'alert-triangle', tone: 'bad', help: footHelp };
         }
         if (report.mode === 'verifying') {
-            return { kind: 'starting', label: report.compact, icon: 'search', tone: 'info' };
+            return { kind: 'starting', label: report.compact, icon: 'search', tone: 'info', help: footHelp };
         }
         if (report.mode === 'recovering') {
-            return { kind: 'restoring', label: report.compact, icon: 'refresh-cw', tone: report.tone as IndexFooterTone };
+            return { kind: 'restoring', label: report.compact, icon: 'refresh-cw', tone: report.tone as IndexFooterTone, help: footHelp };
         }
         if (report.mode === 'updating' || report.health === 'updating') {
-            return { kind: 'updating', label: report.compact, icon: 'refresh-cw', tone: 'warn' };
+            return { kind: 'updating', label: report.compact, icon: 'refresh-cw', tone: 'warn', help: footHelp };
         }
         if (report.mode === 'catching-up') {
-            return { kind: 'indexing', label: report.compact, icon: '', tone: 'accent' };
+            return { kind: 'indexing', label: report.compact, icon: '', tone: 'accent', help: footHelp };
         }
         if (report.mode === 'restoring' || report.health === 'restoring') {
-            return { kind: 'restoring', label: report.compact, icon: 'refresh-cw', tone: report.tone as IndexFooterTone };
+            return { kind: 'restoring', label: report.compact, icon: 'refresh-cw', tone: report.tone as IndexFooterTone, help: footHelp };
         }
         if (report.mode === 'starting' || report.health === 'starting') {
-            return { kind: 'starting', label: report.compact, icon: 'refresh-cw', tone: report.tone as IndexFooterTone };
+            return { kind: 'starting', label: report.compact, icon: 'refresh-cw', tone: report.tone as IndexFooterTone, help: footHelp };
         }
         if (report.mode === 'error' || report.health === 'error') {
-            return { kind: 'error', label: report.compact, icon: 'alert-triangle', tone: 'bad' };
+            return { kind: 'error', label: report.compact, icon: 'alert-triangle', tone: 'bad', help: footHelp };
         }
         if (report.mode === 'full-reindex' || report.mode === 'indexing' || report.health === 'indexing') {
             const remaining = input.remaining ?? (input.job && input.job.total > 0
@@ -574,21 +589,22 @@ export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
                 icon: '',
                 tone: 'accent',
                 badgeCount: remaining,
+                help: footHelp,
             };
         }
         if (!input.modelReady) {
             return { kind: 'model-loading', label: INDEX_MODEL_LOADING_LABEL, icon: 'refresh-cw', tone: 'warn' };
         }
         if (report.mode === 'none' || report.health === 'none') {
-            return { kind: 'no-index', label: report.compact, icon: 'circle-off', tone: 'mid' };
+            return { kind: 'no-index', label: report.compact, icon: 'circle-off', tone: 'mid', help: footHelp };
         }
-        return { kind: 'up-to-date', label: report.compact, icon: 'check', tone: 'good' };
+        return { kind: 'up-to-date', label: report.compact, icon: 'check', tone: 'good', help: footHelp };
     }
     if (input.uiHealth === 'locked') {
-        return { kind: 'locked', label: INDEX_LOCKED_LABEL, icon: 'lock', tone: 'bad' };
+        return { kind: 'locked', label: INDEX_LOCKED_LABEL, icon: 'lock', tone: 'bad', help: INDEX_STATUS_HELP.locked };
     }
     if (input.uiHealth === 'stuck' || input.reason === 'stuck') {
-        return { kind: 'stuck', label: INDEX_STUCK_LABEL, icon: 'alert-triangle', tone: 'bad' };
+        return { kind: 'stuck', label: INDEX_STUCK_LABEL, icon: 'alert-triangle', tone: 'bad', help: INDEX_STATUS_HELP.stuck };
     }
     if (input.uiHealth === 'restoring' || input.kind === 'restoring' || input.waitingForSidecar || input.peerSyncPending) {
         return { kind: 'restoring', label: INDEX_RESTORING_LABEL, icon: 'refresh-cw', tone: 'info' };
@@ -606,7 +622,7 @@ export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
         return { kind: 'starting', label: INDEX_STARTING_LABEL, icon: 'refresh-cw', tone: 'info' };
     }
     if (input.uiHealth === 'updating') {
-        return { kind: 'updating', label: INDEX_UPDATING_LABEL, icon: 'refresh-cw', tone: 'warn' };
+        return { kind: 'updating', label: INDEX_UPDATING_LABEL, icon: 'refresh-cw', tone: 'warn', help: INDEX_STATUS_HELP.updating };
     }
     if (input.uiHealth === 'indexing'
         || (input.uiHealth !== 'ok' && (

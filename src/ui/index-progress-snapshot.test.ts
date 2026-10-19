@@ -5,7 +5,7 @@ import {
     resolveIndexProgressPhase,
     type IndexProgressSnapshot,
 } from './index-progress-snapshot';
-import { INDEX_STATUS_COPY, type IndexStatusReport } from './index-status-report';
+import { INDEX_STATUS_COPY, resolveIndexStatusHelpForMode, type IndexStatusReport } from './index-status-report';
 import { indexPercent } from './index-eta';
 import { renderIndexStatusCard } from './index-status-card';
 import { formatStableFileFraction } from './index-progress-format';
@@ -24,6 +24,7 @@ function reportOf(
         label: copy.label,
         compact: copy.compact,
         tone: copy.tone,
+        help: resolveIndexStatusHelpForMode(mode),
         hydrateProgress: null,
         progress: { phase: 'ready', units: null },
         ...over,

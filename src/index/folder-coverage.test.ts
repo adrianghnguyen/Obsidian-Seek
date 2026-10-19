@@ -987,6 +987,7 @@ describe('createLiveCoverageSnapshot and flattenCoverageTree', () => {
                     label: 'Reindexing…',
                     compact: 'Reindexing',
                     tone: 'accent',
+                    help: 'Seek is rebuilding the whole vault index. Progress counts are for this full pass.',
                     hydrateProgress: null,
                     progress: { phase: 'indexing', units: null },
                 },
