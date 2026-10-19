@@ -556,11 +556,6 @@ async function hydrateFromSidecarGreedy(
         deps.onTierComplete?.(tierDetail);
         deps.log?.('sidecar-hydrate-tier', tierDetail);
 
-        if (goodEnoughReleased && tier.id === 'hydrate-tier-3d') {
-            stoppedEarly = true;
-            stopReason = 'gate-released';
-            break;
-        }
         if (freshIdsRemaining.size === 0) {
             stoppedEarly = true;
             stopReason = 'freshIds-empty';

@@ -115,6 +115,7 @@ export interface IndexProgressIndicatorInput {
     booting: boolean;
     goodEnough: boolean;
     catchUpPending?: boolean;
+    catchUpRunning?: boolean;
     mayFullReindex?: boolean | null;
     walk: IndexProgressWalkState | null;
     job: { done: number; total: number } | null;
@@ -135,6 +136,12 @@ function embedUnits(input: IndexProgressIndicatorInput): IndexProgressUnits | nu
     if (coverage) return unitsFromCounts(coverage.covered, coverage.total, { determinate: coverage.covered > 0 });
     const job = input.job;
     if (job && job.total > 0) return unitsFromCounts(job.done, job.total, { determinate: job.done > 0 });
+    const notes = Math.max(0, Math.floor(input.indexableNotes) || 0);
+    const indexed = Math.max(0, input.inventoryFiles ?? 0);
+    const catchUpQueued = !!(input.catchUpPending || input.catchUpRunning);
+    if (catchUpQueued && notes > 0 && indexed > 0) {
+        return unitsFromCounts(indexed, Math.max(indexed, notes), { determinate: true });
+    }
     return null;
 }
 

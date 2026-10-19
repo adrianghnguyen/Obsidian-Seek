@@ -146,6 +146,15 @@ export function isTransientIdbUnavailable(e: unknown): boolean {
     if (isStoreClosedError(e)) return true;
     return e instanceof Error && e.name === 'UnknownError';
 }
+
+/** Thrown when the DB version matches but required object stores were never created. */
+export const STORE_SCHEMA_INCOMPLETE = 'STORE_SCHEMA_INCOMPLETE';
+
+export function isStoreSchemaIncompleteError(e: unknown): boolean {
+    if (e instanceof Error && e.message.includes(STORE_SCHEMA_INCOMPLETE)) return true;
+    return e instanceof DOMException && e.name === 'NotFoundError';
+}
+
 // Recognize the browser's storage-quota error (disk/IDB quota exhausted). IndexedDB
 // surfaces it as a DOMException named 'QuotaExceededError' on the failed write.
 // Matched by name, not instanceof: the error may originate in another realm
@@ -162,6 +171,20 @@ const STORE_FILES = 'files';
 const STORE_META = 'meta';
 const STORE_BM25 = 'bm25';
 const STORE_SIGN_FRAME = 'sign_frame';
+
+const REQUIRED_OBJECT_STORES: readonly string[] = [
+    STORE_CHUNK_META, STORE_CHUNK_BODY, STORE_EMBEDDINGS, STORE_BINARY, STORE_FILES, STORE_META,
+];
+
+function assertRequiredObjectStores(db: IDBDatabase): void {
+    const names = db.objectStoreNames;
+    if (!names?.contains) return;
+    for (const name of REQUIRED_OBJECT_STORES) {
+        if (!names.contains(name)) {
+            throw new Error(`${STORE_SCHEMA_INCOMPLETE}: missing object store "${name}"`);
+        }
+    }
+}
 
 const META_KEY = 'config';
 const BM25_KEY = 'index';
@@ -780,11 +803,25 @@ export class IndexStore {
         if (scope) this.configure(scope, dbPrefix);
         if (this.db && !scope) return;
         const gen = this.openGeneration;
-        const opened = await openDb(this._dbName);
+        let opened = await openDb(this._dbName);
         if (this.openGeneration !== gen) {
             // close() ran while we awaited indexedDB.open — don't pin the handle.
             opened.close();
             return;
+        }
+        try {
+            assertRequiredObjectStores(opened);
+        } catch (e) {
+            if (!isStoreSchemaIncompleteError(e)) throw e;
+            console.warn('[seek] IndexedDB missing object stores — deleting and reopening with full schema');
+            opened.close();
+            await deleteDbWithBlockGuard(this._dbName);
+            opened = await openDb(this._dbName);
+            if (this.openGeneration !== gen) {
+                opened.close();
+                return;
+            }
+            assertRequiredObjectStores(opened);
         }
         const previous = this.db;
         this.db = opened;
@@ -1576,6 +1613,7 @@ export class IndexStore {
         if (this.countInFlightStore === subset && this.countInFlight) return this.countInFlight;
         const task = withDeadline((async () => {
             const db = this.requireDb();
+            assertRequiredObjectStores(db);
             const tx = db.transaction(stores, 'readonly');
             const read = (name: string) => stores.includes(name)
                 ? awaitRequest(tx.objectStore(name).count())

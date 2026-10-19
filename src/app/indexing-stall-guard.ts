@@ -36,6 +36,9 @@ export function indexingStallDetected(
     s: IndexingStallSnapshot,
 ): boolean {
     if (!indexingWorkActive(s)) return false;
+    // IndexedDB delta-apply can hold the write mutex for long stretches without
+    // bumping job counters; treating that as a stall aborts healthy catch-up.
+    if (s.writing) return false;
     return now - lastProgressAt >= timeoutMs;
 }
 

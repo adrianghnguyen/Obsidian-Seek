@@ -74,7 +74,7 @@ import { sweepOrphanTmpFiles } from './sidecar/sidecar';
 import type { SeekSettings, IndexCompleteEntry, LoadEntry, ModelDeliveryEntry, ScoredChunk, SearchEntry } from './types/types';
 import { DEFAULT_SETTINGS, migrateSettings, forceSharedSidecarLocation } from './types/types';
 import { moveSidecarFiles } from './sidecar/sidecar-location';
-import { IndexStore, indexDbPrefix, isTransientIdbUnavailable, isStoreOpTimeout } from './index/index-store';
+import { IndexStore, indexDbPrefix, isTransientIdbUnavailable, isStoreOpTimeout, isStoreSchemaIncompleteError } from './index/index-store';
 import { SeekLogger, REPORT_ARTIFACTS_DIR } from './diagnostics/logger';
 import { openDiagnosticReport } from './diagnostics/diagnostic-report';
 import { Forensics } from './diagnostics/forensics';
@@ -544,6 +544,7 @@ export default class SeekPlugin extends Plugin {
             reason: this.degradedReason,
             indexing: this.catchUpRunning || this.flushing || this.isIndexing,
             catchUpPending: this.catchUpPending,
+            catchUpRunning: this.catchUpRunning,
             job: this.indexProgress.job(),
             searchableChunks: this.indexInventoryChunks,
             inventoryFiles: this.indexInventoryFiles,
@@ -809,6 +810,11 @@ export default class SeekPlugin extends Plugin {
                     this.markIndexingStalled();
                 }
             } catch (e) {
+                if (isStoreSchemaIncompleteError(e)) {
+                    new Notice('Seek: search index schema is incomplete — rebuilding…', 8000);
+                    await this.forceResetAndReindex(this.loadGeneration);
+                    return;
+                }
                 if (isStoreOpTimeout(e)) {
                     this.markStoreWedged('indexing-stall');
                     await this.recoverWedgedStore();
@@ -849,6 +855,11 @@ export default class SeekPlugin extends Plugin {
             if (gen !== this.inventoryGen) return;
             this.publishInventory(c.files, c.chunks);
         } catch (e) {
+            if (isStoreSchemaIncompleteError(e) && gen === this.inventoryGen) {
+                new Notice('Seek: search index schema is incomplete — rebuilding…', 8000);
+                void this.forceResetAndReindex(this.loadGeneration);
+                return;
+            }
             // A timeout while a writer/index pass is active is expected contention
             // (the write mutex starves the readonly count) — NOT a wedged store.
             // Only flag a wedge when the store is otherwise idle and still hangs.
@@ -1652,6 +1663,12 @@ export default class SeekPlugin extends Plugin {
             this.noteIndexDropped();
             new Notice(`Seek: index ${result.nuked ? 'reset' : 'cleared'} — restoring…`, 6000);
             await this.recoverAfterFailedDrop('force-reset');
+            if (!this.isBootCurrent(bootGen)) return;
+            this.catchUpRunning = false;
+            if (vaultCoverageIncomplete(this.indexInventoryFiles, this.indexableNoteCount())) {
+                this.catchUpPending = true;
+                this.scheduleStartupCatchUp();
+            }
         } catch (e) {
             this.appendErrorIfCurrent('force-reset', e, bootGen);
             this.noteIndexDropped();

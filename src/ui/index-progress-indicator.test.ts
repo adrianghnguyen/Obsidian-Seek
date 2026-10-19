@@ -121,6 +121,26 @@ describe('IndexStatusReporter acceptance', () => {
         expect(report.compact).toBe(INDEX_STATUS_COPY.stuck.compact);
     });
 
+    it('catchUpPending on a populated vault shows indexed notes percent', () => {
+        const indicator = computeIndexProgressIndicator({
+            mode: 'catching-up',
+            hydrating: false,
+            waitingForSidecar: false,
+            dropRecovering: false,
+            booting: false,
+            goodEnough: true,
+            catchUpPending: true,
+            walk: null,
+            job: null,
+            inventoryFiles: 200,
+            indexableNotes: 400,
+        });
+        expect(indicator.phase).toBe('catching-up');
+        expect(indicator.units?.done).toBe(200);
+        expect(indicator.units?.total).toBe(400);
+        expect(indicator.units?.determinate).toBe(true);
+    });
+
     it('Starting with inventory is a named phase with units, not empty Starting up', () => {
         const indicator = computeIndexProgressIndicator({
             mode: 'starting',

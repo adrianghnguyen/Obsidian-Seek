@@ -2078,6 +2078,19 @@ export class SearchOrchestrator {
                         ...afterCarry.filter(f => !remainingSet.has(f.path)).map(f => f.path), // sidecar-hydrated
                         ...(embedded?.committedFilePaths ?? []),                              // actually embedded + committed
                     ];
+                } else if (!opts.embed && indexable.length > 0 && this.coord.sidecarOn()) {
+                    // Consumer / lexical catch-up: copy peer embeddings from sidecar
+                    // without loading the GPU embedder.
+                    const allDirty = indexable
+                        .map(p => this.app.vault.getAbstractFileByPath(p))
+                        .filter((f): f is TFile => f instanceof TFile);
+                    allDirty.sort((a, b) => b.stat.mtime - a.stat.mtime);
+                    const toHydrate = opts.maxFiles !== undefined ? allDirty.slice(0, opts.maxFiles) : allDirty;
+                    const remaining = await this.dedupViaSidecar(toHydrate, adds, removedIds, removedBodies, metaPatches);
+                    sidecarHydrated = toHydrate.length - remaining.length;
+                    const remainingSet = new Set(remaining.map(f => f.path));
+                    committedPaths = toHydrate.filter(f => !remainingSet.has(f.path)).map(f => f.path);
+                    deferredEmbed = remaining.length;
                 } else {
                     deferredEmbed = indexable.length;
                 }

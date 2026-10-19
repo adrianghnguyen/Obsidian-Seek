@@ -52,3 +52,7 @@ export function recentFixturePaths(
         .sort((a, b) => a.ageDays - b.ageDays)
         .map(note => note.path);
 }
+
+export function allFixturePaths(fixture: StartupResponseFixture): string[] {
+    return fixture.notes.map(note => note.path).sort();
+}

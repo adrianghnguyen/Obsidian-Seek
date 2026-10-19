@@ -115,6 +115,7 @@ export interface IndexStatusReport {
 }
 
 export interface IndexStatusReporterInput extends IndexUiStatusInput {
+    catchUpRunning?: boolean;
     jobKind?: ReporterJobKind | null;
     /**
      * Live sidecar hydrate (greedy files walked, needed/hydrated notes, or
@@ -226,6 +227,7 @@ export class IndexStatusReporter {
             booting: !!input.booting,
             goodEnough: !!input.goodEnough,
             catchUpPending: !!input.catchUpPending,
+            catchUpRunning: !!input.catchUpRunning,
             mayFullReindex: input.mayFullReindex,
             walk: input.hydrateProgress ?? null,
             job: input.job ?? null,

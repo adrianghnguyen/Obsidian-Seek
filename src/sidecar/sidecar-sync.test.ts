@@ -755,10 +755,10 @@ describe('probePeerAhead', () => {
         const r = await hydrateFromSidecar(deps);
 
         expect(goodEnough).toBe(true); // released after the 3-day tier
-        // The 3-day tier ran; the ancient note's deeper tier was never walked.
+        expect(r.hydrated).toBe(1);
         const walked = subsetPaths.flat();
         expect(walked).toContain('recent.md');
-        expect(walked).not.toContain('ancient.md');
+        expect(walked).toContain('ancient.md');
     });
 
     it('reuses a CatchUpHydrateCatalog scan across two hydrates of the same jsonl', async () => {
