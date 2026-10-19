@@ -22,6 +22,8 @@ export interface IndexingStallSnapshot {
     /** Committed FileRecords — catch-up can advance inventory while job.done is frozen. */
     inventoryFiles?: number | null;
     inventoryChunks?: number | null;
+    /** Greedy sidecar hydrate can run for minutes without job counter motion. */
+    sidecarHydrating?: boolean;
 }
 
 export function indexingWorkActive(s: IndexingStallSnapshot): boolean {
@@ -38,7 +40,7 @@ export function indexingStallDetected(
     if (!indexingWorkActive(s)) return false;
     // IndexedDB delta-apply can hold the write mutex for long stretches without
     // bumping job counters; treating that as a stall aborts healthy catch-up.
-    if (s.writing) return false;
+    if (s.writing || s.sidecarHydrating) return false;
     return now - lastProgressAt >= timeoutMs;
 }
 

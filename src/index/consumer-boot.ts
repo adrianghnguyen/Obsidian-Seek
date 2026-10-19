@@ -4,6 +4,8 @@
  * from post-boot recovery once boot continuation already ran.
  */
 
+import type { SidecarIndexRole } from '../sidecar/sidecar-fleet';
+
 export interface ConsumerFleetReadyInput {
     role: 'producer' | 'contributor' | 'consumer';
     waitingForProducer: boolean;
@@ -36,14 +38,29 @@ export interface ConsumerHydrateCompletePlan {
 export function planConsumerHydrateComplete(input: {
     fleet: ConsumerFleetReadyInput | null | undefined;
     hydrateReleasedGate: boolean;
+    inventoryFiles?: number | null;
 }): ConsumerHydrateCompletePlan {
     const ready = input.hydrateReleasedGate && isConsumerHydrateReady(input.fleet);
+    const waitingOnProducer = !!input.fleet?.waitingForProducer && input.fleet.role === 'consumer';
+    const hasInventory = (input.inventoryFiles ?? 0) > 0;
+    const relieveStuckWhileWaiting = input.hydrateReleasedGate && waitingOnProducer && hasInventory;
     return {
         markGoodEnough: ready,
         clearBootPending: ready,
-        clearBootStuck: ready,
-        clearIndexingStalled: ready,
+        clearBootStuck: ready || relieveStuckWhileWaiting,
+        clearIndexingStalled: ready || relieveStuckWhileWaiting,
     };
+}
+
+/** Before the first fleet inspect, never assume GPU catch-up (consumer-safe default). */
+export function resolveMayEmbedCatchUp(
+    fleetValue: boolean | null | undefined,
+    roleSetting: SidecarIndexRole,
+): boolean {
+    if (fleetValue != null) return fleetValue;
+    if (roleSetting === 'consumer') return false;
+    if (roleSetting === 'producer') return true;
+    return false;
 }
 
 export type CatchUpKind = 'embed' | 'lexical' | 'none';

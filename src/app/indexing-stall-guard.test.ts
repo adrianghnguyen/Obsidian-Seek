@@ -42,6 +42,12 @@ describe('indexing-stall-guard', () => {
         expect(indexingStallDetected(t0, t0 + INDEXING_STALL_TIMEOUT_MS * 3, INDEXING_STALL_TIMEOUT_MS, active)).toBe(false);
     });
 
+    it('does not fire during sidecar hydrate', () => {
+        const active = { ...idle, catchUpRunning: true, sidecarHydrating: true, jobDone: 0, jobTotal: 4000 };
+        const t0 = 1_000;
+        expect(indexingStallDetected(t0, t0 + INDEXING_STALL_TIMEOUT_MS * 3, INDEXING_STALL_TIMEOUT_MS, active)).toBe(false);
+    });
+
     it('progress key changes when job counters move', () => {
         const a = indexingProgressKey({ ...idle, catchUpRunning: true, jobDone: 0, jobTotal: 10 });
         const b = indexingProgressKey({ ...idle, catchUpRunning: true, jobDone: 1, jobTotal: 10 });

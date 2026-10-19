@@ -126,7 +126,7 @@ import {
     type StoredStartupBoot,
 } from './diagnostics/session-telemetry';
 import { SeekSettingTab } from './settings/settings-tab';
-import { collectPlatformInfo, isMobilePlatform, resolveDevice, recordActiveBackend, maybeDemoteOnCrash, getStartupWarm } from './embedding/platform';
+import { collectPlatformInfo, isMobilePlatform, resolveDevice, recordActiveBackend, maybeDemoteOnCrash, getStartupWarm, getSidecarIndexRole } from './embedding/platform';
 import { CompositorPacer, cheapYield } from './index/pacer';
 import { shouldUnloadEmbedder, type UnloadGateState } from './embedding/embedder-lifecycle';
 import { IndexDeltaTracker, type IndexDeltaSnapshot } from './index/index-delta-view';
@@ -144,6 +144,7 @@ import { planFailedDropRecovery } from './index/failed-drop-recovery';
 import {
     planConsumerHydrateComplete,
     resolveConsumerCatchUpKind,
+    resolveMayEmbedCatchUp,
     shouldStartHydrateFromRecovery,
 } from './index/consumer-boot';
 import { TaskContextTracker, type TaskContext } from './app/task-context';
@@ -667,6 +668,7 @@ export default class SeekPlugin extends Plugin {
             jobKind: job?.kind ?? speed?.kind ?? null,
             inventoryFiles: this.indexInventoryFiles,
             inventoryChunks: this.indexInventoryChunks,
+            sidecarHydrating: this.sidecarHydrating,
         };
     }
 
@@ -2881,6 +2883,10 @@ export default class SeekPlugin extends Plugin {
         this.lastMayEmbedCatchUp = fleet.mayEmbedCatchUp;
     }
 
+    private effectiveMayEmbedCatchUp(): boolean {
+        return resolveMayEmbedCatchUp(this.lastMayEmbedCatchUp, getSidecarIndexRole());
+    }
+
     private async refreshSidecarFleet(): Promise<void> {
         if (!this.settings.sidecarEnabled || !this.orchestrator) return;
         const fleet = await this.orchestrator.inspectSidecarFleet();
@@ -3188,12 +3194,21 @@ export default class SeekPlugin extends Plugin {
         const plan = planConsumerHydrateComplete({
             fleet,
             hydrateReleasedGate: !this.sidecarHydrating,
+            inventoryFiles: this.indexInventoryFiles,
         });
-        if (!plan.markGoodEnough) return;
-        this.waitingForSidecar = false;
-        this.peerSyncPending = false;
+        if (!plan.markGoodEnough && !plan.clearBootStuck && !plan.clearIndexingStalled) return;
         if (plan.clearIndexingStalled) this.clearIndexingStalled();
-        this.markIndexGoodEnough();
+        if (plan.markGoodEnough) {
+            this.waitingForSidecar = false;
+            this.peerSyncPending = false;
+            this.markIndexGoodEnough();
+        } else {
+            if (plan.clearBootStuck) {
+                this.markBootStuckResolved();
+                this.clearBootWatchdog();
+            }
+            this.refreshIndexStatusBar();
+        }
     }
 
     private async logStartupGateReleased(): Promise<void> {
@@ -3395,7 +3410,7 @@ export default class SeekPlugin extends Plugin {
         if (this.waitingForSidecar) return;
         if (!this.catchUpPending || this.catchUpRunning || !this.orchestrator) return;
         const allowEmbed = resolveConsumerCatchUpKind({
-            mayEmbedCatchUp: this.lastMayEmbedCatchUp ?? true,
+            mayEmbedCatchUp: this.effectiveMayEmbedCatchUp(),
             catchUpPending: true,
             mobile: isMobilePlatform(),
         }) === 'embed';
@@ -3668,7 +3683,7 @@ export default class SeekPlugin extends Plugin {
                 : null;
             this.noteSidecarFleetFlags(fleet);
             const kind = resolveConsumerCatchUpKind({
-                mayEmbedCatchUp: this.lastMayEmbedCatchUp ?? true,
+                mayEmbedCatchUp: this.effectiveMayEmbedCatchUp(),
                 catchUpPending: this.catchUpPending,
                 mobile: isMobilePlatform(),
             });
