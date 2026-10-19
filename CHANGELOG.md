@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Fixed
+
+- **Index status tooltips.** Every index mode (`Updating`, catch-up, restore, verify, reindex, stuck, and idle Ready) now exposes the same descriptive hover text on the status bar, Settings → Index **(i)**, and the search-modal footer — including file progress on **Updating** when a pass total is known.
+
 ## 1.15.2
 
 ### Fixed

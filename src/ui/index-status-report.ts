@@ -7,6 +7,8 @@
 import {
     classifyCatchUpPresentation,
     resolveIndexUiStatus,
+    INDEX_STATUS_HELP,
+    type IndexStatusHelpKey,
     INDEX_NO_INDEX_LABEL,
     INDEX_STARTING_LABEL,
     INDEX_RESTORING_LABEL,
@@ -106,6 +108,8 @@ export interface IndexStatusReport {
     label: string;
     compact: string;
     tone: string;
+    /** Status-bar tooltip, Settings (i), search footer — one producer string. */
+    help: string;
     /** Small catch-up on a hydrated vault — green Ready dot with glow, not Updating. */
     quietCatchUp?: boolean;
     /** Present while hydrate/restore is the active job and a file total is known. */
@@ -161,6 +165,59 @@ export function withIndicatorCopy(copy: IndexStatusCopy, units: IndexProgressUni
         };
     }
     return withHydrateProgressCopy(copy, units);
+}
+
+const MODE_HELP_KEY: Partial<Record<IndexStatusMode, IndexStatusHelpKey>> = {
+    'full-reindex': 'full-reindex',
+    'catching-up': 'catching-up',
+    verifying: 'verifying',
+    recovering: 'recovering',
+};
+
+export function resolveIndexStatusHelpForMode(
+    mode: IndexStatusMode,
+    quietCatchUp = false,
+): string {
+    if (quietCatchUp && mode === 'ok') return INDEX_STATUS_HELP['quiet-catchup'];
+    const key = MODE_HELP_KEY[mode] ?? mode;
+    if (key in INDEX_STATUS_HELP) return INDEX_STATUS_HELP[key as IndexStatusHelpKey];
+    return INDEX_STATUS_HELP.ok;
+}
+
+function appendProgressToHelp(help: string, fragment: string | null): string {
+    if (!fragment) return help;
+    return `${help} ${fragment}`;
+}
+
+function progressFragmentFromUnits(units: IndexProgressUnits, determinateOnly = true): string | null {
+    if (determinateOnly && !units.determinate) {
+        if (units.total > 0) {
+            return `${formatStableFileFractionSpaced(units.done, units.total)} so far.`;
+        }
+        return null;
+    }
+    if (units.total <= 0) return null;
+    return `${formatStableLabelProgress(units.done, units.total, units.percent).replace(/…/g, '')}.`;
+}
+
+function buildIndexStatusHelp(
+    mode: IndexStatusMode,
+    quietCatchUp: boolean,
+    progress: IndexProgressIndicator,
+    job: { done: number; total: number } | null | undefined,
+): string {
+    let help = resolveIndexStatusHelpForMode(mode, quietCatchUp);
+    if (mode === 'updating' && job && job.total > 0) {
+        const done = Math.min(job.total, Math.max(0, job.done));
+        const pct = indexPercent(done, job.total);
+        return appendProgressToHelp(help, formatStableLabelProgress(done, job.total, pct).replace(/…/g, '') + '.');
+    }
+    const units = progress.units;
+    if (!units || units.total <= 0) return help;
+    const skipProgress = mode === 'ok' || mode === 'none' || mode === 'stuck' || mode === 'locked' || mode === 'error';
+    if (skipProgress) return help;
+    const determinateOnly = mode !== 'verifying' && progress.phase !== 'verifying';
+    return appendProgressToHelp(help, progressFragmentFromUnits(units, determinateOnly));
 }
 
 export function indexStatusModeFromUi(
@@ -259,12 +316,14 @@ export class IndexStatusReporter {
             const suffix = ` (${skippedPartial} note${skippedPartial === 1 ? '' : 's'} awaiting sidecar bytes)`;
             copy = { ...copy, label: `${copy.label}${suffix}`, compact: `${copy.compact}${suffix}` };
         }
+        const help = buildIndexStatusHelp(mode, quietCatchUp, progress, input.job ?? null);
         return {
             mode,
             health,
             label: copy.label,
             compact: copy.compact,
             tone: copy.tone,
+            help,
             quietCatchUp,
             hydrateProgress: hydrateLegacyFromProgress({ ...progress, units }, !!input.hydrating, mode),
             progress: { phase: progress.phase, units: blocked ? null : progress.units },

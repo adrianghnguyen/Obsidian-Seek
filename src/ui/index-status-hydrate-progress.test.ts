@@ -347,8 +347,9 @@ describe('status bar compact label while hydrating', () => {
         });
         expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe(formatStableFileFraction(12, 40));
         expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-info');
-        expect(labels.at(-1)).toBe(`Seek: ${report.compact}`);
-        expect(labels.at(-1)).toMatch(/12\/40/);
+        expect(labels.at(-1)).toBe(report.help);
+        expect(labels.at(-1)).toMatch(/restoring the index from shared files/i);
+        expect(labels.at(-1)).toMatch(/12.*40/);
         expect(root.querySelector('progress')?.className).not.toContain('is-hidden');
         expect(root.querySelector('progress')?.value).toBe(30);
     });
@@ -377,8 +378,9 @@ describe('status bar compact label while hydrating', () => {
             onRecover: () => {},
         });
         expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe(formatStableFileFraction(18, 63));
-        expect(labels.at(-1)).toMatch(/Restoring/);
-        expect(labels.at(-1)).toMatch(/18\/63/);
+        expect(labels.at(-1)).toBe(report.help);
+        expect(labels.at(-1)).toMatch(/restoring the index/i);
+        expect(labels.at(-1)).toMatch(/18.*63/);
         expect(labels.at(-1)).not.toMatch(/Starting/);
         expect(root.querySelector('progress')?.className).not.toContain('is-hidden');
     });
@@ -407,8 +409,9 @@ describe('status bar compact label while hydrating', () => {
         });
         bar.show(80, 'Seek: indexing…', { id: 1, kind: 'catchup' });
         expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe(formatStableFileFraction(5, 80));
-        expect(labels.at(-1)).toMatch(/Restoring/);
-        expect(labels.at(-1)).toMatch(/5\/80/);
+        expect(labels.at(-1)).toBe(report.help);
+        expect(labels.at(-1)).toMatch(/restoring the index/i);
+        expect(labels.at(-1)).toMatch(/5.*80/);
         expect(labels.at(-1)).not.toMatch(/Indexing 0 \/ 80/);
     });
 });

@@ -8,7 +8,7 @@
 // serializes committed operator pills + free text back to the inline-filter
 // query string the search pipeline already parses.
 
-import { App, Modal, Notice, Platform, TFile, MarkdownView, MarkdownRenderer, Component, setIcon } from 'obsidian';
+import { App, Modal, Notice, Platform, TFile, MarkdownView, MarkdownRenderer, Component, setIcon, setTooltip } from 'obsidian';
 import type { ScoredChunk, SearchEntry, ClickEntry, SeekSettings } from '../types/types';
 import { MATCH_STRENGTH_MIN_NOTES } from '../types/types';
 import { makeSnippet, sanitizeSnippet, SNIPPET_PREVIEW_LIMITS } from '../render/snippet';
@@ -829,6 +829,9 @@ export class SeekSearchModal extends Modal {
         });
         this.footStatusEl.className = `seek-foot-status is-${spec.tone}`;
         this.footStatusLabelEl.setText(spec.label);
+        const footTip = spec.help ?? spec.label;
+        this.footStatusEl.setAttr('aria-label', footTip);
+        setTooltip(this.footStatusEl, footTip, { delay: 300 });
         this.footStatusIconEl.empty();
         if (spec.kind === 'indexing') {
             renderIndexStatusBadge(this.footStatusIconEl, {

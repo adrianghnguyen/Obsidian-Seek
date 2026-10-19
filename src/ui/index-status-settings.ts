@@ -24,11 +24,9 @@ import {
     type IndexJobKind,
 } from './index-status-card';
 import {
-    INDEX_STATUS_HELP,
     QUIET_CATCHUP_HINT,
-    resolveIndexStatusHelp,
-    type IndexUiStatus,
 } from './index-notice';
+import { resolveIndexStatusHelpForMode } from './index-status-report';
 import type { IndexJobSpeedView } from './index-status-bar';
 import type { IndexCompleteEntry, LoadEntry } from '../types/types';
 import type {
@@ -357,6 +355,8 @@ export function renderSettingsIndexStatusCard(
         stats: IndexStatusCardStats | null;
         job?: IndexStatusJob | null;
         quietCatchUp?: boolean;
+        /** When set, overrides mode-based help (reporter snapshot). */
+        help?: string;
         coverage?: CoverageDiagView | null;
         startup?: StartupTimingView | null;
         liveElapsedMs?: number | null;
@@ -365,11 +365,8 @@ export function renderSettingsIndexStatusCard(
         embedDiag?: EmbedDiagView | null;
     },
 ): HTMLElement {
-    const statusHelp = opts.quietCatchUp
-        ? INDEX_STATUS_HELP['quiet-catchup']
-        : opts.mode === 'full-reindex' || opts.health === 'indexing'
-            ? INDEX_STATUS_HELP.indexing
-            : resolveIndexStatusHelp(opts.health as IndexUiStatus);
+    const statusHelp = opts.help
+        ?? resolveIndexStatusHelpForMode(opts.mode ?? opts.health, opts.quietCatchUp);
     const contextHint = opts.quietCatchUp ? QUIET_CATCHUP_HINT : undefined;
     const card = renderIndexStatusCard(parent, {
         health: opts.health,
