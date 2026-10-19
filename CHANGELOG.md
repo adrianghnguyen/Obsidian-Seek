@@ -4,6 +4,13 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.15.1
+
+### Changed
+
+- **Quiet catch-up status.** Passes under 1% of indexed files on a hydrated vault show **Ready** with a **green dot + glow** (background embed still running). Passes at or above 1% (not full reindex) show **yellow Updating** with quiet chrome — no orange 0/N badge. Full reindex keeps numbered indexing chrome.
+- **Settings → Index.** Removed the static catch-up paragraph; the live status card adds an **(i)** tooltip for the current state and a one-line hint during quiet catch-up.
+
 ## 1.15.0
 
 Index status, cross-device sync, consumer hydrate, recovery controls, one job at a time, and quieter catch-up on large vaults.

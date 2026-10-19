@@ -32,6 +32,7 @@ function reportOf(health: IndexStatusHealth, mode?: IndexStatusMode): IndexStatu
         tone: copy.tone,
         hydrateProgress: null,
         progress: { phase: 'ready', units: null },
+        quietCatchUp: false,
     };
 }
 
@@ -331,9 +332,10 @@ describe('IndexStatusBar', () => {
         expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-pending');
     });
 
-    it('paints yellow Updating dot without badge or progress for minor catch-up', () => {
+    it('paints green glow Ready without badge or progress for quiet catch-up', () => {
+        const report = { ...reportOf('ok'), quietCatchUp: true };
         const snap = buildIndexProgressSnapshot({
-            report: reportOf('updating', 'updating'),
+            report,
             job: { done: 0, total: 15, kind: 'catchup' },
             speed: { done: 0, total: 15, chunksDone: 0, tokensDone: 0, elapsedMs: 0, paused: false, kind: 'catchup' },
             inventoryFiles: 3000,
@@ -344,6 +346,28 @@ describe('IndexStatusBar', () => {
         bar.mount(root as unknown as HTMLElement, { ...hooks, getSnapshot: () => snap });
         bar.show(15, 'Seek: indexing 15 notes…', { id: 1, kind: 'catchup' });
         bar.update(0, 15, undefined, 1);
+        expect(snap.quietCatchUp).toBe(true);
+        expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)).toBeNull();
+        expect(root.querySelector('progress')?.className).toContain('is-hidden');
+        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe('Seek');
+        const dot = root.querySelector('.seek-dot');
+        expect(dot?.className).toContain('seek-dot-good');
+        expect(dot?.className).toContain('seek-dot-glow');
+    });
+
+    it('paints yellow Updating dot without badge or progress for moderate catch-up', () => {
+        const snap = buildIndexProgressSnapshot({
+            report: reportOf('updating', 'updating'),
+            job: { done: 0, total: 30, kind: 'catchup' },
+            speed: { done: 0, total: 30, chunksDone: 0, tokensDone: 0, elapsedMs: 0, paused: false, kind: 'catchup' },
+            inventoryFiles: 3000,
+            inventoryChunks: 9000,
+        });
+        const root = stubEl();
+        const bar = new IndexStatusBar();
+        bar.mount(root as unknown as HTMLElement, { ...hooks, getSnapshot: () => snap });
+        bar.show(30, 'Seek: indexing 30 notes…', { id: 1, kind: 'catchup' });
+        bar.update(0, 30, undefined, 1);
         expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)).toBeNull();
         expect(root.querySelector('progress')?.className).toContain('is-hidden');
         expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe('Seek');

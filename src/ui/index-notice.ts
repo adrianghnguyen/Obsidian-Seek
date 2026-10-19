@@ -134,10 +134,10 @@ export type IndexFooterTone = 'info' | 'accent' | 'bad' | 'warn' | 'mid' | 'good
 /** Shared by status bar, settings card, modal, and CLI — one precedence tree. */
 export type IndexUiStatus = 'none' | 'starting' | 'restoring' | 'ok' | 'updating' | 'indexing' | 'error' | 'locked' | 'stuck';
 
-/** Catch-up passes smaller than this fraction of indexed files use quiet chrome (yellow dot). */
+/** Boundary between green quiet catch-up and yellow Updating (fraction of indexed files). */
 export const MINOR_CATCHUP_FRACTION = 0.01;
 
-export interface MinorCatchUpPresentationInput {
+export interface CatchUpPresentationInput {
     goodEnough?: boolean;
     inventoryFiles: number | null;
     job?: { done: number; total: number; kind?: 'full' | 'delta' | 'catchup' } | null;
@@ -145,17 +145,47 @@ export interface MinorCatchUpPresentationInput {
     indexingActive: boolean;
 }
 
-/** Quiet status-bar chrome for small catch-up on a hydrated vault (<1% of indexed files). */
-export function isMinorCatchUpPresentation(input: MinorCatchUpPresentationInput): boolean {
-    if (!input.indexingActive) return false;
+export type CatchUpPresentation = 'quiet' | 'moderate';
+
+/**
+ * Classify catch-up/delta passes on a good-enough index. Full reindex and
+ * non-catch-up jobs return null (callers fall through to indexing chrome).
+ */
+export function classifyCatchUpPresentation(input: CatchUpPresentationInput): CatchUpPresentation | null {
+    if (!input.indexingActive) return null;
     const job = input.job;
-    if (!job || job.total <= 0) return false;
-    if (!input.goodEnough) return false;
+    if (!job || job.total <= 0) return null;
+    if (!input.goodEnough) return null;
     const inventory = input.inventoryFiles ?? 0;
-    if (inventory <= 0) return false;
-    if (job.kind === 'full') return false;
-    if (job.kind != null && job.kind !== 'catchup' && job.kind !== 'delta') return false;
-    return job.total / inventory < MINOR_CATCHUP_FRACTION;
+    if (inventory <= 0) return null;
+    if (job.kind === 'full') return null;
+    if (job.kind != null && job.kind !== 'catchup' && job.kind !== 'delta') return null;
+    return job.total / inventory < MINOR_CATCHUP_FRACTION ? 'quiet' : 'moderate';
+}
+
+export const QUIET_CATCHUP_HINT = 'Re-embedding a few edited notes.';
+
+export type IndexStatusHelpKey = IndexUiStatus | 'quiet-catchup';
+
+export const INDEX_STATUS_HELP: Record<IndexStatusHelpKey, string> = {
+    none: 'This vault has no search index yet. Build one in Seek settings to search.',
+    starting: 'Seek is loading or scheduling the index. Search opens once the vault is searchable.',
+    restoring: 'Seek is restoring the index from shared files on disk — not re-embedding locally.',
+    ok: 'Index matches your vault. Edits queue background catch-up automatically.',
+    'quiet-catchup': 'Search is up to date. Seek is updating embeddings for a small number of edited notes in the background.',
+    updating: 'Seek is catching up on a larger batch of edited notes. Search stays available; the yellow dot means a bigger background pass.',
+    indexing: 'Seek is rebuilding or indexing a large share of notes. Progress and counts apply.',
+    error: 'The index needs attention — check Settings → Seek for recovery options.',
+    locked: 'Seek could not open the index database. Use Recover search index in Settings.',
+    stuck: 'Startup or indexing took too long. Resume or rebuild from Settings → Seek.',
+};
+
+export function resolveIndexStatusHelp(
+    health: IndexUiStatus,
+    quietCatchUp = false,
+): string {
+    if (quietCatchUp && health === 'ok') return INDEX_STATUS_HELP['quiet-catchup'];
+    return INDEX_STATUS_HELP[health] ?? INDEX_STATUS_HELP.ok;
 }
 
 export interface IndexLoadFlags {
@@ -329,14 +359,14 @@ export function resolveIndexUiStatus(input: IndexUiStatusInput): IndexUiStatus {
     if (input.dropRecovering && !jobActive) return 'restoring';
     if (input.health === 'degraded' || input.reason === 'peer-ahead') return 'error';
     if (jobActive) {
-        if (isMinorCatchUpPresentation({
+        const catchUp = classifyCatchUpPresentation({
             goodEnough: input.goodEnough,
             inventoryFiles: input.inventoryFiles,
             job: input.job,
             indexingActive: true,
-        })) {
-            return 'updating';
-        }
+        });
+        if (catchUp === 'quiet') return 'ok';
+        if (catchUp === 'moderate') return 'updating';
         return 'indexing';
     }
     if (input.bootDecisionPending || chunks == null) return 'starting';

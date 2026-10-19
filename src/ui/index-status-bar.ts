@@ -20,6 +20,7 @@ import {
 } from './index-eta';
 import { formatStableFileFraction } from './index-progress-format';
 import { buildIndexProgressSnapshot, type IndexProgressSnapshot } from './index-progress-snapshot';
+import { resolveIndexStatusHelp } from './index-notice';
 
 export type { IndexJobSpeedView };
 export { indexChunksPerSec, indexFilesPerSec, indexTokensPerSec };
@@ -352,7 +353,7 @@ export class IndexStatusBar {
         this.setStatusLabel(label);
     }
 
-    private paintBare(snap: IndexProgressSnapshot): void {
+    private paintBare(snap: IndexProgressSnapshot, opts?: { quietCatchUp?: boolean }): void {
         this.paintedDone = -1;
         this.paintedTotal = -1;
         this.paintedChunks = -1;
@@ -361,8 +362,12 @@ export class IndexStatusBar {
         this.filesEl?.setText('Seek');
         this.chunksEl?.addClass('is-hidden');
         this.paintMeter({ hidden: true, determinate: true, percent: 0 });
-        this.paintChrome(snap.health, null);
-        this.setStatusLabel(`Seek: ${snap.report.compact}`);
+        this.paintChrome(snap.health, null, opts?.quietCatchUp);
+        const label = `Seek: ${snap.report.compact}`;
+        const tip = opts?.quietCatchUp
+            ? resolveIndexStatusHelp('ok', true)
+            : label;
+        this.setStatusLabel(label, tip);
     }
 
     private paintNamedWork(snap: IndexProgressSnapshot): void {
@@ -395,6 +400,10 @@ export class IndexStatusBar {
     }
 
     private paintFromSnapshot(snap: IndexProgressSnapshot, force: boolean): void {
+        if (snap.quietCatchUp) {
+            this.paintBare(snap, { quietCatchUp: true });
+            return;
+        }
         if (snap.health === 'updating') {
             this.paintBare(snap);
             return;
@@ -455,16 +464,17 @@ export class IndexStatusBar {
         this.paintFromSnapshot(this.progressSnapshot(), true);
     }
 
-    private paintChrome(health: IndexStatusHealth, remaining: number | null): void {
+    private paintChrome(health: IndexStatusHealth, remaining: number | null, quietCatchUp = false): void {
         if (!this.chromeEl) return;
         this.chromeEl.empty();
-        renderIndexStatusBadge(this.chromeEl, { health, remaining });
+        renderIndexStatusBadge(this.chromeEl, { health, remaining, quietCatchUp });
     }
 
-    private setStatusLabel(text: string): void {
+    private setStatusLabel(text: string, tooltip?: string): void {
         if (!this.root) return;
-        this.root.setAttr('aria-label', text);
-        setTooltip(this.root, text);
+        const tip = tooltip ?? text;
+        this.root.setAttr('aria-label', tip);
+        setTooltip(this.root, tip);
     }
 
     private async onHover(): Promise<void> {

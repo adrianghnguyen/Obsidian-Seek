@@ -5,7 +5,7 @@ import {
     resolveIndexLoadPhase,
     resolveCliSearchGate,
     resolveIndexUiStatus,
-    isMinorCatchUpPresentation,
+    classifyCatchUpPresentation,
     MINOR_CATCHUP_FRACTION,
     resolveSidecarWait,
     sidecarHydrateHealedIndex,
@@ -570,22 +570,22 @@ describe('resolveIndexUiStatus', () => {
         expect(resolveIndexUiStatus({ ...idle, health: 'degraded', reason: 'version', indexing: true })).toBe('error');
     });
 
-    it('real catch-up with a job is Indexing when pass is large vs inventory', () => {
+    it('real catch-up with a job is Updating when pass is large vs inventory', () => {
         expect(resolveIndexUiStatus({
             ...idle, goodEnough: true, indexing: true,
             inventoryFiles: 40, job: { done: 3, total: 15, kind: 'catchup' },
-        })).toBe('indexing');
+        })).toBe('updating');
     });
 
-    it('minor catch-up on a hydrated vault is Updating, not Indexing', () => {
+    it('quiet catch-up on a hydrated vault is Ready, not Updating or Indexing', () => {
         expect(resolveIndexUiStatus({
             ...idle, goodEnough: true, indexing: true,
             inventoryFiles: 3000, job: { done: 0, total: 29, kind: 'catchup' },
-        })).toBe('updating');
+        })).toBe('ok');
         expect(resolveIndexUiStatus({
             ...idle, goodEnough: true, indexing: true,
             inventoryFiles: 3000, job: { done: 0, total: 30, kind: 'catchup' },
-        })).toBe('indexing');
+        })).toBe('updating');
     });
 
     it('full reindex never uses quiet Updating', () => {
@@ -652,18 +652,18 @@ describe('resolveIndexUiStatus', () => {
     });
 });
 
-describe('isMinorCatchUpPresentation', () => {
-    it(`uses ${MINOR_CATCHUP_FRACTION} of indexed files as the threshold`, () => {
+describe('classifyCatchUpPresentation', () => {
+    it(`uses ${MINOR_CATCHUP_FRACTION} of indexed files as the quiet vs moderate boundary`, () => {
         const base = {
             goodEnough: true,
             inventoryFiles: 3000,
             indexingActive: true,
             job: { done: 0, total: 29, kind: 'catchup' as const },
         };
-        expect(isMinorCatchUpPresentation(base)).toBe(true);
-        expect(isMinorCatchUpPresentation({ ...base, job: { ...base.job!, total: 30 } })).toBe(false);
-        expect(isMinorCatchUpPresentation({ ...base, goodEnough: false })).toBe(false);
-        expect(isMinorCatchUpPresentation({ ...base, job: { ...base.job!, kind: 'full' } })).toBe(false);
+        expect(classifyCatchUpPresentation(base)).toBe('quiet');
+        expect(classifyCatchUpPresentation({ ...base, job: { ...base.job!, total: 30 } })).toBe('moderate');
+        expect(classifyCatchUpPresentation({ ...base, goodEnough: false })).toBeNull();
+        expect(classifyCatchUpPresentation({ ...base, job: { ...base.job!, kind: 'full' } })).toBeNull();
     });
 });
 

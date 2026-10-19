@@ -5,6 +5,7 @@
 // Progress units live in index-progress-indicator — the only producer chrome reads.
 
 import {
+    classifyCatchUpPresentation,
     resolveIndexUiStatus,
     INDEX_NO_INDEX_LABEL,
     INDEX_STARTING_LABEL,
@@ -105,6 +106,8 @@ export interface IndexStatusReport {
     label: string;
     compact: string;
     tone: string;
+    /** Small catch-up on a hydrated vault — green Ready dot with glow, not Updating. */
+    quietCatchUp?: boolean;
     /** Present while hydrate/restore is the active job and a file total is known. */
     hydrateProgress: IndexHydrateProgress | null;
     /** Sole progress snapshot for status chrome. */
@@ -194,6 +197,13 @@ function hydrateLegacyFromProgress(
 export class IndexStatusReporter {
     static compute(input: IndexStatusReporterInput): IndexStatusReport {
         const ui = resolveIndexUiStatus(input);
+        const jobActive = input.indexing || (input.job != null && input.job.total > 0);
+        const quietCatchUp = classifyCatchUpPresentation({
+            goodEnough: input.goodEnough,
+            inventoryFiles: input.inventoryFiles,
+            job: input.job,
+            indexingActive: jobActive,
+        }) === 'quiet';
         const notes = Math.max(0, Math.floor(input.indexableNotes ?? 0) || 0);
         const verifyOnly = isVerifyOnlyWalk({
             needed: input.hydrateProgress?.needed,
@@ -225,7 +235,9 @@ export class IndexStatusReporter {
             coverage: input.coverage ?? null,
         });
         if (progress.phase === 'verifying') mode = 'verifying';
-        if (progress.phase === 'catching-up' && (mode === 'ok' || mode === 'starting')) mode = 'catching-up';
+        if (!quietCatchUp && progress.phase === 'catching-up' && (mode === 'ok' || mode === 'starting')) {
+            mode = 'catching-up';
+        }
         if (progress.phase === 'recovering' && (mode === 'restoring' || mode === 'starting')) mode = 'recovering';
         const health = indexStatusHealth(mode);
         let copy = INDEX_STATUS_COPY[mode];
@@ -241,6 +253,7 @@ export class IndexStatusReporter {
             label: copy.label,
             compact: copy.compact,
             tone: copy.tone,
+            quietCatchUp,
             hydrateProgress: hydrateLegacyFromProgress({ ...progress, units }, !!input.hydrating, mode),
             progress: { phase: progress.phase, units: blocked ? null : progress.units },
         };

@@ -253,7 +253,7 @@ describe('Ready means searchable (status contract)', () => {
         expect(isIndexWaitKind(r.loadSpec.kind)).toBe(true);
     });
 
-    it('minor catch-up: populated hydrated vault uses quiet Updating chrome', () => {
+    it('quiet catch-up: populated hydrated vault stays Ready with glow flag on report', () => {
         const snap: BootSnapshot = {
             label: 'catch-up with chunks',
             inventoryChunks: 10948,
@@ -264,15 +264,15 @@ describe('Ready means searchable (status contract)', () => {
             job: { done: 3, total: 15, kind: 'catchup' },
         };
         const r = evaluateSnapshot(snap);
-        expect(r.uiHealth).toBe('updating');
-        expect(r.footer.kind).toBe('updating');
+        expect(r.uiHealth).toBe('ok');
+        expect(r.footer.kind).toBe('up-to-date');
         expect(r.footer.badgeCount).toBeUndefined();
         expect(r.cliGate).toBeNull();
         expect(r.loadSpec.kind).toBe('resting');
         expect(isIndexWaitKind(r.loadSpec.kind)).toBe(false);
     });
 
-    it('catch-up at or above 1% of indexed files stays prominent Indexing', () => {
+    it('catch-up at or above 1% of indexed files uses yellow Updating chrome', () => {
         const snap: BootSnapshot = {
             label: 'large catch-up pass',
             inventoryChunks: 5000,
@@ -283,8 +283,9 @@ describe('Ready means searchable (status contract)', () => {
             job: { done: 0, total: 30, kind: 'catchup' },
         };
         const r = evaluateSnapshot(snap);
-        expect(r.uiHealth).toBe('indexing');
-        expect(r.footer.kind).toBe('indexing');
+        expect(r.uiHealth).toBe('updating');
+        expect(r.footer.kind).toBe('updating');
+        expect(r.footer.badgeCount).toBeUndefined();
     });
 
     it('full rebuild: never Ready; modal wait and CLI blocked', () => {

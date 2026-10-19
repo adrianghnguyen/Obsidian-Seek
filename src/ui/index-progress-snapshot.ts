@@ -86,6 +86,8 @@ export interface IndexProgressSnapshot {
     phase: IndexProgressPhase;
     health: IndexStatusHealth;
     mode: IndexStatusMode;
+    /** Green Ready + glow while a tiny catch-up pass runs in the background. */
+    quietCatchUp?: boolean;
     kind: IndexProgressKind | null;
     filesDone: number;
     filesTotal: number;
@@ -129,8 +131,10 @@ export function resolveIndexProgressPhase(input: {
     hydrate: { done: number; total: number } | null;
     job: IndexStatusJob | null;
     indicator?: IndexProgressIndicator | null;
+    quietCatchUp?: boolean;
 }): IndexProgressPhase {
-    const { health, hydrate, job, indicator } = input;
+    const { health, hydrate, job, indicator, quietCatchUp } = input;
+    if (quietCatchUp && health === 'ok') return 'idle';
     if (health === 'error' || indicator?.phase === 'error') return 'error';
     if (health === 'locked' || indicator?.phase === 'locked') return 'locked';
     if (health === 'stuck' || indicator?.phase === 'stuck') return 'stuck';
@@ -183,11 +187,13 @@ export function buildIndexProgressSnapshot(input: IndexProgressSnapshotInput): I
         : normalizeHydrateProgress(report.hydrateProgress);
     const rawJob = input.job && input.job.total > 0 ? input.job : null;
     const speed = input.speed;
+    const quietCatchUp = !!report.quietCatchUp;
     const phase = resolveIndexProgressPhase({
         health: report.health,
         hydrate,
         job: rawJob,
         indicator,
+        quietCatchUp,
     });
 
     const inventoryFiles = clampCount(input.inventoryFiles ?? 0);
@@ -291,6 +297,7 @@ export function buildIndexProgressSnapshot(input: IndexProgressSnapshotInput): I
         phase,
         health: report.health,
         mode: report.mode,
+        quietCatchUp: quietCatchUp || undefined,
         kind,
         filesDone,
         filesTotal,
