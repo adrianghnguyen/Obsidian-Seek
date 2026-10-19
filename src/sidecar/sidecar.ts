@@ -521,11 +521,45 @@ export async function scanJsonl(adapter: DataAdapter, paths: string[]): Promise<
 
 // ---- read paths ----
 
+/** Backoff for shard reads racing Obsidian Sync / iCloud (.tmp rename in flight). */
+export const SHARD_READ_RETRY_DELAYS_MS = [0, 40, 120, 250] as const;
+
+/** readBinary with ENOENT/missing retries — returns null when the object never lands. */
+export async function readBinaryWithRetry(
+    adapter: DataAdapter,
+    path: string,
+    opts?: { delaysMs?: readonly number[] },
+): Promise<ArrayBuffer | null> {
+    const delays = opts?.delaysMs ?? SHARD_READ_RETRY_DELAYS_MS;
+    for (let i = 0; i < delays.length; i++) {
+        if (delays[i]! > 0) await new Promise<void>(resolve => setTimeout(resolve, delays[i]!));
+        try {
+            const buf = await adapter.readBinary(path);
+            if (buf && buf.byteLength > 0) return buf;
+        } catch {
+            // Sync may delete/rename mid-read — retry.
+        }
+    }
+    return null;
+}
+
+/** Committed shard path, then peer `.tmp` left mid-atomic-write (never rename-restores here). */
+export async function readSidecarShardBuffer(
+    adapter: DataAdapter,
+    indexDir: string,
+    deviceId: string,
+    seq: number,
+): Promise<ArrayBuffer | null> {
+    const path = shardPathFor(indexDir, deviceId, seq);
+    const committed = await readBinaryWithRetry(adapter, path);
+    if (committed) return committed;
+    return readBinaryWithRetry(adapter, `${path}.tmp`, { delaysMs: [0, 30, 90, 200] });
+}
+
 // Read one resolved record's tiers. Returns null when the shard is missing or the
 // offset is past the synced length (partial arrival) — caller skips, self-heals next pass.
 export async function readRecordAt(adapter: DataAdapter, indexDir: string, entry: ResolvedEntry): Promise<TierBytes | null> {
-    const path = shardPathFor(indexDir, entry.shard, entry.seq);
-    const buf = await adapter.readBinary(path).catch(() => null);
+    const buf = await readSidecarShardBuffer(adapter, indexDir, entry.shard, entry.seq);
     if (!buf) return null;
     if (!isOffsetInRange(buf.byteLength, entry.off)) return null;
     // dim mismatch or CRC failure (corrupt record) → skip, re-embed next pass.

@@ -52,7 +52,7 @@ import {
     jsonlPathFor,
     listSidecarDeviceIds,
     scanJsonl,
-    shardPathFor,
+    readSidecarShardBuffer,
     type ResolvedEntry,
 } from './sidecar';
 import { metaAccepts, readDeviceMeta, fullReindexEpoch, type MetaExpectation, type SidecarMeta } from './sidecar-meta';
@@ -351,7 +351,7 @@ async function hydrateCandidates(
     const entryKey = (e: ResolvedEntry): string => `${e.shard}.${e.seq}.${e.off}`;
     for (const [, entries] of byShard) {
         const first = entries[0];
-        const buf = await adapter.readBinary(shardPathFor(indexDir, first.shard, first.seq)).catch(() => null);
+        const buf = await readSidecarShardBuffer(adapter, indexDir, first.shard, first.seq);
         for (const e of entries) {
             if (buf && isOffsetInRange(buf.byteLength, e.off)) {
                 try { tierCache.set(entryKey(e), decodeRecord(buf, e.off, e.dim)); }
@@ -556,11 +556,6 @@ async function hydrateFromSidecarGreedy(
         deps.onTierComplete?.(tierDetail);
         deps.log?.('sidecar-hydrate-tier', tierDetail);
 
-        if (goodEnoughReleased && tier.id === 'hydrate-tier-3d') {
-            stoppedEarly = true;
-            stopReason = 'gate-released';
-            break;
-        }
         if (freshIdsRemaining.size === 0) {
             stoppedEarly = true;
             stopReason = 'freshIds-empty';

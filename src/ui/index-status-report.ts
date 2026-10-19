@@ -115,6 +115,7 @@ export interface IndexStatusReport {
 }
 
 export interface IndexStatusReporterInput extends IndexUiStatusInput {
+    catchUpRunning?: boolean;
     jobKind?: ReporterJobKind | null;
     /**
      * Live sidecar hydrate (greedy files walked, needed/hydrated notes, or
@@ -124,6 +125,8 @@ export interface IndexStatusReporterInput extends IndexUiStatusInput {
     indexableNotes?: number;
     coverage?: { covered: number; total: number } | null;
     stuckWhy?: 'startup' | 'indexing';
+    /** Hydrate pass skipped notes with partial shard bytes — must appear in chrome. */
+    sidecarSkippedPartialNotes?: number;
 }
 
 export function normalizeHydrateProgress(
@@ -226,6 +229,7 @@ export class IndexStatusReporter {
             booting: !!input.booting,
             goodEnough: !!input.goodEnough,
             catchUpPending: !!input.catchUpPending,
+            catchUpRunning: !!input.catchUpRunning,
             mayFullReindex: input.mayFullReindex,
             walk: input.hydrateProgress ?? null,
             job: input.job ?? null,
@@ -247,6 +251,14 @@ export class IndexStatusReporter {
         const blocked = mode === 'stuck' || mode === 'locked' || mode === 'error' || mode === 'ok' || mode === 'updating' || mode === 'none';
         const units = blocked ? null : progress.units;
         if (units) copy = withIndicatorCopy(copy, units);
+        const skippedPartial = Math.max(0, Math.floor(input.sidecarSkippedPartialNotes ?? 0) || 0);
+        if (
+            skippedPartial > 0
+            && (mode === 'restoring' || mode === 'verifying' || input.waitingForSidecar || input.peerSyncPending)
+        ) {
+            const suffix = ` (${skippedPartial} note${skippedPartial === 1 ? '' : 's'} awaiting sidecar bytes)`;
+            copy = { ...copy, label: `${copy.label}${suffix}`, compact: `${copy.compact}${suffix}` };
+        }
         return {
             mode,
             health,

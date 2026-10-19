@@ -941,7 +941,13 @@ export class SidecarCoordinator {
         metaPatchSink?: Array<{ id: string; meta: ChunkMeta }>,
     ): Promise<TFile[]> {
         if (!this.coord.sidecarOn() || files.length === 0) return files;
-        await this.embedder.ensureTokenizer();
+        let tokenizerReady = true;
+        try {
+            await this.embedder.ensureTokenizer();
+        } catch (e) {
+            tokenizerReady = false;
+            await this.logger.appendError('dedupViaSidecar-tokenizer', e);
+        }
         const notes: ReChunkedNote[] = [];
         for (const f of files) {
             let content: string;
@@ -952,11 +958,13 @@ export class SidecarCoordinator {
             }
             let chunks = this.chunksFor(content, f.path, new Date(f.stat.mtime).toISOString());
             if (chunks.length === 0) continue;
-            try {
-                chunks = (await enforceTokenBudget(chunks, ts => this.embedder.tokenCounts(ts))).chunks;
-            } catch (e) {
-                await this.logger.appendError(`dedupViaSidecar-tokenBudget:${f.path}`, e);
-                continue;
+            if (tokenizerReady) {
+                try {
+                    chunks = (await enforceTokenBudget(chunks, ts => this.embedder.tokenCounts(ts))).chunks;
+                } catch (e) {
+                    await this.logger.appendError(`dedupViaSidecar-tokenBudget:${f.path}`, e);
+                    continue;
+                }
             }
             if (chunks.length > 0) notes.push({ notePath: f.path, mtimeMs: f.stat.mtime, chunks, contentHash: cyrb53Hex(content) });
         }

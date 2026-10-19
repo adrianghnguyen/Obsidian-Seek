@@ -3,6 +3,7 @@ import {
     isConsumerHydrateReady,
     planConsumerHydrateComplete,
     resolveConsumerCatchUpKind,
+    resolveMayEmbedCatchUp,
     shouldStartHydrateFromRecovery,
     type ConsumerFleetReadyInput,
 } from './consumer-boot';
@@ -46,12 +47,48 @@ describe('consumer hydrate completing → good-enough / not stuck', () => {
             fleet: { ...consumerReady, waitingForProducer: true, matchingReady: false },
             hydrateReleasedGate: true,
         }).markGoodEnough).toBe(false);
+        const waitingWithInventory = planConsumerHydrateComplete({
+            fleet: { ...consumerReady, waitingForProducer: true, matchingReady: false },
+            hydrateReleasedGate: true,
+            inventoryFiles: 120,
+        });
+        expect(waitingWithInventory.markGoodEnough).toBe(false);
+        expect(waitingWithInventory.clearBootStuck).toBe(true);
+        expect(waitingWithInventory.clearIndexingStalled).toBe(true);
+        const waitingEmpty = planConsumerHydrateComplete({
+            fleet: { ...consumerReady, waitingForProducer: true, matchingReady: false },
+            hydrateReleasedGate: true,
+            inventoryFiles: 0,
+        });
+        expect(waitingEmpty.markGoodEnough).toBe(false);
+        expect(waitingEmpty.clearBootStuck).toBe(true);
+        const preflightEmpty = planConsumerHydrateComplete({
+            fleet: { ...consumerReady, waitingForProducer: false, matchingReady: true },
+            hydrateReleasedGate: true,
+            inventoryFiles: 0,
+        });
+        expect(preflightEmpty.markGoodEnough).toBe(true);
+        expect(preflightEmpty.clearBootStuck).toBe(true);
         expect(isConsumerHydrateReady({
             role: 'producer',
             waitingForProducer: false,
             matchingReady: false,
             mayFullReindex: true,
         })).toBe(false);
+    });
+});
+
+describe('resolveMayEmbedCatchUp before fleet inspect', () => {
+    it('defaults to false for consumer and auto, true for producer', () => {
+        expect(resolveMayEmbedCatchUp(null, 'consumer')).toBe(false);
+        expect(resolveMayEmbedCatchUp(null, 'auto')).toBe(false);
+        expect(resolveMayEmbedCatchUp(null, 'producer')).toBe(true);
+        expect(resolveMayEmbedCatchUp(undefined, 'consumer')).toBe(false);
+    });
+
+    it('prefers the last fleet inspect result when present', () => {
+        expect(resolveMayEmbedCatchUp(true, 'consumer')).toBe(true);
+        expect(resolveMayEmbedCatchUp(false, 'producer')).toBe(false);
     });
 });
 

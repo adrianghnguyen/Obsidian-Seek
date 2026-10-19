@@ -39,6 +39,7 @@ import { Notice, Plugin, TFile } from 'obsidian';
 import type { App } from 'obsidian';
 import { ConfirmModal } from './app/confirm-modal';
 import { executeFullReindexCleanSlate } from './app/full-reindex-clean-slate';
+import { awaitCatchUpQuiescence } from './app/index-work-quiescence';
 import { LocalEmbedder, LOCAL_MODEL, LEGACY_ENGLISH_MODEL_ID } from './embedding/embedder';
 import type { WorkerProbeResult, WorkerEmbedTestResult } from './embedding/iframe-runner';
 import { activeModelSpec, bindLiveModel, currentModelSpec, resolveOverrideSpec, evictStaleModelCaches, deleteModelCaches, probeModelDownloaded } from './embedding/model-registry';
@@ -74,7 +75,7 @@ import { sweepOrphanTmpFiles } from './sidecar/sidecar';
 import type { SeekSettings, IndexCompleteEntry, LoadEntry, ModelDeliveryEntry, ScoredChunk, SearchEntry } from './types/types';
 import { DEFAULT_SETTINGS, migrateSettings, forceSharedSidecarLocation } from './types/types';
 import { moveSidecarFiles } from './sidecar/sidecar-location';
-import { IndexStore, indexDbPrefix, isTransientIdbUnavailable, isStoreOpTimeout } from './index/index-store';
+import { IndexStore, indexDbPrefix, isTransientIdbUnavailable, isStoreOpTimeout, isStoreSchemaIncompleteError } from './index/index-store';
 import { SeekLogger, REPORT_ARTIFACTS_DIR } from './diagnostics/logger';
 import { openDiagnosticReport } from './diagnostics/diagnostic-report';
 import { Forensics } from './diagnostics/forensics';
@@ -126,7 +127,7 @@ import {
     type StoredStartupBoot,
 } from './diagnostics/session-telemetry';
 import { SeekSettingTab } from './settings/settings-tab';
-import { collectPlatformInfo, isMobilePlatform, resolveDevice, recordActiveBackend, maybeDemoteOnCrash, getStartupWarm } from './embedding/platform';
+import { collectPlatformInfo, isMobilePlatform, resolveDevice, recordActiveBackend, maybeDemoteOnCrash, getStartupWarm, getSidecarIndexRole } from './embedding/platform';
 import { CompositorPacer, cheapYield } from './index/pacer';
 import { shouldUnloadEmbedder, type UnloadGateState } from './embedding/embedder-lifecycle';
 import { IndexDeltaTracker, type IndexDeltaSnapshot } from './index/index-delta-view';
@@ -144,6 +145,7 @@ import { planFailedDropRecovery } from './index/failed-drop-recovery';
 import {
     planConsumerHydrateComplete,
     resolveConsumerCatchUpKind,
+    resolveMayEmbedCatchUp,
     shouldStartHydrateFromRecovery,
 } from './index/consumer-boot';
 import { TaskContextTracker, type TaskContext } from './app/task-context';
@@ -340,6 +342,8 @@ export default class SeekPlugin extends Plugin {
     private set flushing(val: boolean) { this.schedulers.flushing = val; }
     private catchUpPending = false;              // cold-mobile deferred an embed
     private catchUpRunning = false;              // runCatchUp re-entrancy guard
+    /** Last sidecar hydrate pass — partial Sync skips surfaced in status chrome. */
+    private sidecarSkippedPartialNotes = 0;
     private coldBuildScheduled = false;          // scheduleColdBuild single-flight
     // Set synchronously at the start of runFullReindex, before model load.
     // isWriting() stays false until reindexAll acquires the mutex, so a second
@@ -544,6 +548,7 @@ export default class SeekPlugin extends Plugin {
             reason: this.degradedReason,
             indexing: this.catchUpRunning || this.flushing || this.isIndexing,
             catchUpPending: this.catchUpPending,
+            catchUpRunning: this.catchUpRunning,
             job: this.indexProgress.job(),
             searchableChunks: this.indexInventoryChunks,
             inventoryFiles: this.indexInventoryFiles,
@@ -551,6 +556,7 @@ export default class SeekPlugin extends Plugin {
             hydrateProgress: this.indexProgressWalk.snapshot(),
             indexableNotes: Math.max(this.lastIndexableNotes, this.indexableNoteCount()),
             stuckWhy: this.indexIndexingStalled ? 'indexing' : 'startup',
+            sidecarSkippedPartialNotes: this.sidecarSkippedPartialNotes,
         });
     }
 
@@ -666,6 +672,7 @@ export default class SeekPlugin extends Plugin {
             jobKind: job?.kind ?? speed?.kind ?? null,
             inventoryFiles: this.indexInventoryFiles,
             inventoryChunks: this.indexInventoryChunks,
+            sidecarHydrating: this.sidecarHydrating,
         };
     }
 
@@ -759,6 +766,7 @@ export default class SeekPlugin extends Plugin {
         if (this.catchUpJob != null) this.finishCatchUpJob();
         this.taskCtx.closeOpen(['catchup', 'indexing']);
         if (opts?.releaseIndexHold) {
+            this.catchUpPending = false;
             try { this.orchestrator?.dispose(); } catch { /* already torn down */ }
             try { this.releaseEmbedder(); } catch { /* already torn down */ }
             try { this.store.close(); } catch { /* already closed */ }
@@ -809,6 +817,11 @@ export default class SeekPlugin extends Plugin {
                     this.markIndexingStalled();
                 }
             } catch (e) {
+                if (isStoreSchemaIncompleteError(e)) {
+                    new Notice('Seek: search index schema is incomplete — rebuilding…', 8000);
+                    await this.forceResetAndReindex(this.loadGeneration);
+                    return;
+                }
                 if (isStoreOpTimeout(e)) {
                     this.markStoreWedged('indexing-stall');
                     await this.recoverWedgedStore();
@@ -849,6 +862,11 @@ export default class SeekPlugin extends Plugin {
             if (gen !== this.inventoryGen) return;
             this.publishInventory(c.files, c.chunks);
         } catch (e) {
+            if (isStoreSchemaIncompleteError(e) && gen === this.inventoryGen) {
+                new Notice('Seek: search index schema is incomplete — rebuilding…', 8000);
+                void this.forceResetAndReindex(this.loadGeneration);
+                return;
+            }
             // A timeout while a writer/index pass is active is expected contention
             // (the write mutex starves the readonly count) — NOT a wedged store.
             // Only flag a wedge when the store is otherwise idle and still hangs.
@@ -1493,6 +1511,11 @@ export default class SeekPlugin extends Plugin {
                 this.markIndexGoodEnough();
                 return;
             }
+            if (this.waitingForSidecar || this.peerSyncPending || this.sidecarSkippedPartialNotes > 0) {
+                this.markBootStuckResolved();
+                this.clearIndexingStalled();
+                return;
+            }
             this.indexBootStuck = true;
             // Carry the reason to the banner surface (indexBannerSpec) without
             // clobbering a real version/drift/peer-ahead reason that may already stand.
@@ -1652,6 +1675,12 @@ export default class SeekPlugin extends Plugin {
             this.noteIndexDropped();
             new Notice(`Seek: index ${result.nuked ? 'reset' : 'cleared'} — restoring…`, 6000);
             await this.recoverAfterFailedDrop('force-reset');
+            if (!this.isBootCurrent(bootGen)) return;
+            this.catchUpRunning = false;
+            if (vaultCoverageIncomplete(this.indexInventoryFiles, this.indexableNoteCount())) {
+                this.catchUpPending = true;
+                this.scheduleStartupCatchUp();
+            }
         } catch (e) {
             this.appendErrorIfCurrent('force-reset', e, bootGen);
             this.noteIndexDropped();
@@ -1811,6 +1840,7 @@ export default class SeekPlugin extends Plugin {
         this.indexDropRecovering = true;
         this.refreshIndexStatusBar();
         this.notifyIndexActivityChanged();
+        if (this.catchUpRunning) await awaitCatchUpQuiescence(() => this.catchUpRunning);
         this.abortInflightSessionWork('user-recover', { releaseIndexHold: true });
         const prior = this.fullReindexRun;
         if (prior) await prior.catch(() => false);
@@ -1857,6 +1887,7 @@ export default class SeekPlugin extends Plugin {
         this.indexDropRecovering = true;
         this.refreshIndexStatusBar();
         this.notifyIndexActivityChanged();
+        if (this.catchUpRunning) await awaitCatchUpQuiescence(() => this.catchUpRunning);
         this.abortInflightSessionWork('user-force-reset', { releaseIndexHold: true });
         const prior = this.fullReindexRun;
         if (prior) await prior.catch(() => false);
@@ -2852,6 +2883,7 @@ export default class SeekPlugin extends Plugin {
         datalessShards?: number;
     } | null): void {
         if (!result) return;
+        this.sidecarSkippedPartialNotes = Math.max(0, result.skippedPartialNotes ?? 0);
         this.waitingForSidecar = resolveSidecarWait(result, this.indexInventoryChunks);
         if (this.waitingForSidecar) this.peerSyncPending = true;
         if (result.hydrated > 0) void this.touchIndexInventory();
@@ -2862,6 +2894,10 @@ export default class SeekPlugin extends Plugin {
         if (!fleet) return;
         this.lastMayFullReindex = fleet.mayFullReindex;
         this.lastMayEmbedCatchUp = fleet.mayEmbedCatchUp;
+    }
+
+    private effectiveMayEmbedCatchUp(): boolean {
+        return resolveMayEmbedCatchUp(this.lastMayEmbedCatchUp, getSidecarIndexRole());
     }
 
     private async refreshSidecarFleet(): Promise<void> {
@@ -3171,12 +3207,21 @@ export default class SeekPlugin extends Plugin {
         const plan = planConsumerHydrateComplete({
             fleet,
             hydrateReleasedGate: !this.sidecarHydrating,
+            inventoryFiles: this.indexInventoryFiles,
         });
-        if (!plan.markGoodEnough) return;
-        this.waitingForSidecar = false;
-        this.peerSyncPending = false;
+        if (!plan.markGoodEnough && !plan.clearBootStuck && !plan.clearIndexingStalled) return;
         if (plan.clearIndexingStalled) this.clearIndexingStalled();
-        this.markIndexGoodEnough();
+        if (plan.markGoodEnough) {
+            this.waitingForSidecar = false;
+            this.peerSyncPending = false;
+            this.markIndexGoodEnough();
+        } else {
+            if (plan.clearBootStuck) {
+                this.markBootStuckResolved();
+                this.clearBootWatchdog();
+            }
+            this.refreshIndexStatusBar();
+        }
     }
 
     private async logStartupGateReleased(): Promise<void> {
@@ -3378,7 +3423,7 @@ export default class SeekPlugin extends Plugin {
         if (this.waitingForSidecar) return;
         if (!this.catchUpPending || this.catchUpRunning || !this.orchestrator) return;
         const allowEmbed = resolveConsumerCatchUpKind({
-            mayEmbedCatchUp: this.lastMayEmbedCatchUp ?? true,
+            mayEmbedCatchUp: this.effectiveMayEmbedCatchUp(),
             catchUpPending: true,
             mobile: isMobilePlatform(),
         }) === 'embed';
@@ -3651,7 +3696,7 @@ export default class SeekPlugin extends Plugin {
                 : null;
             this.noteSidecarFleetFlags(fleet);
             const kind = resolveConsumerCatchUpKind({
-                mayEmbedCatchUp: this.lastMayEmbedCatchUp ?? true,
+                mayEmbedCatchUp: this.effectiveMayEmbedCatchUp(),
                 catchUpPending: this.catchUpPending,
                 mobile: isMobilePlatform(),
             });

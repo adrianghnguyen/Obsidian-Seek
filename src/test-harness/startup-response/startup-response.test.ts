@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
     SMALL_PEER_DELTA_FIXTURE,
+    allFixturePaths,
     recentFixturePaths,
 } from './fixtures';
 import { ModalResponseHarness } from './modal-response-harness';
@@ -29,8 +30,8 @@ describe('startup response without a live Obsidian vault', () => {
 
         expect(observation.gateAtMs).not.toBeNull();
         expect(observation.gateAtMs!).toBeLessThan(SLO_MS);
-        expect(observation.walkedPaths).toEqual(
-            recentFixturePaths(SMALL_PEER_DELTA_FIXTURE),
+        expect(observation.walkedPaths.sort()).toEqual(
+            allFixturePaths(SMALL_PEER_DELTA_FIXTURE),
         );
         expect(results[0]).toBe(SMALL_PEER_DELTA_FIXTURE.expectedFirstPath);
     });
@@ -40,9 +41,9 @@ describe('startup response without a live Obsidian vault', () => {
 
         const observation = await harness.hydrateRecentFirst();
 
-        expect(observation.hydrate.hydrated).toBe(2);
+        expect(observation.hydrate.hydrated).toBe(3);
         expect(observation.searchablePaths).toEqual(
-            recentFixturePaths(SMALL_PEER_DELTA_FIXTURE).sort(),
+            allFixturePaths(SMALL_PEER_DELTA_FIXTURE),
         );
         expect(observation.hydrate.acceptedProducers).toBe(1);
     });
@@ -53,23 +54,27 @@ describe('startup response without a live Obsidian vault', () => {
         const observation = await harness.hydrateRecentFirst();
 
         expect(observation.searchablePaths).toEqual(
-            recentFixturePaths(SMALL_PEER_DELTA_FIXTURE).sort(),
+            allFixturePaths(SMALL_PEER_DELTA_FIXTURE),
         );
     });
 
-    it('stays within the recent-window operation budget before gate release', async () => {
+    it('releases the SLO gate after the 3-day tier then finishes deeper tiers in the same pass', async () => {
         const harness = await startupHarness();
         const recentPaths = recentFixturePaths(SMALL_PEER_DELTA_FIXTURE);
+        const allPaths = allFixturePaths(SMALL_PEER_DELTA_FIXTURE);
 
         const observation = await harness.hydrateRecentFirst();
 
-        expect(observation.walkedPaths).toHaveLength(recentPaths.length);
+        expect(observation.gateAtMs).not.toBeNull();
+        expect(observation.gateAtMs!).toBeLessThan(SLO_MS);
+        expect(observation.walkedPaths.sort()).toEqual(allPaths);
         expect(observation.work).toEqual({
             fullRechunkCalls: 0,
-            subsetCalls: recentPaths.length,
-            chunkCommits: recentPaths.length,
-            fileRecordCommits: recentPaths.length,
+            subsetCalls: allPaths.length,
+            chunkCommits: allPaths.length,
+            fileRecordCommits: allPaths.length,
         });
+        expect(recentPaths.every(p => observation.walkedPaths.includes(p))).toBe(true);
     });
 
     it('retries exactly once when the first chunk becomes searchable', async () => {
