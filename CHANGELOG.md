@@ -9,6 +9,7 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 ### Fixed
 
 - **Consumer sidecar hydrate stall (P0).** Greedy hydrate continues 7d/90d/full tiers after the 3-day search gate releases when fresh chunk ids remain. Desktop consumers run sidecar copy during lexical catch-up without loading the GPU embedder. Indexing stall guard ignores active write-mutex commits; force-reset recovery reschedules catch-up and rebuilds IDB when object stores are missing. Settings Index shows indexed-notes percent while catch-up is pending or running.
+- **Sidecar hydrate reliability (P1).** Shard reads retry Sync/iCloud ENOENT and fall back to in-flight `.tmp` bytes; partial-sync skips surface in status chrome. Consumer boot clears stuck latches while waiting on the producer (including empty inventory). Recover/Resume waits for catch-up quiescence before releasing the embedder; lexical `dedupViaSidecar` tolerates a missing tokenizer. Force-reset abort clears zombie `catchUpPending` before rescheduling catch-up.
 
 ## 1.15.1
 

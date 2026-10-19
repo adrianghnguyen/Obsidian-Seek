@@ -42,13 +42,18 @@ export function planConsumerHydrateComplete(input: {
 }): ConsumerHydrateCompletePlan {
     const ready = input.hydrateReleasedGate && isConsumerHydrateReady(input.fleet);
     const waitingOnProducer = !!input.fleet?.waitingForProducer && input.fleet.role === 'consumer';
-    const hasInventory = (input.inventoryFiles ?? 0) > 0;
-    const relieveStuckWhileWaiting = input.hydrateReleasedGate && waitingOnProducer && hasInventory;
+    const relieveStuckWhileWaiting = input.hydrateReleasedGate && waitingOnProducer;
+    const preflightReadyEmpty = input.hydrateReleasedGate
+        && input.fleet?.role === 'consumer'
+        && !input.fleet.waitingForProducer
+        && input.fleet.matchingReady
+        && (input.inventoryFiles ?? 0) === 0;
+    const relieveStuck = ready || relieveStuckWhileWaiting || preflightReadyEmpty;
     return {
         markGoodEnough: ready,
         clearBootPending: ready,
-        clearBootStuck: ready || relieveStuckWhileWaiting,
-        clearIndexingStalled: ready || relieveStuckWhileWaiting,
+        clearBootStuck: relieveStuck,
+        clearIndexingStalled: relieveStuck,
     };
 }
 

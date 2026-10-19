@@ -293,6 +293,23 @@ describe('hydrateFromSidecar', () => {
         expect(String(scan?.artifactOnly)).toContain('desktop-ahead');
     });
 
+    it('hydrates from a shard still at .tmp when committed path is ENOENT (Sync rename race)', async () => {
+        const a = new FakeAdapter();
+        const notes: NoteSpec[] = [{ path: 'a.md', mtime: 100, ids: ['a1'] }];
+        await seedSidecar(a, 'desktop-aaa', notes);
+        const path = shardPathFor(DIR, 'desktop-aaa', 0);
+        const full = await a.readBinary(path);
+        await a.writeBinary(`${path}.tmp`, full);
+        await a.remove(path);
+
+        const { deps, store, fileRecs } = makeDeps(a, notes);
+        const r = await hydrateFromSidecar(deps);
+        expect(r.hydrated).toBe(1);
+        expect(r.skippedPartialNotes).toBe(0);
+        expect(store.has('a1')).toBe(true);
+        expect(fileRecs.has('a.md')).toBe(true);
+    });
+
     it('skips a note whose chunk bytes have not synced yet (all-or-nothing)', async () => {
         const a = new FakeAdapter();
         const notes: NoteSpec[] = [

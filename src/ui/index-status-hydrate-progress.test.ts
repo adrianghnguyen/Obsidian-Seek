@@ -146,6 +146,20 @@ describe('IndexStatusReporter hydrate progress', () => {
         expect(visibleProgressText(report.label)).toContain('0 / 63');
     });
 
+    it('surfaces skipped partial notes in restoring copy', () => {
+        const report = IndexStatusReporter.compute({
+            ...idle,
+            waitingForSidecar: true,
+            peerSyncPending: true,
+            hydrating: false,
+            searchableChunks: 0,
+            inventoryFiles: 0,
+            sidecarSkippedPartialNotes: 3,
+        });
+        expect(report.compact).toContain('3 notes awaiting sidecar bytes');
+        expect(report.label).toContain('3 notes awaiting sidecar bytes');
+    });
+
     it('does not keep a leftover 1/1 hydrate walk after hydrate has stopped', () => {
         const report = IndexStatusReporter.compute({
             ...idle,

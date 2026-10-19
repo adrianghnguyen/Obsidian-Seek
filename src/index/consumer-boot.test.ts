@@ -55,6 +55,20 @@ describe('consumer hydrate completing → good-enough / not stuck', () => {
         expect(waitingWithInventory.markGoodEnough).toBe(false);
         expect(waitingWithInventory.clearBootStuck).toBe(true);
         expect(waitingWithInventory.clearIndexingStalled).toBe(true);
+        const waitingEmpty = planConsumerHydrateComplete({
+            fleet: { ...consumerReady, waitingForProducer: true, matchingReady: false },
+            hydrateReleasedGate: true,
+            inventoryFiles: 0,
+        });
+        expect(waitingEmpty.markGoodEnough).toBe(false);
+        expect(waitingEmpty.clearBootStuck).toBe(true);
+        const preflightEmpty = planConsumerHydrateComplete({
+            fleet: { ...consumerReady, waitingForProducer: false, matchingReady: true },
+            hydrateReleasedGate: true,
+            inventoryFiles: 0,
+        });
+        expect(preflightEmpty.markGoodEnough).toBe(true);
+        expect(preflightEmpty.clearBootStuck).toBe(true);
         expect(isConsumerHydrateReady({
             role: 'producer',
             waitingForProducer: false,

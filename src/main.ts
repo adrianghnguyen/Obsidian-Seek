@@ -39,6 +39,7 @@ import { Notice, Plugin, TFile } from 'obsidian';
 import type { App } from 'obsidian';
 import { ConfirmModal } from './app/confirm-modal';
 import { executeFullReindexCleanSlate } from './app/full-reindex-clean-slate';
+import { awaitCatchUpQuiescence } from './app/index-work-quiescence';
 import { LocalEmbedder, LOCAL_MODEL, LEGACY_ENGLISH_MODEL_ID } from './embedding/embedder';
 import type { WorkerProbeResult, WorkerEmbedTestResult } from './embedding/iframe-runner';
 import { activeModelSpec, bindLiveModel, currentModelSpec, resolveOverrideSpec, evictStaleModelCaches, deleteModelCaches, probeModelDownloaded } from './embedding/model-registry';
@@ -341,6 +342,8 @@ export default class SeekPlugin extends Plugin {
     private set flushing(val: boolean) { this.schedulers.flushing = val; }
     private catchUpPending = false;              // cold-mobile deferred an embed
     private catchUpRunning = false;              // runCatchUp re-entrancy guard
+    /** Last sidecar hydrate pass — partial Sync skips surfaced in status chrome. */
+    private sidecarSkippedPartialNotes = 0;
     private coldBuildScheduled = false;          // scheduleColdBuild single-flight
     // Set synchronously at the start of runFullReindex, before model load.
     // isWriting() stays false until reindexAll acquires the mutex, so a second
@@ -553,6 +556,7 @@ export default class SeekPlugin extends Plugin {
             hydrateProgress: this.indexProgressWalk.snapshot(),
             indexableNotes: Math.max(this.lastIndexableNotes, this.indexableNoteCount()),
             stuckWhy: this.indexIndexingStalled ? 'indexing' : 'startup',
+            sidecarSkippedPartialNotes: this.sidecarSkippedPartialNotes,
         });
     }
 
@@ -762,6 +766,7 @@ export default class SeekPlugin extends Plugin {
         if (this.catchUpJob != null) this.finishCatchUpJob();
         this.taskCtx.closeOpen(['catchup', 'indexing']);
         if (opts?.releaseIndexHold) {
+            this.catchUpPending = false;
             try { this.orchestrator?.dispose(); } catch { /* already torn down */ }
             try { this.releaseEmbedder(); } catch { /* already torn down */ }
             try { this.store.close(); } catch { /* already closed */ }
@@ -1506,6 +1511,11 @@ export default class SeekPlugin extends Plugin {
                 this.markIndexGoodEnough();
                 return;
             }
+            if (this.waitingForSidecar || this.peerSyncPending || this.sidecarSkippedPartialNotes > 0) {
+                this.markBootStuckResolved();
+                this.clearIndexingStalled();
+                return;
+            }
             this.indexBootStuck = true;
             // Carry the reason to the banner surface (indexBannerSpec) without
             // clobbering a real version/drift/peer-ahead reason that may already stand.
@@ -1830,6 +1840,7 @@ export default class SeekPlugin extends Plugin {
         this.indexDropRecovering = true;
         this.refreshIndexStatusBar();
         this.notifyIndexActivityChanged();
+        if (this.catchUpRunning) await awaitCatchUpQuiescence(() => this.catchUpRunning);
         this.abortInflightSessionWork('user-recover', { releaseIndexHold: true });
         const prior = this.fullReindexRun;
         if (prior) await prior.catch(() => false);
@@ -1876,6 +1887,7 @@ export default class SeekPlugin extends Plugin {
         this.indexDropRecovering = true;
         this.refreshIndexStatusBar();
         this.notifyIndexActivityChanged();
+        if (this.catchUpRunning) await awaitCatchUpQuiescence(() => this.catchUpRunning);
         this.abortInflightSessionWork('user-force-reset', { releaseIndexHold: true });
         const prior = this.fullReindexRun;
         if (prior) await prior.catch(() => false);
@@ -2871,6 +2883,7 @@ export default class SeekPlugin extends Plugin {
         datalessShards?: number;
     } | null): void {
         if (!result) return;
+        this.sidecarSkippedPartialNotes = Math.max(0, result.skippedPartialNotes ?? 0);
         this.waitingForSidecar = resolveSidecarWait(result, this.indexInventoryChunks);
         if (this.waitingForSidecar) this.peerSyncPending = true;
         if (result.hydrated > 0) void this.touchIndexInventory();
