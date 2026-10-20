@@ -1376,7 +1376,7 @@ export class SeekSearchModal extends Modal {
         this.clearWarmupHint();
         const hint = this.resultsEl.createDiv({ cls: 'seek-warmup-hint' });
         const icon = hint.createSpan({ cls: 'seek-warmup-icon' });
-        setIcon(icon, 'refresh-cw');
+        setIcon(icon, 'rotate-cw');
         hint.createSpan({
             text: 'Seek is warming up — showing quick lexical results; semantic ranking follows.',
         });

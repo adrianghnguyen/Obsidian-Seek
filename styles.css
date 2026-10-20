@@ -1103,10 +1103,6 @@
 .seek-foot-status.is-warn { color: var(--text-warning); }
 .seek-foot-status.is-mid,
 .seek-foot-status.is-good { color: var(--text-muted); }
-.seek-foot-status.is-accent .seek-foot-status-icon svg,
-.seek-foot-status.is-info .seek-foot-status-icon svg {
-	animation: seek-foot-spin 1s linear infinite;
-}
 
 /* ---- Pipeline stage indicator (footer, between status and hints) ---- */
 
@@ -1168,10 +1164,6 @@
    targets the .seek-foot bar, same as the hint-shedding tiers above. */
 @container (max-width: 430px) {
 	.seek-pipe-run { display: none; }
-}
-
-@keyframes seek-foot-spin {
-    to { transform: rotate(360deg); }
 }
 
 /* Hint shedding, lowest priority first. navigate/open, copy link (a real
@@ -1370,19 +1362,26 @@
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.seek-settings .seek-status-info {
+.seek-status-info {
     display: inline-flex;
     align-items: center;
     color: var(--text-faint);
     flex: 0 0 auto;
     cursor: help;
 }
-.seek-settings .seek-status-info:hover {
+.seek-status-info:hover {
     color: var(--text-muted);
 }
-.seek-settings .seek-status-info svg {
+.seek-status-info svg {
     width: 12px;
     height: 12px;
+}
+.seek-status-help-text {
+    width: 100%;
+    font-size: 12px;
+    line-height: 1.35;
+    color: var(--text-muted);
+    margin-top: 2px;
 }
 .seek-settings .seek-status-context-hint {
     width: 100%;

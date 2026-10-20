@@ -268,6 +268,7 @@ export function renderIndexStatusCard(
         setIcon(info, 'info');
         info.setAttr('aria-label', opts.statusHelp);
         setTooltip(info, opts.statusHelp, { delay: 300 });
+        health.createDiv({ cls: 'seek-status-help-text', text: opts.statusHelp });
     }
     if (opts.contextHint) {
         card.createDiv({ cls: 'seek-status-context-hint', text: opts.contextHint });

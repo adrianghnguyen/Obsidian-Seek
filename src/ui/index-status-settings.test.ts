@@ -297,6 +297,19 @@ describe('renderEmbedDiagnostic', () => {
         expect(root.querySelector('.seek-status-embed')).not.toBeNull();
     });
 
+    it('renderSettingsIndexStatusCard shows visible status help text', () => {
+        const root = stubEl();
+        const help = 'Index matches your vault. Edits queue background catch-up automatically.';
+        renderSettingsIndexStatusCard(root as unknown as HTMLElement, {
+            health: 'ok',
+            help,
+            stats: { files: 10, chunks: 40, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null },
+        });
+        const helpEl = root.querySelector('.seek-status-help-text');
+        expect(helpEl).not.toBeNull();
+        expect(helpEl?.textContent).toContain('Index matches your vault');
+    });
+
     it('coverage disclosure sits below embed and stays collapsed by default', () => {
         const root = stubEl();
         renderSettingsIndexStatusCard(root as unknown as HTMLElement, {

@@ -295,7 +295,7 @@ describe('indexFooterStatus', () => {
         expect(indexFooterStatus({ ...idle, modelReady: false })).toEqual({
             kind: 'model-loading',
             label: INDEX_MODEL_LOADING_LABEL,
-            icon: 'refresh-cw',
+            icon: 'rotate-cw',
             tone: 'warn',
         });
     });
@@ -308,7 +308,7 @@ describe('indexFooterStatus', () => {
         expect(indexFooterStatus({ ...idle, phase: 'hydrating' })).toMatchObject({
             kind: 'restoring',
             label: INDEX_RESTORING_LABEL,
-            icon: 'refresh-cw',
+            icon: 'rotate-cw',
             tone: 'info',
         });
     });
@@ -353,7 +353,7 @@ describe('indexFooterStatus', () => {
         expect(indexFooterStatus({ ...idle, reason: 'peer-ahead' }).kind).toBe('error');
     });
 
-    it('is Indexing… while indexing, using the status-bar badge not refresh-cw', () => {
+    it('is Indexing… while indexing, using the status-bar badge not rotate-cw', () => {
         expect(indexFooterStatus({ ...idle, kind: 'indexing' })).toMatchObject({
             kind: 'indexing',
             label: INDEX_INDEXING_LABEL,
@@ -366,7 +366,7 @@ describe('indexFooterStatus', () => {
             icon: '',
             badgeCount: 15,
         });
-        expect(indexFooterStatus({ ...idle, kind: 'indexing' }).icon).not.toBe('refresh-cw');
+        expect(indexFooterStatus({ ...idle, kind: 'indexing' }).icon).not.toBe('rotate-cw');
         expect(indexFooterStatus({ ...idle, phase: 'indexing' }).kind).toBe('indexing');
         expect(indexFooterStatus({ ...idle, job: { done: 0, total: 15 } })).toMatchObject({
             kind: 'indexing',
@@ -379,7 +379,7 @@ describe('indexFooterStatus', () => {
         expect(indexFooterStatus({ ...idle, health: 'recovering' })).toMatchObject({
             kind: 'starting',
             label: INDEX_STARTING_LABEL,
-            icon: 'refresh-cw',
+            icon: 'rotate-cw',
             tone: 'info',
         });
     });

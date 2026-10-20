@@ -562,19 +562,19 @@ export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
             return { kind: 'starting', label: report.compact, icon: 'search', tone: 'info', help: footHelp };
         }
         if (report.mode === 'recovering') {
-            return { kind: 'restoring', label: report.compact, icon: 'refresh-cw', tone: report.tone as IndexFooterTone, help: footHelp };
+            return { kind: 'restoring', label: report.compact, icon: 'rotate-cw', tone: report.tone as IndexFooterTone, help: footHelp };
         }
         if (report.mode === 'updating' || report.health === 'updating') {
-            return { kind: 'updating', label: report.compact, icon: 'refresh-cw', tone: 'warn', help: footHelp };
+            return { kind: 'updating', label: report.compact, icon: 'rotate-cw', tone: 'warn', help: footHelp };
         }
         if (report.mode === 'catching-up') {
             return { kind: 'indexing', label: report.compact, icon: '', tone: 'accent', help: footHelp };
         }
         if (report.mode === 'restoring' || report.health === 'restoring') {
-            return { kind: 'restoring', label: report.compact, icon: 'refresh-cw', tone: report.tone as IndexFooterTone, help: footHelp };
+            return { kind: 'restoring', label: report.compact, icon: 'rotate-cw', tone: report.tone as IndexFooterTone, help: footHelp };
         }
         if (report.mode === 'starting' || report.health === 'starting') {
-            return { kind: 'starting', label: report.compact, icon: 'refresh-cw', tone: report.tone as IndexFooterTone, help: footHelp };
+            return { kind: 'starting', label: report.compact, icon: 'rotate-cw', tone: report.tone as IndexFooterTone, help: footHelp };
         }
         if (report.mode === 'error' || report.health === 'error') {
             return { kind: 'error', label: report.compact, icon: 'alert-triangle', tone: 'bad', help: footHelp };
@@ -593,7 +593,7 @@ export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
             };
         }
         if (!input.modelReady) {
-            return { kind: 'model-loading', label: INDEX_MODEL_LOADING_LABEL, icon: 'refresh-cw', tone: 'warn' };
+            return { kind: 'model-loading', label: INDEX_MODEL_LOADING_LABEL, icon: 'rotate-cw', tone: 'warn' };
         }
         if (report.mode === 'none' || report.health === 'none') {
             return { kind: 'no-index', label: report.compact, icon: 'circle-off', tone: 'mid', help: footHelp };
@@ -607,22 +607,22 @@ export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
         return { kind: 'stuck', label: INDEX_STUCK_LABEL, icon: 'alert-triangle', tone: 'bad', help: INDEX_STATUS_HELP.stuck };
     }
     if (input.uiHealth === 'restoring' || input.kind === 'restoring' || input.waitingForSidecar || input.peerSyncPending) {
-        return { kind: 'restoring', label: INDEX_RESTORING_LABEL, icon: 'refresh-cw', tone: 'info' };
+        return { kind: 'restoring', label: INDEX_RESTORING_LABEL, icon: 'rotate-cw', tone: 'info' };
     }
     if (input.phase === 'hydrating') {
-        return { kind: 'restoring', label: INDEX_RESTORING_LABEL, icon: 'refresh-cw', tone: 'info' };
+        return { kind: 'restoring', label: INDEX_RESTORING_LABEL, icon: 'rotate-cw', tone: 'info' };
     }
     if (input.uiHealth === 'starting' || input.kind === 'starting') {
-        return { kind: 'starting', label: INDEX_STARTING_LABEL, icon: 'refresh-cw', tone: 'info' };
+        return { kind: 'starting', label: INDEX_STARTING_LABEL, icon: 'rotate-cw', tone: 'info' };
     }
     if (input.uiHealth === 'error' || input.health === 'degraded' || input.reason === 'peer-ahead') {
         return { kind: 'error', label: INDEX_ERROR_LABEL, icon: 'alert-triangle', tone: 'bad' };
     }
     if (input.health === 'recovering') {
-        return { kind: 'starting', label: INDEX_STARTING_LABEL, icon: 'refresh-cw', tone: 'info' };
+        return { kind: 'starting', label: INDEX_STARTING_LABEL, icon: 'rotate-cw', tone: 'info' };
     }
     if (input.uiHealth === 'updating') {
-        return { kind: 'updating', label: INDEX_UPDATING_LABEL, icon: 'refresh-cw', tone: 'warn', help: INDEX_STATUS_HELP.updating };
+        return { kind: 'updating', label: INDEX_UPDATING_LABEL, icon: 'rotate-cw', tone: 'warn', help: INDEX_STATUS_HELP.updating };
     }
     if (input.uiHealth === 'indexing'
         || (input.uiHealth !== 'ok' && (
@@ -642,7 +642,7 @@ export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
         };
     }
     if (!input.modelReady) {
-        return { kind: 'model-loading', label: INDEX_MODEL_LOADING_LABEL, icon: 'refresh-cw', tone: 'warn' };
+        return { kind: 'model-loading', label: INDEX_MODEL_LOADING_LABEL, icon: 'rotate-cw', tone: 'warn' };
     }
     if (input.kind === 'onboarding') {
         return { kind: 'no-index', label: INDEX_NO_INDEX_LABEL, icon: 'circle-off', tone: 'mid' };
