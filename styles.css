@@ -900,13 +900,6 @@
     color: var(--text-faint);
 }
 
-.seek-warmup-hint .seek-warmup-icon > svg {
-    animation: seek-spin 1.5s linear infinite;
-}
-@media (prefers-reduced-motion: reduce) {
-    .seek-warmup-hint .seek-warmup-icon > svg { animation: none; }
-}
-
 /* Recent searches (resting state — no active query) */
 .seek-recents {
     padding: 6px 8px;
@@ -1103,11 +1096,6 @@
 .seek-foot-status.is-warn { color: var(--text-warning); }
 .seek-foot-status.is-mid,
 .seek-foot-status.is-good { color: var(--text-muted); }
-.seek-foot-status.is-accent .seek-foot-status-icon svg,
-.seek-foot-status.is-info .seek-foot-status-icon svg {
-	animation: seek-foot-spin 1s linear infinite;
-}
-
 /* ---- Pipeline stage indicator (footer, between status and hints) ---- */
 
 /* The indicator is permanently visible in the footer bar so the user can
@@ -1170,10 +1158,6 @@
 	.seek-pipe-run { display: none; }
 }
 
-@keyframes seek-foot-spin {
-    to { transform: rotate(360deg); }
-}
-
 /* Hint shedding, lowest priority first. navigate/open, copy link (a real
    action, not a hint) and esc are never shed. Mobile is untouched — it already
    drops every hint group (see the .seek-mobile rule above).
@@ -1225,9 +1209,6 @@
 @media (prefers-reduced-motion: reduce) {
     .seek-results.is-loading {
         transition: none;
-    }
-    .seek-foot-status-icon svg {
-        animation: none;
     }
 }
 
@@ -1370,19 +1351,29 @@
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.seek-settings .seek-status-info {
+.seek-status-info {
     display: inline-flex;
     align-items: center;
     color: var(--text-faint);
     flex: 0 0 auto;
     cursor: help;
 }
-.seek-settings .seek-status-info:hover {
+.seek-status-info:hover {
     color: var(--text-muted);
 }
-.seek-settings .seek-status-info svg {
+.seek-status-info svg {
     width: 12px;
     height: 12px;
+}
+.seek-status-help-text {
+    width: 100%;
+    flex: 1 1 100%;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--text-muted);
+    margin-top: 2px;
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
 .seek-settings .seek-status-context-hint {
     width: 100%;
@@ -2507,19 +2498,17 @@
     opacity: 0.45;
 }
 
-/* ---- Model: download spinner (indeterminate — no byte progress available) ---- */
+/* ---- Model: in-progress icon (Lucide rotate-cw; no CSS spin) ---- */
 .seek-settings .seek-spinner {
-    display: inline-block;
+    display: inline-flex;
+    align-items: center;
+    vertical-align: middle;
+    margin-right: 4px;
+    color: var(--text-muted);
+}
+.seek-settings .seek-spinner svg {
     width: 12px;
     height: 12px;
-    vertical-align: middle;
-    border: 2px solid var(--background-modifier-border);
-    border-top-color: var(--interactive-accent);
-    border-radius: 50%;
-    animation: seek-spin 0.7s linear infinite;
-}
-@keyframes seek-spin {
-    to { transform: rotate(360deg); }
 }
 
 /* ---- About footer ---- */
@@ -2575,7 +2564,6 @@
 @media (prefers-reduced-motion: reduce) {
     .seek-settings .seek-pipe-box,
     .seek-settings .seek-progress-fill { transition: none; }
-    .seek-settings .seek-spinner { animation: none; }
 }
 
 /* ============================================================================

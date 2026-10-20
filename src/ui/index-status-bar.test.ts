@@ -626,6 +626,21 @@ describe('renderIndexStatusCard', () => {
         expect(blob).toContain('exclusion pass');
         expect(blob).not.toContain('Indexing…');
     });
+
+    it('renders status help as visible card copy, not tooltip-only', () => {
+        const root = stubEl();
+        const help = 'Seek is ready. Search uses your local index; catch-up runs quietly in the background when needed.';
+        renderIndexStatusCard(root as unknown as HTMLElement, {
+            health: 'ok',
+            stats: { files: 80, chunks: 400, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: '2026-10-17T13:50:00.000Z' },
+            statusHelp: help,
+        });
+        const helpEl = root.querySelector('.seek-status-help-text');
+        expect(helpEl).not.toBeNull();
+        expect(helpEl?.textContent).toBe(help);
+        expect(textOf(root)).toContain(help);
+        expect(root.querySelector('.seek-status-info')).not.toBeNull();
+    });
 });
 
 describe('INDEX_STATUS_HEALTH locked', () => {
