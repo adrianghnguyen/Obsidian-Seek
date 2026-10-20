@@ -99,6 +99,9 @@ export const HYDRATE_TIERS = [
     { id: 'hydrate-tier-full', days: null as number | null },
 ] as const;
 
+/** Greedy hydrate: re-chunk batch size for tiers after 3d (status chrome file ticks). */
+export const HYDRATE_WALK_BATCH_SIZE = 48;
+
 export interface HydrateDeps {
     adapter: DataAdapter;
     indexDir: string;
@@ -117,6 +120,8 @@ export interface HydrateDeps {
     onHydrateProgress?: (detail: HydrateProgressDetail) => void;
     /** When true and reChunkSubset + listHydrateFiles are set, use tiered greedy hydrate. */
     greedyHydrate?: boolean;
+    /** Override walk batch size for post-3d tiers (tests). Default {@link HYDRATE_WALK_BATCH_SIZE}. */
+    hydrateWalkBatchSize?: number;
     existingIds: () => Promise<Set<string>>; // chunk_ids already in IDB (skip — idempotent)
     putQuantized: (
         chunks: Chunk[],
@@ -512,11 +517,17 @@ async function hydrateFromSidecarGreedy(
         } else {
             filesTotal = Math.max(filesTotal, filesDone + tierFiles.length);
             emitFiles(totalNeeded, totalHydrated);
-            tierFilesWalked = tierFiles.length;
-            const live = await deps.reChunkSubset!(tierFiles, () => freshIdsRemaining.size === 0);
-            await processRechunked(live);
-            filesDone += tierFiles.length;
-            emitFiles(totalNeeded + tierNeeded, totalHydrated + tierHydrated);
+            const walkBatch = deps.hydrateWalkBatchSize ?? HYDRATE_WALK_BATCH_SIZE;
+            for (let i = 0; i < tierFiles.length; i += walkBatch) {
+                if (freshIdsRemaining.size === 0) break;
+                const batch = tierFiles.slice(i, i + walkBatch);
+                tierFilesWalked += batch.length;
+                filesDone += batch.length;
+                emitFiles(totalNeeded + tierNeeded, totalHydrated + tierHydrated);
+                const live = await deps.reChunkSubset!(batch, () => freshIdsRemaining.size === 0);
+                await processRechunked(live);
+                emitFiles(totalNeeded + tierNeeded, totalHydrated + tierHydrated);
+            }
         }
 
         totalNeeded += tierNeeded;

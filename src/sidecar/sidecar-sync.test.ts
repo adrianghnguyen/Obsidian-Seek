@@ -693,6 +693,44 @@ describe('probePeerAhead', () => {
         expect(ticks.every(t => t.total === 2)).toBe(true);
     });
 
+    it('greedy hydrate emits intermediate file ticks while walking a multi-file post-3d tier', async () => {
+        const a = new FakeAdapter();
+        const now = Date.now();
+        const fiveDaysAgo = now - 5 * 86_400_000;
+        const notes: NoteSpec[] = [
+            { path: 'w1.md', mtime: fiveDaysAgo, ids: ['w1'] },
+            { path: 'w2.md', mtime: fiveDaysAgo - 1, ids: ['w2'] },
+            { path: 'w3.md', mtime: fiveDaysAgo - 2, ids: ['w3'] },
+            { path: 'w4.md', mtime: fiveDaysAgo - 3, ids: ['w4'] },
+            { path: 'w5.md', mtime: fiveDaysAgo - 4, ids: ['w5'] },
+        ];
+        await seedSidecar(a, 'desktop-aaa', notes);
+        const subsetPaths: string[][] = [];
+        const ticks: number[] = [];
+        const { deps } = makeDeps(a, notes, {
+            existingIds: async () => new Set(),
+            greedyHydrate: true,
+            hydrateWalkBatchSize: 2,
+            listHydrateFiles: async () => notes.map(n => ({ path: n.path, mtimeMs: n.mtime })),
+            reChunkSubset: async files => {
+                subsetPaths.push(files.map(f => f.path));
+                return files.map(ref => {
+                    const n = notes.find(x => x.path === ref.path)!;
+                    return { notePath: n.path, mtimeMs: n.mtime, chunks: n.ids.map(id => chunk(id, n.path)) };
+                });
+            },
+            reChunk: async () => { throw new Error('full reChunk should not run'); },
+            onHydrateProgress: p => ticks.push(p.done),
+        });
+        await hydrateFromSidecar(deps);
+
+        expect(subsetPaths.length).toBe(3);
+        expect(subsetPaths.map(b => b.length)).toEqual([2, 2, 1]);
+        expect(ticks.some(d => d === 2)).toBe(true);
+        expect(ticks.some(d => d === 4)).toBe(true);
+        expect(ticks.at(-1)).toBe(5);
+    });
+
     it('WARM index (nothing to hydrate) releases the gate without re-chunking the vault', async () => {
         // Regression: a healthy warm boot — every coverable chunk already in the store —
         // used to return from hydrate WITHOUT calling onGoodEnough, so the startup gate
