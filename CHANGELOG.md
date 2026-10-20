@@ -4,15 +4,13 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
-### Fixed
-
-- **Index status tooltips.** Every index mode (`Updating`, catch-up, restore, verify, reindex, stuck, and idle Ready) now exposes the same descriptive hover text on the status bar, Settings → Index **(i)**, and the search-modal footer — including file progress on **Updating** when a pass total is known.
-
 ## 1.15.3
 
 ### Fixed
 
 - **Sidecar greedy hydrate progress.** Post-3d tiers (7d–full) re-chunk in walk batches and emit file done/total between batches so verify/hydrate status no longer freezes for minutes on large tiers (e.g. 90d).
+- **Index status help visible in Settings and status bar.** Index mode explanations render as inline `.seek-status-help-text` on the status card (Settings → Index, status-bar hover, search footer). Native tooltips on **(i)** remain for accessibility but are no longer required to read the explanation — fixes missing help in Settings and inside `.seek-index-hover` popovers.
+- **Loading chrome uses Lucide `rotate-cw`.** Search-modal footer, warmup hint, and Settings model download/delete rows use the `rotate-cw` icon instead of CSS-spinning `refresh-cw` / `search` glyphs (`seek-foot-spin` / `seek-spin` removed).
 
 ## 1.15.2
 

@@ -1912,14 +1912,16 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
 
         if (this.modelDownloading) {
             const desc = row.descEl;
-            desc.createSpan({ cls: 'seek-spinner' });
+            const spin = desc.createSpan({ cls: 'seek-spinner' });
+            setIcon(spin, 'rotate-cw');
             desc.createSpan({ text: ` Downloading… (≈${approxMB} MB — keep Obsidian open)` });
             return;
         }
 
         if (this.modelDeleting) {
             const desc = row.descEl;
-            desc.createSpan({ cls: 'seek-spinner' });
+            const spin = desc.createSpan({ cls: 'seek-spinner' });
+            setIcon(spin, 'rotate-cw');
             desc.createSpan({ text: ' Deleting model…' });
             return;
         }
