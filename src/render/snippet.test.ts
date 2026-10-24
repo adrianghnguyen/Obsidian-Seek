@@ -13,6 +13,12 @@ describe('makeSnippet', () => {
         const content = 'First sentence here. Second sentence with more words.';
         expect(makeSnippet(content, 'zzzzz', 30)).toBe('First sentence here. Second se…');
     });
+
+    it('unaccented query anchors on accented body text', () => {
+        const content = 'Intro only. Later we visited the Café Central for coffee.';
+        const out = makeSnippet(content, 'cafe central', 80);
+        expect(out.toLowerCase()).toContain('caf');
+    });
 });
 
 // The headline case (Inbox/Seek Dense Channel CSLS De-Hubbing.md): a $$…$$

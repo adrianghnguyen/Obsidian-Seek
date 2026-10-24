@@ -134,6 +134,11 @@ export function foldDiacritics(t: string): string {
     return t.normalize('NFD').replace(/\p{M}+/gu, '');
 }
 
+/** Lowercase + Latin accent fold for UI/filter matching (not BM25 processTerm). */
+export function foldForMatch(s: string): string {
+    return foldDiacritics(s.toLowerCase());
+}
+
 // MiniSearch's `processTerm` runs at BOTH index and query time, so the stoplist
 // (and now the depluralizer) stay symmetric across the two with no chance of drift.
 // It replaces MiniSearch's default processor (which only lowercases), so we lowercase

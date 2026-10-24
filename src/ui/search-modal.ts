@@ -14,7 +14,7 @@ import { MATCH_STRENGTH_MIN_NOTES } from '../types/types';
 import { makeSnippet, sanitizeSnippet, SNIPPET_PREVIEW_LIMITS } from '../render/snippet';
 import type { SearchOrchestrator } from '../search/search';
 import type { SeekLogger } from '../diagnostics/logger';
-import { ENGLISH_STOPWORDS } from '../search/bm25';
+import { ENGLISH_STOPWORDS, distinctQueryTerms, foldForMatch } from '../search/bm25';
 import { buildHighlightRanges } from '../render/highlight';
 import { buildPassageTerms, markPattern } from '../render/passage';
 import { parseQuery } from '../search/query-parser';
@@ -1357,9 +1357,10 @@ export class SeekSearchModal extends Modal {
     // matches `meetings/1x1` and `meetings/1x1/child`, but NOT the sibling
     // `meetings/1x1s` — so this predicts whether the pill will bind to anything.
     private tagBinds(filterTag: string): boolean {
-        const ft = filterTag.replace(/^#/, '').toLowerCase();
+        const ft = foldForMatch(filterTag.replace(/^#/, ''));
         for (const vt of this.vaultTagSet) {
-            if (vt === ft || vt.startsWith(ft + '/')) return true;
+            const folded = foldForMatch(vt);
+            if (folded === ft || folded.startsWith(ft + '/')) return true;
         }
         return false;
     }
@@ -2013,8 +2014,7 @@ export class SeekSearchModal extends Modal {
     // so the highlight lands on the text the snippet already showed.
     private async buildMatchHighlight(file: TFile, r: ScoredChunk): Promise<Record<string, unknown> | undefined> {
         if (r.start_line <= 0) return undefined;
-        const tokens = (this.latestSearchEntry?.cleanedQuery ?? '')
-            .toLowerCase().split(/\s+/).filter(Boolean);
+        const tokens = [...distinctQueryTerms(this.latestSearchEntry?.cleanedQuery ?? '')];
         if (tokens.length === 0) return undefined;
 
         const content = await this.app.vault.cachedRead(file);

@@ -96,6 +96,12 @@ describe('SuggestEngine — tags', () => {
         expect(C('recipes tag:mee')?.accept).toBe('recipes tag:meetings');
         expect(C('recipes tag:mee')?.ghost).toBe('tings');
     });
+
+    it('unaccented prefix extends to accented vault tag', () => {
+        const c = C('tag:caf');
+        expect(c?.accept).toBe('tag:café');
+        expect(c?.ghost).toBe('é');
+    });
 });
 
 describe('SuggestEngine — paths', () => {

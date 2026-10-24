@@ -25,6 +25,7 @@ import { toDisplayForm } from './prop-normalize';
 import { enumerateDatePropertyNames, enumerateNumberPropertyNames } from './prop-types';
 import { shouldIndexPath } from './search';
 import type { SeekSettings } from '../types/types';
+import { foldForMatch } from './bm25-text';
 
 export interface Completion {
     // What the input's full value becomes if accepted (head + completed token).
@@ -326,7 +327,8 @@ export class SuggestEngine {
     // re-suggested — an accepted "tag:meetings" surfaces the deeper
     // "tag:meetings/1x1s" instead of itself.
     private extendsTok(tok: string, typedTok: string): boolean {
-        return tok.length > typedTok.length && tok.toLowerCase().startsWith(typedTok.toLowerCase());
+        return tok.length > typedTok.length
+            && foldForMatch(tok).startsWith(foldForMatch(typedTok));
     }
 
     // Highest-count entry whose makeTok(value) prefix-extends `typedTok`.
