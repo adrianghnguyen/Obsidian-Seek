@@ -3,7 +3,7 @@
 // imports — string in, string out.
 
 import type { SnippetPreview } from '../types/types';
-import { passageWindow, type PassageTerm } from './passage';
+import { buildPassageTerms, passageWindow, type PassageTerm } from './passage';
 
 /** Lines + character window for each Display → snippet preview preset. */
 export const SNIPPET_PREVIEW_LIMITS: Record<SnippetPreview, { lines: number; chars: number }> = {
@@ -36,16 +36,8 @@ export function makeSnippet(content: string, queryOrTerms: string | PassageTerm[
         if (end < text.length) snippet = snippet + '…';
         return snippet;
     }
-    const query = queryOrTerms;
-    const lower = text.toLowerCase();
-    const q = query.toLowerCase().split(/\s+/).filter(Boolean);
-    let best = -1;
-    for (const tok of q) {
-        const idx = lower.indexOf(tok);
-        if (idx !== -1 && (best === -1 || idx < best)) best = idx;
-    }
-    const start = best === -1 ? 0 : Math.max(0, best - 40);
-    const end = Math.min(text.length, start + maxLen);
+    const terms = buildPassageTerms(queryOrTerms, () => 0);
+    const { start, end } = passageWindow(text, terms, maxLen);
     let snippet = text.slice(start, end).replace(/\s+/g, ' ').trim();
     if (start > 0) snippet = '…' + snippet;
     if (end < text.length) snippet = snippet + '…';

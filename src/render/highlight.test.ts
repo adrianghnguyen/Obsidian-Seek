@@ -83,6 +83,15 @@ describe('buildHighlightRanges — all in-window occurrences (passage-window con
     });
 });
 
+describe('buildHighlightRanges — accent-insensitive (BM25 term space)', () => {
+    it('folded query token highlights accented surface form', () => {
+        const src = 'We met at the Café Roma downtown.\n';
+        const ranges = buildHighlightRanges(src, ['cafe'], 0, src.length, STOP);
+        expect(ranges.length).toBeGreaterThan(0);
+        expect(src.slice(...ranges[0]).toLowerCase()).toContain('caf');
+    });
+});
+
 describe('buildHighlightRanges — offset defence', () => {
     it('drops overlapping ranges, keeping a disjoint ascending set', () => {
         // Both tokens' first match resolves to the same "pillars" span → overlap.

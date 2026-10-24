@@ -47,7 +47,7 @@ import { toBindForm } from './prop-normalize';
 // below): the same seekTokenize + processQueryTerm pipeline BM25 itself uses
 // to process a query (bm25.ts distinctQueryTerms), not an ad-hoc duplicate.
 import { seekTokenize } from './tokenize';
-import { processQueryTerm } from './bm25';
+import { foldForMatch, processQueryTerm } from './bm25';
 
 // Tag/property-key character grammar — SHARED with the doc-side inline-tag
 // scanner (tag-grammar.ts, where the full derivation comment lives): both
@@ -427,7 +427,7 @@ export function compileMatcher(f: QueryFilters, ctx?: FilterContext): (chunk: Ch
     // Each include pattern matches the full path OR a `*/pattern` suffix, and
     // any one pattern matching is enough (OR across patterns).
     const pathRes = (f.includePaths ?? []).flatMap(p => [globToRegExp(p), globToRegExp(`*/${p}`)]);
-    const filterTags = (f.tags ?? []).map(t => t.replace(/^#/, '').toLowerCase());
+    const filterTags = (f.tags ?? []).map(t => foldForMatch(t.replace(/^#/, '')));
     // Obsidian-style property matching, precompiled once per query: substring +
     // case-insensitive + wikilink-aware by DEFAULT; a double-quoted value
     // (`[key:"v"]`) forces a whole-value exact match. The quote check runs on the
@@ -435,7 +435,7 @@ export function compileMatcher(f: QueryFilters, ctx?: FilterContext): (chunk: Ch
     const fmMatchers = (f.frontmatter ? Object.entries(f.frontmatter) : []).map(([k, v]) => {
         const raw = String(v).trim();
         const exact = raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"');
-        return { key: k, expected: normalizePropValue(exact ? raw.slice(1, -1) : raw), exact };
+        return { key: k, expected: foldForMatch(normalizePropValue(exact ? raw.slice(1, -1) : raw)), exact };
     });
     const numericClauses = f.numeric ?? [];
     // Date bounds: `after:D` lower bound = start-of-period(D) (parseDateMs already
@@ -458,7 +458,7 @@ export function compileMatcher(f: QueryFilters, ctx?: FilterContext): (chunk: Ch
 
         // Tag filtering (hierarchical: "meetings" matches "meetings/1x1").
         if (filterTags.length > 0) {
-            const chunkTags = (meta.tags ?? []).map(t => t.replace(/^#/, '').toLowerCase());
+            const chunkTags = (meta.tags ?? []).map(t => foldForMatch(t.replace(/^#/, '')));
             if (f.tagsMatchAll) {
                 if (!filterTags.every(ft => tagMatches(chunkTags, ft))) return false;
             } else {
@@ -477,7 +477,7 @@ export function compileMatcher(f: QueryFilters, ctx?: FilterContext): (chunk: Ch
             if (actual === undefined) return false;
             const values = Array.isArray(actual) ? actual : [actual];
             const hit = values.some(v => {
-                const actNorm = normalizePropValue(v);
+                const actNorm = foldForMatch(normalizePropValue(v));
                 return exact ? actNorm === expected : actNorm.includes(expected);
             });
             if (!hit) return false;

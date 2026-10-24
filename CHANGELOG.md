@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Fixed
+
+- **Accent-insensitive filter binding and UI parity.** `#tag` / `[key:value]` filters, tag pill bind checks, open-note highlight, naive snippet fallback, and filter suggest prefix now use shared `foldForMatch` (same Latin fold as BM25 ranking, without changing `processTerm`).
+
 ## 1.15.3
 
 ### Fixed

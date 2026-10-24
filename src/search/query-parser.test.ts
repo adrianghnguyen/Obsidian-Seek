@@ -600,6 +600,11 @@ describe('matchesFilters / tags (hierarchical, OR)', () => {
         expect(matchesFilters(c, filters({ tags: ['meetings'] }))).toBe(true);
     });
 
+    it('unaccented filter tag matches accented chunk tag', () => {
+        const c = makeChunk({ metadata: { tags: ['café'] } });
+        expect(matchesFilters(c, filters({ tags: ['cafe'] }))).toBe(true);
+    });
+
     it('tagsMatchAll = AND semantics', () => {
         const one = makeChunk({ metadata: { tags: ['a'] } });
         const both = makeChunk({ metadata: { tags: ['a', 'b'] } });
@@ -689,6 +694,11 @@ describe('matchesFilters / frontmatter (Obsidian-style: substring + wikilink + q
     it('quoted exact still sees through wikilinks', () => {
         const h = makeChunk({ metadata: { properties: { placeLoc: '[[Los Angeles]]' } } });
         expect(matchesFilters(h, filters({ frontmatter: { placeLoc: '"Los Angeles"' } }))).toBe(true);
+    });
+
+    it('unaccented filter value matches accented property value', () => {
+        const h = makeChunk({ metadata: { properties: { city: 'Zürich' } } });
+        expect(matchesFilters(h, filters({ frontmatter: { city: 'zurich' } }))).toBe(true);
     });
 });
 

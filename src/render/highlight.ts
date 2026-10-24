@@ -1,3 +1,5 @@
+import { foldForMatch } from '../search/bm25-text';
+
 // Pure computation for the in-note match-highlight flash, factored out of
 // search-modal.ts so it is unit-testable without Obsidian. buildMatchHighlight
 // resolves the chunk window and hands the raw note text here; this module finds
@@ -50,6 +52,10 @@ export function maskNonBodyText(content: string): string {
 
 const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+// Word token in the markup-masked, lowercased note. Avoid ASCII `\b` — it splits
+// before accented letters (é is not \w in JS), which would flash only "caf" of "café".
+const WORD_RE = /(?<![\p{L}\p{M}0-9_])[\p{L}\p{M}0-9_]+(?![\p{L}\p{M}0-9_])/gu;
+
 // Per-token cap on collected occurrences. The flash decorates ONE chunk window
 // (~a few hundred words); the cap only bounds pathological repetition from
 // growing the RangeSet, never a normal chunk.
@@ -91,13 +97,15 @@ export function buildHighlightRanges(
     const raw: Array<[number, number]> = [];
     for (const tok of tokens) {
         if (tok.length < 2 || stopwords.has(tok)) continue;
-        const re = new RegExp(`\\b${escapeRegExp(tok)}\\w*`, 'g');
-        re.lastIndex = lineStart;
+        const stemRe = new RegExp(`^${escapeRegExp(tok)}\\w*$`);
+        WORD_RE.lastIndex = lineStart;
         let m: RegExpExecArray | null;
         let count = 0;
-        while (count < MAX_OCCURRENCES && (m = re.exec(masked)) !== null && m.index < windowEnd) {
-            raw.push([m.index, m.index + m[0].length]);
-            count++;
+        while (count < MAX_OCCURRENCES && (m = WORD_RE.exec(masked)) !== null && m.index < windowEnd) {
+            if (stemRe.test(foldForMatch(m[0]))) {
+                raw.push([m.index, m.index + m[0].length]);
+                count++;
+            }
         }
     }
 

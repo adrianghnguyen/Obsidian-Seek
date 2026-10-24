@@ -180,6 +180,7 @@ import {
     isAllStopwordQuery,
     depluralize,
     foldDiacritics,
+    foldForMatch,
     processTerm,
     processQueryTerm,
     keepStopwordsProcessTerm,
@@ -193,7 +194,9 @@ import {
 } from './bm25-text';
 export {
     depluralize,
+    distinctQueryTerms,
     foldDiacritics,
+    foldForMatch,
     processQueryTerm,
     extractNoteName,
     extractHeadingsText,
