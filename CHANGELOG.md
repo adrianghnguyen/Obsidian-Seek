@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Added
+
+- **Telescope preview — collapse front matter.** Settings → Display → **Collapse front matter in preview** (default ON) hides YAML `---` blocks behind a clickable **Front matter** control in the preview pane.
+
 ## 1.16.0-beta.1
 
 Beta: search-modal telescope preview column plus status-bar and accent fixes since 1.15.3.

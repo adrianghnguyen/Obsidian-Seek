@@ -36,6 +36,15 @@ const HEADING = /^(#{1,3})[ \t]+(.*)$/;
 const FENCE = /^ {0,3}(`{3,}|~{3,})/;
 const TAG_BODY = /[\p{L}\p{N}_\-/]+/uy;
 
+/** Line index range `[from, toExclusive)` for a leading YAML `---` … `---` block, or null. */
+export function frontmatterLineRange(lines: string[]): { from: number; toExclusive: number } | null {
+    if (lines.length < 2 || lines[0].trim() !== '---') return null;
+    for (let i = 1; i < lines.length; i++) {
+        if (lines[i].trim() === '---') return { from: 0, toExclusive: i + 1 };
+    }
+    return null;
+}
+
 /** Lowercase highlight terms from a cleaned query string (inline filters already stripped). */
 export function telescopeQueryTerms(cleanedQuery: string): string[] {
     const out: string[] = [];
@@ -185,6 +194,8 @@ export interface PreviewPaintOptions {
     notePath: string;
     anchorLine: number | null;
     terms: string[];
+    /** When true, leading YAML front matter starts collapsed with an expand control. */
+    collapseFrontmatter: boolean;
 }
 
 /** rAF-coalesced lightweight DOM preview of vault note text for the search modal. */
@@ -196,6 +207,9 @@ export class TelescopePreviewPane {
     private paintRaf: number | null = null;
     private pending: PreviewPaintOptions | null = null;
     private readonly readNote: (path: string) => Promise<string>;
+    private lastNotePath: string | null = null;
+    private frontmatterExpanded = false;
+    private lastRender: { text: string; opts: PreviewPaintOptions } | null = null;
 
     /** Mounts the preview body inside scrollEl and stores the vault read callback. */
     constructor(
@@ -215,6 +229,9 @@ export class TelescopePreviewPane {
             this.paintRaf = null;
         }
         this.pending = null;
+        this.lastNotePath = null;
+        this.frontmatterExpanded = false;
+        this.lastRender = null;
         this.bodyEl.empty();
     }
 
@@ -259,30 +276,78 @@ export class TelescopePreviewPane {
         this.renderDom(text, opts);
     }
 
+    /** Re-renders from the last loaded note (e.g. front matter expand/collapse). */
+    private repaintLastDom(): void {
+        if (!this.lastRender) return;
+        this.renderDom(this.lastRender.text, this.lastRender.opts);
+    }
+
     /** Builds capped classified preview DOM and scrolls to the anchor line or first query mark. */
     private renderDom(text: string, opts: PreviewPaintOptions): void {
         this.bodyEl.empty();
         if (!text) {
             this.bodyEl.createDiv({ cls: 'seek-preview-empty', text: 'No preview' });
+            this.lastRender = null;
             return;
         }
+        if (opts.notePath !== this.lastNotePath) {
+            this.lastNotePath = opts.notePath;
+            this.frontmatterExpanded = false;
+        }
+        this.lastRender = { text, opts };
+
         const all = text.split('\n');
         const sliced = all.slice(0, MAX_PREVIEW_LINES);
+        const fm = frontmatterLineRange(sliced);
+        const fmLineCount = fm ? fm.toExclusive - fm.from : 0;
+        const hideFm = Boolean(
+            fm && opts.collapseFrontmatter && !this.frontmatterExpanded,
+        );
+
+        if (fm && opts.collapseFrontmatter) {
+            const expanded = this.frontmatterExpanded;
+            const btn = this.bodyEl.createEl('button', {
+                type: 'button',
+                cls: 'seek-preview-frontmatter-toggle',
+            });
+            btn.setText(
+                expanded
+                    ? `▾ Front matter (${fmLineCount} lines)`
+                    : `▸ Front matter (${fmLineCount} lines)`,
+            );
+            btn.addEventListener('click', () => {
+                this.frontmatterExpanded = !this.frontmatterExpanded;
+                this.repaintLastDom();
+            });
+        }
+
         const lines = classifyPreviewLines(sliced);
         const budget: PreviewBudget = { marks: MAX_PREVIEW_MARKS, styles: MAX_PREVIEW_STYLES };
         const segs = lines.map((l) => segmentPreviewLine(l.text, opts.terms, budget, l.kind === 'code'));
-        const markLine = segs.findIndex((ss) => ss.some((x) => x.mark));
+        const markLine = segs.findIndex((ss, idx) => {
+            if (hideFm && fm && idx >= fm.from && idx < fm.toExclusive) return false;
+            return ss.some((x) => x.mark);
+        });
         let anchor = opts.anchorLine;
         if (anchor == null || anchor < 0 || anchor >= lines.length) {
             anchor = markLine >= 0 ? markLine : 0;
         }
+        if (hideFm && fm && anchor >= fm.from && anchor < fm.toExclusive) {
+            anchor = Math.min(fm.toExclusive, lines.length - 1);
+        }
         const lazyFrom = Math.max(anchor, 0) + LAZY_MARGIN;
         let target: HTMLElement | null = null;
         for (let i = 0; i < lines.length; i++) {
+            if (hideFm && fm && i >= fm.from && i < fm.toExclusive) continue;
+
             const line = lines[i];
-            const div = this.bodyEl.createDiv({
-                cls: line.kind === 'text' ? 'seek-preview-line' : `seek-preview-line seek-preview-${line.kind}`,
-            });
+            const inFm = fm !== null && i >= fm.from && i < fm.toExclusive;
+            const cls = inFm
+                ? 'seek-preview-line seek-preview-frontmatter'
+                : line.kind === 'text'
+                    ? 'seek-preview-line'
+                    : `seek-preview-line seek-preview-${line.kind}`;
+            const div = this.bodyEl.createDiv({ cls });
             if (i >= lazyFrom) div.addClass('seek-preview-lazy');
             if (line.text === '') div.appendText('\u200b');
             for (const s of segs[i]) {

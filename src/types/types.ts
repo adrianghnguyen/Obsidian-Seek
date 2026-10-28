@@ -565,6 +565,8 @@ export interface SeekSettings {
     // unless the user enables this in Settings → Display. Remap “Search: Toggle
     // preview column” under Settings → Hotkeys (default Ctrl/Cmd+P).
     telescopePreviewEnabled: boolean;
+    /** When ON, YAML front matter at the top of preview notes starts collapsed (click to expand). */
+    telescopePreviewCollapseFrontmatter: boolean;
 
     // Search modal width on desktop/tablet (phones keep full-width). Applied on
     // next open via CSS vars — see search-modal-size.ts.
@@ -711,6 +713,7 @@ export const DEFAULT_SETTINGS: SeekSettings = {
     resultAliasLimit: 3,       // max aliases before "+N more"; 0 = show all
     snippetPreview: 'compact', // 1-line / 200-char window; standard=3/400, expanded=6/800
     telescopePreviewEnabled: true,
+    telescopePreviewCollapseFrontmatter: true,
     searchModalWidth: 'default',   // desktop/tablet modal width preset
     searchModalHeight: 'default',  // desktop modal height preset
     altOpenLocation: 'tab',    // schema compat with upstream; fork open UX uses OpenTarget modifiers

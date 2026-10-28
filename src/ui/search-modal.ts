@@ -1988,6 +1988,7 @@ export class SeekSearchModal extends Modal {
             notePath: r.note_path,
             anchorLine,
             terms,
+            collapseFrontmatter: this.settings.telescopePreviewCollapseFrontmatter,
         });
     }
 
