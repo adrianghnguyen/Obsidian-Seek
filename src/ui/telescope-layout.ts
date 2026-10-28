@@ -4,17 +4,27 @@ import type { SearchModalHeight, SearchModalWidth, TelescopePreviewLayout } from
 import { applySearchModalSizePx } from './search-modal-size';
 
 export const SEARCH_MODAL_WIDTH_MIN_PX = 400;
-export const SEARCH_MODAL_WIDTH_MAX_PX = 960;
+
+/** Former Extra-wide preset — snap target only, not a width ceiling. */
+export const SEARCH_MODAL_WIDTH_EXTRA_WIDE_PX = 960;
 
 /** Former width presets — snap targets on the modal width slider. */
 export const SEARCH_MODAL_WIDTH_NOTCHES: readonly { px: number; label: string }[] = [
     { px: 640, label: 'Default' },
     { px: 800, label: 'Wide' },
-    { px: 960, label: 'Extra wide' },
+    { px: SEARCH_MODAL_WIDTH_EXTRA_WIDE_PX, label: 'Extra wide' },
 ] as const;
 
+/** Slider upper bound: current window. Applied CSS still caps at 94vw / 90vw. */
+export function searchModalWidthSliderMaxPx(): number {
+    const viewport = typeof window !== 'undefined' && window.innerWidth > 0
+        ? Math.round(window.innerWidth)
+        : SEARCH_MODAL_WIDTH_EXTRA_WIDE_PX;
+    return Math.max(SEARCH_MODAL_WIDTH_MIN_PX, viewport);
+}
+
 export const TELESCOPE_PREVIEW_COLUMN_MIN_PCT = 25;
-export const TELESCOPE_PREVIEW_COLUMN_MAX_PCT = 65;
+export const TELESCOPE_PREVIEW_COLUMN_MAX_PCT = 95;
 
 /** Preview column share snap targets (former layout presets). */
 export const TELESCOPE_PREVIEW_COLUMN_NOTCHES: readonly { pct: number; label: string }[] = [
@@ -50,8 +60,8 @@ const LEGACY_MODAL_WIDTH_PX: Record<SearchModalWidth, number> = {
 };
 
 export function clampSearchModalWidthPx(px: number): number {
-    const n = Math.round(px);
-    return Math.min(SEARCH_MODAL_WIDTH_MAX_PX, Math.max(SEARCH_MODAL_WIDTH_MIN_PX, n));
+    const n = Math.round(Number.isFinite(px) ? px : SEARCH_MODAL_WIDTH_MIN_PX);
+    return Math.max(SEARCH_MODAL_WIDTH_MIN_PX, n);
 }
 
 export function snapSearchModalWidthPx(px: number): number {
