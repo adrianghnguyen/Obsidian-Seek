@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Added
+
+- **Telescope preview (search modal).** Optional read-only preview column beside ranked results — lightweight DOM from vault text (headings, wikilinks, tags, query marks), coalesced on selection with an LRU read cache. Default ON on desktop; phones default OFF until enabled in Settings → Display. Toggle the column while search is open with Ctrl/Cmd+P (remappable under Settings → Hotkeys).
+
 ### Fixed
 
 - **Accent-insensitive filter binding and UI parity.** `#tag` / `[key:value]` filters, tag pill bind checks, open-note highlight, naive snippet fallback, and filter suggest prefix now use shared `foldForMatch` (same Latin fold as BM25 ranking, without changing `processTerm`).

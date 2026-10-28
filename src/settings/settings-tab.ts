@@ -1761,6 +1761,16 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                     await this.save();
                 }));
 
+        new Setting(containerEl)
+            .setName('Telescope preview')
+            .setDesc('Shows a read-only preview of the selected note beside the result list (plain headings, links, tags, and query highlights — not full markdown). Off by default on phones; remap “Search: Toggle preview column” under Settings → Hotkeys (default Ctrl/Cmd+P) while search is open.')
+            .addToggle(t => t
+                .setValue(this.s.telescopePreviewEnabled)
+                .onChange(async v => {
+                    this.s.telescopePreviewEnabled = v;
+                    await this.save();
+                }));
+
         const aliasLimitLabels: Record<string, number> = {
             '1': 1, '2': 2, '3': 3, '5': 5, '10': 10, All: 0,
         };

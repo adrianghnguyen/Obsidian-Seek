@@ -599,6 +599,101 @@
 
 /* ---- Component 2: result list + row ---- */
 
+.seek-modal-split {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: row;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.seek-modal.seek-has-preview:not(.seek-preview-hidden) .seek-results {
+    flex: 1 1 55%;
+    max-width: 55%;
+}
+
+.seek-preview-column {
+    flex: 1 1 45%;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    border-left: 1px solid var(--background-modifier-border);
+    background: var(--background-secondary);
+}
+
+.seek-preview-header {
+    flex: 0 0 auto;
+    padding: 8px 12px;
+    font-size: var(--font-ui-small);
+    font-weight: 600;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.seek-preview-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 10px 12px 14px;
+}
+
+.seek-preview-body {
+    font-size: var(--font-text-size);
+    line-height: 1.45;
+    word-break: break-word;
+}
+
+.seek-preview-line {
+    margin: 0 0 0.35em;
+    white-space: pre-wrap;
+}
+
+.seek-preview-h1 { font-size: 1.15em; font-weight: 700; margin-top: 0.6em; }
+.seek-preview-h2 { font-size: 1.05em; font-weight: 600; margin-top: 0.5em; }
+.seek-preview-h3 { font-size: 1em; font-weight: 600; margin-top: 0.4em; }
+
+.seek-preview-link { color: var(--text-accent); }
+.seek-preview-tag { color: var(--text-accent); opacity: 0.9; }
+.seek-preview-mark {
+    background: var(--text-highlight-bg);
+    color: inherit;
+    border-radius: 2px;
+    padding: 0 1px;
+}
+
+.seek-preview-lazy {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 1.5em;
+}
+
+.seek-preview-truncated,
+.seek-preview-empty {
+    color: var(--text-muted);
+    font-size: var(--font-ui-small);
+}
+
+.seek-modal.seek-preview-hidden .seek-preview-column,
+.seek-modal:not(.seek-has-preview) .seek-preview-column {
+    display: none;
+}
+
+.seek-modal.seek-mobile.seek-has-preview:not(.seek-preview-hidden) .seek-modal-split {
+    flex-direction: column;
+}
+
+.seek-modal.seek-mobile.seek-has-preview:not(.seek-preview-hidden) .seek-results {
+    flex: 1 1 50%;
+    max-width: none;
+    max-height: 50%;
+}
+
+.seek-modal.seek-mobile.seek-has-preview:not(.seek-preview-hidden) .seek-preview-column {
+    flex: 1 1 50%;
+    max-height: 50%;
+    border-left: none;
+    border-top: 1px solid var(--background-modifier-border);
+}
+
 .seek-results {
     position: relative; /* make it the offsetParent so row.offsetTop matches scrollTop space */
     flex: 1 1 auto;

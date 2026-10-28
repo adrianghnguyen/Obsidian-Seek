@@ -35,7 +35,7 @@
  *    and unloads the embedder iframe.
  */
 
-import { Notice, Plugin, TFile } from 'obsidian';
+import { Notice, Platform, Plugin, TFile } from 'obsidian';
 import type { App } from 'obsidian';
 import { ConfirmModal } from './app/confirm-modal';
 import { executeFullReindexCleanSlate } from './app/full-reindex-clean-slate';
@@ -1063,7 +1063,12 @@ export default class SeekPlugin extends Plugin {
         // Mutates `raw` and stamps settingsRev; runs BEFORE the Object.assign so the
         // migrated values win over the persisted ones rather than being overridden.
         migrateSettings(raw);
+        const rawHadTelescopePreview = Object.prototype.hasOwnProperty.call(raw, 'telescopePreviewEnabled');
         Object.assign(this.settings, DEFAULT_SETTINGS, raw);
+        // Telescope preview: desktop default ON; phone/tablet default OFF until the user opts in.
+        if (Platform.isMobile && !rawHadTelescopePreview) {
+            this.settings.telescopePreviewEnabled = false;
+        }
         forceSharedSidecarLocation(this.settings);
         // Identity, sidecar stride, and the iframe script all read the live spec.
         // Bind before the boot identity check so a saved EmbeddingGemma choice is

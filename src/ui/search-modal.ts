@@ -12,6 +12,7 @@ import { App, Modal, Notice, Platform, TFile, MarkdownView, MarkdownRenderer, Co
 import type { ScoredChunk, SearchEntry, ClickEntry, SeekSettings } from '../types/types';
 import { MATCH_STRENGTH_MIN_NOTES } from '../types/types';
 import { makeSnippet, sanitizeSnippet, SNIPPET_PREVIEW_LIMITS } from '../render/snippet';
+import { TelescopePreviewPane, telescopeQueryTerms } from '../render/telescope-preview';
 import type { SearchOrchestrator } from '../search/search';
 import type { SeekLogger } from '../diagnostics/logger';
 import { ENGLISH_STOPWORDS, distinctQueryTerms, foldForMatch } from '../search/bm25';
@@ -229,7 +230,13 @@ export class SeekSearchModal extends Modal {
     // Holds the vault's distinct-value dictionaries (built once on open) that
     // back the field's value suggestions.
     private suggester: SuggestEngine | null = null;
+    private splitEl: HTMLElement | null = null;
     private resultsEl: HTMLElement | null = null;
+    private previewColumnEl: HTMLElement | null = null;
+    private previewScrollEl: HTMLElement | null = null;
+    private telescopePreview: TelescopePreviewPane | null = null;
+    /** Session-only hide via Ctrl/Cmd+P (settings still ON). */
+    private previewColumnHidden = false;
     // Fixed-position container for the version-stale banner, between the field and the
     // results. Rendered into (empty + refill) so re-renders keep their place; collapses
     // to nothing via `.seek-banner-slot:empty { display: none }` when there's no banner.
@@ -468,8 +475,24 @@ export class SeekSearchModal extends Modal {
         this.bannerSlot = contentEl.createDiv({ cls: 'seek-banner-slot' });
         this.renderIndexBanner();
 
-        this.resultsEl = contentEl.createDiv({ cls: 'seek-results' });
+        this.previewColumnHidden = false;
+        this.splitEl = contentEl.createDiv({ cls: 'seek-modal-split' });
+        this.resultsEl = this.splitEl.createDiv({ cls: 'seek-results' });
         this.resultsEl.tabIndex = -1;
+        if (this.settings.telescopePreviewEnabled) {
+            this.modalEl.addClass('seek-has-preview');
+            this.previewColumnEl = this.splitEl.createDiv({ cls: 'seek-preview-column' });
+            this.previewColumnEl.createDiv({ cls: 'seek-preview-header', text: 'Preview' });
+            this.previewScrollEl = this.previewColumnEl.createDiv({ cls: 'seek-preview-scroll' });
+            this.telescopePreview = new TelescopePreviewPane(
+                this.previewScrollEl,
+                path => this.readNoteTextForPreview(path),
+            );
+        } else {
+            this.previewColumnEl = null;
+            this.previewScrollEl = null;
+            this.telescopePreview = null;
+        }
         this.snippetExpanded = false;
         this.applySnippetLineStyle();
         this.renderEmpty();
@@ -580,6 +603,11 @@ export class SeekSearchModal extends Modal {
         this.sentinelEl = null;
         this.shownCount = 0;
         this.rows = [];
+        this.telescopePreview?.clear();
+        this.telescopePreview = null;
+        this.previewColumnEl = null;
+        this.previewScrollEl = null;
+        this.splitEl = null;
         // Drop the banner slot ref before empty() detaches it — defensive hygiene so any
         // stray renderIndexBanner call can never touch an orphaned node. (The banner is a
         // pure signpost now; it's only painted in onOpen, so this is belt-and-suspenders.)
@@ -1855,6 +1883,7 @@ export class SeekSearchModal extends Modal {
                 this.insertSelectedLink('searchAlias');
                 break;
             case 'expand-snippet': this.toggleSnippetExpand(); break;
+            case 'toggle-preview-column': this.togglePreviewColumn(); break;
             case 'fill-autosuggest': this.field?.fillAutosuggest(); break;
             case 'close': this.close(); break;
         }
@@ -1907,6 +1936,7 @@ export class SeekSearchModal extends Modal {
             row.el.toggleClass('is-selected', i === this.selectedIndex);
         });
         this.refreshInsertLinkTabHints();
+        this.schedulePreviewPaint();
         if (!scroll) return;
         const list = this.resultsEl;
         const row = this.rows[this.selectedIndex];
@@ -1931,6 +1961,38 @@ export class SeekSearchModal extends Modal {
         }
         const r = this.currentResults[this.selectedIndex];
         if (r) void this.openResult(r, this.selectedIndex + 1, target);
+    }
+
+    private togglePreviewColumn(): void {
+        if (!this.settings.telescopePreviewEnabled || !this.telescopePreview) return;
+        this.previewColumnHidden = !this.previewColumnHidden;
+        this.modalEl.toggleClass('seek-preview-hidden', this.previewColumnHidden);
+        if (!this.previewColumnHidden) this.schedulePreviewPaint();
+    }
+
+    private schedulePreviewPaint(): void {
+        if (this.closed || !this.telescopePreview || this.previewColumnHidden) return;
+        if (this.currentResults.length === 0) {
+            this.telescopePreview.clear();
+            return;
+        }
+        const r = this.currentResults[this.selectedIndex];
+        if (!r) return;
+        const { cleanedQuery } = parseQuery(this.lastQuery);
+        const terms = telescopeQueryTerms(cleanedQuery);
+        const titleNav = this.titleCoverage(r) >= TITLE_NAV_COVERAGE_MIN;
+        const anchorLine = titleNav ? 0 : (r.start_line > 0 ? r.start_line - 1 : null);
+        this.telescopePreview.schedulePaint({
+            notePath: r.note_path,
+            anchorLine,
+            terms,
+        });
+    }
+
+    private async readNoteTextForPreview(path: string): Promise<string> {
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (!(file instanceof TFile)) return '';
+        return this.app.vault.cachedRead(file);
     }
 
     private insertSelectedLink(mode: InsertLinkMode): void {

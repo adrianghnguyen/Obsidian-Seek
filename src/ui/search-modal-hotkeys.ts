@@ -14,6 +14,7 @@ export type SearchModalAction =
     | 'insert-link'
     | 'insert-link-alias'
     | 'expand-snippet'
+    | 'toggle-preview-column'
     | 'fill-autosuggest'
     | 'close';
 
@@ -120,6 +121,13 @@ export const SEARCH_MODAL_COMMANDS: readonly SearchModalCommandSpec[] = [
         name: 'Search: Expand snippet',
         action: 'expand-snippet',
         hotkeys: [{ modifiers: ['Mod', 'Shift'], key: 'E' }],
+    },
+    {
+        id: 'search-toggle-preview-column',
+        name: 'Search: Toggle preview column',
+        action: 'toggle-preview-column',
+        hotkeys: [{ modifiers: ['Mod'], key: 'P' }],
+        footerLabel: 'toggle preview',
     },
     {
         id: 'search-fill-autosuggest',
@@ -368,7 +376,7 @@ export function searchModalFooterHints(app: App, pluginId: string): FooterHotkey
         hints.push({ keys: navigateKeys, label: 'navigate results' });
     }
     for (const action of [
-        'open', 'open-tab', 'open-split', 'fill-autosuggest', 'expand-snippet',
+        'open', 'open-tab', 'open-split', 'fill-autosuggest', 'expand-snippet', 'toggle-preview-column',
     ] as const) {
         const h = hintForAction(app, pluginId, action);
         if (h) hints.push(h);
