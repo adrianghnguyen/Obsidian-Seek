@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.16.0-beta.5
+
+Search modal width presets (Compact / Default / Wide) cycle independently of telescope preview share.
+
 ### Added
 
 - **Search modal width presets.** Settings → Display has three independently configurable total-modal-width values (Compact / Default / Wide). A **Width** button in the search footer cycles them. This is the outer modal size and is independent of telescope preview column share (List / Balanced / Even / Reading).
