@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.16.0-beta.3
+
+Modal width and telescope preview column are separate sliders, and small catch-up no longer paints vault-scale status.
+
 ### Changed
 
 - **Search modal width slider.** Settings → Display replaces the width dropdown with a 400–960px slider (snap: Default 640 · Wide 800 · Extra wide 960). Applies live while search is open when possible.
