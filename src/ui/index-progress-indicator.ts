@@ -8,16 +8,9 @@ import {
     hydrateProgressAgainstVault,
     resolveSidecarHydrateProgress,
 } from '../app/index-self-heal';
+import { shouldPreferPassCountsOverCoverage } from './catch-up-presentation';
 
-/** Catch-up/delta embed passes: status chrome uses pass size, not vault coverage overlay. */
-export function shouldPreferPassCountsOverCoverage(input: {
-    jobKind?: 'full' | 'delta' | 'catchup' | null;
-    quietCatchUp?: boolean;
-}): boolean {
-    if (input.quietCatchUp) return true;
-    const kind = input.jobKind;
-    return kind === 'catchup' || kind === 'delta';
-}
+export { shouldPreferPassCountsOverCoverage } from './catch-up-presentation';
 
 export type IndexProgressWorkPhase =
     | 'ready'
@@ -143,7 +136,11 @@ function coverageComplete(inventoryFiles: number | null, indexableNotes: number)
 
 function embedUnits(input: IndexProgressIndicatorInput): IndexProgressUnits | null {
     const job = input.job;
-    const preferPass = shouldPreferPassCountsOverCoverage({ jobKind: input.jobKind ?? null });
+    const preferPass = shouldPreferPassCountsOverCoverage({
+        jobKind: input.jobKind ?? null,
+        passTotal: job?.total ?? 0,
+        inventoryFiles: input.inventoryFiles,
+    });
     if (preferPass && job && job.total > 0) {
         return unitsFromCounts(job.done, job.total, { determinate: job.done > 0 });
     }

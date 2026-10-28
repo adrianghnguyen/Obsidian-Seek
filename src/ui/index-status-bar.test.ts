@@ -16,7 +16,7 @@ import {
     INDEX_STATUS_DOT_CLS,
     INDEX_STATUS_HEALTH,
 } from './index-status-card';
-import { INDEX_STATUS_COPY, resolveIndexStatusHelpForMode, type IndexStatusReport } from './index-status-report';
+import { INDEX_STATUS_COPY, IndexStatusReporter, resolveIndexStatusHelpForMode, type IndexStatusReport } from './index-status-report';
 import { formatStableFileFraction, visibleProgressText } from './index-progress-format';
 import { buildIndexProgressSnapshot, remainingFromCounts } from './index-progress-snapshot';
 import type { IndexStatusHealth, IndexStatusMode } from './index-status-card';
@@ -331,6 +331,41 @@ describe('IndexStatusBar', () => {
         health = 'starting';
         bar.refreshIdle();
         expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-pending');
+    });
+
+    it('1-file catch-up regression: reporter + snapshot paint green Seek, not 243/244', () => {
+        const report = IndexStatusReporter.compute({
+            booting: false,
+            hydrating: false,
+            goodEnough: true,
+            waitingForSidecar: false,
+            peerSyncPending: false,
+            health: 'healthy',
+            reason: null,
+            indexing: true,
+            catchUpPending: false,
+            searchableChunks: 900,
+            inventoryFiles: 244,
+            jobKind: 'catchup',
+            job: { done: 0, total: 1 },
+            coverage: { covered: 243, total: 244 },
+        });
+        const snap = buildIndexProgressSnapshot({
+            report,
+            job: { done: 0, total: 1, kind: 'catchup' },
+            speed: { done: 0, total: 1, chunksDone: 0, tokensDone: 0, elapsedMs: 0, paused: false, kind: 'catchup' },
+            inventoryFiles: 244,
+            coverage: { covered: 243, total: 244 },
+        });
+        const root = stubEl();
+        const bar = new IndexStatusBar();
+        bar.mount(root as unknown as HTMLElement, { ...hooks, getSnapshot: () => snap, getReport: () => report });
+        bar.show(1, 'Seek: indexing…', { id: 1, kind: 'catchup' });
+        bar.update(0, 1, undefined, 1);
+        expect(report.quietCatchUp).toBe(true);
+        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe('Seek');
+        expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)).toBeNull();
+        expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-glow');
     });
 
     it('paints green glow Ready without badge or progress for quiet catch-up', () => {

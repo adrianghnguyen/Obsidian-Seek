@@ -123,6 +123,27 @@ describe('buildIndexProgressSnapshot', () => {
         expect(snap.percent).toBe(26);
     });
 
+    it('prefers pass counts when job kind is missing but pass is tiny vs inventory', () => {
+        const snap = buildIndexProgressSnapshot({
+            report: reportOf('indexing', {
+                mode: 'catching-up',
+                progress: {
+                    phase: 'catching-up',
+                    units: { done: 1, total: 1, percent: 100, determinate: true },
+                },
+            }),
+            job: { done: 1, total: 1 },
+            speed: {
+                done: 1, total: 1, chunksDone: 2, tokensDone: 100,
+                elapsedMs: 500, paused: false,
+            },
+            inventoryFiles: 244,
+            coverage: { covered: 243, total: 244 },
+        });
+        expect(snap.filesDone).toBe(1);
+        expect(snap.filesTotal).toBe(1);
+    });
+
     it('prefers pass counts over coverage for catchup jobs', () => {
         const snap = buildIndexProgressSnapshot({
             report: reportOf('indexing', {
