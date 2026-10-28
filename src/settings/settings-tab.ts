@@ -20,18 +20,17 @@ import type SeekPlugin from '../main';
 import type { IndexStats, ModelStatus } from '../main';
 import type { SearchModalHeight, SnippetPreview } from '../types/types';
 import {
-    clampSearchModalWidthPx,
     clampTelescopePreviewColumnPct,
     SEARCH_MODAL_WIDTH_MIN_PX,
-    searchModalWidthSliderMaxPx,
-    snapSearchModalWidthPx,
     snapTelescopePreviewColumnPct,
     TELESCOPE_PREVIEW_COLUMN_MAX_PCT,
     TELESCOPE_PREVIEW_COLUMN_MIN_PCT,
 } from '../ui/telescope-layout';
 import {
     SEARCH_MODAL_WIDTH_PRESET_LABELS,
+    applySearchModalWidthPresetSlot,
     normalizeSearchModalWidthPresetsPx,
+    type SearchModalWidthPresetIndex,
 } from '../ui/search-modal-width-presets';
 import { DEFAULT_SETTINGS, MATCH_STRENGTH_MIN_NOTES } from '../types/types';
 import {
@@ -1726,40 +1725,49 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             .setDesc('When ON, opening a result in a new tab, split, or window leaves the search modal open so you can open more results. When OFF (default), the modal closes after any open, like Quick Switcher.')
             .addToggle(t => t.setValue(this.s.keepSearchOpenOnTabSplit).onChange(async v => { this.s.keepSearchOpenOnTabSplit = v; await this.save(); }));
 
-        const modalWidthSliderMax = searchModalWidthSliderMaxPx();
-        new Setting(containerEl)
-            .setName('Search modal width')
-            .setDesc('Total width of the search modal (the whole panel). Independent of telescope preview column share below.')
-            .addSlider(slider => slider
-                .setLimits(SEARCH_MODAL_WIDTH_MIN_PX, modalWidthSliderMax, 10)
-                .setValue(Math.min(modalWidthSliderMax, clampSearchModalWidthPx(this.s.searchModalWidthPx)))
-                .setDynamicTooltip()
-                .onChange(async v => {
-                    this.s.searchModalWidthPx = snapSearchModalWidthPx(v);
-                    await this.save();
-                }));
-
         this.s.searchModalWidthPresetsPx = normalizeSearchModalWidthPresetsPx(this.s.searchModalWidthPresetsPx);
+        const modalWidthSetting = new Setting(containerEl)
+            .setName('Search modal width')
+            .setClass('seek-modal-width-setting');
+        const presetRow = modalWidthSetting.controlEl.createDiv({ cls: 'seek-modal-width-presets' });
         for (let i = 0; i < SEARCH_MODAL_WIDTH_PRESET_LABELS.length; i++) {
-            const slot = i;
+            const slot = i as SearchModalWidthPresetIndex;
             const name = SEARCH_MODAL_WIDTH_PRESET_LABELS[slot]!;
-            new Setting(containerEl)
-                .setName(`Modal width preset: ${name}`)
-                .setDesc(
-                    slot === 0
-                        ? 'The search footer Width button cycles Compact → Default → Wide. Each value is total modal width, not preview share.'
-                        : `Cycle slot ${slot + 1} of 3. Independent of telescope preview column width.`,
-                )
-                .addSlider(slider => slider
-                    .setLimits(SEARCH_MODAL_WIDTH_MIN_PX, modalWidthSliderMax, 10)
-                    .setValue(Math.min(modalWidthSliderMax, clampSearchModalWidthPx(this.s.searchModalWidthPresetsPx[slot]!)))
-                    .setDynamicTooltip()
-                    .onChange(async v => {
-                        const next = [...this.s.searchModalWidthPresetsPx] as [number, number, number];
-                        next[slot] = snapSearchModalWidthPx(v);
-                        this.s.searchModalWidthPresetsPx = next;
-                        await this.save();
-                    }));
+            const cell = presetRow.createDiv({ cls: 'seek-modal-width-preset' });
+            cell.createEl('label', {
+                text: name.toLowerCase(),
+                attr: { for: `seek-modal-width-preset-${slot}` },
+            });
+            const input = cell.createEl('input', {
+                type: 'number',
+                attr: {
+                    id: `seek-modal-width-preset-${slot}`,
+                    min: String(SEARCH_MODAL_WIDTH_MIN_PX),
+                    step: '1',
+                    inputmode: 'numeric',
+                    'aria-label': `${name} search modal width in pixels`,
+                },
+            });
+            input.value = String(this.s.searchModalWidthPresetsPx[slot]);
+            const commit = async () => {
+                const n = Number(input.value);
+                if (!Number.isFinite(n)) {
+                    input.value = String(this.s.searchModalWidthPresetsPx[slot]);
+                    return;
+                }
+                const applied = applySearchModalWidthPresetSlot(
+                    slot,
+                    n,
+                    this.s.searchModalWidthPx,
+                    this.s.searchModalWidthPresetsPx,
+                );
+                this.s.searchModalWidthPresetsPx = applied.presets;
+                this.s.searchModalWidthPx = applied.currentWidthPx;
+                input.value = String(applied.presets[slot]);
+                await this.save();
+            };
+            input.addEventListener('change', () => void commit());
+            input.addEventListener('blur', () => void commit());
         }
 
         const heightLabels: Record<SearchModalHeight, string> = {

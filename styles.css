@@ -1397,6 +1397,33 @@
     color: var(--text-muted);
     margin: 8px 0;
 }
+.seek-settings .seek-modal-width-setting .setting-item-control {
+    flex: 1 1 auto;
+    justify-content: flex-end;
+}
+.seek-settings .seek-modal-width-presets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    align-items: flex-end;
+    justify-content: flex-end;
+}
+.seek-settings .seek-modal-width-preset {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 4.5rem;
+}
+.seek-settings .seek-modal-width-preset label {
+    font-size: var(--font-ui-smaller);
+    color: var(--text-muted);
+    line-height: 1.2;
+}
+.seek-settings .seek-modal-width-preset input {
+    width: 5.25rem;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+}
 .seek-settings .seek-faint {
     color: var(--text-faint);
     font-size: 12px;
@@ -2762,6 +2789,10 @@
     justify-content: flex-start;
     flex-wrap: wrap;
     gap: 10px;
+}
+.is-phone .seek-settings .seek-modal-width-presets {
+    justify-content: flex-start;
+    width: 100%;
 }
 /* segmented: full width, options split evenly with bigger touch targets */
 .is-phone .seek-settings .seek-seg {

@@ -67,3 +67,21 @@ export function searchModalWidthPresetCycleLabel(
     if (idx == null) return `Width · Custom (${px})`;
     return `Width · ${SEARCH_MODAL_WIDTH_PRESET_LABELS[idx]} (${px})`;
 }
+
+/** Writes one Compact/Default/Wide slot. Live width follows only if it was that slot. */
+export function applySearchModalWidthPresetSlot(
+    slot: SearchModalWidthPresetIndex,
+    nextPx: number,
+    currentWidthPx: number,
+    presetsRaw: unknown,
+): { presets: [number, number, number]; currentWidthPx: number } {
+    const presets = normalizeSearchModalWidthPresetsPx(presetsRaw);
+    const clamped = clampSearchModalWidthPx(nextPx);
+    const idx = searchModalWidthPresetIndexForPx(currentWidthPx, presets);
+    const next: [number, number, number] = [presets[0], presets[1], presets[2]];
+    next[slot] = clamped;
+    return {
+        presets: next,
+        currentWidthPx: idx === slot ? clamped : clampSearchModalWidthPx(currentWidthPx),
+    };
+}
