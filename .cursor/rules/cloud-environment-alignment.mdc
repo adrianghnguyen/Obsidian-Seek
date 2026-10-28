@@ -1,0 +1,47 @@
+---
+description: Keep repo-managed Cloud Agent environment.json aligned across the multi-plugin Obsidian E2E stack
+alwaysApply: true
+---
+
+# Cloud environment.json alignment
+
+Obsidian plugin Cloud Agents use a **shared pointer** in `.cursor/environment.json`. Install/start scripts live only in **`obsidian-plugin-development`**; plugin repos must not copy `env-install.sh` / `env-start.sh` into their trees.
+
+## Required contract
+
+| Field | Rule |
+| --- | --- |
+| `install` | `bash /agent/repos/obsidian-plugin-development/scripts/cloud-e2e/env-install.sh` |
+| `start` | `bash /agent/repos/obsidian-plugin-development/scripts/cloud-e2e/env-start.sh` |
+| `repositoryDependencies` | Must list **every** checkout `env-install.sh` expects under `/agent/repos/`, including the orchestrator |
+
+**Canonical `repositoryDependencies` (keep this set in sync everywhere the pointer is used):**
+
+1. `github.com/adrianghnguyen/obsidian-plugin-development` — orchestrator; **required** whenever `install`/`start` use the path above (omit → build exit **127**, missing script).
+2. `github.com/adrianghnguyen/obsidian-agent-client`
+3. `github.com/adrianghnguyen/obsidian-seek`
+4. `github.com/adrianghnguyen/whisper-obsidian-plugin`
+5. `github.com/adrianghnguyen/obsidian-book-search-plugin` — optional at install time; keep listed for token scope and parity.
+
+Adding or removing a sibling plugin from the E2E bundle: update `env-install.sh` in **obsidian-plugin-development** first, then mirror the same `repositoryDependencies` list in every repo’s `.cursor/environment.json`.
+
+## Cross-repo sync
+
+These repos intentionally share the same pointer on `main` (names may differ; content must match):
+
+- `adrianghnguyen/obsidian-plugin-development` (script source of truth)
+- `adrianghnguyen/Obsidian-Seek`
+- `adrianghnguyen/obsidian-seek`
+- `adrianghnguyen/whisper-obsidian-plugin`
+- `adrianghnguyen/obsidian-agent-client`
+- `adrianghnguyen/obsidian-book-search-plugin` (when part of the bundle)
+
+When you change `.cursor/environment.json` in one repo, **apply the identical JSON** to the others in the same change cycle (separate PRs per repo are fine; do not leave one repo with a stale dependency list).
+
+## Agent checklist
+
+1. Read `.cursor/environment.json` and confirm the orchestrator repo is in `repositoryDependencies`.
+2. If editing dependencies or install/start paths, diff against obsidian-plugin-development `main` and sync sibling repos.
+3. After merge to the repo tied to the Cloud environment dashboard, recommend a **draft environment build** and confirm logs pass `env-install.sh` (not `No such file or directory`) and agent boot runs `env-start.sh` (`/tmp/cursor/start-user/start-user.log`).
+
+See `AGENTS.md` § Cursor Cloud environment and obsidian-plugin-development `scripts/cloud-e2e/GETTING-STARTED.md`.
