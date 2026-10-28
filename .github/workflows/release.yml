@@ -48,7 +48,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="${GITHUB_REF#refs/tags/}"
+          prerelease_flag=""
+          case "$tag" in
+            *-beta.*|*-rc.*|*-alpha.*) prerelease_flag="--prerelease" ;;
+          esac
           gh release create "$tag" \
             --title "$tag" \
             --generate-notes \
+            $prerelease_flag \
             main.js manifest.json styles.css
