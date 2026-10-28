@@ -4,6 +4,11 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Changed
+
+- **Search modal width slider.** Settings → Display replaces the width dropdown with a 400–960px slider (snap: Default 640 · Wide 800 · Extra wide 960). Applies live while search is open when possible.
+- **Telescope preview column slider.** Settings → Display → **Telescope preview column width** sets how much horizontal space the preview column uses inside the modal (snap: List 35% · Balanced 45% · Even 50% · Reading 60%). The old combined layout dropdown is removed. Ctrl/Cmd+Shift+P still cycles the four layout presets (both sliders).
+
 ## 1.16.0-beta.2
 
 Telescope preview UX: front matter collapse, layout cycling, and depth presets.

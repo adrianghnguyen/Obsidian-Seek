@@ -1,21 +1,30 @@
 import { describe, expect, it } from 'vitest';
-import { applySearchModalSize, resolveSearchModalWidthPx } from './search-modal-size';
+import {
+    applySearchModalSizePx,
+    resolveSearchModalWidthPx,
+    resolveSearchModalWidthPxFromEnum,
+} from './search-modal-size';
 
 describe('resolveSearchModalWidthPx', () => {
-    it('returns preset widths on desktop', () => {
-        expect(resolveSearchModalWidthPx('default', false)).toBe(640);
-        expect(resolveSearchModalWidthPx('wide', false)).toBe(800);
-        expect(resolveSearchModalWidthPx('extra-wide', false)).toBe(960);
+    it('returns px widths on desktop', () => {
+        expect(resolveSearchModalWidthPx(640, false)).toBe(640);
+        expect(resolveSearchModalWidthPx(800, false)).toBe(800);
+        expect(resolveSearchModalWidthPx(960, false)).toBe(960);
+        expect(resolveSearchModalWidthPx(500, false)).toBe(500);
     });
 
     it('never goes below the tablet floor', () => {
-        expect(resolveSearchModalWidthPx('default', true)).toBe(820);
-        expect(resolveSearchModalWidthPx('wide', true)).toBe(820);
-        expect(resolveSearchModalWidthPx('extra-wide', true)).toBe(960);
+        expect(resolveSearchModalWidthPx(640, true)).toBe(820);
+        expect(resolveSearchModalWidthPx(800, true)).toBe(820);
+        expect(resolveSearchModalWidthPx(960, true)).toBe(960);
+    });
+
+    it('legacy enum helper matches px', () => {
+        expect(resolveSearchModalWidthPxFromEnum('wide', false)).toBe(800);
     });
 });
 
-describe('applySearchModalSize', () => {
+describe('applySearchModalSizePx', () => {
     it('sets CSS vars on desktop', () => {
         const props = new Map<string, string>();
         const el = {
@@ -29,7 +38,7 @@ describe('applySearchModalSize', () => {
             },
             querySelector: () => null,
         } as unknown as HTMLElement;
-        applySearchModalSize(el, 'wide', 'tall', { isPhone: false, isTablet: false });
+        applySearchModalSizePx(el, 800, 'tall', { isPhone: false, isTablet: false });
         expect(props.get('--seek-modal-width')).toBe('800px');
         expect(props.get('--seek-modal-max-height')).toBe('82vh');
         expect(props.get('--seek-modal-margin-top')).toBe('6vh');
@@ -50,7 +59,7 @@ describe('applySearchModalSize', () => {
             },
             querySelector: () => null,
         } as unknown as HTMLElement;
-        applySearchModalSize(el, 'extra-wide', 'extra-tall', { isPhone: true, isTablet: false });
+        applySearchModalSizePx(el, 960, 'extra-tall', { isPhone: true, isTablet: false });
         expect(props.size).toBe(0);
     });
 });

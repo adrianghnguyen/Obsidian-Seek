@@ -2296,6 +2296,7 @@ export default class SeekPlugin extends Plugin {
         const before = currentModelSpec();
         const after = bindLiveModel(this.settings);
         await this.saveData(this.settings);
+        this.activeSearchModal?.applyDisplayLayoutFromSettings();
         const modelChanged = before.repo !== after.repo
             || before.revision !== after.revision
             || before.dim !== after.dim

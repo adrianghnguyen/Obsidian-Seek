@@ -567,14 +567,14 @@ export interface SeekSettings {
     telescopePreviewEnabled: boolean;
     /** When ON, YAML front matter at the top of preview notes starts collapsed (click to expand). */
     telescopePreviewCollapseFrontmatter: boolean;
-    /** Modal width + results/preview split while telescope preview is shown — see telescope-layout.ts. */
-    telescopePreviewLayout: TelescopePreviewLayout;
+    /** Horizontal share of the preview column when telescope preview is on (% of modal width). */
+    telescopePreviewColumnPct: number;
     /** How much note text the telescope preview renders (line/mark/style caps) — see telescope-preview.ts. */
     telescopePreviewDepth: TelescopePreviewDepth;
 
-    // Search modal width on desktop/tablet (phones keep full-width). Applied on
-    // next open via CSS vars — see search-modal-size.ts.
-    searchModalWidth: SearchModalWidth;
+    // Search modal width on desktop/tablet (phones keep full-width), in px.
+    // Applied on open (live when search is open) — see search-modal-size.ts.
+    searchModalWidthPx: number;
 
     // Search modal height on desktop (mobile/tablet use keyboard-aware sizing).
     // Applied on next open via CSS vars — see search-modal-size.ts.
@@ -720,15 +720,15 @@ export const DEFAULT_SETTINGS: SeekSettings = {
     snippetPreview: 'compact', // 1-line / 200-char window; standard=3/400, expanded=6/800
     telescopePreviewEnabled: true,
     telescopePreviewCollapseFrontmatter: true,
-    telescopePreviewLayout: 'balanced',
+    telescopePreviewColumnPct: 45,
     telescopePreviewDepth: 'large',
-    searchModalWidth: 'default',   // desktop/tablet modal width preset
+    searchModalWidthPx: 640,
     searchModalHeight: 'default',  // desktop modal height preset
     altOpenLocation: 'tab',    // schema compat with upstream; fork open UX uses OpenTarget modifiers
     sidecarEnabled: true,      // ON by default; user-facing under Index advanced → Sync index across devices; vault-file index for iOS-eviction survival + Sync hydrate; OFF = this device only — see field comment
     sidecarIndexLocation: 'visible', // vault-root 'Seek Index/' shared folder (default with sync on); 'config' = hidden literal '.obsidian/plugins/seek/index', expert-only
     sidecarHiddenIndexExpert: false,
-    settingsRev: 9,            // current schema rev; bump alongside a migration in main.ts onload (rev 9 = 2026-07-16 Recency High half-life 270→90)
+    settingsRev: 10,           // current schema rev; bump alongside a migration in main.ts onload (rev 10 = 2026-10-28 modal width + preview share sliders)
     embeddingModelKey: '',     // '' = shipped Granite. A registry key selects EmbeddingGemma 2. No migration: absent data.json falls through to this default.
     embeddingOutputDim: 0,     // 0 = the selected model's native width. EmbeddingGemma 2 accepts 768, 512, 256, 128.
 };
@@ -819,11 +819,40 @@ export function migrateSettings(raw: Partial<SeekSettings>): Partial<SeekSetting
     // able and gets moved — same accepted trade as rev 7. Score-time only: no reindex, no
     // BM25 refit (the half-life is applied at fusion).
     if (fromRev < 9 && raw.recencyHalfLifeDays === 270) raw.recencyHalfLifeDays = 90;
+    // Rev 10 (2026-10-28 modal/telescope sliders): width + preview share are px/%
+    // sliders; legacy enum width and layout preset ids migrate once then drop.
+    if (fromRev < 10) {
+        const legacy = raw as Partial<SeekSettings> & {
+            searchModalWidth?: SearchModalWidth;
+            telescopePreviewLayout?: TelescopePreviewLayout;
+        };
+        const layoutModalPx: Record<TelescopePreviewLayout, number> = {
+            balanced: 800, even: 960, reading: 960, list: 640,
+        };
+        const layoutPreviewPct: Record<TelescopePreviewLayout, number> = {
+            balanced: 45, even: 50, reading: 60, list: 35,
+        };
+        const enumModalPx: Record<SearchModalWidth, number> = {
+            default: 640, wide: 800, 'extra-wide': 960,
+        };
+        if (raw.searchModalWidthPx === undefined) {
+            if (legacy.searchModalWidth !== undefined) {
+                raw.searchModalWidthPx = enumModalPx[legacy.searchModalWidth] ?? 640;
+            } else if (legacy.telescopePreviewLayout !== undefined) {
+                raw.searchModalWidthPx = layoutModalPx[legacy.telescopePreviewLayout] ?? 640;
+            }
+        }
+        if (raw.telescopePreviewColumnPct === undefined && legacy.telescopePreviewLayout !== undefined) {
+            raw.telescopePreviewColumnPct = layoutPreviewPct[legacy.telescopePreviewLayout] ?? 45;
+        }
+        delete legacy.searchModalWidth;
+        delete legacy.telescopePreviewLayout;
+    }
     // Never DOWNGRADE the stamp: a data.json synced from a device running a newer
-    // Seek (rev 10+) must keep its rev, or this older build stamps it back to 9 and
+    // Seek (rev 11+) must keep its rev, or this older build stamps it back to 10 and
     // the newer device re-runs its migrations on next load (conditional default
     // moves misfire on second application).
-    raw.settingsRev = Math.max(fromRev, 9);
+    raw.settingsRev = Math.max(fromRev, 10);
     return raw;
 }
 

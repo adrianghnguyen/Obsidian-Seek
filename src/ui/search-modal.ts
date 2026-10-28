@@ -15,12 +15,12 @@ import { makeSnippet, sanitizeSnippet, SNIPPET_PREVIEW_LIMITS } from '../render/
 import { TelescopePreviewPane, telescopeQueryTerms } from '../render/telescope-preview';
 import {
     applyTelescopeLayout,
+    clampTelescopePreviewColumnPct,
     nextTelescopeLayoutIndex,
-    TELESCOPE_LAYOUT_PRESETS,
-    telescopeLayoutIndexForId,
-    telescopeLayoutPresetById,
+    telescopeLayoutCycleIndexForSettings,
+    telescopeLayoutCycleLabel,
+    telescopeLayoutPreset,
 } from './telescope-layout';
-import type { TelescopePreviewLayout } from '../types/types';
 import type { SearchOrchestrator } from '../search/search';
 import type { SeekLogger } from '../diagnostics/logger';
 import { ENGLISH_STOPWORDS, distinctQueryTerms, foldForMatch } from '../search/bm25';
@@ -40,7 +40,7 @@ import {
     resolveInsertLinkSubpath,
     type InsertLinkMode,
 } from '../app/insert-link';
-import { applySearchModalSize } from './search-modal-size';
+import { applySearchModalSizePx } from './search-modal-size';
 import { matchTitleAlias, matchNamePrefix } from '../search/fusion';
 import type { SearchPartial } from '../types/types';
 import { dedupeAliasesAgainstBasename, sliceResultAliases } from '../render/result-aliases';
@@ -439,12 +439,7 @@ export class SeekSearchModal extends Modal {
         // width back to a centred reading column (see styles.css). Same surface
         // distinction capabilityDefault() uses for the WebGPU allowlist.
         if (Platform.isTablet) this.modalEl.addClass('seek-tablet');
-        applySearchModalSize(
-            this.modalEl,
-            this.settings.searchModalWidth,
-            this.settings.searchModalHeight,
-            { isPhone: Platform.isMobile && !Platform.isTablet, isTablet: Platform.isTablet },
-        );
+        this.applyModalSizeFromSettings();
         // Activate the component now so MarkdownRenderer can register snippet
         // child-renderers against a loaded parent.
         this.markdownComponent.load();
@@ -1992,22 +1987,46 @@ export class SeekSearchModal extends Modal {
         if (!this.previewColumnHidden) this.schedulePreviewPaint();
     }
 
-    /** Cycles modal width + results/preview split (session-only; telescope preview on). */
+    /** Re-applies width / preview share from settings (Settings save or slider change). */
+    applyDisplayLayoutFromSettings(): void {
+        if (this.closed) return;
+        if (this.settings.telescopePreviewEnabled && this.telescopePreview) {
+            this.applyTelescopeLayoutToModal();
+        } else {
+            this.applyModalSizeFromSettings();
+        }
+    }
+
+    private applyModalSizeFromSettings(): void {
+        applySearchModalSizePx(
+            this.modalEl,
+            this.settings.searchModalWidthPx,
+            this.settings.searchModalHeight,
+            { isPhone: Platform.isMobile && !Platform.isTablet, isTablet: Platform.isTablet },
+        );
+    }
+
+    /** Cycles modal width + preview column share through layout presets (persists). */
     private cycleTelescopeLayout(): void {
         if (!this.settings.telescopePreviewEnabled || !this.telescopePreview) return;
-        const idx = telescopeLayoutIndexForId(this.settings.telescopePreviewLayout);
+        const idx = telescopeLayoutCycleIndexForSettings(
+            this.settings.searchModalWidthPx,
+            this.settings.telescopePreviewColumnPct,
+        );
         const nextIdx = nextTelescopeLayoutIndex(idx);
-        this.settings.telescopePreviewLayout = TELESCOPE_LAYOUT_PRESETS[nextIdx]!.id as TelescopePreviewLayout;
+        const preset = telescopeLayoutPreset(nextIdx);
+        this.settings.searchModalWidthPx = preset.modalWidthPx;
+        this.settings.telescopePreviewColumnPct = preset.previewColumnPct;
         void this.persistSettings?.();
         this.applyTelescopeLayoutToModal();
     }
 
     private applyTelescopeLayoutToModal(): void {
         if (!this.settings.telescopePreviewEnabled) return;
-        const preset = telescopeLayoutPresetById(this.settings.telescopePreviewLayout);
         applyTelescopeLayout(
             this.modalEl,
-            preset,
+            this.settings.searchModalWidthPx,
+            this.settings.telescopePreviewColumnPct,
             this.settings.searchModalHeight,
             {
                 isPhone: Platform.isMobile && !Platform.isTablet,
@@ -2020,12 +2039,16 @@ export class SeekSearchModal extends Modal {
     private updatePreviewLayoutCycleLabel(): void {
         const btn = this.previewLayoutCycleBtn;
         if (!btn) return;
-        const preset = telescopeLayoutPresetById(this.settings.telescopePreviewLayout);
-        const previewPct = 100 - preset.resultsPercent;
-        btn.setText(preset.label);
+        const previewPct = clampTelescopePreviewColumnPct(this.settings.telescopePreviewColumnPct);
+        const resultsPct = 100 - previewPct;
+        const label = telescopeLayoutCycleLabel(
+            this.settings.searchModalWidthPx,
+            previewPct,
+        );
+        btn.setText(label);
         btn.setAttr(
             'aria-label',
-            `Preview layout: ${preset.label} (${preset.resultsPercent}% results, ${previewPct}% preview). Click to cycle.`,
+            `Preview layout: ${label} (${resultsPct}% results, ${previewPct}% preview column). Click to cycle presets.`,
         );
     }
 
