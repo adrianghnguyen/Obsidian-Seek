@@ -4,10 +4,14 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.16.0-beta.4
+
+Search modal width is uncapped past Extra wide, and the telescope preview column can take up to 95%.
+
 ### Changed
 
 - **Search modal width.** Settings slider is no longer capped at 960px; Extra wide remains a snap notch. The live modal still fits the window (`94vw` / `90vw`). Help text is one line: total width of the modal.
-- **Telescope preview column.** Slider max is 95% (was 65%). Help stays a one-liner.
+- **Telescope preview column.** Slider max is 95% (was 65%). Help stays a one-liner. Drag-snap notches are unchanged (modal 640 / 800 / 960; preview 35 / 45 / 50 / 60).
 
 ## 1.16.0-beta.3
 
