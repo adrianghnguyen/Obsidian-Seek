@@ -29,6 +29,10 @@ import {
     TELESCOPE_PREVIEW_COLUMN_MAX_PCT,
     TELESCOPE_PREVIEW_COLUMN_MIN_PCT,
 } from '../ui/telescope-layout';
+import {
+    SEARCH_MODAL_WIDTH_PRESET_LABELS,
+    normalizeSearchModalWidthPresetsPx,
+} from '../ui/search-modal-width-presets';
 import { DEFAULT_SETTINGS, MATCH_STRENGTH_MIN_NOTES } from '../types/types';
 import {
     INDEX_RECOVERY_NAME,
@@ -1725,7 +1729,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         const modalWidthSliderMax = searchModalWidthSliderMaxPx();
         new Setting(containerEl)
             .setName('Search modal width')
-            .setDesc('Total width of the search modal.')
+            .setDesc('Total width of the search modal (the whole panel). Independent of telescope preview column share below.')
             .addSlider(slider => slider
                 .setLimits(SEARCH_MODAL_WIDTH_MIN_PX, modalWidthSliderMax, 10)
                 .setValue(Math.min(modalWidthSliderMax, clampSearchModalWidthPx(this.s.searchModalWidthPx)))
@@ -1734,6 +1738,29 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                     this.s.searchModalWidthPx = snapSearchModalWidthPx(v);
                     await this.save();
                 }));
+
+        this.s.searchModalWidthPresetsPx = normalizeSearchModalWidthPresetsPx(this.s.searchModalWidthPresetsPx);
+        for (let i = 0; i < SEARCH_MODAL_WIDTH_PRESET_LABELS.length; i++) {
+            const slot = i;
+            const name = SEARCH_MODAL_WIDTH_PRESET_LABELS[slot]!;
+            new Setting(containerEl)
+                .setName(`Modal width preset: ${name}`)
+                .setDesc(
+                    slot === 0
+                        ? 'The search footer Width button cycles Compact → Default → Wide. Each value is total modal width, not preview share.'
+                        : `Cycle slot ${slot + 1} of 3. Independent of telescope preview column width.`,
+                )
+                .addSlider(slider => slider
+                    .setLimits(SEARCH_MODAL_WIDTH_MIN_PX, modalWidthSliderMax, 10)
+                    .setValue(Math.min(modalWidthSliderMax, clampSearchModalWidthPx(this.s.searchModalWidthPresetsPx[slot]!)))
+                    .setDynamicTooltip()
+                    .onChange(async v => {
+                        const next = [...this.s.searchModalWidthPresetsPx] as [number, number, number];
+                        next[slot] = snapSearchModalWidthPx(v);
+                        this.s.searchModalWidthPresetsPx = next;
+                        await this.save();
+                    }));
+        }
 
         const heightLabels: Record<SearchModalHeight, string> = {
             default: 'Default',
@@ -1781,7 +1808,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
 
         const telescopePreviewShareSetting = new Setting(containerEl)
             .setName('Telescope preview column width')
-            .setDesc('Share of the modal for the preview column; the rest is the result list.')
+            .setDesc('Share of the modal for the preview column; the rest is the result list. Does not change total modal width (use Search modal width / footer Width).')
             .addSlider(slider => slider
                 .setLimits(TELESCOPE_PREVIEW_COLUMN_MIN_PCT, TELESCOPE_PREVIEW_COLUMN_MAX_PCT, 1)
                 .setValue(clampTelescopePreviewColumnPct(this.s.telescopePreviewColumnPct))
