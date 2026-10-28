@@ -9,6 +9,16 @@ import {
     resolveSidecarHydrateProgress,
 } from '../app/index-self-heal';
 
+/** Catch-up/delta embed passes: status chrome uses pass size, not vault coverage overlay. */
+export function shouldPreferPassCountsOverCoverage(input: {
+    jobKind?: 'full' | 'delta' | 'catchup' | null;
+    quietCatchUp?: boolean;
+}): boolean {
+    if (input.quietCatchUp) return true;
+    const kind = input.jobKind;
+    return kind === 'catchup' || kind === 'delta';
+}
+
 export type IndexProgressWorkPhase =
     | 'ready'
     | 'starting'
@@ -132,16 +142,14 @@ function coverageComplete(inventoryFiles: number | null, indexableNotes: number)
 }
 
 function embedUnits(input: IndexProgressIndicatorInput): IndexProgressUnits | null {
+    const job = input.job;
+    const preferPass = shouldPreferPassCountsOverCoverage({ jobKind: input.jobKind ?? null });
+    if (preferPass && job && job.total > 0) {
+        return unitsFromCounts(job.done, job.total, { determinate: job.done > 0 });
+    }
     const coverage = input.coverage && input.coverage.total > 0 ? input.coverage : null;
     if (coverage) return unitsFromCounts(coverage.covered, coverage.total, { determinate: coverage.covered > 0 });
-    const job = input.job;
     if (job && job.total > 0) return unitsFromCounts(job.done, job.total, { determinate: job.done > 0 });
-    const notes = Math.max(0, Math.floor(input.indexableNotes) || 0);
-    const indexed = Math.max(0, input.inventoryFiles ?? 0);
-    const catchUpQueued = !!(input.catchUpPending || input.catchUpRunning);
-    if (catchUpQueued && notes > 0 && indexed > 0) {
-        return unitsFromCounts(indexed, Math.max(indexed, notes), { determinate: true });
-    }
     return null;
 }
 
@@ -160,6 +168,27 @@ export function computeIndexProgressIndicator(input: IndexProgressIndicatorInput
         waitingForSidecar: input.waitingForSidecar,
         dropRecovering: input.dropRecovering,
     });
+
+    const indexed = Math.max(0, input.inventoryFiles ?? 0);
+    if (
+        needed === 0
+        && notes > 0
+        && indexed < notes
+        && !input.waitingForSidecar
+        && !input.dropRecovering
+    ) {
+        const walk = input.walk;
+        if (walk && walk.total > 0 && walk.total < notes) {
+            const walkDone = Math.max(0, Math.floor(walk.done) || 0);
+            return {
+                phase: 'verifying',
+                units: unitsFromCounts(walkDone, walk.total, { determinate: walkDone > 0 }),
+            };
+        }
+        if (input.hydrating || input.mode === 'verifying' || input.mode === 'restoring') {
+            return { phase: 'verifying', units: null };
+        }
+    }
 
     if (input.mode === 'stuck' || input.mode === 'locked' || input.mode === 'error' || input.mode === 'none' || input.mode === 'updating') {
         return { phase: workPhaseFromMode(input.mode), units: null };

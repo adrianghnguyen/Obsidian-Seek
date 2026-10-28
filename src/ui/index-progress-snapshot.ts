@@ -24,7 +24,10 @@ import {
     type IndexHydrateProgress,
     type IndexStatusReport,
 } from './index-status-report';
-import type { IndexProgressIndicator } from './index-progress-indicator';
+import {
+    shouldPreferPassCountsOverCoverage,
+    type IndexProgressIndicator,
+} from './index-progress-indicator';
 
 export type IndexProgressPhase =
     | 'idle'
@@ -228,7 +231,15 @@ export function buildIndexProgressSnapshot(input: IndexProgressSnapshotInput): I
     } else if (phase === 'embed' && (rawJob || (speed && speed.total > 0) || indicator.units)) {
         const passDone = clampCount(speed?.done ?? rawJob?.done ?? 0);
         const passTotal = clampCount(speed?.total ?? rawJob?.total ?? 0);
-        if (coverageFiles && coverageFiles.filesTotal > 0) {
+        const passKind = rawJob?.kind ?? speed?.kind ?? null;
+        const preferPass = shouldPreferPassCountsOverCoverage({
+            jobKind: passKind,
+            quietCatchUp,
+        });
+        if (preferPass && passTotal > 0) {
+            filesDone = passTotal > 0 ? Math.min(passTotal, passDone) : passDone;
+            filesTotal = passTotal;
+        } else if (coverageFiles && coverageFiles.filesTotal > 0) {
             filesDone = coverageFiles.filesDone;
             filesTotal = coverageFiles.filesTotal;
         } else if (inventoryFiles > 0) {

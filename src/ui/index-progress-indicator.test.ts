@@ -121,7 +121,7 @@ describe('IndexStatusReporter acceptance', () => {
         expect(report.compact).toBe(INDEX_STATUS_COPY.stuck.compact);
     });
 
-    it('catchUpPending on a populated vault shows indexed notes percent', () => {
+    it('catchUpPending without a job avoids vault-scale indexed/notes fractions', () => {
         const indicator = computeIndexProgressIndicator({
             mode: 'catching-up',
             hydrating: false,
@@ -136,9 +136,63 @@ describe('IndexStatusReporter acceptance', () => {
             indexableNotes: 400,
         });
         expect(indicator.phase).toBe('catching-up');
-        expect(indicator.units?.done).toBe(200);
-        expect(indicator.units?.total).toBe(400);
-        expect(indicator.units?.determinate).toBe(true);
+        expect(indicator.units).toBeNull();
+    });
+
+    it('catchup job with coverage overlay uses pass counts, not vault coverage', () => {
+        const indicator = computeIndexProgressIndicator({
+            mode: 'catching-up',
+            hydrating: false,
+            waitingForSidecar: false,
+            dropRecovering: false,
+            booting: false,
+            goodEnough: true,
+            walk: null,
+            job: { done: 3, total: 5 },
+            jobKind: 'catchup',
+            inventoryFiles: 240,
+            indexableNotes: 244,
+            coverage: { covered: 240, total: 244 },
+        });
+        expect(indicator.units?.done).toBe(3);
+        expect(indicator.units?.total).toBe(5);
+    });
+
+    it('partial verify walk uses tier total, not inventory/indexableNotes', () => {
+        const indicator = computeIndexProgressIndicator({
+            mode: 'verifying',
+            hydrating: true,
+            waitingForSidecar: false,
+            dropRecovering: false,
+            booting: true,
+            goodEnough: false,
+            mayFullReindex: false,
+            walk: { done: 12, total: 63, needed: 0 },
+            job: null,
+            inventoryFiles: 84,
+            indexableNotes: 244,
+        });
+        expect(indicator.phase).toBe('verifying');
+        expect(indicator.units?.done).toBe(12);
+        expect(indicator.units?.total).toBe(63);
+    });
+
+    it('verify-only partial IDB suppresses inventory/vault placeholder counts', () => {
+        const indicator = computeIndexProgressIndicator({
+            mode: 'verifying',
+            hydrating: true,
+            waitingForSidecar: false,
+            dropRecovering: false,
+            booting: true,
+            goodEnough: false,
+            mayFullReindex: false,
+            walk: { done: 0, total: 244, needed: 0 },
+            job: null,
+            inventoryFiles: 84,
+            indexableNotes: 244,
+        });
+        expect(indicator.phase).toBe('verifying');
+        expect(indicator.units).toBeNull();
     });
 
     it('Starting with inventory is a named phase with units, not empty Starting up', () => {
