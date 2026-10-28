@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.16.0-beta.6
+
+Search modal width and telescope preview share are compact preset number fields (preview defaults 25 / 40 / 50 / 80).
+
 ### Changed
 
 - **Search modal width.** Settings → Display is one row: Compact / Default / Wide as pixel number fields. Extra width sliders and help copy are gone. The search footer **Width** button still cycles those three values.
