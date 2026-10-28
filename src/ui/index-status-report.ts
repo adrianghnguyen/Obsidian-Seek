@@ -178,7 +178,7 @@ export function resolveIndexStatusHelpForMode(
     mode: IndexStatusMode,
     quietCatchUp = false,
 ): string {
-    if (quietCatchUp && mode === 'ok') return INDEX_STATUS_HELP['quiet-catchup'];
+    if (quietCatchUp) return INDEX_STATUS_HELP['quiet-catchup'];
     const key = MODE_HELP_KEY[mode] ?? mode;
     if (key in INDEX_STATUS_HELP) return INDEX_STATUS_HELP[key as IndexStatusHelpKey];
     return INDEX_STATUS_HELP.ok;

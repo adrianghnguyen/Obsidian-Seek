@@ -68,6 +68,7 @@ export const CI_TEST_AREAS = {
         'src/sidecar/sidecar.test.ts',
         'src/ui/index-eta.test.ts',
         'src/ui/index-notice.test.ts',
+        'src/ui/catch-up-presentation.test.ts',
         'src/ui/index-status-bar.test.ts',
         'src/ui/index-status-help.test.ts',
         'src/ui/index-progress-snapshot.test.ts',

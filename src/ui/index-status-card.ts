@@ -268,10 +268,6 @@ export function renderIndexStatusCard(
         setIcon(info, 'info');
         info.setAttr('aria-label', opts.statusHelp);
         setTooltip(info, opts.statusHelp, { delay: 300 });
-        card.createDiv({ cls: 'seek-status-help-text', text: opts.statusHelp });
-    }
-    if (opts.contextHint) {
-        card.createDiv({ cls: 'seek-status-context-hint', text: opts.contextHint });
     }
 
     main.createDiv({ cls: 'seek-status-sep' });
@@ -282,6 +278,13 @@ export function renderIndexStatusCard(
         });
         m.createDiv({ cls: 'seek-status-value', text: slot.value });
         m.createDiv({ cls: 'seek-status-mlabel', text: slot.label });
+    }
+
+    if (opts.statusHelp) {
+        card.createDiv({ cls: 'seek-status-help-text', text: opts.statusHelp });
+    }
+    if (opts.contextHint) {
+        card.createDiv({ cls: 'seek-status-context-hint', text: opts.contextHint });
     }
 
     const meter = card.createEl('progress', { cls: 'seek-status-meter' }) as HTMLProgressElement;

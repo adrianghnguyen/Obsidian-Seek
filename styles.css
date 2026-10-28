@@ -1514,6 +1514,11 @@
     width: 12px;
     height: 12px;
 }
+.seek-status-card > .seek-status-help-text,
+.seek-status-card > .seek-status-context-hint {
+    flex-basis: 100%;
+    width: 100%;
+}
 .seek-status-help-text {
     width: 100%;
     flex: 1 1 100%;

@@ -58,6 +58,7 @@ describe('index status help / tooltips', () => {
         expect(resolveIndexStatusHelpForMode('full-reindex')).toBe(INDEX_STATUS_HELP['full-reindex']);
         expect(resolveIndexStatusHelpForMode('verifying')).toBe(INDEX_STATUS_HELP.verifying);
         expect(resolveIndexStatusHelpForMode('ok', true)).toBe(INDEX_STATUS_HELP['quiet-catchup']);
+        expect(resolveIndexStatusHelpForMode('catching-up', true)).toBe(INDEX_STATUS_HELP['quiet-catchup']);
     });
 
     it('quiet catch-up help is distinct from updating copy', () => {
@@ -70,5 +71,20 @@ describe('index status help / tooltips', () => {
         expect(quiet.quietCatchUp).toBe(true);
         expect(quiet.help).toBe(INDEX_STATUS_HELP['quiet-catchup']);
         expect(quiet.compact).toBe(INDEX_STATUS_COPY.ok.compact);
+    });
+
+    it('1-file catch-up on a consumer-sized vault is quiet Ready, not vault fractions', () => {
+        const report = IndexStatusReporter.compute({
+            ...baseInput,
+            inventoryFiles: 244,
+            searchableChunks: 800,
+            indexing: true,
+            jobKind: 'catchup',
+            job: { done: 0, total: 1 },
+        });
+        expect(report.quietCatchUp).toBe(true);
+        expect(report.health).toBe('ok');
+        expect(report.compact).toBe(INDEX_STATUS_COPY.ok.compact);
+        expect(report.progress.units).toBeNull();
     });
 });

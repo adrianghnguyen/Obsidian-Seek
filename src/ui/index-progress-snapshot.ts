@@ -24,10 +24,8 @@ import {
     type IndexHydrateProgress,
     type IndexStatusReport,
 } from './index-status-report';
-import {
-    shouldPreferPassCountsOverCoverage,
-    type IndexProgressIndicator,
-} from './index-progress-indicator';
+import { shouldPreferPassCountsOverCoverage } from './catch-up-presentation';
+import type { IndexProgressIndicator } from './index-progress-indicator';
 
 export type IndexProgressPhase =
     | 'idle'
@@ -235,6 +233,8 @@ export function buildIndexProgressSnapshot(input: IndexProgressSnapshotInput): I
         const preferPass = shouldPreferPassCountsOverCoverage({
             jobKind: passKind,
             quietCatchUp,
+            passTotal,
+            inventoryFiles,
         });
         if (preferPass && passTotal > 0) {
             filesDone = passTotal > 0 ? Math.min(passTotal, passDone) : passDone;
