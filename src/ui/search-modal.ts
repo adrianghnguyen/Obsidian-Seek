@@ -1963,6 +1963,7 @@ export class SeekSearchModal extends Modal {
         if (r) void this.openResult(r, this.selectedIndex + 1, target);
     }
 
+    /** Toggles preview column visibility and repaints when the column is shown. */
     private togglePreviewColumn(): void {
         if (!this.settings.telescopePreviewEnabled || !this.telescopePreview) return;
         this.previewColumnHidden = !this.previewColumnHidden;
@@ -1970,6 +1971,7 @@ export class SeekSearchModal extends Modal {
         if (!this.previewColumnHidden) this.schedulePreviewPaint();
     }
 
+    /** Drives the telescope preview from the current selection and parsed query terms. */
     private schedulePreviewPaint(): void {
         if (this.closed || !this.telescopePreview || this.previewColumnHidden) return;
         if (this.currentResults.length === 0) {
@@ -1989,6 +1991,7 @@ export class SeekSearchModal extends Modal {
         });
     }
 
+    /** Loads full note markdown via vault cachedRead for telescope preview paint. */
     private async readNoteTextForPreview(path: string): Promise<string> {
         const file = this.app.vault.getAbstractFileByPath(path);
         if (!(file instanceof TFile)) return '';

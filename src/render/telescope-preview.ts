@@ -1,23 +1,31 @@
 // Telescope preview pane: lightweight DOM from vault text (no MarkdownRenderer).
 // Ported from Fast Find preview.ts patterns — classify, segment, caps, lazy lines.
 
+/** Maximum note lines rendered in the telescope preview pane. */
 export const MAX_PREVIEW_LINES = 4000;
+/** Global budget for query highlight marks across the preview. */
 export const MAX_PREVIEW_MARKS = 200;
+/** Global budget for wikilink and tag style spans in the preview. */
 export const MAX_PREVIEW_STYLES = 2000;
+/** Maximum characters per preview line before ellipsis truncation. */
 export const MAX_LINE_CHARS = 2000;
+/** Maximum link or tag style ranges applied on a single line. */
 export const MAX_LINE_STYLES = 50;
 const LAZY_MARGIN = 200;
 const CACHE_SIZE = 20;
 const MIN_TERM = 2;
 
+/** Classified preview line kind for heading, fenced code, or plain text styling. */
 export type PreviewLineKind = 'h1' | 'h2' | 'h3' | 'code' | 'text';
 
+/** One classified note line with display text and styling kind. */
 export interface PreviewLine {
     kind: PreviewLineKind;
     /** Display text: heading markers stripped, everything else verbatim. */
     text: string;
 }
 
+/** Text run within a line with optional link/tag style and query highlight mark. */
 export interface PreviewSegment {
     text: string;
     style: 'link' | 'tag' | null;
@@ -39,6 +47,7 @@ export function telescopeQueryTerms(cleanedQuery: string): string[] {
     return out;
 }
 
+/** Classifies raw note lines into ATX headings, fenced code blocks, or text. */
 export function classifyPreviewLines(lines: string[]): PreviewLine[] {
     let fence: string | null = null;
     return lines.map((line) => {
@@ -57,11 +66,13 @@ export function classifyPreviewLines(lines: string[]): PreviewLine[] {
     });
 }
 
+/** Mutable counters limiting marks and styles while segmenting preview lines. */
 export interface PreviewBudget {
     marks: number;
     styles: number;
 }
 
+/** Finds non-overlapping query term highlight ranges on a line under the mark budget. */
 function markRanges(text: string, terms: string[], budget: PreviewBudget): [number, number][] {
     const lower = text.toLowerCase();
     const usable = terms.filter((t) => t.length >= MIN_TERM);
@@ -88,6 +99,7 @@ function markRanges(text: string, terms: string[], budget: PreviewBudget): [numb
     return out;
 }
 
+/** Finds wikilink and hashtag tag character ranges on a line up to the style cap. */
 function styleRanges(text: string, cap: number): [number, number, 'link' | 'tag'][] {
     const out: [number, number, 'link' | 'tag'][] = [];
     let pos = 0;
@@ -123,6 +135,7 @@ function styleRanges(text: string, cap: number): [number, number, 'link' | 'tag'
     return out;
 }
 
+/** Splits one line into styled and marked segments respecting per-line and global budgets. */
 export function segmentPreviewLine(
     text: string,
     terms: string[],
@@ -167,12 +180,14 @@ export function segmentPreviewLine(
     return out;
 }
 
+/** Inputs for painting a note preview: path, scroll anchor line, and query terms. */
 export interface PreviewPaintOptions {
     notePath: string;
     anchorLine: number | null;
     terms: string[];
 }
 
+/** rAF-coalesced lightweight DOM preview of vault note text for the search modal. */
 export class TelescopePreviewPane {
     private readonly scrollEl: HTMLElement;
     private readonly bodyEl: HTMLElement;
@@ -182,6 +197,7 @@ export class TelescopePreviewPane {
     private pending: PreviewPaintOptions | null = null;
     private readonly readNote: (path: string) => Promise<string>;
 
+    /** Mounts the preview body inside scrollEl and stores the vault read callback. */
     constructor(
         scrollEl: HTMLElement,
         readNote: (path: string) => Promise<string>,
@@ -191,6 +207,7 @@ export class TelescopePreviewPane {
         this.readNote = readNote;
     }
 
+    /** Cancels pending paints and empties the preview DOM. */
     clear(): void {
         this.token++;
         if (this.paintRaf != null) {
@@ -201,6 +218,7 @@ export class TelescopePreviewPane {
         this.bodyEl.empty();
     }
 
+    /** Coalesces preview repaints to the next animation frame. */
     schedulePaint(opts: PreviewPaintOptions): void {
         this.pending = opts;
         if (this.paintRaf != null) return;
@@ -212,6 +230,7 @@ export class TelescopePreviewPane {
         });
     }
 
+    /** Updates the LRU cache of recently read note bodies. */
     private remember(path: string, text: string): void {
         this.texts.delete(path);
         this.texts.set(path, text);
@@ -221,6 +240,7 @@ export class TelescopePreviewPane {
         }
     }
 
+    /** Loads note text from cache or readNote and renders if the paint token is still current. */
     private async paintNow(opts: PreviewPaintOptions): Promise<void> {
         const token = ++this.token;
         let text = this.texts.get(opts.notePath);
@@ -239,6 +259,7 @@ export class TelescopePreviewPane {
         this.renderDom(text, opts);
     }
 
+    /** Builds capped classified preview DOM and scrolls to the anchor line or first query mark. */
     private renderDom(text: string, opts: PreviewPaintOptions): void {
         this.bodyEl.empty();
         if (!text) {
