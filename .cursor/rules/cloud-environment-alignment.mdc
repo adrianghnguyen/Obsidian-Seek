@@ -11,13 +11,13 @@ Obsidian plugin Cloud Agents use a **shared pointer** in `.cursor/environment.js
 
 | Field | Rule |
 | --- | --- |
-| `install` | `bash /agent/repos/obsidian-plugin-development/scripts/cloud-e2e/env-install.sh` |
-| `start` | `bash /agent/repos/obsidian-plugin-development/scripts/cloud-e2e/env-start.sh` |
+| `install` | `bash .cursor/cloud-bootstrap.sh install` |
+| `start` | `bash .cursor/cloud-bootstrap.sh start` |
 | `repositoryDependencies` | Must list **every** checkout `env-install.sh` expects under `/agent/repos/`, including the orchestrator |
 
 **Canonical `repositoryDependencies` (keep this set in sync everywhere the pointer is used):**
 
-1. `github.com/adrianghnguyen/obsidian-plugin-development` — orchestrator; **required** whenever `install`/`start` use the path above (omit → build exit **127**, missing script).
+1. `github.com/adrianghnguyen/obsidian-plugin-development` — orchestrator; **required** for token scope and non-bootstrap agent layouts. `cloud-bootstrap.sh` symlinks `/workspace` when this repo is primary.
 2. `github.com/adrianghnguyen/obsidian-agent-client`
 3. `github.com/adrianghnguyen/obsidian-seek`
 4. `github.com/adrianghnguyen/whisper-obsidian-plugin`
