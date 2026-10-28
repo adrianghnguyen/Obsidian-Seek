@@ -85,7 +85,18 @@ export function resolveSidecarHydrateProgress(input: {
     const liveWalk = input.hydrating || input.waitingForSidecar || input.dropRecovering;
     if (liveWalk && input.walk && input.walk.total > 0) {
         const fromWalk = hydrateProgressAgainstVault(input.walk, notes, input.walk.needed);
-        if (fromWalk) return fromWalk;
+        if (fromWalk) {
+            const indexed = Math.max(0, input.inventoryFiles ?? 0);
+            if (
+                input.walk.needed === 0
+                && notes > 0
+                && indexed < notes
+                && fromWalk.total >= notes
+            ) {
+                return null;
+            }
+            return fromWalk;
+        }
     }
     if (!(
         input.waitingForSidecar
@@ -96,6 +107,7 @@ export function resolveSidecarHydrateProgress(input: {
     const done = Math.max(0, input.inventoryFiles ?? 0);
     const total = Math.max(done, notes);
     if (total <= 0) return null;
+    if (input.walk?.needed === 0 && done < notes) return null;
     return { done, total };
 }
 

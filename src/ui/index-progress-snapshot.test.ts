@@ -123,6 +123,30 @@ describe('buildIndexProgressSnapshot', () => {
         expect(snap.percent).toBe(26);
     });
 
+    it('prefers pass counts over coverage for catchup jobs', () => {
+        const snap = buildIndexProgressSnapshot({
+            report: reportOf('indexing', {
+                mode: 'catching-up',
+                progress: {
+                    phase: 'catching-up',
+                    units: { done: 3, total: 5, percent: 60, determinate: true },
+                },
+            }),
+            job: { done: 3, total: 5, kind: 'catchup' },
+            speed: {
+                done: 3, total: 5, chunksDone: 10, tokensDone: 500,
+                elapsedMs: 1000, paused: false, kind: 'catchup',
+            },
+            inventoryFiles: 240,
+            coverage: { covered: 240, total: 244 },
+        });
+        expect(snap.phase).toBe('embed');
+        expect(snap.filesDone).toBe(3);
+        expect(snap.filesTotal).toBe(5);
+        expect(snap.speed?.done).toBe(3);
+        expect(snap.speed?.total).toBe(5);
+    });
+
     it('prefers coverage FileRecords over files-started during an embed pass', () => {
         const snap = buildIndexProgressSnapshot({
             report: reportOf('indexing', { mode: 'full-reindex' }),

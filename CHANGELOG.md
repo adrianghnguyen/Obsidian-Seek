@@ -6,6 +6,8 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ### Fixed
 
+- **Consumer status bar file counts.** Catch-up/delta embed passes and verify-only hydrate use pass- or tier-scoped denominators instead of vault coverage (e.g. no more `240/244` during a five-note catch-up or `84/244` while verifying a partial consumer index).
+
 - **Accent-insensitive filter binding and UI parity.** `#tag` / `[key:value]` filters, tag pill bind checks, open-note highlight, naive snippet fallback, and filter suggest prefix now use shared `foldForMatch` (same Latin fold as BM25 ranking, without changing `processTerm`).
 
 ## 1.15.3

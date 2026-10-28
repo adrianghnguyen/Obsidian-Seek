@@ -99,6 +99,16 @@ describe('resolveSidecarHydrateProgress', () => {
             walk: { done: 1047, total: 3132 },
         })).toBeNull();
     });
+
+    it('verify-only partial IDB suppresses vault-scale walk totals', () => {
+        expect(resolveSidecarHydrateProgress({
+            ...vault,
+            inventoryFiles: 84,
+            indexableNotes: 244,
+            hydrating: true,
+            walk: { done: 84, total: 244, needed: 0 },
+        })).toBeNull();
+    });
 });
 
 describe('shouldResumeIndexing', () => {
