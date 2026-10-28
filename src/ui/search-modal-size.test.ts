@@ -11,6 +11,7 @@ describe('resolveSearchModalWidthPx', () => {
         expect(resolveSearchModalWidthPx(800, false)).toBe(800);
         expect(resolveSearchModalWidthPx(960, false)).toBe(960);
         expect(resolveSearchModalWidthPx(500, false)).toBe(500);
+        expect(resolveSearchModalWidthPx(1800, false)).toBe(1800);
     });
 
     it('never goes below the tablet floor', () => {

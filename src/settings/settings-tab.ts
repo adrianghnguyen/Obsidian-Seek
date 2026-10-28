@@ -22,10 +22,8 @@ import type { SearchModalHeight, SnippetPreview } from '../types/types';
 import {
     clampSearchModalWidthPx,
     clampTelescopePreviewColumnPct,
-    formatSearchModalWidthNotchHelp,
-    formatTelescopePreviewColumnNotchHelp,
-    SEARCH_MODAL_WIDTH_MAX_PX,
     SEARCH_MODAL_WIDTH_MIN_PX,
+    searchModalWidthSliderMaxPx,
     snapSearchModalWidthPx,
     snapTelescopePreviewColumnPct,
     TELESCOPE_PREVIEW_COLUMN_MAX_PCT,
@@ -1724,26 +1722,18 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             .setDesc('When ON, opening a result in a new tab, split, or window leaves the search modal open so you can open more results. When OFF (default), the modal closes after any open, like Quick Switcher.')
             .addToggle(t => t.setValue(this.s.keepSearchOpenOnTabSplit).onChange(async v => { this.s.keepSearchOpenOnTabSplit = v; await this.save(); }));
 
-        const modalWidthSetting = new Setting(containerEl)
+        const modalWidthSliderMax = searchModalWidthSliderMaxPx();
+        new Setting(containerEl)
             .setName('Search modal width')
-            .setDesc(
-                `Total width of the search panel on desktop and tablet (${SEARCH_MODAL_WIDTH_MIN_PX}–${SEARCH_MODAL_WIDTH_MAX_PX}px). `
-                + `Snap points: ${formatSearchModalWidthNotchHelp()}. `
-                + 'Updates live while search is open when possible. '
-                + 'Remap “Search: Cycle preview layout” under Settings → Hotkeys (default Ctrl/Cmd+Shift+P) to step through combined layout presets when telescope preview is on.',
-            )
+            .setDesc('Total width of the search modal.')
             .addSlider(slider => slider
-                .setLimits(SEARCH_MODAL_WIDTH_MIN_PX, SEARCH_MODAL_WIDTH_MAX_PX, 10)
-                .setValue(clampSearchModalWidthPx(this.s.searchModalWidthPx))
+                .setLimits(SEARCH_MODAL_WIDTH_MIN_PX, modalWidthSliderMax, 10)
+                .setValue(Math.min(modalWidthSliderMax, clampSearchModalWidthPx(this.s.searchModalWidthPx)))
                 .setDynamicTooltip()
                 .onChange(async v => {
                     this.s.searchModalWidthPx = snapSearchModalWidthPx(v);
                     await this.save();
                 }));
-        modalWidthSetting.descEl.createDiv({
-            cls: 'setting-item-description',
-            text: `Notches: ${formatSearchModalWidthNotchHelp()}. Drag between them for in-between widths.`,
-        });
 
         const heightLabels: Record<SearchModalHeight, string> = {
             default: 'Default',
@@ -1791,11 +1781,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
 
         const telescopePreviewShareSetting = new Setting(containerEl)
             .setName('Telescope preview column width')
-            .setDesc(
-                'How much horizontal space the preview column takes inside the search modal (not the modal’s total width — use Search modal width above for that). '
-                + `Snap points: ${formatTelescopePreviewColumnNotchHelp()}. `
-                + 'Ctrl/Cmd+Shift+P cycles Balanced → Even → Reading → List (both sliders) while search is open.',
-            )
+            .setDesc('Share of the modal for the preview column; the rest is the result list.')
             .addSlider(slider => slider
                 .setLimits(TELESCOPE_PREVIEW_COLUMN_MIN_PCT, TELESCOPE_PREVIEW_COLUMN_MAX_PCT, 1)
                 .setValue(clampTelescopePreviewColumnPct(this.s.telescopePreviewColumnPct))
@@ -1804,10 +1790,6 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                     this.s.telescopePreviewColumnPct = snapTelescopePreviewColumnPct(v);
                     await this.save();
                 }));
-        telescopePreviewShareSetting.descEl.createDiv({
-            cls: 'setting-item-description',
-            text: `Preview column share notches: ${formatTelescopePreviewColumnNotchHelp()}. Result list gets the remaining width.`,
-        });
 
         const telescopeDepthLabels: Record<typeof this.s.telescopePreviewDepth, string> = {
             compact: 'Compact (faster, less note text)',

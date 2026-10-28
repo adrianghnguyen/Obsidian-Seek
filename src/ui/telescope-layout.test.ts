@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
     clampSearchModalWidthPx,
     clampTelescopePreviewColumnPct,
+    searchModalWidthSliderMaxPx,
     nextTelescopeLayoutIndex,
     snapSearchModalWidthPx,
     snapTelescopePreviewColumnPct,
@@ -15,9 +16,10 @@ import {
 } from './telescope-layout';
 
 describe('search modal width px', () => {
-    it('clamps to min/max', () => {
+    it('clamps only the floor, not 960', () => {
         expect(clampSearchModalWidthPx(200)).toBe(400);
-        expect(clampSearchModalWidthPx(2000)).toBe(960);
+        expect(clampSearchModalWidthPx(2000)).toBe(2000);
+        expect(clampSearchModalWidthPx(960)).toBe(960);
     });
 
     it('snaps near legacy width notches', () => {
@@ -27,18 +29,38 @@ describe('search modal width px', () => {
         expect(snapSearchModalWidthPx(500)).toBe(500);
     });
 
+    it('mimics a drag across Default/Wide/Extra-wide then past 960', () => {
+        const path = [500, 628, 640, 788, 800, 948, 960, 1100, 1400];
+        expect(path.map(snapSearchModalWidthPx)).toEqual([
+            500, 640, 640, 800, 800, 960, 960, 1100, 1400,
+        ]);
+    });
+
     it('maps legacy enum widths', () => {
         expect(searchModalWidthEnumToPx('default')).toBe(640);
         expect(searchModalWidthEnumToPx('extra-wide')).toBe(960);
+    });
+
+    it('slider max follows the window, not 960', () => {
+        const prev = window.innerWidth;
+        Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1600 });
+        expect(searchModalWidthSliderMaxPx()).toBe(1600);
+        Object.defineProperty(window, 'innerWidth', { configurable: true, value: prev });
     });
 });
 
 describe('telescope preview column pct', () => {
     it('clamps and snaps layout notches', () => {
         expect(clampTelescopePreviewColumnPct(10)).toBe(25);
+        expect(clampTelescopePreviewColumnPct(90)).toBe(90);
+        expect(clampTelescopePreviewColumnPct(99)).toBe(95);
         expect(snapTelescopePreviewColumnPct(36)).toBe(35);
         expect(snapTelescopePreviewColumnPct(48)).toBe(50);
         expect(telescopePreviewLayoutToColumnPct('reading')).toBe(60);
+        const path = [25, 33, 35, 43, 45, 48, 50, 58, 60, 80, 95];
+        expect(path.map(snapTelescopePreviewColumnPct)).toEqual([
+            25, 35, 35, 45, 45, 50, 50, 60, 60, 80, 95,
+        ]);
     });
 });
 
