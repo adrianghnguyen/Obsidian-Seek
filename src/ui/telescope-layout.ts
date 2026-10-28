@@ -37,7 +37,7 @@ export const TELESCOPE_PREVIEW_COLUMN_NOTCHES: readonly { pct: number; label: st
 const WIDTH_SNAP_TOLERANCE_PX = 12;
 const PREVIEW_SNAP_TOLERANCE_PCT = 3;
 
-/** Combined layout presets for Ctrl/Cmd+Shift+P and the preview header cycle control. */
+/** Preview-column-share presets (Ctrl/Cmd+Shift+P). modalWidthPx is legacy migration only. */
 export interface TelescopeLayoutPreset {
     id: string;
     label: string;
@@ -137,37 +137,32 @@ export function telescopeLayoutPreset(index: number): TelescopeLayoutPreset {
     return TELESCOPE_LAYOUT_PRESETS[i]!;
 }
 
-function presetMatchesSettings(
+function presetMatchesPreviewShare(
     preset: TelescopeLayoutPreset,
-    widthPx: number,
     previewColumnPct: number,
 ): boolean {
-    return Math.abs(preset.modalWidthPx - widthPx) <= WIDTH_SNAP_TOLERANCE_PX
-        && Math.abs(preset.previewColumnPct - previewColumnPct) <= PREVIEW_SNAP_TOLERANCE_PCT;
+    return Math.abs(preset.previewColumnPct - previewColumnPct) <= PREVIEW_SNAP_TOLERANCE_PCT;
 }
 
-/** Index into TELESCOPE_LAYOUT_PRESETS for cycle hotkey when sliders may sit between notches. */
-export function telescopeLayoutCycleIndexForSettings(
-    widthPx: number,
-    previewColumnPct: number,
-): number {
+/** Index into TELESCOPE_LAYOUT_PRESETS from preview-column share only (not modal width). */
+export function telescopeLayoutCycleIndexForSettings(previewColumnPct: number): number {
     for (let i = 0; i < TELESCOPE_LAYOUT_PRESETS.length; i++) {
-        if (presetMatchesSettings(TELESCOPE_LAYOUT_PRESETS[i]!, widthPx, previewColumnPct)) return i;
+        if (presetMatchesPreviewShare(TELESCOPE_LAYOUT_PRESETS[i]!, previewColumnPct)) return i;
     }
     return 0;
 }
 
 /** Label for the preview header cycle control (preset name or Custom). */
-export function telescopeLayoutCycleLabel(widthPx: number, previewColumnPct: number): string {
+export function telescopeLayoutCycleLabel(previewColumnPct: number): string {
     for (const p of TELESCOPE_LAYOUT_PRESETS) {
-        if (presetMatchesSettings(p, widthPx, previewColumnPct)) return p.label;
+        if (presetMatchesPreviewShare(p, previewColumnPct)) return p.label;
     }
     return 'Custom';
 }
 
-export function telescopeLayoutPresetIdForSettings(widthPx: number, previewColumnPct: number): string {
+export function telescopeLayoutPresetIdForSettings(previewColumnPct: number): string {
     for (const p of TELESCOPE_LAYOUT_PRESETS) {
-        if (presetMatchesSettings(p, widthPx, previewColumnPct)) return p.id;
+        if (presetMatchesPreviewShare(p, previewColumnPct)) return p.id;
     }
     return 'custom';
 }
@@ -200,7 +195,7 @@ export function applyTelescopeLayout(
     modalEl.style.setProperty('--seek-mobile-preview-pct', `${previewPct}%`);
     modalEl.setAttribute(
         'data-seek-telescope-layout',
-        telescopeLayoutPresetIdForSettings(widthPx, previewPct),
+        telescopeLayoutPresetIdForSettings(previewPct),
     );
     applySearchModalSizePx(modalEl, widthPx, height, opts);
 }

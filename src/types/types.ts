@@ -575,6 +575,8 @@ export interface SeekSettings {
     // Search modal width on desktop/tablet (phones keep full-width), in px.
     // Applied on open (live when search is open) — see search-modal-size.ts.
     searchModalWidthPx: number;
+    /** Three independently configurable total-modal-width cycle targets (px). Not telescope preview share. */
+    searchModalWidthPresetsPx: [number, number, number];
 
     // Search modal height on desktop (mobile/tablet use keyboard-aware sizing).
     // Applied on next open via CSS vars — see search-modal-size.ts.
@@ -723,6 +725,7 @@ export const DEFAULT_SETTINGS: SeekSettings = {
     telescopePreviewColumnPct: 45,
     telescopePreviewDepth: 'large',
     searchModalWidthPx: 640,
+    searchModalWidthPresetsPx: [640, 800, 960],
     searchModalHeight: 'default',  // desktop modal height preset
     altOpenLocation: 'tab',    // schema compat with upstream; fork open UX uses OpenTarget modifiers
     sidecarEnabled: true,      // ON by default; user-facing under Index advanced → Sync index across devices; vault-file index for iOS-eviction survival + Sync hydrate; OFF = this device only — see field comment

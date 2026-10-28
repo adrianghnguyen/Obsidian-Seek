@@ -41,6 +41,10 @@ import {
     type InsertLinkMode,
 } from '../app/insert-link';
 import { applySearchModalSizePx } from './search-modal-size';
+import {
+    cycleSearchModalWidthPx,
+    searchModalWidthPresetCycleLabel,
+} from './search-modal-width-presets';
 import { matchTitleAlias, matchNamePrefix } from '../search/fusion';
 import type { SearchPartial } from '../types/types';
 import { dedupeAliasesAgainstBasename, sliceResultAliases } from '../render/result-aliases';
@@ -246,6 +250,7 @@ export class SeekSearchModal extends Modal {
     /** Session-only hide via Ctrl/Cmd+P (settings still ON). */
     private previewColumnHidden = false;
     private previewLayoutCycleBtn: HTMLButtonElement | null = null;
+    private modalWidthCycleBtn: HTMLButtonElement | null = null;
     // Fixed-position container for the version-stale banner, between the field and the
     // results. Rendered into (empty + refill) so re-renders keep their place; collapses
     // to nothing via `.seek-banner-slot:empty { display: none }` when there's no banner.
@@ -712,6 +717,12 @@ export class SeekSearchModal extends Modal {
                 link.addEventListener('click', () => void this.copySearchLink());
             });
         }
+        this.modalWidthCycleBtn = foot.createEl('button', {
+            type: 'button',
+            cls: 'seek-foot-modal-width',
+        });
+        this.modalWidthCycleBtn.addEventListener('click', () => this.cycleSearchModalWidth());
+        this.updateModalWidthCycleLabel();
         const closeGrp = foot.createSpan({ cls: 'seek-foot-grp seek-foot-close' });
         this.footStatusEl = closeGrp.createSpan({ cls: 'seek-foot-status' });
         this.footStatusEl.setAttr('role', 'status');
@@ -1900,6 +1911,7 @@ export class SeekSearchModal extends Modal {
             case 'expand-snippet': this.toggleSnippetExpand(); break;
             case 'toggle-preview-column': this.togglePreviewColumn(); break;
             case 'cycle-telescope-layout': this.cycleTelescopeLayout(); break;
+            case 'cycle-search-modal-width': this.cycleSearchModalWidth(); break;
             case 'fill-autosuggest': this.field?.fillAutosuggest(); break;
             case 'close': this.close(); break;
         }
@@ -1995,6 +2007,7 @@ export class SeekSearchModal extends Modal {
         } else {
             this.applyModalSizeFromSettings();
         }
+        this.updateModalWidthCycleLabel();
     }
 
     private applyModalSizeFromSettings(): void {
@@ -2006,16 +2019,23 @@ export class SeekSearchModal extends Modal {
         );
     }
 
-    /** Cycles modal width + preview column share through layout presets (persists). */
+    /** Cycles total modal width through the three Settings presets (preview share unchanged). */
+    private cycleSearchModalWidth(): void {
+        const { nextPx } = cycleSearchModalWidthPx(
+            this.settings.searchModalWidthPx,
+            this.settings.searchModalWidthPresetsPx,
+        );
+        this.settings.searchModalWidthPx = nextPx;
+        void this.persistSettings?.();
+        this.applyDisplayLayoutFromSettings();
+    }
+
+    /** Cycles telescope preview column share only (total modal width unchanged). */
     private cycleTelescopeLayout(): void {
         if (!this.settings.telescopePreviewEnabled || !this.telescopePreview) return;
-        const idx = telescopeLayoutCycleIndexForSettings(
-            this.settings.searchModalWidthPx,
-            this.settings.telescopePreviewColumnPct,
-        );
+        const idx = telescopeLayoutCycleIndexForSettings(this.settings.telescopePreviewColumnPct);
         const nextIdx = nextTelescopeLayoutIndex(idx);
         const preset = telescopeLayoutPreset(nextIdx);
-        this.settings.searchModalWidthPx = preset.modalWidthPx;
         this.settings.telescopePreviewColumnPct = preset.previewColumnPct;
         void this.persistSettings?.();
         this.applyTelescopeLayoutToModal();
@@ -2041,14 +2061,25 @@ export class SeekSearchModal extends Modal {
         if (!btn) return;
         const previewPct = clampTelescopePreviewColumnPct(this.settings.telescopePreviewColumnPct);
         const resultsPct = 100 - previewPct;
-        const label = telescopeLayoutCycleLabel(
+        const label = telescopeLayoutCycleLabel(previewPct);
+        btn.setText(label);
+        btn.setAttr(
+            'aria-label',
+            `Preview column share: ${label} (${resultsPct}% results, ${previewPct}% preview). Click to cycle List/Balanced/Even/Reading. Does not change total modal width.`,
+        );
+    }
+
+    private updateModalWidthCycleLabel(): void {
+        const btn = this.modalWidthCycleBtn;
+        if (!btn) return;
+        const label = searchModalWidthPresetCycleLabel(
             this.settings.searchModalWidthPx,
-            previewPct,
+            this.settings.searchModalWidthPresetsPx,
         );
         btn.setText(label);
         btn.setAttr(
             'aria-label',
-            `Preview layout: ${label} (${resultsPct}% results, ${previewPct}% preview column). Click to cycle presets.`,
+            `${label}. Click to cycle Compact, Default, and Wide total modal widths from Settings. Independent of telescope preview share.`,
         );
     }
 

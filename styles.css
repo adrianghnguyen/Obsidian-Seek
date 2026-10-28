@@ -1195,6 +1195,30 @@
     overflow: hidden;
 }
 
+.seek-foot-modal-width {
+    flex: 0 0 auto;
+    margin: 0;
+    padding: 2px 8px;
+    font-size: var(--font-ui-smaller);
+    font-weight: 500;
+    font-family: inherit;
+    color: var(--text-muted);
+    background: var(--background-modifier-form-field);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-s);
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.seek-foot-modal-width:hover {
+    color: var(--text-normal);
+    background: var(--background-modifier-hover);
+}
+
+.seek-mobile:not(.seek-tablet) .seek-foot-modal-width {
+    display: none;
+}
+
 .seek-foot-hints {
     display: flex;
     flex-wrap: wrap;

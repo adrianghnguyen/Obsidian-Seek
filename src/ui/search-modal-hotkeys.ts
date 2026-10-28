@@ -16,6 +16,7 @@ export type SearchModalAction =
     | 'expand-snippet'
     | 'toggle-preview-column'
     | 'cycle-telescope-layout'
+    | 'cycle-search-modal-width'
     | 'fill-autosuggest'
     | 'close';
 
@@ -135,7 +136,14 @@ export const SEARCH_MODAL_COMMANDS: readonly SearchModalCommandSpec[] = [
         name: 'Search: Cycle preview layout',
         action: 'cycle-telescope-layout',
         hotkeys: [{ modifiers: ['Mod', 'Shift'], key: 'P' }],
-        footerLabel: 'cycle layout presets',
+        footerLabel: 'cycle preview share',
+    },
+    {
+        id: 'search-cycle-modal-width',
+        name: 'Search: Cycle modal width',
+        action: 'cycle-search-modal-width',
+        hotkeys: [],
+        footerLabel: 'cycle modal width',
     },
     {
         id: 'search-fill-autosuggest',

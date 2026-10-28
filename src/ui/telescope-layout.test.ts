@@ -84,7 +84,14 @@ describe('telescope layout presets', () => {
 
     it('cycle index and label match balanced preset values', () => {
         const p = telescopeLayoutPresetById('balanced');
-        expect(telescopeLayoutCycleIndexForSettings(p.modalWidthPx, p.previewColumnPct)).toBe(0);
-        expect(telescopeLayoutCycleLabel(p.modalWidthPx, p.previewColumnPct)).toBe('Balanced');
+        expect(telescopeLayoutCycleIndexForSettings(p.previewColumnPct)).toBe(0);
+        expect(telescopeLayoutCycleLabel(p.previewColumnPct)).toBe('Balanced');
+    });
+
+    it('matches preview share even when modal width disagrees', () => {
+        expect(telescopeLayoutCycleLabel(45)).toBe('Balanced');
+        expect(telescopeLayoutCycleIndexForSettings(35)).toBe(
+            TELESCOPE_LAYOUT_PRESETS.findIndex((p) => p.id === 'list'),
+        );
     });
 });
