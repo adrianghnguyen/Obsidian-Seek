@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Added
+
+- **Telescope preview (search modal).** Optional read-only preview column beside ranked results — lightweight DOM from vault text (headings, wikilinks, tags, query marks), coalesced on selection with an LRU read cache. Default ON on desktop; phones default OFF until enabled in Settings → Display. Toggle the column while search is open with Ctrl/Cmd+P (remappable under Settings → Hotkeys).
+
 ### Fixed
 
 - **Consumer status bar file counts.** Catch-up/delta embed passes and verify-only hydrate use pass- or tier-scoped denominators instead of vault coverage (e.g. no more `240/244` during a five-note catch-up or `84/244` while verifying a partial consumer index).

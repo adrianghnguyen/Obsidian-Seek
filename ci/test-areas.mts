@@ -93,6 +93,7 @@ export const CI_TEST_AREAS = {
         'src/render/passage.test.ts',
         'src/render/result-aliases.test.ts',
         'src/render/snippet.test.ts',
+        'src/render/telescope-preview.test.ts',
         'src/search/bm25-boosts.test.ts',
         'src/search/bm25-incremental.test.ts',
         'src/search/bm25-persist.test.ts',

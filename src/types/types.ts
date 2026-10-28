@@ -560,6 +560,12 @@ export interface SeekSettings {
     // Applied on next modal open — see snippet.ts.
     snippetPreview: SnippetPreview;
 
+    // Telescope preview: read-only note pane beside the result list (lite DOM,
+    // vault cachedRead). ON by default on desktop; mobile installs default OFF
+    // unless the user enables this in Settings → Display. Remap “Search: Toggle
+    // preview column” under Settings → Hotkeys (default Ctrl/Cmd+P).
+    telescopePreviewEnabled: boolean;
+
     // Search modal width on desktop/tablet (phones keep full-width). Applied on
     // next open via CSS vars — see search-modal-size.ts.
     searchModalWidth: SearchModalWidth;
@@ -704,6 +710,7 @@ export const DEFAULT_SETTINGS: SeekSettings = {
     showResultAliases: true,   // ON: show frontmatter aliases on result rows (truncated per resultAliasLimit)
     resultAliasLimit: 3,       // max aliases before "+N more"; 0 = show all
     snippetPreview: 'compact', // 1-line / 200-char window; standard=3/400, expanded=6/800
+    telescopePreviewEnabled: true,
     searchModalWidth: 'default',   // desktop/tablet modal width preset
     searchModalHeight: 'default',  // desktop modal height preset
     altOpenLocation: 'tab',    // schema compat with upstream; fork open UX uses OpenTarget modifiers
