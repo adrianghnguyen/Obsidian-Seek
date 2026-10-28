@@ -2,12 +2,10 @@
 // Desktop and tablet only — phones keep the full-width keyboard-aware shell.
 
 import type { SearchModalHeight, SearchModalWidth } from '../types/types';
-
-const WIDTH_PX: Record<SearchModalWidth, number> = {
-    default: 640,
-    wide: 800,
-    'extra-wide': 960,
-};
+import {
+    clampSearchModalWidthPx,
+    searchModalWidthEnumToPx,
+} from './telescope-layout';
 
 const HEIGHT_PRESETS: Record<SearchModalHeight, { maxHeight: string; marginTop: string }> = {
     default: { maxHeight: '74vh', marginTop: '11vh' },
@@ -19,35 +17,51 @@ const HEIGHT_PRESETS: Record<SearchModalHeight, { maxHeight: string; marginTop: 
 const TABLET_MIN_WIDTH_PX = 820;
 
 export function resolveSearchModalWidthPx(
-    width: SearchModalWidth,
+    widthPx: number,
     isTablet: boolean,
 ): number {
-    const base = WIDTH_PX[width] ?? WIDTH_PX.default;
+    const base = clampSearchModalWidthPx(widthPx);
     return isTablet ? Math.max(base, TABLET_MIN_WIDTH_PX) : base;
 }
 
-export function applySearchModalSize(
-    modalEl: HTMLElement,
+/** @deprecated Use resolveSearchModalWidthPx with px from settings. */
+export function resolveSearchModalWidthPxFromEnum(
     width: SearchModalWidth,
+    isTablet: boolean,
+): number {
+    return resolveSearchModalWidthPx(searchModalWidthEnumToPx(width), isTablet);
+}
+
+export function applySearchModalSizePx(
+    modalEl: HTMLElement,
+    widthPx: number,
     height: SearchModalHeight,
     opts: { isPhone: boolean; isTablet: boolean },
 ): void {
     if (opts.isPhone) return;
 
-    const widthPx = resolveSearchModalWidthPx(width, opts.isTablet);
+    const widthResolved = resolveSearchModalWidthPx(widthPx, opts.isTablet);
     const h = HEIGHT_PRESETS[height] ?? HEIGHT_PRESETS.default;
     const maxWidth = opts.isTablet ? '90vw' : '94vw';
 
-    // CSS vars for styles.css; inline dimensions too so size settings survive a
-    // stale plugin stylesheet until Obsidian fully reloads CSS on plugin:reload.
-    modalEl.style.setProperty('--seek-modal-width', `${widthPx}px`);
+    modalEl.style.setProperty('--seek-modal-width', `${widthResolved}px`);
     modalEl.style.setProperty('--seek-modal-max-height', h.maxHeight);
     modalEl.style.setProperty('--seek-modal-margin-top', h.marginTop);
-    modalEl.style.width = `${widthPx}px`;
+    modalEl.style.width = `${widthResolved}px`;
     modalEl.style.maxWidth = maxWidth;
     modalEl.style.maxHeight = h.maxHeight;
     modalEl.style.marginTop = h.marginTop;
 
     const content = modalEl.querySelector('.modal-content') as HTMLElement | null;
     if (content) content.style.maxHeight = h.maxHeight;
+}
+
+/** @deprecated Use applySearchModalSizePx. */
+export function applySearchModalSize(
+    modalEl: HTMLElement,
+    width: SearchModalWidth,
+    height: SearchModalHeight,
+    opts: { isPhone: boolean; isTablet: boolean },
+): void {
+    applySearchModalSizePx(modalEl, searchModalWidthEnumToPx(width), height, opts);
 }

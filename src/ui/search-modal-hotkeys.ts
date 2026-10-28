@@ -135,7 +135,7 @@ export const SEARCH_MODAL_COMMANDS: readonly SearchModalCommandSpec[] = [
         name: 'Search: Cycle preview layout',
         action: 'cycle-telescope-layout',
         hotkeys: [{ modifiers: ['Mod', 'Shift'], key: 'P' }],
-        footerLabel: 'cycle layout',
+        footerLabel: 'cycle layout presets',
     },
     {
         id: 'search-fill-autosuggest',

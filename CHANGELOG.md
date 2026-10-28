@@ -4,6 +4,11 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Changed
+
+- **Search modal width slider.** Settings → Display replaces the width dropdown with a 400–960px slider (snap: Default 640 · Wide 800 · Extra wide 960). Applies live while search is open when possible.
+- **Telescope preview column slider.** Settings → Display → **Telescope preview column width** sets how much horizontal space the preview column uses inside the modal (snap: List 35% · Balanced 45% · Even 50% · Reading 60%). The old combined layout dropdown is removed. Ctrl/Cmd+Shift+P still cycles the four layout presets (both sliders).
+
 ### Fixed
 
 - **Small catch-up guard (status bar).** Unified `catch-up-presentation` module drives quiet green-dot chrome (`classifyCatchUpPresentation`) and pass-scoped file counts (`shouldPreferPassCountsOverCoverage`, including tiny passes when job kind is missing). Prevents vault coverage fractions during single-file and sub-1% catch-up.
