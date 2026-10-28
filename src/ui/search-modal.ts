@@ -2047,6 +2047,7 @@ export class SeekSearchModal extends Modal {
             anchorLine,
             terms,
             collapseFrontmatter: this.settings.telescopePreviewCollapseFrontmatter,
+            depth: this.settings.telescopePreviewDepth,
         });
     }
 

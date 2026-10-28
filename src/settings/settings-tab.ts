@@ -1785,6 +1785,22 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                     await this.save();
                 }));
 
+        const telescopeDepthLabels: Record<typeof this.s.telescopePreviewDepth, string> = {
+            compact: 'Compact (faster, less note text)',
+            standard: 'Standard',
+            large: 'Large (more note text, heavier DOM)',
+        };
+        const telescopeDepthSetting = new Setting(containerEl)
+            .setName('Telescope preview depth')
+            .setDesc('Caps lines, highlights, and link/tag styling in the preview pane. Compact is best on huge notes or slower devices; Large matches the original beta preview limits.')
+            .addDropdown(dd => dd
+                .addOptions(telescopeDepthLabels)
+                .setValue(this.s.telescopePreviewDepth)
+                .onChange(async v => {
+                    this.s.telescopePreviewDepth = v as typeof this.s.telescopePreviewDepth;
+                    await this.save();
+                }));
+
         const telescopeCollapseFm = new Setting(containerEl)
             .setName('Collapse front matter in preview')
             .setDesc('When telescope preview is on, notes with YAML front matter (--- blocks) hide that block until you click “Front matter” in the preview pane. Your expand/collapse choice applies to every result until you close search.')
@@ -1798,6 +1814,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         const syncTelescopePreviewSubsettings = () => {
             const on = this.s.telescopePreviewEnabled;
             telescopeLayoutSetting.settingEl.toggleClass('is-disabled', !on);
+            telescopeDepthSetting.settingEl.toggleClass('is-disabled', !on);
             telescopeCollapseFm.settingEl.toggleClass('is-disabled', !on);
         };
         syncTelescopePreviewSubsettings();
