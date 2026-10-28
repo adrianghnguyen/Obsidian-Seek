@@ -272,6 +272,23 @@ describe('Ready means searchable (status contract)', () => {
         expect(isIndexWaitKind(r.loadSpec.kind)).toBe(false);
     });
 
+    it('1-file catch-up: all surfaces stay Ready without vault-scale progress', () => {
+        const snap: BootSnapshot = {
+            label: 'single-note edit',
+            inventoryChunks: 900,
+            inventoryFiles: 244,
+            warmPhase: null,
+            goodEnough: true,
+            catchUpRunning: true,
+            job: { done: 0, total: 1, kind: 'catchup' },
+        };
+        const r = evaluateSnapshot(snap);
+        expect(r.uiHealth).toBe('ok');
+        expect(r.footer.kind).toBe('up-to-date');
+        expect(r.footer.badgeCount).toBeUndefined();
+        expect(r.loadSpec.kind).toBe('resting');
+    });
+
     it('catch-up at or above 1% of indexed files uses yellow Updating chrome', () => {
         const snap: BootSnapshot = {
             label: 'large catch-up pass',

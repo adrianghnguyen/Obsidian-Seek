@@ -134,34 +134,16 @@ export type IndexFooterTone = 'info' | 'accent' | 'bad' | 'warn' | 'mid' | 'good
 /** Shared by status bar, settings card, modal, and CLI — one precedence tree. */
 export type IndexUiStatus = 'none' | 'starting' | 'restoring' | 'ok' | 'updating' | 'indexing' | 'error' | 'locked' | 'stuck';
 
-/** Boundary between green quiet catch-up and yellow Updating (fraction of indexed files). */
-export const MINOR_CATCHUP_FRACTION = 0.01;
+import {
+    classifyCatchUpPresentation,
+} from './catch-up-presentation';
 
-export interface CatchUpPresentationInput {
-    goodEnough?: boolean;
-    inventoryFiles: number | null;
-    job?: { done: number; total: number; kind?: 'full' | 'delta' | 'catchup' } | null;
-    /** Catch-up / flush / reindex embed activity, or an active coordinator job. */
-    indexingActive: boolean;
-}
-
-export type CatchUpPresentation = 'quiet' | 'moderate';
-
-/**
- * Classify catch-up/delta passes on a good-enough index. Full reindex and
- * non-catch-up jobs return null (callers fall through to indexing chrome).
- */
-export function classifyCatchUpPresentation(input: CatchUpPresentationInput): CatchUpPresentation | null {
-    if (!input.indexingActive) return null;
-    const job = input.job;
-    if (!job || job.total <= 0) return null;
-    if (!input.goodEnough) return null;
-    const inventory = input.inventoryFiles ?? 0;
-    if (inventory <= 0) return null;
-    if (job.kind === 'full') return null;
-    if (job.kind != null && job.kind !== 'catchup' && job.kind !== 'delta') return null;
-    return job.total / inventory < MINOR_CATCHUP_FRACTION ? 'quiet' : 'moderate';
-}
+export {
+    MINOR_CATCHUP_FRACTION,
+    classifyCatchUpPresentation,
+    type CatchUpPresentation,
+    type CatchUpPresentationInput,
+} from './catch-up-presentation';
 
 export const QUIET_CATCHUP_HINT = 'Re-embedding a few edited notes.';
 

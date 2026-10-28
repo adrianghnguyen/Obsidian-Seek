@@ -71,4 +71,19 @@ describe('index status help / tooltips', () => {
         expect(quiet.help).toBe(INDEX_STATUS_HELP['quiet-catchup']);
         expect(quiet.compact).toBe(INDEX_STATUS_COPY.ok.compact);
     });
+
+    it('1-file catch-up on a consumer-sized vault is quiet Ready, not vault fractions', () => {
+        const report = IndexStatusReporter.compute({
+            ...baseInput,
+            inventoryFiles: 244,
+            searchableChunks: 800,
+            indexing: true,
+            jobKind: 'catchup',
+            job: { done: 0, total: 1 },
+        });
+        expect(report.quietCatchUp).toBe(true);
+        expect(report.health).toBe('ok');
+        expect(report.compact).toBe(INDEX_STATUS_COPY.ok.compact);
+        expect(report.progress.units).toBeNull();
+    });
 });

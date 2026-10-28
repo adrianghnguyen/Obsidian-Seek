@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Fixed
+
+- **Small catch-up guard (status bar).** Unified `catch-up-presentation` module drives quiet green-dot chrome (`classifyCatchUpPresentation`) and pass-scoped file counts (`shouldPreferPassCountsOverCoverage`, including tiny passes when job kind is missing). Prevents vault coverage fractions during single-file and sub-1% catch-up.
+
 ## 1.16.0-beta.2
 
 Telescope preview UX: front matter collapse, layout cycling, and depth presets.
