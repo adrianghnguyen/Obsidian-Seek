@@ -207,7 +207,7 @@ export class TelescopePreviewPane {
     private paintRaf: number | null = null;
     private pending: PreviewPaintOptions | null = null;
     private readonly readNote: (path: string) => Promise<string>;
-    private lastNotePath: string | null = null;
+    /** Session expand/collapse while collapseFrontmatter is ON; kept across note changes until clear(). */
     private frontmatterExpanded = false;
     private lastRender: { text: string; opts: PreviewPaintOptions } | null = null;
 
@@ -229,7 +229,6 @@ export class TelescopePreviewPane {
             this.paintRaf = null;
         }
         this.pending = null;
-        this.lastNotePath = null;
         this.frontmatterExpanded = false;
         this.lastRender = null;
         this.bodyEl.empty();
@@ -289,10 +288,6 @@ export class TelescopePreviewPane {
             this.bodyEl.createDiv({ cls: 'seek-preview-empty', text: 'No preview' });
             this.lastRender = null;
             return;
-        }
-        if (opts.notePath !== this.lastNotePath) {
-            this.lastNotePath = opts.notePath;
-            this.frontmatterExpanded = false;
         }
         this.lastRender = { text, opts };
 

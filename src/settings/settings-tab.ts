@@ -1773,7 +1773,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
 
         new Setting(containerEl)
             .setName('Collapse front matter in preview')
-            .setDesc('When telescope preview is on, notes with YAML front matter (--- blocks) hide that block until you click “Front matter” in the preview pane.')
+            .setDesc('When telescope preview is on, notes with YAML front matter (--- blocks) hide that block until you click “Front matter” in the preview pane. Your expand/collapse choice applies to every result until you close search.')
             .addToggle(t => t
                 .setValue(this.s.telescopePreviewCollapseFrontmatter)
                 .onChange(async v => {

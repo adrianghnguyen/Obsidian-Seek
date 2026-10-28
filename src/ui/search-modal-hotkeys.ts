@@ -15,6 +15,7 @@ export type SearchModalAction =
     | 'insert-link-alias'
     | 'expand-snippet'
     | 'toggle-preview-column'
+    | 'cycle-telescope-layout'
     | 'fill-autosuggest'
     | 'close';
 
@@ -128,6 +129,13 @@ export const SEARCH_MODAL_COMMANDS: readonly SearchModalCommandSpec[] = [
         action: 'toggle-preview-column',
         hotkeys: [{ modifiers: ['Mod'], key: 'P' }],
         footerLabel: 'toggle preview',
+    },
+    {
+        id: 'search-cycle-telescope-layout',
+        name: 'Search: Cycle preview layout',
+        action: 'cycle-telescope-layout',
+        hotkeys: [{ modifiers: ['Mod', 'Shift'], key: 'P' }],
+        footerLabel: 'cycle layout',
     },
     {
         id: 'search-fill-autosuggest',
@@ -366,7 +374,11 @@ function hintForAction(app: App, pluginId: string, action: SearchModalAction): F
     };
 }
 
-export function searchModalFooterHints(app: App, pluginId: string): FooterHotkeyHint[] {
+export function searchModalFooterHints(
+    app: App,
+    pluginId: string,
+    opts?: { telescopePreview?: boolean },
+): FooterHotkeyHint[] {
     const navigateKeys = [
         ...capsForAction(app, pluginId, 'navigate-up'),
         ...capsForAction(app, pluginId, 'navigate-down'),
@@ -375,10 +387,15 @@ export function searchModalFooterHints(app: App, pluginId: string): FooterHotkey
     if (navigateKeys.length > 0) {
         hints.push({ keys: navigateKeys, label: 'navigate results' });
     }
-    for (const action of [
+    const coreActions = [
         'open', 'open-tab', 'open-split', 'fill-autosuggest', 'expand-snippet', 'toggle-preview-column',
-    ] as const) {
+    ] as const;
+    for (const action of coreActions) {
         const h = hintForAction(app, pluginId, action);
+        if (h) hints.push(h);
+    }
+    if (opts?.telescopePreview) {
+        const h = hintForAction(app, pluginId, 'cycle-telescope-layout');
         if (h) hints.push(h);
     }
     if (!Platform.isMobile) {
