@@ -54,12 +54,12 @@ describe('telescope preview column pct', () => {
         expect(clampTelescopePreviewColumnPct(10)).toBe(25);
         expect(clampTelescopePreviewColumnPct(90)).toBe(90);
         expect(clampTelescopePreviewColumnPct(99)).toBe(95);
-        expect(snapTelescopePreviewColumnPct(36)).toBe(35);
+        expect(snapTelescopePreviewColumnPct(26)).toBe(25);
         expect(snapTelescopePreviewColumnPct(48)).toBe(50);
-        expect(telescopePreviewLayoutToColumnPct('reading')).toBe(60);
-        const path = [25, 33, 35, 43, 45, 48, 50, 58, 60, 80, 95];
+        expect(telescopePreviewLayoutToColumnPct('reading')).toBe(80);
+        const path = [25, 33, 38, 40, 48, 50, 78, 80, 90, 95];
         expect(path.map(snapTelescopePreviewColumnPct)).toEqual([
-            25, 35, 35, 45, 45, 50, 50, 60, 60, 80, 95,
+            25, 33, 40, 40, 50, 50, 80, 80, 90, 95,
         ]);
     });
 });
@@ -73,7 +73,7 @@ describe('telescope layout presets', () => {
     });
 
     it('telescopeLayoutPresetById resolves known presets', () => {
-        expect(telescopeLayoutPresetById('reading').previewColumnPct).toBe(60);
+        expect(telescopeLayoutPresetById('reading').previewColumnPct).toBe(80);
         expect(telescopeLayoutPresetById('missing' as 'balanced').id).toBe('balanced');
     });
 
@@ -89,8 +89,8 @@ describe('telescope layout presets', () => {
     });
 
     it('matches preview share even when modal width disagrees', () => {
-        expect(telescopeLayoutCycleLabel(45)).toBe('Balanced');
-        expect(telescopeLayoutCycleIndexForSettings(35)).toBe(
+        expect(telescopeLayoutCycleLabel(40)).toBe('Balanced');
+        expect(telescopeLayoutCycleIndexForSettings(25)).toBe(
             TELESCOPE_LAYOUT_PRESETS.findIndex((p) => p.id === 'list'),
         );
     });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+    applySearchModalWidthPresetSlot,
     cycleSearchModalWidthPx,
     DEFAULT_SEARCH_MODAL_WIDTH_PRESETS_PX,
     normalizeSearchModalWidthPresetsPx,
@@ -36,5 +37,20 @@ describe('search modal width presets', () => {
         expect(searchModalWidthPresetCycleLabel(800, DEFAULT_SEARCH_MODAL_WIDTH_PRESETS_PX)).toBe(
             'Width · Default (800)',
         );
+    });
+
+    it('updates live width only when editing the active preset slot', () => {
+        expect(applySearchModalWidthPresetSlot(0, 500, 640, DEFAULT_SEARCH_MODAL_WIDTH_PRESETS_PX)).toEqual({
+            presets: [500, 800, 960],
+            currentWidthPx: 500,
+        });
+        expect(applySearchModalWidthPresetSlot(2, 1200, 640, DEFAULT_SEARCH_MODAL_WIDTH_PRESETS_PX)).toEqual({
+            presets: [640, 800, 1200],
+            currentWidthPx: 640,
+        });
+        expect(applySearchModalWidthPresetSlot(1, 700, 555, DEFAULT_SEARCH_MODAL_WIDTH_PRESETS_PX)).toEqual({
+            presets: [640, 700, 960],
+            currentWidthPx: 555,
+        });
     });
 });
