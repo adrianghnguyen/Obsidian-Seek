@@ -3,6 +3,7 @@ import {
     nextTelescopeLayoutIndex,
     TELESCOPE_LAYOUT_PRESETS,
     telescopeLayoutPreset,
+    telescopeLayoutPresetById,
 } from './telescope-layout';
 
 describe('telescope-layout', () => {
@@ -10,6 +11,11 @@ describe('telescope-layout', () => {
         const n = TELESCOPE_LAYOUT_PRESETS.length;
         expect(nextTelescopeLayoutIndex(0)).toBe(1 % n);
         expect(nextTelescopeLayoutIndex(n - 1)).toBe(0);
+    });
+
+    it('telescopeLayoutPresetById resolves known presets', () => {
+        expect(telescopeLayoutPresetById('reading').resultsPercent).toBe(40);
+        expect(telescopeLayoutPresetById('missing' as 'balanced').id).toBe('balanced');
     });
 
     it('telescopeLayoutPreset wraps negative and oversized indices', () => {

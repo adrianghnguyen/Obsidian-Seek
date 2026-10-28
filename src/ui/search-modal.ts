@@ -16,8 +16,11 @@ import { TelescopePreviewPane, telescopeQueryTerms } from '../render/telescope-p
 import {
     applyTelescopeLayout,
     nextTelescopeLayoutIndex,
-    telescopeLayoutPreset,
+    TELESCOPE_LAYOUT_PRESETS,
+    telescopeLayoutIndexForId,
+    telescopeLayoutPresetById,
 } from './telescope-layout';
+import type { TelescopePreviewLayout } from '../types/types';
 import type { SearchOrchestrator } from '../search/search';
 import type { SeekLogger } from '../diagnostics/logger';
 import { ENGLISH_STOPWORDS, distinctQueryTerms, foldForMatch } from '../search/bm25';
@@ -242,8 +245,6 @@ export class SeekSearchModal extends Modal {
     private telescopePreview: TelescopePreviewPane | null = null;
     /** Session-only hide via Ctrl/Cmd+P (settings still ON). */
     private previewColumnHidden = false;
-    /** Session index into TELESCOPE_LAYOUT_PRESETS (modal width + split). */
-    private telescopeLayoutIndex = 0;
     private previewLayoutCycleBtn: HTMLButtonElement | null = null;
     // Fixed-position container for the version-stale banner, between the field and the
     // results. Rendered into (empty + refill) so re-renders keep their place; collapses
@@ -402,6 +403,7 @@ export class SeekSearchModal extends Modal {
         // Notifies the plugin when this modal becomes the active search surface
         // (so remappable commands' checkCallbacks can target it).
         private onActiveChange?: (active: boolean) => void,
+        private persistSettings?: () => Promise<void>,
     ) {
         super(app);
         this.orchestrator = orchestrator;
@@ -484,7 +486,6 @@ export class SeekSearchModal extends Modal {
         this.renderIndexBanner();
 
         this.previewColumnHidden = false;
-        this.telescopeLayoutIndex = 0;
         this.previewLayoutCycleBtn = null;
         this.splitEl = contentEl.createDiv({ cls: 'seek-modal-split' });
         this.resultsEl = this.splitEl.createDiv({ cls: 'seek-results' });
@@ -1994,13 +1995,16 @@ export class SeekSearchModal extends Modal {
     /** Cycles modal width + results/preview split (session-only; telescope preview on). */
     private cycleTelescopeLayout(): void {
         if (!this.settings.telescopePreviewEnabled || !this.telescopePreview) return;
-        this.telescopeLayoutIndex = nextTelescopeLayoutIndex(this.telescopeLayoutIndex);
+        const idx = telescopeLayoutIndexForId(this.settings.telescopePreviewLayout);
+        const nextIdx = nextTelescopeLayoutIndex(idx);
+        this.settings.telescopePreviewLayout = TELESCOPE_LAYOUT_PRESETS[nextIdx]!.id as TelescopePreviewLayout;
+        void this.persistSettings?.();
         this.applyTelescopeLayoutToModal();
     }
 
     private applyTelescopeLayoutToModal(): void {
         if (!this.settings.telescopePreviewEnabled) return;
-        const preset = telescopeLayoutPreset(this.telescopeLayoutIndex);
+        const preset = telescopeLayoutPresetById(this.settings.telescopePreviewLayout);
         applyTelescopeLayout(
             this.modalEl,
             preset,
@@ -2016,7 +2020,7 @@ export class SeekSearchModal extends Modal {
     private updatePreviewLayoutCycleLabel(): void {
         const btn = this.previewLayoutCycleBtn;
         if (!btn) return;
-        const preset = telescopeLayoutPreset(this.telescopeLayoutIndex);
+        const preset = telescopeLayoutPresetById(this.settings.telescopePreviewLayout);
         const previewPct = 100 - preset.resultsPercent;
         btn.setText(preset.label);
         btn.setAttr(

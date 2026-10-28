@@ -567,6 +567,8 @@ export interface SeekSettings {
     telescopePreviewEnabled: boolean;
     /** When ON, YAML front matter at the top of preview notes starts collapsed (click to expand). */
     telescopePreviewCollapseFrontmatter: boolean;
+    /** Modal width + results/preview split while telescope preview is shown — see telescope-layout.ts. */
+    telescopePreviewLayout: TelescopePreviewLayout;
 
     // Search modal width on desktop/tablet (phones keep full-width). Applied on
     // next open via CSS vars — see search-modal-size.ts.
@@ -678,6 +680,7 @@ export type SidecarIndexLocation = 'config' | 'visible';
 export type SearchModalWidth = 'default' | 'wide' | 'extra-wide';
 export type SearchModalHeight = 'default' | 'tall' | 'extra-tall';
 export type SnippetPreview = 'compact' | 'standard' | 'expanded';
+export type TelescopePreviewLayout = 'balanced' | 'even' | 'reading' | 'list';
 
 export const DEFAULT_SETTINGS: SeekSettings = {
     denseWeight: 0.85,         // BOUND-NORM scale dense weight; mirrors DEFAULT_RANKING_CONFIG.alpha. Raised 0.80→0.85 (2026-06-27 re-eval): de-franken made BM25 more assertive, so a fixed α=0.80 over-weighted lexical; 0.85 is a cross-corpus win (Example Vault flat-to-+, BEIR +0.01–0.02). Migrated via rev 8. (NOT the 0.92 empirical-max point)
@@ -714,6 +717,7 @@ export const DEFAULT_SETTINGS: SeekSettings = {
     snippetPreview: 'compact', // 1-line / 200-char window; standard=3/400, expanded=6/800
     telescopePreviewEnabled: true,
     telescopePreviewCollapseFrontmatter: true,
+    telescopePreviewLayout: 'balanced',
     searchModalWidth: 'default',   // desktop/tablet modal width preset
     searchModalHeight: 'default',  // desktop modal height preset
     altOpenLocation: 'tab',    // schema compat with upstream; fork open UX uses OpenTarget modifiers

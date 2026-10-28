@@ -1,6 +1,6 @@
 // Session layout presets for the search modal when the telescope preview column is on.
 
-import type { SearchModalHeight, SearchModalWidth } from '../types/types';
+import type { SearchModalHeight, SearchModalWidth, TelescopePreviewLayout } from '../types/types';
 import { applySearchModalSize } from './search-modal-size';
 
 /** One modal width + results/preview share while telescope preview is visible. */
@@ -19,6 +19,33 @@ export const TELESCOPE_LAYOUT_PRESETS: readonly TelescopeLayoutPreset[] = [
     { id: 'reading', label: 'Reading', modalWidth: 'extra-wide', resultsPercent: 40 },
     { id: 'list', label: 'List', modalWidth: 'default', resultsPercent: 65 },
 ] as const;
+
+const MODAL_WIDTH_PX: Record<SearchModalWidth, number> = {
+    default: 640,
+    wide: 800,
+    'extra-wide': 960,
+};
+
+/** Dropdown labels for Settings → Display (modal width + preview share). */
+export function telescopePreviewLayoutSettingLabels(): Record<TelescopePreviewLayout, string> {
+    const out = {} as Record<TelescopePreviewLayout, string>;
+    for (const p of TELESCOPE_LAYOUT_PRESETS) {
+        const id = p.id as TelescopePreviewLayout;
+        const previewPct = 100 - p.resultsPercent;
+        const w = MODAL_WIDTH_PX[p.modalWidth];
+        out[id] = `${p.label} — ${w}px modal, ${previewPct}% preview`;
+    }
+    return out;
+}
+
+export function telescopeLayoutPresetById(id: TelescopePreviewLayout): TelescopeLayoutPreset {
+    return TELESCOPE_LAYOUT_PRESETS.find((p) => p.id === id) ?? TELESCOPE_LAYOUT_PRESETS[0]!;
+}
+
+export function telescopeLayoutIndexForId(id: TelescopePreviewLayout): number {
+    const idx = TELESCOPE_LAYOUT_PRESETS.findIndex((p) => p.id === id);
+    return idx >= 0 ? idx : 0;
+}
 
 export function nextTelescopeLayoutIndex(current: number): number {
     if (TELESCOPE_LAYOUT_PRESETS.length === 0) return 0;
