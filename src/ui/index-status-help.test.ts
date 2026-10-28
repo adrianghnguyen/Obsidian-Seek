@@ -58,6 +58,7 @@ describe('index status help / tooltips', () => {
         expect(resolveIndexStatusHelpForMode('full-reindex')).toBe(INDEX_STATUS_HELP['full-reindex']);
         expect(resolveIndexStatusHelpForMode('verifying')).toBe(INDEX_STATUS_HELP.verifying);
         expect(resolveIndexStatusHelpForMode('ok', true)).toBe(INDEX_STATUS_HELP['quiet-catchup']);
+        expect(resolveIndexStatusHelpForMode('catching-up', true)).toBe(INDEX_STATUS_HELP['quiet-catchup']);
     });
 
     it('quiet catch-up help is distinct from updating copy', () => {

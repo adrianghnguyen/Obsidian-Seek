@@ -31,6 +31,15 @@
 // so the modal renders the same thing everywhere (the reindex itself lives behind the
 // Settings affordance, which owns any platform-specific guardrails).
 
+import { classifyCatchUpPresentation } from './catch-up-presentation';
+
+export {
+    MINOR_CATCHUP_FRACTION,
+    classifyCatchUpPresentation,
+    type CatchUpPresentation,
+    type CatchUpPresentationInput,
+} from './catch-up-presentation';
+
 export type DegradedReason = 'version' | 'drift' | 'peer-ahead' | 'stuck' | null;
 export type IndexHealth = 'healthy' | 'recovering' | 'degraded';
 
@@ -133,17 +142,6 @@ export type IndexFooterKind = 'restoring' | 'starting' | 'error' | 'indexing' | 
 export type IndexFooterTone = 'info' | 'accent' | 'bad' | 'warn' | 'mid' | 'good';
 /** Shared by status bar, settings card, modal, and CLI — one precedence tree. */
 export type IndexUiStatus = 'none' | 'starting' | 'restoring' | 'ok' | 'updating' | 'indexing' | 'error' | 'locked' | 'stuck';
-
-import {
-    classifyCatchUpPresentation,
-} from './catch-up-presentation';
-
-export {
-    MINOR_CATCHUP_FRACTION,
-    classifyCatchUpPresentation,
-    type CatchUpPresentation,
-    type CatchUpPresentationInput,
-} from './catch-up-presentation';
 
 export const QUIET_CATCHUP_HINT = 'Re-embedding a few edited notes.';
 

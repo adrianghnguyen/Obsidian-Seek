@@ -7,6 +7,7 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 ### Fixed
 
 - **Small catch-up guard (status bar).** Unified `catch-up-presentation` module drives quiet green-dot chrome (`classifyCatchUpPresentation`) and pass-scoped file counts (`shouldPreferPassCountsOverCoverage`, including tiny passes when job kind is missing). Prevents vault coverage fractions during single-file and sub-1% catch-up.
+- **Settings Index help visibility.** Status help renders below the metrics row (full card width) so it is not squeezed beside the health column; quiet catch-up always uses the `quiet-catchup` help string.
 
 ## 1.16.0-beta.2
 

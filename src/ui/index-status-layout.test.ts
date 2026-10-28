@@ -112,6 +112,8 @@ function paintSettingsCard(report: ReturnType<typeof hydrateReport>, extra?: { h
         health: extra?.health ?? report.health,
         mode: report.mode,
         label: report.label,
+        help: report.help,
+        quietCatchUp: report.quietCatchUp,
         hydrateProgress: report.hydrateProgress,
         progress: report.progress,
         percent: report.progress.units?.percent ?? report.hydrateProgress?.percent,
@@ -245,5 +247,24 @@ describe('Settings Index card', () => {
         expect(stuck.heading).toBe(INDEX_STATUS_COPY.stuck.label);
         expect(indexing.heading).toBe(INDEX_STATUS_COPY.indexing.label);
         expect(restoring.heading).not.toMatch(/\d/);
+    });
+
+    it('shows reporter help as visible inline copy on the Settings card', () => {
+        const report = IndexStatusReporter.compute({
+            ...idle,
+            goodEnough: true,
+            inventoryFiles: 244,
+            indexing: true,
+            jobKind: 'catchup',
+            job: { done: 0, total: 1 },
+        });
+        expect(report.quietCatchUp).toBe(true);
+        const root = paintSettingsCard(report);
+        const helpEl = root.querySelector('.seek-status-help-text');
+        expect(helpEl).not.toBeNull();
+        expect(helpEl?.textContent).toBe(report.help);
+        expect(textOf(root)).toContain(report.help.slice(0, 32));
+        expect(root.querySelector('.seek-status-context-hint')?.textContent)
+            .toMatch(/Re-embedding a few edited notes/);
     });
 });
