@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.16.0-beta.1
+
+Beta: search-modal telescope preview column plus status-bar and accent fixes since 1.15.3.
+
 ### Added
 
 - **Telescope preview (search modal).** Optional read-only preview column beside ranked results — lightweight DOM from vault text (headings, wikilinks, tags, query marks), coalesced on selection with an LRU read cache. Default ON on desktop; phones default OFF until enabled in Settings → Display. Toggle the column while search is open with Ctrl/Cmd+P (remappable under Settings → Hotkeys).
