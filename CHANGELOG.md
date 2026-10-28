@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.16.0-beta.2
+
+Telescope preview UX: front matter collapse, layout cycling, and depth presets.
+
 ### Added
 
 - **Telescope preview — collapse front matter.** Settings → Display → **Collapse front matter in preview** (default ON) hides YAML `---` blocks behind a clickable **Front matter** control in the preview pane. Expand/collapse choice persists while you move between results in the same search session.
