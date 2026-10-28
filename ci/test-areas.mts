@@ -120,6 +120,7 @@ export const CI_TEST_AREAS = {
         'src/ui/search-modal-hotkeys.test.ts',
         'src/ui/search-modal-size.test.ts',
         'src/ui/search-modal-width-presets.test.ts',
+        'src/ui/telescope-preview-share-presets.test.ts',
         'src/ui/telescope-layout.test.ts',
         'src/ui/search-modal-tab-dispatch.test.ts',
         'src/ui/title-nav-coverage.test.ts',

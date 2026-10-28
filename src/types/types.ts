@@ -569,6 +569,8 @@ export interface SeekSettings {
     telescopePreviewCollapseFrontmatter: boolean;
     /** Horizontal share of the preview column when telescope preview is on (% of modal width). */
     telescopePreviewColumnPct: number;
+    /** Four independently configurable preview-column-share cycle targets (%). Not total modal width. */
+    telescopePreviewColumnPresetsPct: [number, number, number, number];
     /** How much note text the telescope preview renders (line/mark/style caps) — see telescope-preview.ts. */
     telescopePreviewDepth: TelescopePreviewDepth;
 
@@ -722,7 +724,8 @@ export const DEFAULT_SETTINGS: SeekSettings = {
     snippetPreview: 'compact', // 1-line / 200-char window; standard=3/400, expanded=6/800
     telescopePreviewEnabled: true,
     telescopePreviewCollapseFrontmatter: true,
-    telescopePreviewColumnPct: 45,
+    telescopePreviewColumnPct: 40,
+    telescopePreviewColumnPresetsPct: [25, 40, 50, 80],
     telescopePreviewDepth: 'large',
     searchModalWidthPx: 640,
     searchModalWidthPresetsPx: [640, 800, 960],

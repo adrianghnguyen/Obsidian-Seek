@@ -16,10 +16,6 @@ import { TelescopePreviewPane, telescopeQueryTerms } from '../render/telescope-p
 import {
     applyTelescopeLayout,
     clampTelescopePreviewColumnPct,
-    nextTelescopeLayoutIndex,
-    telescopeLayoutCycleIndexForSettings,
-    telescopeLayoutCycleLabel,
-    telescopeLayoutPreset,
 } from './telescope-layout';
 import type { SearchOrchestrator } from '../search/search';
 import type { SeekLogger } from '../diagnostics/logger';
@@ -45,6 +41,11 @@ import {
     cycleSearchModalWidthPx,
     searchModalWidthPresetCycleLabel,
 } from './search-modal-width-presets';
+import {
+    cycleTelescopePreviewSharePct,
+    telescopePreviewShareCycleLabel,
+    telescopePreviewSharePresetId,
+} from './telescope-preview-share-presets';
 import { matchTitleAlias, matchNamePrefix } from '../search/fusion';
 import type { SearchPartial } from '../types/types';
 import { dedupeAliasesAgainstBasename, sliceResultAliases } from '../render/result-aliases';
@@ -2033,10 +2034,11 @@ export class SeekSearchModal extends Modal {
     /** Cycles telescope preview column share only (total modal width unchanged). */
     private cycleTelescopeLayout(): void {
         if (!this.settings.telescopePreviewEnabled || !this.telescopePreview) return;
-        const idx = telescopeLayoutCycleIndexForSettings(this.settings.telescopePreviewColumnPct);
-        const nextIdx = nextTelescopeLayoutIndex(idx);
-        const preset = telescopeLayoutPreset(nextIdx);
-        this.settings.telescopePreviewColumnPct = preset.previewColumnPct;
+        const { nextPct } = cycleTelescopePreviewSharePct(
+            this.settings.telescopePreviewColumnPct,
+            this.settings.telescopePreviewColumnPresetsPct,
+        );
+        this.settings.telescopePreviewColumnPct = nextPct;
         void this.persistSettings?.();
         this.applyTelescopeLayoutToModal();
     }
@@ -2051,6 +2053,10 @@ export class SeekSearchModal extends Modal {
             {
                 isPhone: Platform.isMobile && !Platform.isTablet,
                 isTablet: Platform.isTablet,
+                layoutId: telescopePreviewSharePresetId(
+                    this.settings.telescopePreviewColumnPct,
+                    this.settings.telescopePreviewColumnPresetsPct,
+                ),
             },
         );
         this.updatePreviewLayoutCycleLabel();
@@ -2061,7 +2067,10 @@ export class SeekSearchModal extends Modal {
         if (!btn) return;
         const previewPct = clampTelescopePreviewColumnPct(this.settings.telescopePreviewColumnPct);
         const resultsPct = 100 - previewPct;
-        const label = telescopeLayoutCycleLabel(previewPct);
+        const label = telescopePreviewShareCycleLabel(
+            previewPct,
+            this.settings.telescopePreviewColumnPresetsPct,
+        );
         btn.setText(label);
         btn.setAttr(
             'aria-label',

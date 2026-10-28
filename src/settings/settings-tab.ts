@@ -20,9 +20,7 @@ import type SeekPlugin from '../main';
 import type { IndexStats, ModelStatus } from '../main';
 import type { SearchModalHeight, SnippetPreview } from '../types/types';
 import {
-    clampTelescopePreviewColumnPct,
     SEARCH_MODAL_WIDTH_MIN_PX,
-    snapTelescopePreviewColumnPct,
     TELESCOPE_PREVIEW_COLUMN_MAX_PCT,
     TELESCOPE_PREVIEW_COLUMN_MIN_PCT,
 } from '../ui/telescope-layout';
@@ -32,6 +30,12 @@ import {
     normalizeSearchModalWidthPresetsPx,
     type SearchModalWidthPresetIndex,
 } from '../ui/search-modal-width-presets';
+import {
+    TELESCOPE_PREVIEW_SHARE_PRESET_LABELS,
+    applyTelescopePreviewSharePresetSlot,
+    normalizeTelescopePreviewSharePresetsPct,
+    type TelescopePreviewSharePresetIndex,
+} from '../ui/telescope-preview-share-presets';
 import { DEFAULT_SETTINGS, MATCH_STRENGTH_MIN_NOTES } from '../types/types';
 import {
     INDEX_RECOVERY_NAME,
@@ -1728,12 +1732,12 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         this.s.searchModalWidthPresetsPx = normalizeSearchModalWidthPresetsPx(this.s.searchModalWidthPresetsPx);
         const modalWidthSetting = new Setting(containerEl)
             .setName('Search modal width')
-            .setClass('seek-modal-width-setting');
-        const presetRow = modalWidthSetting.controlEl.createDiv({ cls: 'seek-modal-width-presets' });
+            .setClass('seek-preset-number-setting');
+        const presetRow = modalWidthSetting.controlEl.createDiv({ cls: 'seek-preset-number-fields' });
         for (let i = 0; i < SEARCH_MODAL_WIDTH_PRESET_LABELS.length; i++) {
             const slot = i as SearchModalWidthPresetIndex;
             const name = SEARCH_MODAL_WIDTH_PRESET_LABELS[slot]!;
-            const cell = presetRow.createDiv({ cls: 'seek-modal-width-preset' });
+            const cell = presetRow.createDiv({ cls: 'seek-preset-number-field' });
             cell.createEl('label', {
                 text: name.toLowerCase(),
                 attr: { for: `seek-modal-width-preset-${slot}` },
@@ -1814,17 +1818,53 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                     syncTelescopePreviewSubsettings();
                 }));
 
+        this.s.telescopePreviewColumnPresetsPct = normalizeTelescopePreviewSharePresetsPct(
+            this.s.telescopePreviewColumnPresetsPct,
+        );
         const telescopePreviewShareSetting = new Setting(containerEl)
-            .setName('Telescope preview column width')
-            .setDesc('Share of the modal for the preview column; the rest is the result list. Does not change total modal width (use Search modal width / footer Width).')
-            .addSlider(slider => slider
-                .setLimits(TELESCOPE_PREVIEW_COLUMN_MIN_PCT, TELESCOPE_PREVIEW_COLUMN_MAX_PCT, 1)
-                .setValue(clampTelescopePreviewColumnPct(this.s.telescopePreviewColumnPct))
-                .setDynamicTooltip()
-                .onChange(async v => {
-                    this.s.telescopePreviewColumnPct = snapTelescopePreviewColumnPct(v);
-                    await this.save();
-                }));
+            .setName('Telescope preview width')
+            .setClass('seek-preset-number-setting');
+        const previewPresetRow = telescopePreviewShareSetting.controlEl.createDiv({ cls: 'seek-preset-number-fields' });
+        for (let i = 0; i < TELESCOPE_PREVIEW_SHARE_PRESET_LABELS.length; i++) {
+            const slot = i as TelescopePreviewSharePresetIndex;
+            const name = TELESCOPE_PREVIEW_SHARE_PRESET_LABELS[slot]!;
+            const cell = previewPresetRow.createDiv({ cls: 'seek-preset-number-field' });
+            cell.createEl('label', {
+                text: name.toLowerCase(),
+                attr: { for: `seek-preview-share-preset-${slot}` },
+            });
+            const input = cell.createEl('input', {
+                type: 'number',
+                attr: {
+                    id: `seek-preview-share-preset-${slot}`,
+                    min: String(TELESCOPE_PREVIEW_COLUMN_MIN_PCT),
+                    max: String(TELESCOPE_PREVIEW_COLUMN_MAX_PCT),
+                    step: '1',
+                    inputmode: 'numeric',
+                    'aria-label': `${name} telescope preview column share percent`,
+                },
+            });
+            input.value = String(this.s.telescopePreviewColumnPresetsPct[slot]);
+            const commit = async () => {
+                const n = Number(input.value);
+                if (!Number.isFinite(n)) {
+                    input.value = String(this.s.telescopePreviewColumnPresetsPct[slot]);
+                    return;
+                }
+                const applied = applyTelescopePreviewSharePresetSlot(
+                    slot,
+                    n,
+                    this.s.telescopePreviewColumnPct,
+                    this.s.telescopePreviewColumnPresetsPct,
+                );
+                this.s.telescopePreviewColumnPresetsPct = applied.presets;
+                this.s.telescopePreviewColumnPct = applied.currentPct;
+                input.value = String(applied.presets[slot]);
+                await this.save();
+            };
+            input.addEventListener('change', () => void commit());
+            input.addEventListener('blur', () => void commit());
+        }
 
         const telescopeDepthLabels: Record<typeof this.s.telescopePreviewDepth, string> = {
             compact: 'Compact (faster, less note text)',

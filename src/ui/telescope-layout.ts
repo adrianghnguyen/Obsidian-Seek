@@ -26,12 +26,12 @@ export function searchModalWidthSliderMaxPx(): number {
 export const TELESCOPE_PREVIEW_COLUMN_MIN_PCT = 25;
 export const TELESCOPE_PREVIEW_COLUMN_MAX_PCT = 95;
 
-/** Preview column share snap targets (former layout presets). */
+/** Preview column share snap targets (Settings List / Balanced / Even / Reading). */
 export const TELESCOPE_PREVIEW_COLUMN_NOTCHES: readonly { pct: number; label: string }[] = [
-    { pct: 35, label: 'List' },
-    { pct: 45, label: 'Balanced' },
+    { pct: 25, label: 'List' },
+    { pct: 40, label: 'Balanced' },
     { pct: 50, label: 'Even' },
-    { pct: 60, label: 'Reading' },
+    { pct: 80, label: 'Reading' },
 ] as const;
 
 const WIDTH_SNAP_TOLERANCE_PX = 12;
@@ -47,10 +47,10 @@ export interface TelescopeLayoutPreset {
 }
 
 export const TELESCOPE_LAYOUT_PRESETS: readonly TelescopeLayoutPreset[] = [
-    { id: 'balanced', label: 'Balanced', modalWidthPx: 800, previewColumnPct: 45 },
+    { id: 'balanced', label: 'Balanced', modalWidthPx: 800, previewColumnPct: 40 },
     { id: 'even', label: 'Even', modalWidthPx: 960, previewColumnPct: 50 },
-    { id: 'reading', label: 'Reading', modalWidthPx: 960, previewColumnPct: 60 },
-    { id: 'list', label: 'List', modalWidthPx: 640, previewColumnPct: 35 },
+    { id: 'reading', label: 'Reading', modalWidthPx: 960, previewColumnPct: 80 },
+    { id: 'list', label: 'List', modalWidthPx: 640, previewColumnPct: 25 },
 ] as const;
 
 const LEGACY_MODAL_WIDTH_PX: Record<SearchModalWidth, number> = {
@@ -131,7 +131,7 @@ export function nextTelescopeLayoutIndex(current: number): number {
 export function telescopeLayoutPreset(index: number): TelescopeLayoutPreset {
     const n = TELESCOPE_LAYOUT_PRESETS.length;
     if (n === 0) {
-        return { id: 'fallback', label: 'Preview', modalWidthPx: 640, previewColumnPct: 45 };
+        return { id: 'fallback', label: 'Preview', modalWidthPx: 640, previewColumnPct: 40 };
     }
     const i = ((index % n) + n) % n;
     return TELESCOPE_LAYOUT_PRESETS[i]!;
@@ -185,7 +185,7 @@ export function applyTelescopeLayout(
     widthPx: number,
     previewColumnPct: number,
     height: SearchModalHeight,
-    opts: { isPhone: boolean; isTablet: boolean },
+    opts: { isPhone: boolean; isTablet: boolean; layoutId?: string },
 ): void {
     const previewPct = clampTelescopePreviewColumnPct(previewColumnPct);
     const resultsPct = 100 - previewPct;
@@ -195,7 +195,7 @@ export function applyTelescopeLayout(
     modalEl.style.setProperty('--seek-mobile-preview-pct', `${previewPct}%`);
     modalEl.setAttribute(
         'data-seek-telescope-layout',
-        telescopeLayoutPresetIdForSettings(previewPct),
+        opts.layoutId ?? telescopeLayoutPresetIdForSettings(previewPct),
     );
     applySearchModalSizePx(modalEl, widthPx, height, opts);
 }
