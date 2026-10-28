@@ -13,6 +13,14 @@ import type { ScoredChunk, SearchEntry, ClickEntry, SeekSettings } from '../type
 import { MATCH_STRENGTH_MIN_NOTES } from '../types/types';
 import { makeSnippet, sanitizeSnippet, SNIPPET_PREVIEW_LIMITS } from '../render/snippet';
 import { TelescopePreviewPane, telescopeQueryTerms } from '../render/telescope-preview';
+import {
+    applyTelescopeLayout,
+    nextTelescopeLayoutIndex,
+    TELESCOPE_LAYOUT_PRESETS,
+    telescopeLayoutIndexForId,
+    telescopeLayoutPresetById,
+} from './telescope-layout';
+import type { TelescopePreviewLayout } from '../types/types';
 import type { SearchOrchestrator } from '../search/search';
 import type { SeekLogger } from '../diagnostics/logger';
 import { ENGLISH_STOPWORDS, distinctQueryTerms, foldForMatch } from '../search/bm25';
@@ -237,6 +245,7 @@ export class SeekSearchModal extends Modal {
     private telescopePreview: TelescopePreviewPane | null = null;
     /** Session-only hide via Ctrl/Cmd+P (settings still ON). */
     private previewColumnHidden = false;
+    private previewLayoutCycleBtn: HTMLButtonElement | null = null;
     // Fixed-position container for the version-stale banner, between the field and the
     // results. Rendered into (empty + refill) so re-renders keep their place; collapses
     // to nothing via `.seek-banner-slot:empty { display: none }` when there's no banner.
@@ -394,6 +403,7 @@ export class SeekSearchModal extends Modal {
         // Notifies the plugin when this modal becomes the active search surface
         // (so remappable commands' checkCallbacks can target it).
         private onActiveChange?: (active: boolean) => void,
+        private persistSettings?: () => Promise<void>,
     ) {
         super(app);
         this.orchestrator = orchestrator;
@@ -476,14 +486,22 @@ export class SeekSearchModal extends Modal {
         this.renderIndexBanner();
 
         this.previewColumnHidden = false;
+        this.previewLayoutCycleBtn = null;
         this.splitEl = contentEl.createDiv({ cls: 'seek-modal-split' });
         this.resultsEl = this.splitEl.createDiv({ cls: 'seek-results' });
         this.resultsEl.tabIndex = -1;
         if (this.settings.telescopePreviewEnabled) {
             this.modalEl.addClass('seek-has-preview');
             this.previewColumnEl = this.splitEl.createDiv({ cls: 'seek-preview-column' });
-            this.previewColumnEl.createDiv({ cls: 'seek-preview-header', text: 'Preview' });
+            const previewHeader = this.previewColumnEl.createDiv({ cls: 'seek-preview-header' });
+            previewHeader.createSpan({ cls: 'seek-preview-header-title', text: 'Preview' });
+            this.previewLayoutCycleBtn = previewHeader.createEl('button', {
+                type: 'button',
+                cls: 'seek-preview-layout-cycle',
+            });
+            this.previewLayoutCycleBtn.addEventListener('click', () => this.cycleTelescopeLayout());
             this.previewScrollEl = this.previewColumnEl.createDiv({ cls: 'seek-preview-scroll' });
+            this.applyTelescopeLayoutToModal();
             this.telescopePreview = new TelescopePreviewPane(
                 this.previewScrollEl,
                 path => this.readNoteTextForPreview(path),
@@ -684,7 +702,9 @@ export class SeekSearchModal extends Modal {
                 const g = hints.createSpan({ cls: 'seek-foot-grp' });
                 build(g);
             };
-            for (const hint of searchModalFooterHints(this.app, this.pluginId)) {
+            for (const hint of searchModalFooterHints(this.app, this.pluginId, {
+                telescopePreview: this.settings.telescopePreviewEnabled,
+            })) {
                 grp(g => {
                     if (hint.shedClass) g.addClass(hint.shedClass);
                     for (const key of hint.keys) kbd(g, key);
@@ -1884,6 +1904,7 @@ export class SeekSearchModal extends Modal {
                 break;
             case 'expand-snippet': this.toggleSnippetExpand(); break;
             case 'toggle-preview-column': this.togglePreviewColumn(); break;
+            case 'cycle-telescope-layout': this.cycleTelescopeLayout(); break;
             case 'fill-autosuggest': this.field?.fillAutosuggest(); break;
             case 'close': this.close(); break;
         }
@@ -1971,6 +1992,43 @@ export class SeekSearchModal extends Modal {
         if (!this.previewColumnHidden) this.schedulePreviewPaint();
     }
 
+    /** Cycles modal width + results/preview split (session-only; telescope preview on). */
+    private cycleTelescopeLayout(): void {
+        if (!this.settings.telescopePreviewEnabled || !this.telescopePreview) return;
+        const idx = telescopeLayoutIndexForId(this.settings.telescopePreviewLayout);
+        const nextIdx = nextTelescopeLayoutIndex(idx);
+        this.settings.telescopePreviewLayout = TELESCOPE_LAYOUT_PRESETS[nextIdx]!.id as TelescopePreviewLayout;
+        void this.persistSettings?.();
+        this.applyTelescopeLayoutToModal();
+    }
+
+    private applyTelescopeLayoutToModal(): void {
+        if (!this.settings.telescopePreviewEnabled) return;
+        const preset = telescopeLayoutPresetById(this.settings.telescopePreviewLayout);
+        applyTelescopeLayout(
+            this.modalEl,
+            preset,
+            this.settings.searchModalHeight,
+            {
+                isPhone: Platform.isMobile && !Platform.isTablet,
+                isTablet: Platform.isTablet,
+            },
+        );
+        this.updatePreviewLayoutCycleLabel();
+    }
+
+    private updatePreviewLayoutCycleLabel(): void {
+        const btn = this.previewLayoutCycleBtn;
+        if (!btn) return;
+        const preset = telescopeLayoutPresetById(this.settings.telescopePreviewLayout);
+        const previewPct = 100 - preset.resultsPercent;
+        btn.setText(preset.label);
+        btn.setAttr(
+            'aria-label',
+            `Preview layout: ${preset.label} (${preset.resultsPercent}% results, ${previewPct}% preview). Click to cycle.`,
+        );
+    }
+
     /** Drives the telescope preview from the current selection and parsed query terms. */
     private schedulePreviewPaint(): void {
         if (this.closed || !this.telescopePreview || this.previewColumnHidden) return;
@@ -1988,6 +2046,8 @@ export class SeekSearchModal extends Modal {
             notePath: r.note_path,
             anchorLine,
             terms,
+            collapseFrontmatter: this.settings.telescopePreviewCollapseFrontmatter,
+            depth: this.settings.telescopePreviewDepth,
         });
     }
 

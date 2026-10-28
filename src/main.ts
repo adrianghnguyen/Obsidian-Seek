@@ -3354,6 +3354,7 @@ export default class SeekPlugin extends Plugin {
                 (active) => {
                     this.activeSearchModal = active ? modal : (this.activeSearchModal === modal ? null : this.activeSearchModal);
                 },
+                () => this.saveSettings(),
             );
             modal.open();
         } catch (e) {

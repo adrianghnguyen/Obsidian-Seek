@@ -19,6 +19,7 @@ import { App, PluginSettingTab, Setting, Notice, setIcon, setTooltip, TFolder } 
 import type SeekPlugin from '../main';
 import type { IndexStats, ModelStatus } from '../main';
 import type { SearchModalHeight, SearchModalWidth, SnippetPreview } from '../types/types';
+import { telescopePreviewLayoutSettingLabels } from '../ui/telescope-layout';
 import { DEFAULT_SETTINGS, MATCH_STRENGTH_MIN_NOTES } from '../types/types';
 import {
     INDEX_RECOVERY_NAME,
@@ -1769,7 +1770,54 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
                 .onChange(async v => {
                     this.s.telescopePreviewEnabled = v;
                     await this.save();
+                    syncTelescopePreviewSubsettings();
                 }));
+
+        const telescopeLayoutLabels = telescopePreviewLayoutSettingLabels();
+        const telescopeLayoutSetting = new Setting(containerEl)
+            .setName('Telescope preview layout')
+            .setDesc('Search modal width and how much horizontal space the preview column uses (desktop/tablet). Remap “Search: Cycle preview layout” under Settings → Hotkeys (default Ctrl/Cmd+Shift+P) to step through these presets while search is open.')
+            .addDropdown(dd => dd
+                .addOptions(telescopeLayoutLabels)
+                .setValue(this.s.telescopePreviewLayout)
+                .onChange(async v => {
+                    this.s.telescopePreviewLayout = v as typeof this.s.telescopePreviewLayout;
+                    await this.save();
+                }));
+
+        const telescopeDepthLabels: Record<typeof this.s.telescopePreviewDepth, string> = {
+            compact: 'Compact (faster, less note text)',
+            standard: 'Standard',
+            large: 'Large (more note text, heavier DOM)',
+        };
+        const telescopeDepthSetting = new Setting(containerEl)
+            .setName('Telescope preview depth')
+            .setDesc('Caps lines, highlights, and link/tag styling in the preview pane. Compact is best on huge notes or slower devices; Large matches the original beta preview limits.')
+            .addDropdown(dd => dd
+                .addOptions(telescopeDepthLabels)
+                .setValue(this.s.telescopePreviewDepth)
+                .onChange(async v => {
+                    this.s.telescopePreviewDepth = v as typeof this.s.telescopePreviewDepth;
+                    await this.save();
+                }));
+
+        const telescopeCollapseFm = new Setting(containerEl)
+            .setName('Collapse front matter in preview')
+            .setDesc('When telescope preview is on, notes with YAML front matter (--- blocks) hide that block until you click “Front matter” in the preview pane. Your expand/collapse choice applies to every result until you close search.')
+            .addToggle(t => t
+                .setValue(this.s.telescopePreviewCollapseFrontmatter)
+                .onChange(async v => {
+                    this.s.telescopePreviewCollapseFrontmatter = v;
+                    await this.save();
+                }));
+
+        const syncTelescopePreviewSubsettings = () => {
+            const on = this.s.telescopePreviewEnabled;
+            telescopeLayoutSetting.settingEl.toggleClass('is-disabled', !on);
+            telescopeDepthSetting.settingEl.toggleClass('is-disabled', !on);
+            telescopeCollapseFm.settingEl.toggleClass('is-disabled', !on);
+        };
+        syncTelescopePreviewSubsettings();
 
         const aliasLimitLabels: Record<string, number> = {
             '1': 1, '2': 2, '3': 3, '5': 5, '10': 10, All: 0,

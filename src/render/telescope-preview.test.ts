@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
     classifyPreviewLines,
+    frontmatterLineRange,
     segmentPreviewLine,
+    telescopePreviewLimitsFor,
+    TELESCOPE_PREVIEW_LIMITS,
     telescopeQueryTerms,
     MAX_LINE_CHARS,
 } from './telescope-preview';
@@ -15,6 +18,24 @@ const seg = (text: string, style: 'link' | 'tag' | null = null, mark = false) =>
 describe('telescope-preview', () => {
     it('telescopeQueryTerms drops short tokens and dedupes', () => {
         expect(telescopeQueryTerms('Data  data  a  -skip')).toEqual(['data']);
+    });
+
+    it('telescopePreviewLimitsFor resolves presets and falls back to large', () => {
+        expect(telescopePreviewLimitsFor('compact')).toEqual(TELESCOPE_PREVIEW_LIMITS.compact);
+        expect(telescopePreviewLimitsFor('standard')).toEqual(TELESCOPE_PREVIEW_LIMITS.standard);
+        expect(telescopePreviewLimitsFor('large')).toEqual(TELESCOPE_PREVIEW_LIMITS.large);
+        expect(telescopePreviewLimitsFor('missing' as 'compact').maxLines).toBe(
+            TELESCOPE_PREVIEW_LIMITS.large.maxLines,
+        );
+    });
+
+    it('frontmatterLineRange detects leading YAML blocks', () => {
+        expect(frontmatterLineRange(['# no fm'])).toBeNull();
+        expect(frontmatterLineRange(['---', 'title: x', '---', 'body'])).toEqual({
+            from: 0,
+            toExclusive: 3,
+        });
+        expect(frontmatterLineRange(['---', 'open only'])).toBeNull();
     });
 
     it('classifyPreviewLines handles headings and fenced code', () => {

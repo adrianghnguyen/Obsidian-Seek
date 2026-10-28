@@ -4,6 +4,12 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Added
+
+- **Telescope preview — collapse front matter.** Settings → Display → **Collapse front matter in preview** (default ON) hides YAML `---` blocks behind a clickable **Front matter** control in the preview pane. Expand/collapse choice persists while you move between results in the same search session.
+- **Telescope preview — cycle layout.** **Search: Cycle preview layout** (default Ctrl/Cmd+Shift+P) and the layout button in the preview header cycle modal width and results/preview split (Balanced → Even → Reading → List).
+- **Telescope preview — depth presets.** Settings → Display → **Telescope preview depth** (Compact / Standard / Large) caps rendered lines, query highlights, and link/tag styling. Default **Large** preserves the original beta preview limits; Compact reduces DOM work on huge notes.
+
 ## 1.16.0-beta.1
 
 Beta: search-modal telescope preview column plus status-bar and accent fixes since 1.15.3.
