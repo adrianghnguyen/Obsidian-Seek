@@ -11,16 +11,28 @@ case "$CMD" in
     ;;
 esac
 
-ROOT=/agent/repos
-ORCH="$ROOT/obsidian-plugin-development"
 BOOT=""
+REPOS_ROOT=""
+if [ -f /tmp/cloud-e2e-repos.env ]; then
+  # shellcheck source=/dev/null
+  . /tmp/cloud-e2e-repos.env
+  REPOS_ROOT=$CLOUD_E2E_REPOS
+fi
+if [ -z "$REPOS_ROOT" ]; then
+  if [ -d /agent/repos ] && [ -w /agent/repos ]; then
+    REPOS_ROOT=/agent/repos
+  else
+    REPOS_ROOT="${CLOUD_E2E_REPOS:-$HOME/repos}"
+  fi
+fi
+ORCH="$REPOS_ROOT/obsidian-plugin-development"
 
 if [ -f /workspace/scripts/cloud-e2e/bootstrap-cloud-repos.sh ]; then
   BOOT=/workspace/scripts/cloud-e2e/bootstrap-cloud-repos.sh
 elif [ -f "$ORCH/scripts/cloud-e2e/bootstrap-cloud-repos.sh" ]; then
   BOOT="$ORCH/scripts/cloud-e2e/bootstrap-cloud-repos.sh"
 else
-  mkdir -p "$ROOT"
+  mkdir -p "$REPOS_ROOT"
   if [ -f /workspace/scripts/cloud-e2e/env-install.sh ]; then
     ln -sfn /workspace "$ORCH"
   fi
@@ -35,6 +47,12 @@ if [ -z "$BOOT" ] || [ ! -f "$BOOT" ]; then
 fi
 
 bash "$BOOT"
+if [ -f /tmp/cloud-e2e-repos.env ]; then
+  # shellcheck source=/dev/null
+  . /tmp/cloud-e2e-repos.env
+  ORCH="$CLOUD_E2E_REPOS/obsidian-plugin-development"
+fi
+export CLOUD_E2E_REPOS="${CLOUD_E2E_REPOS:-$REPOS_ROOT}"
 
 case "$CMD" in
   install) exec bash "$ORCH/scripts/cloud-e2e/env-install.sh" ;;
