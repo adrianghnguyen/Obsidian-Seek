@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.16.0-beta.7
+
+Search footer no longer shows Indexing 0 when inventory is complete but a flush is still running.
+
 ### Fixed
 
 - **Search footer indexing badge.** When the vault inventory is already complete (remaining 0) but an incremental flush or dirty queue is still running, the footer shows **Updating** or the dirty-queue count / ellipsis instead of **Indexing 0**.
