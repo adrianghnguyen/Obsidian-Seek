@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Fixed
+
+- **Search footer small catch-up.** The search-modal footer uses the same `catch-up-presentation` module as the status bar (`classifyCatchUpPresentation`). A one-file / sub-1% catch-up stays **Ready** (no Indexing or Updating vault counts). Settings Index remains the detailed view.
+
 ## 1.16.0-beta.8
 
 Search modal footer states use a hoverable (i) for extra copy. No index banners in the modal.

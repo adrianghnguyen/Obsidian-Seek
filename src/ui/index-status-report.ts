@@ -302,6 +302,8 @@ export class IndexStatusReporter {
         if (!quietCatchUp && progress.phase === 'catching-up' && (mode === 'ok' || mode === 'starting')) {
             mode = 'catching-up';
         }
+        /* Compact chrome (bar + modal) stays Ready; Settings still reads quietCatchUp + job. */
+        if (quietCatchUp) mode = 'ok';
         if (progress.phase === 'recovering' && (mode === 'restoring' || mode === 'starting')) mode = 'recovering';
         const inventoryComplete = notes > 0 && (input.inventoryFiles ?? 0) >= notes;
         const jobCounts = input.job != null && input.job.total > 0;

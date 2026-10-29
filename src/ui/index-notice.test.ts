@@ -694,6 +694,37 @@ describe('resolveIndexUiStatus', () => {
         })).toBe('updating');
     });
 
+    it('footer uses catch-up-presentation SSOT: 1-file pass is Ready, not Indexing counts', () => {
+        const idleFooter: IndexFooterInput = {
+            kind: 'indexing',
+            modelReady: true,
+            phase: 'indexing',
+            health: 'healthy',
+            reason: null,
+            peerSyncPending: false,
+            goodEnough: true,
+            inventoryFiles: 244,
+            job: { done: 0, total: 1, kind: 'catchup' },
+        };
+        expect(indexFooterStatus(idleFooter)).toMatchObject({
+            kind: 'up-to-date',
+            label: INDEX_UP_TO_DATE_LABEL,
+            icon: 'check',
+            tone: 'good',
+        });
+        expect(indexFooterStatus(idleFooter).badgeCount).toBeUndefined();
+        const moderate = indexFooterStatus({
+            ...idleFooter,
+            job: { done: 0, total: 30, kind: 'catchup' },
+            inventoryFiles: 3000,
+        });
+        expect(moderate).toMatchObject({
+            kind: 'updating',
+            label: INDEX_UPDATING_LABEL,
+        });
+        expect(moderate.badgeCount).toBeUndefined();
+    });
+
     it('quiet catch-up on a hydrated vault is Ready, not Updating or Indexing', () => {
         expect(resolveIndexUiStatus({
             ...idle, goodEnough: true, indexing: true,
