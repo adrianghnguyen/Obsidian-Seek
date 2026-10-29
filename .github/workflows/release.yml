@@ -48,12 +48,16 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="${GITHUB_REF#refs/tags/}"
-          prerelease_flag=""
+          # Pre-releases: GitHub --prerelease AND --latest (project preference).
+          # BRAT "track Latest" (docs): highest semver among releases AND
+          # prereleases — not GitHub's Latest pointer. See
+          # https://tfthacker.com/brat-developers
+          extra_flags=""
           case "$tag" in
-            *-beta.*|*-rc.*|*-alpha.*) prerelease_flag="--prerelease" ;;
+            *-beta.*|*-rc.*|*-alpha.*) extra_flags="--prerelease --latest" ;;
           esac
           gh release create "$tag" \
             --title "$tag" \
             --generate-notes \
-            $prerelease_flag \
+            $extra_flags \
             main.js manifest.json styles.css
