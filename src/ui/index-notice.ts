@@ -31,7 +31,11 @@
 // so the modal renders the same thing everywhere (the reindex itself lives behind the
 // Settings affordance, which owns any platform-specific guardrails).
 
-import { classifyCatchUpPresentation, honestIndexingRemaining } from './catch-up-presentation';
+import {
+    classifyCatchUpPresentation,
+    honestIndexingRemaining,
+    type CatchUpPresentation,
+} from './catch-up-presentation';
 
 export {
     MINOR_CATCHUP_FRACTION,
@@ -234,6 +238,8 @@ export interface IndexLoadState {
     uiHealth?: IndexUiStatus;
     /** Status-bar inventory; modal may use when uiHealth is ok and the store probe lags. */
     inventoryChunks?: number | null;
+    inventoryFiles?: number | null;
+    goodEnough?: boolean;
     statusReport?: IndexFooterInput['statusReport'];
 }
 
@@ -259,9 +265,13 @@ export interface IndexFooterInput {
         label?: string;
         /** Longer hover / aria copy — same producer as status bar tooltips. */
         help?: string;
+        quietCatchUp?: boolean;
         hydrateProgress?: { done: number; total: number; percent?: number } | null;
         progress?: { phase: string; units: { done: number; total: number; percent: number; determinate: boolean } | null };
     };
+    /** Same inputs the status bar uses for classifyCatchUpPresentation. */
+    goodEnough?: boolean;
+    inventoryFiles?: number | null;
 }
 
 export interface IndexFooterStatus {
@@ -589,6 +599,49 @@ export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
     return withFooterInfo(indexFooterStatusCore(input), input);
 }
 
+function footerCatchUpPresentation(input: IndexFooterInput): CatchUpPresentation | null {
+    if (input.statusReport?.quietCatchUp) return 'quiet';
+    const job = input.job;
+    const indexingActive = input.phase === 'indexing'
+        || input.kind === 'indexing'
+        || input.uiHealth === 'indexing'
+        || input.uiHealth === 'updating'
+        || (job != null && job.total > 0);
+    return classifyCatchUpPresentation({
+        goodEnough: input.goodEnough
+            ?? (input.statusReport?.health === 'ok' || input.uiHealth === 'ok'),
+        inventoryFiles: input.inventoryFiles ?? null,
+        job,
+        indexingActive,
+    });
+}
+
+function quietFooterReady(input: IndexFooterInput): IndexFooterStatus {
+    return {
+        kind: 'up-to-date',
+        label: INDEX_UP_TO_DATE_LABEL,
+        icon: 'check',
+        tone: 'good',
+        help: input.statusReport?.help,
+    };
+}
+
+function applyFooterCatchUp(input: IndexFooterInput): IndexFooterStatus | null {
+    const catchUp = footerCatchUpPresentation(input);
+    if (catchUp === 'quiet') return quietFooterReady(input);
+    if (catchUp === 'moderate') {
+        return {
+            kind: 'updating',
+            label: INDEX_UPDATING_LABEL,
+            icon: 'rotate-cw',
+            tone: 'warn',
+            help: INDEX_FLUSH_UPDATING_HELP,
+            showInfo: true,
+        };
+    }
+    return null;
+}
+
 function indexFooterStatusCore(input: IndexFooterInput): IndexFooterStatus {
     const report = input.statusReport;
     if (report) {
@@ -605,6 +658,17 @@ function indexFooterStatusCore(input: IndexFooterInput): IndexFooterStatus {
         if (report.mode === 'recovering') {
             return { kind: 'restoring', label: report.compact, icon: 'rotate-cw', tone: report.tone as IndexFooterTone, help: footHelp };
         }
+        if (report.mode === 'restoring' || report.health === 'restoring') {
+            return { kind: 'restoring', label: report.compact, icon: 'rotate-cw', tone: report.tone as IndexFooterTone, help: footHelp };
+        }
+        if (report.mode === 'starting' || report.health === 'starting') {
+            return { kind: 'starting', label: report.compact, icon: 'rotate-cw', tone: report.tone as IndexFooterTone, help: footHelp };
+        }
+        if (report.mode === 'error' || report.health === 'error') {
+            return { kind: 'error', label: report.compact, icon: 'alert-triangle', tone: 'bad', help: footHelp };
+        }
+        const catchUpChrome = applyFooterCatchUp(input);
+        if (catchUpChrome) return catchUpChrome;
         if (report.mode === 'updating' || report.health === 'updating') {
             return {
                 kind: 'updating',
@@ -617,15 +681,6 @@ function indexFooterStatusCore(input: IndexFooterInput): IndexFooterStatus {
         }
         if (report.mode === 'catching-up') {
             return { kind: 'indexing', label: report.compact, icon: '', tone: 'accent', help: footHelp };
-        }
-        if (report.mode === 'restoring' || report.health === 'restoring') {
-            return { kind: 'restoring', label: report.compact, icon: 'rotate-cw', tone: report.tone as IndexFooterTone, help: footHelp };
-        }
-        if (report.mode === 'starting' || report.health === 'starting') {
-            return { kind: 'starting', label: report.compact, icon: 'rotate-cw', tone: report.tone as IndexFooterTone, help: footHelp };
-        }
-        if (report.mode === 'error' || report.health === 'error') {
-            return { kind: 'error', label: report.compact, icon: 'alert-triangle', tone: 'bad', help: footHelp };
         }
         if (report.mode === 'full-reindex' || report.mode === 'indexing' || report.health === 'indexing') {
             const remaining = footerIndexingRemaining(input, report.mode);
@@ -677,6 +732,8 @@ function indexFooterStatusCore(input: IndexFooterInput): IndexFooterStatus {
     if (input.health === 'recovering') {
         return { kind: 'starting', label: INDEX_STARTING_LABEL, icon: 'rotate-cw', tone: 'info' };
     }
+    const catchUpChrome = applyFooterCatchUp(input);
+    if (catchUpChrome) return catchUpChrome;
     if (input.uiHealth === 'updating') {
         return {
             kind: 'updating',

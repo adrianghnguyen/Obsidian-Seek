@@ -108,6 +108,8 @@ function evaluateSnapshot(s: BootSnapshot) {
         waitingForSidecar: false,
         job: s.job ? { done: s.job.done, total: s.job.total, kind: s.job.kind } : null,
         uiHealth,
+        inventoryFiles: s.inventoryFiles,
+        goodEnough: s.goodEnough,
         statusReport: report,
     });
     const cliGate = resolveCliSearchGate({
@@ -181,6 +183,8 @@ function evaluateSnapshotLocked(s: BootSnapshot) {
         waitingForSidecar: false,
         job: s.job ? { done: s.job.done, total: s.job.total, kind: s.job.kind } : null,
         uiHealth,
+        inventoryFiles: s.inventoryFiles,
+        goodEnough: s.goodEnough,
         statusReport: report,
     });
     const cliGate = resolveCliSearchGate({
@@ -287,6 +291,25 @@ describe('Ready means searchable (status contract)', () => {
         expect(r.footer.kind).toBe('up-to-date');
         expect(r.footer.badgeCount).toBeUndefined();
         expect(r.loadSpec.kind).toBe('resting');
+    });
+
+    it('1-file catch-up with queued flag still Ready on the footer (no Indexing/Updating counts)', () => {
+        const snap: BootSnapshot = {
+            label: 'single-note edit queued',
+            inventoryChunks: 900,
+            inventoryFiles: 244,
+            warmPhase: null,
+            goodEnough: true,
+            catchUpPending: true,
+            catchUpRunning: true,
+            job: { done: 0, total: 1, kind: 'catchup' },
+        };
+        const r = evaluateSnapshot(snap);
+        expect(r.uiHealth).toBe('ok');
+        expect(r.footer.kind).toBe('up-to-date');
+        expect(r.footer.label).toBe(INDEX_UP_TO_DATE_LABEL);
+        expect(r.footer.badgeCount).toBeUndefined();
+        expect(r.footer.label).not.toMatch(/Indexing|Updating|\d/);
     });
 
     it('catch-up at or above 1% of indexed files uses yellow Updating chrome', () => {

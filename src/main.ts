@@ -2882,6 +2882,8 @@ export default class SeekPlugin extends Plugin {
             flushing: this.flushing,
             uiHealth: statusReport.health,
             inventoryChunks: this.indexInventoryChunks,
+            inventoryFiles: this.indexInventoryFiles,
+            goodEnough: this.indexGoodEnough,
             statusReport,
         };
     }

@@ -73,6 +73,23 @@ describe('index status help / tooltips', () => {
         expect(quiet.compact).toBe(INDEX_STATUS_COPY.ok.compact);
     });
 
+    it('queued 1-file catch-up keeps reporter mode Ready (compact chrome), not Catching up', () => {
+        const report = IndexStatusReporter.compute({
+            ...baseInput,
+            inventoryFiles: 244,
+            searchableChunks: 800,
+            indexing: true,
+            catchUpPending: true,
+            jobKind: 'catchup',
+            job: { done: 0, total: 1 },
+        });
+        expect(report.quietCatchUp).toBe(true);
+        expect(report.mode).toBe('ok');
+        expect(report.health).toBe('ok');
+        expect(report.compact).toBe(INDEX_STATUS_COPY.ok.compact);
+        expect(report.progress.units).toBeNull();
+    });
+
     it('1-file catch-up on a consumer-sized vault is quiet Ready, not vault fractions', () => {
         const report = IndexStatusReporter.compute({
             ...baseInput,

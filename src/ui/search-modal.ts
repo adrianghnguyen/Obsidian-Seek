@@ -882,6 +882,8 @@ export class SeekSearchModal extends Modal {
             dirtyQueueSize: load.dirtyQueueSize,
             flushing: load.flushing,
             uiHealth: load.uiHealth,
+            inventoryFiles: load.inventoryFiles,
+            goodEnough: load.goodEnough,
             statusReport: load.statusReport,
         });
         this.footStatusEl.className = `seek-foot-status is-${spec.tone}`;
