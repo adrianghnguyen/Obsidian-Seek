@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.16.0-beta.9
+
+Search footer uses the same small catch-up guard as the status bar.
+
 ### Fixed
 
 - **Search footer small catch-up.** The search-modal footer uses the same `catch-up-presentation` module as the status bar (`classifyCatchUpPresentation`). A one-file / sub-1% catch-up stays **Ready** (no Indexing or Updating vault counts). Settings Index remains the detailed view.
