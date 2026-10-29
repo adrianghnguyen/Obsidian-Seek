@@ -52,12 +52,8 @@ import { dedupeAliasesAgainstBasename, sliceResultAliases } from '../render/resu
 import type { RecentSearches } from '../render/recents';
 import { indexLoadSpec, indexFooterStatus, isIndexWaitKind, type IndexLoadKind, type IndexLoadState } from './index-notice';
 import {
-    renderIndexStatusCard,
     renderIndexStatusBadge,
-    indexWaitCardModel,
-    type IndexStatusHealth,
 } from './index-status-card';
-import type { IndexProgressIndicator } from './index-progress-indicator';
 import {
     nextPipelineStage,
     initialPipelineStageState,
@@ -1132,37 +1128,6 @@ export class SeekSearchModal extends Modal {
         this.renderResting();
     }
 
-    private modalIndexHealth(kind: IndexLoadKind, load: IndexLoadState): IndexStatusHealth {
-        if (load.uiHealth) return load.uiHealth;
-        if (kind === 'locked') return 'locked';
-        if (kind === 'restoring' || load.waitingForSidecar || load.peerSyncPending) return 'restoring';
-        if (kind === 'starting' || load.phase === 'hydrating') return 'starting';
-        if (kind === 'indexing' || load.phase === 'indexing') return 'indexing';
-        if (load.health === 'degraded') return 'error';
-        if (kind === 'onboarding') return 'none';
-        return 'ok';
-    }
-
-    private paintIndexWaitCard(parent: HTMLElement, kind: IndexLoadKind): void {
-        const load = this.getIndexLoadState?.() ?? { phase: 'idle' as const };
-        const report = load.statusReport;
-        const model = indexWaitCardModel({
-            health: this.modalIndexHealth(kind, load),
-            job: load.job,
-            stats: null,
-            hydrateProgress: report?.hydrateProgress ?? null,
-            progress: (report?.progress as IndexProgressIndicator | null | undefined) ?? null,
-        });
-        renderIndexStatusCard(parent, {
-            ...model,
-            mode: report?.mode,
-            label: report?.label,
-            hydrateProgress: report?.hydrateProgress ?? null,
-            progress: (report?.progress as IndexProgressIndicator | null | undefined) ?? null,
-            percent: report?.hydrateProgress?.percent,
-        });
-    }
-
     private currentLoadSpec() {
         const load = this.getIndexLoadState?.() ?? { phase: 'idle' as const };
         return indexLoadSpec({
@@ -1185,28 +1150,7 @@ export class SeekSearchModal extends Modal {
         this.clearRows();
         this.currentResults = [];
         this.resultsEl.removeClass('is-loading');
-        const load = this.getIndexLoadState?.() ?? { phase: 'idle' as const };
-        const health = this.modalIndexHealth(this.currentLoadSpec().kind, load);
-        const footer = indexFooterStatus({
-            kind: this.currentLoadSpec().kind,
-            modelReady: this.modelReady,
-            phase: load.phase,
-            health: load.health,
-            reason: load.reason,
-            peerSyncPending: load.peerSyncPending,
-            waitingForSidecar: load.waitingForSidecar,
-            job: load.job,
-            remaining: load.remaining,
-            dirtyQueueSize: load.dirtyQueueSize,
-            flushing: load.flushing,
-            uiHealth: load.uiHealth,
-            statusReport: load.statusReport,
-        });
-        // Populated recents: Starting/Restoring may still flash a wait card.
-        // Indexing/Updating belong in the footer — do not stack a status card on top.
-        if ((health === 'starting' || health === 'restoring') && footer.kind !== 'updating' && footer.kind !== 'indexing') {
-            this.paintIndexWaitCard(this.resultsEl, this.currentLoadSpec().kind);
-        }
+        /* Extra copy lives on the footer (i). Do not stack a wait card over recents. */
         this.renderRecents();
     }
 
@@ -1333,13 +1277,9 @@ export class SeekSearchModal extends Modal {
     }
 
     private renderIndexWait(spec: { kind: IndexLoadKind; title?: string; message?: string }): void {
-        if (!this.resultsEl) return;
-        this.clearRows();
-        this.currentResults = [];
-        this.resultsEl.removeClass('is-loading');
-        const box = this.resultsEl.createDiv({ cls: 'seek-empty seek-noindex' });
-        this.paintIndexWaitCard(box, spec.kind);
-        if (spec.message) box.createDiv({ cls: 'seek-empty-sub', text: spec.message });
+        void spec;
+        /* Wait copy is the footer (i). Recents stay; no status card in the list. */
+        this.renderResting();
     }
 
     private renderEmptyQuery(kind: IndexLoadKind): void {
@@ -1368,29 +1308,9 @@ export class SeekSearchModal extends Modal {
         setting?.openTabById('seek');
     }
 
-    // Paint (or clear) the version-stale banner from the live thunk. Empties the slot
-    // first so it's idempotent: re-evaluated on each open, it shows while the index is
-    // version-stale and is gone once a reindex (from Settings) heals it. CSS hides an
-    // empty slot, so the common (current-index) case adds no visible chrome. The button
-    // opens Seek settings (which closes this modal) — the reindex itself lives there.
+    /* Search modal: keep the slot empty. Extra copy is the footer (i) tooltip. */
     private renderIndexBanner(): void {
-        if (!this.bannerSlot) return;
-        this.bannerSlot.empty();
-        const notice = this.getIndexNotice?.();
-        if (!notice) return;
-        /* Calm status belongs in the footer (i), not a second banner. */
-        if (!notice.showAction) return;
-        const banner = this.bannerSlot.createDiv({ cls: 'seek-index-banner' });
-        // Calm (info) variant for the "syncing from another device" state; the default
-        // warning style for the stale/action-needed state.
-        banner.toggleClass('is-info', notice.tone === 'info');
-        banner.createSpan({ cls: 'seek-index-banner-msg', text: notice.message });
-        // Only the action-needed banner carries the reindex affordance; the syncing
-        // banner has nothing for the user to do, so it shows no button.
-        if (notice.showAction) {
-            banner.createEl('button', { cls: 'seek-index-banner-btn mod-cta', text: 'Open settings' })
-                .addEventListener('click', () => this.openSeekSettings());
-        }
+        this.bannerSlot?.empty();
     }
 
     // Loading feedback that does NOT destroy what's on screen: dim the existing

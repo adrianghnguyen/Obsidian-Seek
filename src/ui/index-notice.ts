@@ -127,6 +127,8 @@ export const INDEX_NO_INDEX_LABEL = 'None';
 export const INDEX_STARTING_LABEL = 'Starting';
 export const INDEX_RESTORING_LABEL = 'Restoring';
 export const INDEX_MODEL_LOADING_LABEL = 'Loading';
+/** Footer (i) while the embedding model is still loading. */
+export const INDEX_MODEL_LOADING_HELP = 'Seek is loading the embedding model. Search uses it as soon as it is ready.';
 export const INDEX_ERROR_LABEL = 'Error';
 export const INDEX_INDEXING_LABEL = 'Indexing';
 export const INDEX_UPDATING_LABEL = 'Updating';
@@ -557,7 +559,37 @@ function isInventoryCompleteFlush(input: IndexFooterInput): boolean {
     return raw === 0 || (raw == null && (!!input.flushing || (input.dirtyQueueSize ?? 0) > 0));
 }
 
+function defaultFooterHelp(spec: IndexFooterStatus, input: IndexFooterInput): string | undefined {
+    if (spec.help) return spec.help;
+    if (spec.kind === 'updating') return INDEX_FLUSH_UPDATING_HELP;
+    if (spec.kind === 'restoring') return INDEX_STATUS_HELP.restoring;
+    if (spec.kind === 'starting') return INDEX_STATUS_HELP.starting;
+    if (spec.kind === 'stuck') return INDEX_STATUS_HELP.stuck;
+    if (spec.kind === 'locked') return INDEX_STATUS_HELP.locked;
+    if (spec.kind === 'error') {
+        if (input.reason === 'peer-ahead') return INDEX_PEER_AHEAD_MSG;
+        if (input.reason === 'version') return INDEX_STALE_MSG;
+        return INDEX_STATUS_HELP.error;
+    }
+    if (spec.kind === 'indexing') return INDEX_STATUS_HELP.indexing;
+    if (spec.kind === 'model-loading') return INDEX_MODEL_LOADING_HELP;
+    if (spec.kind === 'no-index') return INDEX_STATUS_HELP.none;
+    if (spec.kind === 'up-to-date') return INDEX_STATUS_HELP.ok;
+    return undefined;
+}
+
+/** Extra copy belongs on the hoverable (i), never in a search-modal banner. */
+function withFooterInfo(spec: IndexFooterStatus, input: IndexFooterInput): IndexFooterStatus {
+    const help = defaultFooterHelp(spec, input);
+    if (!help) return spec;
+    return { ...spec, help, showInfo: true };
+}
+
 export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
+    return withFooterInfo(indexFooterStatusCore(input), input);
+}
+
+function indexFooterStatusCore(input: IndexFooterInput): IndexFooterStatus {
     const report = input.statusReport;
     if (report) {
         const footHelp = report.help;

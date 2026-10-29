@@ -4,9 +4,13 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.16.0-beta.8
+
+Search modal footer states use a hoverable (i) for extra copy. No index banners in the modal.
+
 ### Changed
 
-- **Search footer Updating.** Inventory-complete flush uses **Updating** with a hoverable **(i)** (plain-language tooltip) instead of a count badge or a wait banner/card.
+- **Search footer extra copy.** Index and model states (Indexing, Updating, catching up, Restoring, Starting, Ready, Error, Locked, Stuck, Loading, None) keep a one-word footer label. Longer copy is a hoverable **(i)** tooltip. The search modal no longer paints index banners or wait cards over recents. Settings is unchanged.
 
 ## 1.16.0-beta.7
 
