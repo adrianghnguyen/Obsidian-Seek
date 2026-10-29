@@ -52,12 +52,8 @@ import { dedupeAliasesAgainstBasename, sliceResultAliases } from '../render/resu
 import type { RecentSearches } from '../render/recents';
 import { indexLoadSpec, indexFooterStatus, isIndexWaitKind, type IndexLoadKind, type IndexLoadState } from './index-notice';
 import {
-    renderIndexStatusCard,
     renderIndexStatusBadge,
-    indexWaitCardModel,
-    type IndexStatusHealth,
 } from './index-status-card';
-import type { IndexProgressIndicator } from './index-progress-indicator';
 import {
     nextPipelineStage,
     initialPipelineStageState,
@@ -1132,37 +1128,6 @@ export class SeekSearchModal extends Modal {
         this.renderResting();
     }
 
-    private modalIndexHealth(kind: IndexLoadKind, load: IndexLoadState): IndexStatusHealth {
-        if (load.uiHealth) return load.uiHealth;
-        if (kind === 'locked') return 'locked';
-        if (kind === 'restoring' || load.waitingForSidecar || load.peerSyncPending) return 'restoring';
-        if (kind === 'starting' || load.phase === 'hydrating') return 'starting';
-        if (kind === 'indexing' || load.phase === 'indexing') return 'indexing';
-        if (load.health === 'degraded') return 'error';
-        if (kind === 'onboarding') return 'none';
-        return 'ok';
-    }
-
-    private paintIndexWaitCard(parent: HTMLElement, kind: IndexLoadKind): void {
-        const load = this.getIndexLoadState?.() ?? { phase: 'idle' as const };
-        const report = load.statusReport;
-        const model = indexWaitCardModel({
-            health: this.modalIndexHealth(kind, load),
-            job: load.job,
-            stats: null,
-            hydrateProgress: report?.hydrateProgress ?? null,
-            progress: (report?.progress as IndexProgressIndicator | null | undefined) ?? null,
-        });
-        renderIndexStatusCard(parent, {
-            ...model,
-            mode: report?.mode,
-            label: report?.label,
-            hydrateProgress: report?.hydrateProgress ?? null,
-            progress: (report?.progress as IndexProgressIndicator | null | undefined) ?? null,
-            percent: report?.hydrateProgress?.percent,
-        });
-    }
-
     private currentLoadSpec() {
         const load = this.getIndexLoadState?.() ?? { phase: 'idle' as const };
         return indexLoadSpec({
@@ -1312,12 +1277,9 @@ export class SeekSearchModal extends Modal {
     }
 
     private renderIndexWait(spec: { kind: IndexLoadKind; title?: string; message?: string }): void {
-        if (!this.resultsEl) return;
-        this.clearRows();
-        this.currentResults = [];
-        this.resultsEl.removeClass('is-loading');
-        const box = this.resultsEl.createDiv({ cls: 'seek-empty seek-noindex' });
-        this.paintIndexWaitCard(box, spec.kind);
+        void spec;
+        /* Wait copy is the footer (i). Recents stay; no status card in the list. */
+        this.renderResting();
     }
 
     private renderEmptyQuery(kind: IndexLoadKind): void {
