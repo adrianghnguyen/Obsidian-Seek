@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
     MINOR_CATCHUP_FRACTION,
     classifyCatchUpPresentation,
+    honestIndexingRemaining,
     isSmallCatchUpPass,
     shouldPreferPassCountsOverCoverage,
 } from './catch-up-presentation';
@@ -41,5 +42,26 @@ describe('shouldPreferPassCountsOverCoverage', () => {
             passTotal: 500,
             inventoryFiles: 244,
         })).toBe(false);
+    });
+});
+
+describe('honestIndexingRemaining', () => {
+    it('replaces inventory remaining 0 with dirty-queue size', () => {
+        expect(honestIndexingRemaining({
+            remaining: 0,
+            mode: 'indexing',
+            job: null,
+            dirtyQueueSize: 3,
+            flushing: true,
+        })).toBe(3);
+    });
+
+    it('uses ellipsis when flushing without a job or dirty queue', () => {
+        expect(honestIndexingRemaining({
+            remaining: 0,
+            mode: 'indexing',
+            job: null,
+            flushing: true,
+        })).toBeNull();
     });
 });

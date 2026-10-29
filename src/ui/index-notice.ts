@@ -31,7 +31,7 @@
 // so the modal renders the same thing everywhere (the reindex itself lives behind the
 // Settings affordance, which owns any platform-specific guardrails).
 
-import { classifyCatchUpPresentation } from './catch-up-presentation';
+import { classifyCatchUpPresentation, honestIndexingRemaining } from './catch-up-presentation';
 
 export {
     MINOR_CATCHUP_FRACTION,
@@ -224,6 +224,8 @@ export interface IndexLoadState {
     job?: { done: number; total: number; paused?: boolean; kind?: 'full' | 'delta' | 'catchup' } | null;
     /** Snapshot remaining — footer formats this, does not recompute from job. */
     remaining?: number | null;
+    dirtyQueueSize?: number;
+    flushing?: boolean;
     /** Canonical UI status — every surface must show this, not a local remapping. */
     uiHealth?: IndexUiStatus;
     /** Status-bar inventory; modal may use when uiHealth is ok and the store probe lags. */
@@ -241,6 +243,8 @@ export interface IndexFooterInput {
     waitingForSidecar?: boolean;
     job?: { done: number; total: number; paused?: boolean; kind?: 'full' | 'delta' | 'catchup' } | null;
     remaining?: number | null;
+    dirtyQueueSize?: number;
+    flushing?: boolean;
     uiHealth?: IndexUiStatus;
     /** Authoritative snapshot — footer labels must match status bar + Settings. */
     statusReport?: {
@@ -528,6 +532,19 @@ export function isIndexWaitKind(kind: IndexLoadKind): boolean {
 // Search-modal footer: always-visible icon + one-word label. UI path is
 // Starting / Restoring / Indexing (plus Loading, None, Error, Ready).
 // Peer-sync and sidecar wait both read as Restoring.
+function footerIndexingRemaining(input: IndexFooterInput, mode: string): number | null {
+    const remaining = input.remaining ?? (input.job && input.job.total > 0
+        ? Math.max(0, input.job.total - input.job.done)
+        : null);
+    return honestIndexingRemaining({
+        remaining,
+        mode,
+        job: input.job ?? null,
+        dirtyQueueSize: input.dirtyQueueSize,
+        flushing: input.flushing,
+    });
+}
+
 export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
     const report = input.statusReport;
     if (report) {
@@ -560,15 +577,12 @@ export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
             return { kind: 'error', label: report.compact, icon: 'alert-triangle', tone: 'bad', help: footHelp };
         }
         if (report.mode === 'full-reindex' || report.mode === 'indexing' || report.health === 'indexing') {
-            const remaining = input.remaining ?? (input.job && input.job.total > 0
-                ? Math.max(0, input.job.total - input.job.done)
-                : null);
             return {
                 kind: 'indexing',
                 label: report.compact,
                 icon: '',
                 tone: 'accent',
-                badgeCount: remaining,
+                badgeCount: footerIndexingRemaining(input, report.mode),
                 help: footHelp,
             };
         }
@@ -610,15 +624,12 @@ export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
             || input.phase === 'indexing'
             || (input.job != null && input.job.total > 0)
         ))) {
-        const remaining = input.remaining ?? (input.job && input.job.total > 0
-            ? Math.max(0, input.job.total - input.job.done)
-            : null);
         return {
             kind: 'indexing',
             label: INDEX_INDEXING_LABEL,
             icon: '',
             tone: 'accent',
-            badgeCount: remaining,
+            badgeCount: footerIndexingRemaining(input, 'indexing'),
         };
     }
     if (!input.modelReady) {

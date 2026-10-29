@@ -131,6 +131,9 @@ export interface IndexStatusReporterInput extends IndexUiStatusInput {
     stuckWhy?: 'startup' | 'indexing';
     /** Hydrate pass skipped notes with partial shard bytes — must appear in chrome. */
     sidecarSkippedPartialNotes?: number;
+    /** Dirty note paths waiting for incremental flush (may have no job). */
+    dirtyQueueSize?: number;
+    flushing?: boolean;
 }
 
 export function normalizeHydrateProgress(
@@ -300,6 +303,17 @@ export class IndexStatusReporter {
             mode = 'catching-up';
         }
         if (progress.phase === 'recovering' && (mode === 'restoring' || mode === 'starting')) mode = 'recovering';
+        const inventoryComplete = notes > 0 && (input.inventoryFiles ?? 0) >= notes;
+        const jobCounts = input.job != null && input.job.total > 0;
+        const dirty = Math.max(0, Math.floor(input.dirtyQueueSize ?? 0) || 0);
+        if (
+            inventoryComplete
+            && !jobCounts
+            && (dirty > 0 || !!input.flushing)
+            && (mode === 'indexing' || mode === 'catching-up')
+        ) {
+            mode = 'updating';
+        }
         const health = indexStatusHealth(mode);
         let copy = INDEX_STATUS_COPY[mode];
         if (mode === 'stuck' && input.stuckWhy === 'indexing') {

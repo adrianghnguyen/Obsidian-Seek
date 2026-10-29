@@ -26,6 +26,8 @@ import {
     INDEX_RESTORING_LABEL,
     INDEX_ERROR_LABEL,
     INDEX_INDEXING_LABEL,
+    INDEX_UPDATING_LABEL,
+    INDEX_STATUS_HELP,
     INDEX_MODEL_LOADING_LABEL,
     INDEX_NO_INDEX_LABEL,
     INDEX_NO_INDEX_TITLE,
@@ -373,6 +375,55 @@ describe('indexFooterStatus', () => {
             badgeCount: 15,
             icon: '',
         });
+    });
+
+    it('says Updating when inventory is complete and an incremental flush is still active', () => {
+        const report = {
+            mode: 'updating' as const,
+            compact: INDEX_UPDATING_LABEL,
+            tone: 'warn',
+            health: 'updating' as const,
+            help: INDEX_STATUS_HELP.updating,
+        };
+        expect(indexFooterStatus({
+            ...idle,
+            phase: 'indexing',
+            remaining: 0,
+            statusReport: report as IndexFooterInput['statusReport'],
+        })).toMatchObject({
+            kind: 'updating',
+            label: INDEX_UPDATING_LABEL,
+            icon: 'rotate-cw',
+            tone: 'warn',
+        });
+        expect(indexFooterStatus({
+            ...idle,
+            kind: 'indexing',
+            phase: 'indexing',
+            remaining: 0,
+            dirtyQueueSize: 3,
+            flushing: true,
+            statusReport: {
+                mode: 'indexing',
+                compact: INDEX_INDEXING_LABEL,
+                tone: 'accent',
+                health: 'indexing',
+            },
+        }).badgeCount).toBe(3);
+        expect(indexFooterStatus({
+            ...idle,
+            kind: 'indexing',
+            phase: 'indexing',
+            remaining: 0,
+            dirtyQueueSize: 0,
+            flushing: true,
+            statusReport: {
+                mode: 'indexing',
+                compact: INDEX_INDEXING_LABEL,
+                tone: 'accent',
+                health: 'indexing',
+            },
+        }).badgeCount).toBeNull();
     });
 
     it('says Starting during embed-free drift recovery, not Indexing', () => {

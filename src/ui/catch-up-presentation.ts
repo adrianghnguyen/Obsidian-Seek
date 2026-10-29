@@ -50,6 +50,29 @@ export function classifyCatchUpPresentation(input: CatchUpPresentationInput): Ca
  * Status chrome file counts: catch-up/delta (or tiny pass) use pass done/total,
  * not vault coverage overlay. Full reindex keeps coverage-first display.
  */
+/**
+ * Inventory remaining can hit 0 while a flush/dirty queue is still running
+ * (no coordinator job). Do not paint Indexing 0 — use dirty size or ellipsis.
+ */
+export function honestIndexingRemaining(input: {
+    remaining: number | null;
+    mode: string;
+    job: { done: number; total: number } | null | undefined;
+    dirtyQueueSize?: number;
+    flushing?: boolean;
+}): number | null {
+    const indexing = input.mode === 'indexing'
+        || input.mode === 'full-reindex'
+        || input.mode === 'catching-up';
+    if (!indexing) return input.remaining;
+    if (input.remaining != null && input.remaining > 0) return input.remaining;
+    const dirty = Math.max(0, Math.floor(input.dirtyQueueSize ?? 0) || 0);
+    if (dirty > 0) return dirty;
+    const noJob = !input.job || input.job.total <= 0;
+    if (input.flushing && noJob) return null;
+    return input.remaining;
+}
+
 export function shouldPreferPassCountsOverCoverage(input: {
     jobKind?: CatchUpJobKind | null;
     quietCatchUp?: boolean;

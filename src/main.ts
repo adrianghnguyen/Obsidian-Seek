@@ -557,6 +557,8 @@ export default class SeekPlugin extends Plugin {
             indexableNotes: Math.max(this.lastIndexableNotes, this.indexableNoteCount()),
             stuckWhy: this.indexIndexingStalled ? 'indexing' : 'startup',
             sidecarSkippedPartialNotes: this.sidecarSkippedPartialNotes,
+            dirtyQueueSize: this.dirtyQueue.size,
+            flushing: this.flushing,
         });
     }
 
@@ -601,6 +603,8 @@ export default class SeekPlugin extends Plugin {
             indexableNotes: Math.max(this.lastIndexableNotes, this.indexableNoteCount()),
             coverage: coverage ?? this.indexCoverageOverlay,
             lastComplete: this.getLastIndexComplete(),
+            dirtyQueueSize: this.dirtyQueue.size,
+            flushing: this.flushing,
         });
     }
 
@@ -2874,6 +2878,8 @@ export default class SeekPlugin extends Plugin {
             peerSyncPending: this.peerSyncPending,
             job: snap.job,
             remaining: snap.remaining,
+            dirtyQueueSize: this.dirtyQueue.size,
+            flushing: this.flushing,
             uiHealth: statusReport.health,
             inventoryChunks: this.indexInventoryChunks,
             statusReport,

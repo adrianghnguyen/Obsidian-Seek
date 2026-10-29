@@ -24,7 +24,7 @@ import {
     type IndexHydrateProgress,
     type IndexStatusReport,
 } from './index-status-report';
-import { shouldPreferPassCountsOverCoverage } from './catch-up-presentation';
+import { honestIndexingRemaining, shouldPreferPassCountsOverCoverage } from './catch-up-presentation';
 import type { IndexProgressIndicator } from './index-progress-indicator';
 
 export type IndexProgressPhase =
@@ -125,6 +125,9 @@ export interface IndexProgressSnapshotInput {
     indexableNotes?: number | null;
     coverage?: IndexProgressCoverageOverlay | null;
     lastComplete?: IndexProgressLastComplete | null;
+    /** Live dirty-queue size while flush/catch-up may have no coordinator job. */
+    dirtyQueueSize?: number;
+    flushing?: boolean;
 }
 
 export function resolveIndexProgressPhase(input: {
@@ -162,6 +165,8 @@ export function remainingFromCounts(done: number, total: number): number | null 
     if (total <= 0) return null;
     return Math.max(0, total - done);
 }
+
+export { honestIndexingRemaining } from './catch-up-presentation';
 
 function coverageIndexFiles(
     coverage: IndexProgressCoverageOverlay,
@@ -292,7 +297,13 @@ export function buildIndexProgressSnapshot(input: IndexProgressSnapshotInput): I
         : filesTotal > 0
             ? (phase === 'hydrate' && hydrate ? hydrate.percent : (indicator.units?.percent ?? indexPercent(filesDone, filesTotal)))
             : 0;
-    const remaining = remainingFromCounts(filesDone, filesTotal);
+    const remaining = honestIndexingRemaining({
+        remaining: remainingFromCounts(filesDone, filesTotal),
+        mode: report.mode,
+        job: rawJob,
+        dirtyQueueSize: input.dirtyQueueSize,
+        flushing: input.flushing,
+    });
     const eta = formatRoughEta(filesDone, filesTotal, elapsedMs);
     const embed = embedDerivedFromInputs(speedOut, input.lastComplete ?? null);
     const liveRates = embed.liveRates;

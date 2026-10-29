@@ -54,6 +54,25 @@ describe('IndexStatusReporter — one snapshot for bar + Settings', () => {
         }
     });
 
+    it('inventory-complete incremental flush is Updating, not Indexing 0', () => {
+        const report = IndexStatusReporter.compute({
+            ...idle,
+            goodEnough: true,
+            indexing: true,
+            flushing: true,
+            dirtyQueueSize: 3,
+            job: null,
+            searchableChunks: 9000,
+            inventoryFiles: 3177,
+            indexableNotes: 3177,
+        });
+        expect(report.mode).toBe('updating');
+        expect(report.health).toBe('updating');
+        expect(report.compact).toBe(INDEX_STATUS_COPY.updating.compact);
+        expect(report.compact).not.toMatch(/\b0\b/);
+        expect(report.mode).not.toBe('indexing');
+    });
+
     it('overlapping drop + hydrate is Restoring on both surfaces, not Indexing or None', () => {
         const report = IndexStatusReporter.compute({
             ...idle,

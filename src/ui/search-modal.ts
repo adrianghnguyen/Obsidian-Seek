@@ -879,6 +879,8 @@ export class SeekSearchModal extends Modal {
             waitingForSidecar: load.waitingForSidecar,
             job: load.job,
             remaining: load.remaining,
+            dirtyQueueSize: load.dirtyQueueSize,
+            flushing: load.flushing,
             uiHealth: load.uiHealth,
             statusReport: load.statusReport,
         });
