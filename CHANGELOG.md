@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Fixed
+
+- **Search footer indexing badge.** When the vault inventory is already complete (remaining 0) but an incremental flush or dirty queue is still running, the footer shows **Updating** or the dirty-queue count / ellipsis instead of **Indexing 0**.
+
 ## 1.16.0-beta.6
 
 Search modal width and telescope preview share are compact preset number fields (preview defaults 25 / 40 / 50 / 80).

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
     buildIndexProgressSnapshot,
     coverageHeadlineFromProgress,
+    honestIndexingRemaining,
     resolveIndexProgressPhase,
     type IndexProgressSnapshot,
 } from './index-progress-snapshot';
@@ -280,6 +281,61 @@ describe('buildIndexProgressSnapshot', () => {
         expect(idle.coverageHeadline.percent).toBe(idle.percent);
         expect(idle.coverageHeadline.caption).toBe('in the index');
         expect(idle.coverageHeadline.live).toBe(false);
+    });
+
+    it('does not paint remaining 0 while dirty queue or flush is still running', () => {
+        const snap = buildIndexProgressSnapshot({
+            report: reportOf('indexing', {
+                mode: 'indexing',
+                progress: { phase: 'indexing', units: null },
+            }),
+            job: null,
+            speed: null,
+            inventoryFiles: 3177,
+            indexableNotes: 3177,
+            coverage: { covered: 3177, total: 3177 },
+            dirtyQueueSize: 3,
+            flushing: true,
+        });
+        expect(snap.remaining).toBe(3);
+        expect(snap.remaining).not.toBe(0);
+
+        const ellipsis = buildIndexProgressSnapshot({
+            report: reportOf('indexing', {
+                mode: 'indexing',
+                progress: { phase: 'indexing', units: null },
+            }),
+            job: null,
+            speed: null,
+            inventoryFiles: 3177,
+            indexableNotes: 3177,
+            coverage: { covered: 3177, total: 3177 },
+            dirtyQueueSize: 0,
+            flushing: true,
+        });
+        expect(ellipsis.remaining).toBeNull();
+    });
+});
+
+describe('honestIndexingRemaining', () => {
+    it('prefers dirty-queue size over inventory remaining 0', () => {
+        expect(honestIndexingRemaining({
+            remaining: 0,
+            mode: 'indexing',
+            job: null,
+            dirtyQueueSize: 3,
+            flushing: true,
+        })).toBe(3);
+    });
+
+    it('uses ellipsis when flushing with no job and empty dirty queue', () => {
+        expect(honestIndexingRemaining({
+            remaining: 0,
+            mode: 'indexing',
+            job: null,
+            dirtyQueueSize: 0,
+            flushing: true,
+        })).toBeNull();
     });
 });
 
