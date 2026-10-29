@@ -27,6 +27,7 @@ import {
     INDEX_ERROR_LABEL,
     INDEX_INDEXING_LABEL,
     INDEX_UPDATING_LABEL,
+    INDEX_FLUSH_UPDATING_HELP,
     INDEX_STATUS_HELP,
     INDEX_MODEL_LOADING_LABEL,
     INDEX_NO_INDEX_LABEL,
@@ -395,7 +396,15 @@ describe('indexFooterStatus', () => {
             label: INDEX_UPDATING_LABEL,
             icon: 'rotate-cw',
             tone: 'warn',
+            showInfo: true,
+            help: INDEX_FLUSH_UPDATING_HELP,
         });
+        expect(indexFooterStatus({
+            ...idle,
+            phase: 'indexing',
+            remaining: 0,
+            statusReport: report as IndexFooterInput['statusReport'],
+        }).badgeCount).toBeUndefined();
         expect(indexFooterStatus({
             ...idle,
             kind: 'indexing',
@@ -409,7 +418,11 @@ describe('indexFooterStatus', () => {
                 tone: 'accent',
                 health: 'indexing',
             },
-        }).badgeCount).toBe(3);
+        })).toMatchObject({
+            kind: 'updating',
+            showInfo: true,
+            help: INDEX_FLUSH_UPDATING_HELP,
+        });
         expect(indexFooterStatus({
             ...idle,
             kind: 'indexing',
@@ -423,7 +436,7 @@ describe('indexFooterStatus', () => {
                 tone: 'accent',
                 health: 'indexing',
             },
-        }).badgeCount).toBeNull();
+        }).showInfo).toBe(true);
     });
 
     it('says Starting during embed-free drift recovery, not Indexing', () => {
