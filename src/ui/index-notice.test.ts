@@ -279,11 +279,13 @@ describe('indexFooterStatus', () => {
     };
 
     it('is up to date when the model is ready and the index is populated and idle', () => {
-        expect(indexFooterStatus(idle)).toEqual({
+        expect(indexFooterStatus(idle)).toMatchObject({
             kind: 'up-to-date',
             label: INDEX_UP_TO_DATE_LABEL,
             icon: 'check',
             tone: 'good',
+            showInfo: true,
+            help: INDEX_STATUS_HELP.ok,
         });
     });
 
@@ -295,11 +297,12 @@ describe('indexFooterStatus', () => {
     });
 
     it('says Loading model on a populated index while the model is cold', () => {
-        expect(indexFooterStatus({ ...idle, modelReady: false })).toEqual({
+        expect(indexFooterStatus({ ...idle, modelReady: false })).toMatchObject({
             kind: 'model-loading',
             label: INDEX_MODEL_LOADING_LABEL,
             icon: 'rotate-cw',
             tone: 'warn',
+            showInfo: true,
         });
     });
 
@@ -437,6 +440,56 @@ describe('indexFooterStatus', () => {
                 health: 'indexing',
             },
         }).showInfo).toBe(true);
+    });
+
+    it('puts extra copy on a hoverable (i) for every footer kind', () => {
+        const cases: IndexFooterInput[] = [
+            idle,
+            { ...idle, kind: 'starting' },
+            { ...idle, kind: 'restoring' },
+            { ...idle, kind: 'indexing', job: { done: 0, total: 12 } },
+            { ...idle, uiHealth: 'updating' },
+            { ...idle, modelReady: false },
+            { ...idle, health: 'degraded' },
+            { ...idle, kind: 'onboarding' },
+            { ...idle, uiHealth: 'locked' },
+            { ...idle, uiHealth: 'stuck' },
+            {
+                ...idle,
+                statusReport: {
+                    mode: 'catching-up',
+                    compact: INDEX_INDEXING_LABEL,
+                    tone: 'accent',
+                    health: 'indexing',
+                    help: INDEX_STATUS_HELP['catching-up'],
+                },
+            },
+            {
+                ...idle,
+                statusReport: {
+                    mode: 'verifying',
+                    compact: INDEX_STARTING_LABEL,
+                    tone: 'info',
+                    health: 'starting',
+                    help: INDEX_STATUS_HELP.verifying,
+                },
+            },
+            {
+                ...idle,
+                statusReport: {
+                    mode: 'recovering',
+                    compact: INDEX_RESTORING_LABEL,
+                    tone: 'info',
+                    health: 'restoring',
+                    help: INDEX_STATUS_HELP.recovering,
+                },
+            },
+        ];
+        for (const input of cases) {
+            const spec = indexFooterStatus(input);
+            expect(spec.showInfo, spec.kind).toBe(true);
+            expect(spec.help, spec.kind).toBeTruthy();
+        }
     });
 
     it('says Starting during embed-free drift recovery, not Indexing', () => {
