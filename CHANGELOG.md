@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Changed
+
+- **Search footer Updating.** Inventory-complete flush uses **Updating** with a hoverable **(i)** (plain-language tooltip) instead of a count badge or a wait banner/card.
+
 ## 1.16.0-beta.7
 
 Search footer no longer shows Indexing 0 when inventory is complete but a flush is still running.

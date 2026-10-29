@@ -1263,6 +1263,19 @@
     width: 14px;
     height: 14px;
 }
+.seek-foot-status-info {
+    display: inline-flex;
+    align-items: center;
+    color: var(--text-faint);
+    cursor: help;
+}
+.seek-foot-status-info:hover {
+    color: var(--text-muted);
+}
+.seek-foot-status-info svg {
+    width: 12px;
+    height: 12px;
+}
 .seek-foot-status.is-accent { color: var(--interactive-accent); }
 .seek-foot-status.is-info { color: var(--color-blue); }
 .seek-foot-status.is-bad { color: var(--text-error); }

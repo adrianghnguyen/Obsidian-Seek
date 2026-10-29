@@ -130,6 +130,8 @@ export const INDEX_MODEL_LOADING_LABEL = 'Loading';
 export const INDEX_ERROR_LABEL = 'Error';
 export const INDEX_INDEXING_LABEL = 'Indexing';
 export const INDEX_UPDATING_LABEL = 'Updating';
+/** Footer (i) on Updating — inventory is complete; leftover edits are still embedding. */
+export const INDEX_FLUSH_UPDATING_HELP = 'Your notes are already searchable. Seek is still catching up a few recent edits in the background.';
 export const INDEX_UP_TO_DATE_LABEL = 'Ready';
 export const INDEX_LOCKED_TITLE = 'Index locked';
 export const INDEX_LOCKED_MSG = 'Seek cannot open the search index database. Run **Recover search index** in Seek settings (Retry first; rebuild if it stays locked), or quit Obsidian if it stays locked.';
@@ -269,6 +271,8 @@ export interface IndexFooterStatus {
     badgeCount?: number | null;
     /** Descriptive tooltip — matches status bar / Settings (i) help. */
     help?: string;
+    /** Hoverable (i) next to the label — used for Updating instead of a count badge. */
+    showInfo?: boolean;
 }
 
 // Hydrate holds the write mutex, so `writing` must not win over an explicit hydrating
@@ -532,17 +536,25 @@ export function isIndexWaitKind(kind: IndexLoadKind): boolean {
 // Search-modal footer: always-visible icon + one-word label. UI path is
 // Starting / Restoring / Indexing (plus Loading, None, Error, Ready).
 // Peer-sync and sidecar wait both read as Restoring.
-function footerIndexingRemaining(input: IndexFooterInput, mode: string): number | null {
-    const remaining = input.remaining ?? (input.job && input.job.total > 0
+function footerRawRemaining(input: IndexFooterInput): number | null {
+    return input.remaining ?? (input.job && input.job.total > 0
         ? Math.max(0, input.job.total - input.job.done)
         : null);
+}
+
+function footerIndexingRemaining(input: IndexFooterInput, mode: string): number | null {
     return honestIndexingRemaining({
-        remaining,
+        remaining: footerRawRemaining(input),
         mode,
         job: input.job ?? null,
         dirtyQueueSize: input.dirtyQueueSize,
         flushing: input.flushing,
     });
+}
+
+function isInventoryCompleteFlush(input: IndexFooterInput): boolean {
+    const raw = footerRawRemaining(input);
+    return raw === 0 || (raw == null && (!!input.flushing || (input.dirtyQueueSize ?? 0) > 0));
 }
 
 export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
@@ -562,7 +574,14 @@ export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
             return { kind: 'restoring', label: report.compact, icon: 'rotate-cw', tone: report.tone as IndexFooterTone, help: footHelp };
         }
         if (report.mode === 'updating' || report.health === 'updating') {
-            return { kind: 'updating', label: report.compact, icon: 'rotate-cw', tone: 'warn', help: footHelp };
+            return {
+                kind: 'updating',
+                label: INDEX_UPDATING_LABEL,
+                icon: 'rotate-cw',
+                tone: 'warn',
+                help: INDEX_FLUSH_UPDATING_HELP,
+                showInfo: true,
+            };
         }
         if (report.mode === 'catching-up') {
             return { kind: 'indexing', label: report.compact, icon: '', tone: 'accent', help: footHelp };
@@ -577,12 +596,23 @@ export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
             return { kind: 'error', label: report.compact, icon: 'alert-triangle', tone: 'bad', help: footHelp };
         }
         if (report.mode === 'full-reindex' || report.mode === 'indexing' || report.health === 'indexing') {
+            const remaining = footerIndexingRemaining(input, report.mode);
+            if (isInventoryCompleteFlush(input)) {
+                return {
+                    kind: 'updating',
+                    label: INDEX_UPDATING_LABEL,
+                    icon: 'rotate-cw',
+                    tone: 'warn',
+                    help: INDEX_FLUSH_UPDATING_HELP,
+                    showInfo: true,
+                };
+            }
             return {
                 kind: 'indexing',
                 label: report.compact,
                 icon: '',
                 tone: 'accent',
-                badgeCount: footerIndexingRemaining(input, report.mode),
+                badgeCount: remaining,
                 help: footHelp,
             };
         }
@@ -616,7 +646,14 @@ export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
         return { kind: 'starting', label: INDEX_STARTING_LABEL, icon: 'rotate-cw', tone: 'info' };
     }
     if (input.uiHealth === 'updating') {
-        return { kind: 'updating', label: INDEX_UPDATING_LABEL, icon: 'rotate-cw', tone: 'warn', help: INDEX_STATUS_HELP.updating };
+        return {
+            kind: 'updating',
+            label: INDEX_UPDATING_LABEL,
+            icon: 'rotate-cw',
+            tone: 'warn',
+            help: INDEX_FLUSH_UPDATING_HELP,
+            showInfo: true,
+        };
     }
     if (input.uiHealth === 'indexing'
         || (input.uiHealth !== 'ok' && (
@@ -624,12 +661,23 @@ export function indexFooterStatus(input: IndexFooterInput): IndexFooterStatus {
             || input.phase === 'indexing'
             || (input.job != null && input.job.total > 0)
         ))) {
+        const remaining = footerIndexingRemaining(input, 'indexing');
+        if (isInventoryCompleteFlush(input)) {
+            return {
+                kind: 'updating',
+                label: INDEX_UPDATING_LABEL,
+                icon: 'rotate-cw',
+                tone: 'warn',
+                help: INDEX_FLUSH_UPDATING_HELP,
+                showInfo: true,
+            };
+        }
         return {
             kind: 'indexing',
             label: INDEX_INDEXING_LABEL,
             icon: '',
             tone: 'accent',
-            badgeCount: footerIndexingRemaining(input, 'indexing'),
+            badgeCount: remaining,
         };
     }
     if (!input.modelReady) {

@@ -350,6 +350,7 @@ export class SeekSearchModal extends Modal {
     private footStatusEl: HTMLElement | null = null;
     private footStatusIconEl: HTMLElement | null = null;
     private footStatusLabelEl: HTMLElement | null = null;
+    private footStatusInfoEl: HTMLElement | null = null;
 
     // Model-load decoupling. When `modelReady` is false, `runSearch` awaits
     // `modelReadyPromise` before calling the orchestrator.
@@ -634,6 +635,7 @@ export class SeekSearchModal extends Modal {
         this.footStatusEl = null;
         this.footStatusIconEl = null;
         this.footStatusLabelEl = null;
+        this.footStatusInfoEl = null;
         this.contentEl.empty();
     }
 
@@ -729,6 +731,8 @@ export class SeekSearchModal extends Modal {
         this.footStatusEl.setAttr('role', 'status');
         this.footStatusIconEl = this.footStatusEl.createSpan({ cls: 'seek-foot-status-icon' });
         this.footStatusLabelEl = this.footStatusEl.createSpan({ cls: 'seek-foot-status-label' });
+        this.footStatusInfoEl = this.footStatusEl.createSpan({ cls: 'seek-foot-status-info' });
+        this.footStatusInfoEl.hide();
         for (const key of searchModalCloseHintKeys(this.app, this.pluginId)) kbd(closeGrp, key);
         closeGrp.createSpan({ text: ' close' });
     }
@@ -886,17 +890,28 @@ export class SeekSearchModal extends Modal {
         });
         this.footStatusEl.className = `seek-foot-status is-${spec.tone}`;
         this.footStatusLabelEl.setText(spec.label);
-        const footTip = spec.help ?? spec.label;
-        this.footStatusEl.setAttr('aria-label', footTip);
-        setTooltip(this.footStatusEl, footTip, { delay: 300 });
+        this.footStatusEl.setAttr('aria-label', spec.label);
+        setTooltip(this.footStatusEl, spec.label, { delay: 300 });
         this.footStatusIconEl.empty();
-        if (spec.kind === 'indexing') {
+        if (spec.kind === 'indexing' && spec.badgeCount != null && spec.badgeCount > 0) {
             renderIndexStatusBadge(this.footStatusIconEl, {
                 health: 'indexing',
-                remaining: spec.badgeCount ?? load.remaining ?? null,
+                remaining: spec.badgeCount,
             });
         } else {
             setIcon(this.footStatusIconEl, spec.icon);
+        }
+        if (this.footStatusInfoEl) {
+            this.footStatusInfoEl.empty();
+            if (spec.showInfo && spec.help) {
+                this.footStatusInfoEl.show();
+                setIcon(this.footStatusInfoEl, 'info');
+                this.footStatusInfoEl.setAttr('aria-label', spec.help);
+                setTooltip(this.footStatusInfoEl, spec.help, { delay: 200 });
+            } else {
+                this.footStatusInfoEl.removeAttribute('aria-label');
+                this.footStatusInfoEl.hide();
+            }
         }
     }
 
@@ -1172,9 +1187,24 @@ export class SeekSearchModal extends Modal {
         this.resultsEl.removeClass('is-loading');
         const load = this.getIndexLoadState?.() ?? { phase: 'idle' as const };
         const health = this.modalIndexHealth(this.currentLoadSpec().kind, load);
+        const footer = indexFooterStatus({
+            kind: this.currentLoadSpec().kind,
+            modelReady: this.modelReady,
+            phase: load.phase,
+            health: load.health,
+            reason: load.reason,
+            peerSyncPending: load.peerSyncPending,
+            waitingForSidecar: load.waitingForSidecar,
+            job: load.job,
+            remaining: load.remaining,
+            dirtyQueueSize: load.dirtyQueueSize,
+            flushing: load.flushing,
+            uiHealth: load.uiHealth,
+            statusReport: load.statusReport,
+        });
         // Populated recents: Starting/Restoring may still flash a wait card.
-        // Indexing belongs in the footer — a reload+open catch-up pause is not "building index".
-        if (health === 'starting' || health === 'restoring') {
+        // Indexing/Updating belong in the footer — do not stack a status card on top.
+        if ((health === 'starting' || health === 'restoring') && footer.kind !== 'updating' && footer.kind !== 'indexing') {
             this.paintIndexWaitCard(this.resultsEl, this.currentLoadSpec().kind);
         }
         this.renderRecents();
@@ -1348,6 +1378,8 @@ export class SeekSearchModal extends Modal {
         this.bannerSlot.empty();
         const notice = this.getIndexNotice?.();
         if (!notice) return;
+        /* Calm status belongs in the footer (i), not a second banner. */
+        if (!notice.showAction) return;
         const banner = this.bannerSlot.createDiv({ cls: 'seek-index-banner' });
         // Calm (info) variant for the "syncing from another device" state; the default
         // warning style for the stale/action-needed state.
