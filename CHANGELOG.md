@@ -4,9 +4,27 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.16.0
+
+Stable 1.16: telescope preview, modal/preview width presets, quieter catch-up chrome, and per-machine energy saver. Covers `1.16.0-beta.1`–`beta.9` plus energy saver.
+
 ### Added
 
-- **Energy saver (this computer).** Settings → Seek → Index toggle, not synced. When on, Seek skips GPU indexing when you hide Obsidian, waits 30 minutes of idle before embedding edits, unloads the desktop model after a few quiet minutes, and does not keep catching up while the window is hidden. Search still loads the model when you query. The Seek status-bar chip is unchanged; hover shows only a yellow battery. The long explanation stays in Settings. Phones already unload the model after idle.
+- **Energy saver (this computer).** Settings → Seek → Index toggle, stored in this computer’s `localStorage` (not synced). When on, Seek skips GPU indexing when you hide Obsidian, waits 30 minutes of idle before embedding edits, unloads the desktop model after a few quiet minutes, pauses catch-up while the window is hidden, and skips sidecar compact/coalesce. Search still loads the model when you query. The Seek status-bar chip is unchanged; hover shows only a yellow battery. The long explanation stays in Settings. Phones already unload the model after idle.
+- **Telescope preview (search modal).** Optional read-only preview column beside ranked results. Default ON on desktop; phones default OFF until Settings → Display. Toggle with Ctrl/Cmd+P. Collapse YAML front matter (default ON), cycle List / Balanced / Even / Reading layout (Ctrl/Cmd+Shift+P), and Compact / Standard / Large depth presets.
+- **Search modal width presets.** Settings → Display Compact / Default / Wide pixel fields. Footer **Width** button cycles them independently of the preview-column share.
+
+### Changed
+
+- **Telescope preview column share.** Settings → Display List / Balanced / Even / Reading as percent fields (defaults 25 / 40 / 50 / 80). Layout cycle no longer overwrites total modal width. Preview column can use up to 95% of the modal.
+- **Search footer extra copy.** Index and model states keep a one-word footer label; longer copy is a hoverable **(i)** tooltip. No index banners over recents.
+
+### Fixed
+
+- **Small catch-up guard.** Status bar and search footer share `catch-up-presentation`. Sub-1% / one-file catch-up stays **Ready**; no vault-scale Indexing counts in the footer. Settings Index remains the detailed view.
+- **Search footer indexing badge.** When inventory is complete but a flush is still running, the footer shows **Updating** (or dirty-queue counts) instead of **Indexing 0**.
+- **Consumer status bar file counts.** Catch-up/delta embed and verify-only hydrate use pass-scoped denominators instead of vault coverage.
+- **Accent-insensitive filter binding.** `#tag` / `[key:value]` filters, tag pills, open-note highlight, and filter suggest use shared `foldForMatch`.
 
 ## 1.16.0-beta.9
 
