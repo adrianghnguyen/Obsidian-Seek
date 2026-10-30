@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('obsidian', async () => {
     const actual = await import('../test-stubs/obsidian');
@@ -11,6 +11,7 @@ vi.mock('obsidian', async () => {
 
 import { Platform } from 'obsidian';
 import SeekPlugin from '../main';
+import { setEnergySaver } from '../embedding/platform';
 import { IndexDeltaTracker } from '../index/index-delta-view';
 
 type SchedulerWindow = typeof globalThis & {
@@ -112,11 +113,22 @@ function makeHarness(hidden: boolean): CatchUpHarness {
     };
 }
 
+beforeEach(() => {
+    let ls: Record<string, string> = {};
+    vi.stubGlobal('localStorage', {
+        getItem: (k: string) => (k in ls ? ls[k] : null),
+        setItem: (k: string, v: string) => { ls[k] = String(v); },
+        removeItem: (k: string) => { delete ls[k]; },
+        clear: () => { ls = {}; },
+    });
+});
+
 afterEach(() => {
     delete (globalThis as unknown as { activeDocument?: unknown }).activeDocument;
     delete (activeWindow as unknown as SchedulerWindow).scheduler;
     Platform.isMobile = false;
     Platform.isDesktop = true;
+    setEnergySaver(false);
     vi.restoreAllMocks();
 });
 
@@ -151,6 +163,19 @@ describe('runCatchUp pending-work scheduling', () => {
         expect(h.computeCalls()).toBe(1);
         expect(h.reindexCalls()).toBe(1);
         expect(h.inventoryCalls()).toBe(1);
+    });
+
+    it('does not drain while hidden when energy saver is on', async () => {
+        setEnergySaver(true);
+        try {
+            const h = makeHarness(true);
+            h.plugin.runCatchUp();
+            await flushMicrotasks();
+            expect(h.computeCalls()).toBe(0);
+            expect(h.reindexCalls()).toBe(0);
+        } finally {
+            setEnergySaver(false);
+        }
     });
 });
 

@@ -8,6 +8,7 @@ import {
     classifyCatchUpPresentation,
     resolveIndexUiStatus,
     INDEX_STATUS_HELP,
+    ENERGY_SAVER_HELP,
     type IndexStatusHelpKey,
     INDEX_NO_INDEX_LABEL,
     INDEX_STARTING_LABEL,
@@ -116,6 +117,8 @@ export interface IndexStatusReport {
     hydrateProgress: IndexHydrateProgress | null;
     /** Sole progress snapshot for status chrome. */
     progress: IndexProgressIndicator;
+    /** Per-device energy saver (localStorage) — chrome must show when it is on. */
+    energySaver: boolean;
 }
 
 export interface IndexStatusReporterInput extends IndexUiStatusInput {
@@ -134,6 +137,7 @@ export interface IndexStatusReporterInput extends IndexUiStatusInput {
     /** Dirty note paths waiting for incremental flush (may have no job). */
     dirtyQueueSize?: number;
     flushing?: boolean;
+    energySaver?: boolean;
 }
 
 export function normalizeHydrateProgress(
@@ -208,8 +212,10 @@ function buildIndexStatusHelp(
     quietCatchUp: boolean,
     progress: IndexProgressIndicator,
     job: { done: number; total: number } | null | undefined,
+    energySaver: boolean,
 ): string {
     let help = resolveIndexStatusHelpForMode(mode, quietCatchUp);
+    if (energySaver) help = `${help} ${ENERGY_SAVER_HELP}`;
     if (mode === 'updating' && job && job.total > 0) {
         const done = Math.min(job.total, Math.max(0, job.done));
         const pct = indexPercent(done, job.total);
@@ -332,17 +338,22 @@ export class IndexStatusReporter {
             const suffix = ` (${skippedPartial} note${skippedPartial === 1 ? '' : 's'} awaiting sidecar bytes)`;
             copy = { ...copy, label: `${copy.label}${suffix}`, compact: `${copy.compact}${suffix}` };
         }
-        const help = buildIndexStatusHelp(mode, quietCatchUp, progress, input.job ?? null);
+        const energySaver = !!input.energySaver;
+        const help = buildIndexStatusHelp(mode, quietCatchUp, progress, input.job ?? null, energySaver);
+        if (energySaver && (mode === 'ok' || mode === 'updating' || mode === 'none')) {
+            copy = { ...copy, compact: `${copy.compact} · Saver` };
+        }
         return {
             mode,
             health,
-            label: copy.label,
+            label: energySaver && mode === 'ok' ? `${copy.label} · Energy saver` : copy.label,
             compact: copy.compact,
             tone: copy.tone,
             help,
             quietCatchUp,
             hydrateProgress: hydrateLegacyFromProgress({ ...progress, units }, !!input.hydrating, mode),
             progress: { phase: progress.phase, units: blocked ? null : progress.units },
+            energySaver,
         };
     }
 }

@@ -87,6 +87,7 @@ import type { IndexProgressSnapshot } from '../ui/index-progress-snapshot';
 import {
     getBackendOverride, setBackendOverride, isWebgpuDemoted, clearWebgpuDemoted,
     getStartupWarm, setStartupWarm, isMobilePlatform,
+    getEnergySaver, setEnergySaver,
     getWorkerEmbedRoute, setWorkerEmbedRoute,
     getSidecarIndexRole, setSidecarIndexRole,
     getPendingEmbeddingModel, setPendingEmbeddingModel,
@@ -470,6 +471,15 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
         new Setting(containerEl).setName('Index').setHeading();
 
         this.renderStatusCard(containerEl);
+
+        new Setting(containerEl)
+            .setName('Energy saver')
+            .setDesc('This computer only (not synced). When on, Seek does not load the GPU to index when you hide Obsidian, waits 30 minutes of idle before embedding edited notes, unloads the model after a few quiet minutes, and skips sidecar compact while saving power. Search still loads the model when you query. Phones already unload the model after idle.')
+            .addToggle(t => t.setValue(getEnergySaver()).onChange(v => {
+                setEnergySaver(v);
+                this.plugin.notifyIndexActivityChanged();
+                this.paintStatusCard();
+            }));
 
         // Exclusion-change banner: shows while a backfill for a detected change in
         // Obsidian's "Excluded files" is running (e.g. a folder was un-excluded).

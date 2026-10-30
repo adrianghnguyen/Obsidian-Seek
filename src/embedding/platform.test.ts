@@ -20,6 +20,9 @@ import {
     RESIDENT_INT8_MAX_BYTES,
     getStartupWarm,
     setStartupWarm,
+    getEnergySaver,
+    setEnergySaver,
+    pauseBackgroundGpu,
     getSidecarIndexRole,
     setSidecarIndexRole,
     getPendingEmbeddingModel,
@@ -207,6 +210,29 @@ describe('residentInt8Enabled — B2 resident-block memory gate', () => {
         expect(Number.isInteger(rows)).toBe(true);
         expect(residentInt8Enabled(rows, embDim)).toBe(true);
         expect(residentInt8Enabled(rows + 1, embDim)).toBe(false);
+    });
+});
+
+describe('energy saver (per-device)', () => {
+    it('defaults off when the key is absent', () => {
+        expect(getEnergySaver()).toBe(false);
+    });
+
+    it('round-trips through localStorage', () => {
+        setEnergySaver(true);
+        expect(getEnergySaver()).toBe(true);
+        setEnergySaver(false);
+        expect(getEnergySaver()).toBe(false);
+    });
+
+    it('pauseBackgroundGpu is true on mobile even when saver is off', () => {
+        setDevice('iphone');
+        setEnergySaver(false);
+        expect(pauseBackgroundGpu()).toBe(true);
+        setDevice('desktop');
+        expect(pauseBackgroundGpu()).toBe(false);
+        setEnergySaver(true);
+        expect(pauseBackgroundGpu()).toBe(true);
     });
 });
 

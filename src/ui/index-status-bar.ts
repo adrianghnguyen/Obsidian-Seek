@@ -293,6 +293,7 @@ export class IndexStatusBar {
             help: 'Index matches your vault. Edits queue background catch-up automatically.',
             hydrateProgress: null,
             progress: IDLE_PROGRESS,
+            energySaver: false,
         };
         return buildIndexProgressSnapshot({
             report,
@@ -367,7 +368,7 @@ export class IndexStatusBar {
         this.paintedChunks = -1;
         this.paintedPercent = -1;
         this.labelEl?.removeClass('is-hidden');
-        this.filesEl?.setText('Seek');
+        this.filesEl?.setText(snap.report.energySaver ? 'Seek · Saver' : 'Seek');
         this.chunksEl?.addClass('is-hidden');
         this.paintMeter({ hidden: true, determinate: true, percent: 0 });
         this.paintChrome(snap.health, null, opts?.quietCatchUp);

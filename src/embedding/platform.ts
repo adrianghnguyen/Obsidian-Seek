@@ -104,6 +104,28 @@ export function setStartupWarm(on: boolean): void {
     catch { /* best-effort */ }
 }
 
+// ── Per-device energy saver ────────────────────────────────────────────────
+// Laptop battery vs always-on desktop GPU residency. Must not live in
+// data.json: that file syncs, and a desktop tower would inherit a laptop's
+// saver (or vice versa). Absent key = OFF (desktop keeps today's always-resident
+// embedder + 5-minute idle flush + hide-to-flush).
+const ENERGY_SAVER_KEY = 'seek-energy-saver';
+
+export function getEnergySaver(): boolean {
+    try { return window.localStorage.getItem(ENERGY_SAVER_KEY) === '1'; }
+    catch { return false; }
+}
+
+export function setEnergySaver(on: boolean): void {
+    try { window.localStorage.setItem(ENERGY_SAVER_KEY, on ? '1' : '0'); }
+    catch { /* best-effort */ }
+}
+
+/** Mobile memory mode, or a desktop that opted into energy saver. */
+export function pauseBackgroundGpu(): boolean {
+    return isMobilePlatform() || getEnergySaver();
+}
+
 // ── Per-device sidecar fleet role ──────────────────────────────────────────
 // Producer vs consumer must not live in data.json: that file syncs, and both
 // machines would claim the same role. localStorage is per Chromium install.

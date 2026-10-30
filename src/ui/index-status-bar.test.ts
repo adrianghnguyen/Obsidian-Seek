@@ -34,6 +34,7 @@ function reportOf(health: IndexStatusHealth, mode?: IndexStatusMode): IndexStatu
         hydrateProgress: null,
         progress: { phase: 'ready', units: null },
         quietCatchUp: false,
+        energySaver: false,
     };
 }
 
