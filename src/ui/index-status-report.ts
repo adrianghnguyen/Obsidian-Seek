@@ -8,7 +8,6 @@ import {
     classifyCatchUpPresentation,
     resolveIndexUiStatus,
     INDEX_STATUS_HELP,
-    ENERGY_SAVER_HELP,
     type IndexStatusHelpKey,
     INDEX_NO_INDEX_LABEL,
     INDEX_STARTING_LABEL,
@@ -212,10 +211,8 @@ function buildIndexStatusHelp(
     quietCatchUp: boolean,
     progress: IndexProgressIndicator,
     job: { done: number; total: number } | null | undefined,
-    energySaver: boolean,
 ): string {
     let help = resolveIndexStatusHelpForMode(mode, quietCatchUp);
-    if (energySaver) help = `${help} ${ENERGY_SAVER_HELP}`;
     if (mode === 'updating' && job && job.total > 0) {
         const done = Math.min(job.total, Math.max(0, job.done));
         const pct = indexPercent(done, job.total);
@@ -339,7 +336,7 @@ export class IndexStatusReporter {
             copy = { ...copy, label: `${copy.label}${suffix}`, compact: `${copy.compact}${suffix}` };
         }
         const energySaver = !!input.energySaver;
-        const help = buildIndexStatusHelp(mode, quietCatchUp, progress, input.job ?? null, energySaver);
+        const help = buildIndexStatusHelp(mode, quietCatchUp, progress, input.job ?? null);
         return {
             mode,
             health,

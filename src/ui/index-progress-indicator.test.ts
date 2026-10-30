@@ -117,7 +117,7 @@ describe('IndexStatusReporter acceptance', () => {
         expect(report.energySaver).toBe(true);
         expect(report.compact).toBe(INDEX_STATUS_COPY.ok.compact);
         expect(report.label).toBe(INDEX_STATUS_COPY.ok.label);
-        expect(report.help).toMatch(/Energy saver is on/);
+        expect(report.help).not.toMatch(/Energy saver/);
     });
 
     it('stuck outranks restore counts', () => {

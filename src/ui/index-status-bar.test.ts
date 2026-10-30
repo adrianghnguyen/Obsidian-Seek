@@ -770,7 +770,7 @@ describe('INDEX_STATUS_HEALTH stuck', () => {
         await Promise.resolve();
         await Promise.resolve();
         expect(root.querySelector('.seek-energy-saver-glyph')).not.toBeNull();
-        expect(root.querySelector('.seek-energy-saver-hint-text')?.textContent).toBe('Energy saver on');
+        expect(textOf(root.querySelector('.seek-index-hover') as unknown as StubEl)).not.toMatch(/skips GPU/);
         expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe('Seek');
     });
 });

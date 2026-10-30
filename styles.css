@@ -2430,14 +2430,6 @@
     color: var(--text-on-accent, #fff);
     background: var(--interactive-accent);
 }
-.seek-energy-saver-hint {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-top: 8px;
-    font-size: 12px;
-    color: var(--text-muted);
-}
 .seek-energy-saver-glyph {
     display: inline-flex;
     align-items: center;
@@ -2450,9 +2442,6 @@
 .seek-energy-saver-glyph svg {
     width: 16px;
     height: 16px;
-}
-.seek-energy-saver-hint-text {
-    color: var(--text-normal);
 }
 
 .seek-status-bar .seek-index-badge {
