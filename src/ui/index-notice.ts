@@ -178,6 +178,10 @@ export const INDEX_STATUS_HELP: Record<IndexStatusHelpKey, string> = {
     stuck: 'Startup or indexing took too long. Resume or rebuild from Settings → Seek.',
 };
 
+export const ENERGY_SAVER_ON_LABEL = 'Energy saver on';
+export const ENERGY_SAVER_HELP =
+    'Energy saver is on for this computer: Seek skips GPU work when you hide Obsidian, waits 30 minutes of idle before embedding edits, and unloads the model after a few quiet minutes. Search still loads the model when you query.';
+
 export function resolveIndexStatusHelp(
     health: IndexUiStatus,
     quietCatchUp = false,

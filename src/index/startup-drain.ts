@@ -13,8 +13,9 @@ export function shouldAutoDrainStartupCatchUp(opts: {
     mobile: boolean;
     catchUpPending: boolean;
     emptyIndexWithNotes?: boolean;
+    energySaver?: boolean;
 }): boolean {
-    if (opts.mobile) return false;
+    if (opts.mobile || opts.energySaver) return false;
     return opts.catchUpPending || !!opts.emptyIndexWithNotes;
 }
 

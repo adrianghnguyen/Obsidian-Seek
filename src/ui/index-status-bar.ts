@@ -293,6 +293,7 @@ export class IndexStatusBar {
             help: 'Index matches your vault. Edits queue background catch-up automatically.',
             hydrateProgress: null,
             progress: IDLE_PROGRESS,
+            energySaver: false,
         };
         return buildIndexProgressSnapshot({
             report,
@@ -507,6 +508,7 @@ export class IndexStatusBar {
             remaining: snap.remaining,
             eta: snap.eta,
             statusHelp: snap.report.help,
+            energySaver: snap.report.energySaver,
         });
         const health = snap.health;
         // One-click recovery lives on the hover card so a wedged startup is fixable

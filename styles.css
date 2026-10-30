@@ -2430,6 +2430,20 @@
     color: var(--text-on-accent, #fff);
     background: var(--interactive-accent);
 }
+.seek-energy-saver-glyph {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    flex: 0 0 auto;
+    color: var(--color-yellow, #e6b325);
+}
+.seek-energy-saver-glyph svg {
+    width: 16px;
+    height: 16px;
+}
+
 .seek-status-bar .seek-index-badge {
     min-width: 20px;
     height: 18px;

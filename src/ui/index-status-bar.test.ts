@@ -34,6 +34,7 @@ function reportOf(health: IndexStatusHealth, mode?: IndexStatusMode): IndexStatu
         hydrateProgress: null,
         progress: { phase: 'ready', units: null },
         quietCatchUp: false,
+        energySaver: false,
     };
 }
 
@@ -261,6 +262,23 @@ describe('IndexStatusBar', () => {
         expect(root.querySelector('progress')?.className).toContain('is-hidden');
         expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-good');
         expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)).toBeNull();
+    });
+
+    it('does not put an energy-saver glyph on the always-visible chip', () => {
+        const snap = buildIndexProgressSnapshot({
+            report: { ...reportOf('ok'), energySaver: true },
+            job: null,
+            speed: null,
+            coverage: { covered: 10, total: 10 },
+            inventoryFiles: 10,
+            inventoryChunks: 20,
+        });
+        const root = stubEl();
+        const bar = new IndexStatusBar();
+        bar.mount(root as unknown as HTMLElement, { ...hooks, getSnapshot: () => snap });
+        bar.hide();
+        expect(root.querySelector('.seek-energy-saver-glyph')).toBeNull();
+        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe('Seek');
     });
 
     it('hides file counts and the progress meter when Ready coverage is complete', () => {
@@ -736,5 +754,23 @@ describe('INDEX_STATUS_HEALTH stuck', () => {
         await Promise.resolve();
         await Promise.resolve();
         expect(root.querySelector('.seek-index-hover-recovery-btn')).toBeNull();
+    });
+
+    it('hover tooltip shows a battery glyph and Energy saver on', async () => {
+        const root = stubEl();
+        const bar = new IndexStatusBar();
+        bar.mount(root as unknown as HTMLElement, {
+            getStats: async () => ({ files: 5, chunks: 18, lastFullAt: null, lastFullDurationMs: null, lastUpdatedAt: null }),
+            getReport: () => ({ ...reportOf('ok'), energySaver: true }),
+            onOpenSettings: () => {},
+            onRecover: () => {},
+        });
+        expect(root.querySelector('.seek-energy-saver-glyph')).toBeNull();
+        root.fire('mouseenter');
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(root.querySelector('.seek-energy-saver-glyph')).not.toBeNull();
+        expect(textOf(root.querySelector('.seek-index-hover') as unknown as StubEl)).not.toMatch(/skips GPU/);
+        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe('Seek');
     });
 });

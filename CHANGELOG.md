@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Added
+
+- **Energy saver (this computer).** Settings → Seek → Index toggle, not synced. When on, Seek skips GPU indexing when you hide Obsidian, waits 30 minutes of idle before embedding edits, unloads the desktop model after a few quiet minutes, and does not keep catching up while the window is hidden. Search still loads the model when you query. The Seek status-bar chip is unchanged; hover shows only a yellow battery. The long explanation stays in Settings. Phones already unload the model after idle.
+
 ## 1.16.0-beta.9
 
 Search footer uses the same small catch-up guard as the status bar.

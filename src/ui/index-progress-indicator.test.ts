@@ -109,6 +109,17 @@ describe('IndexStatusReporter acceptance', () => {
         expect(visibleProgressText(report.compact)).not.toMatch(/0%/);
     });
 
+    it('energy saver does not change compact Ready copy', () => {
+        const report = IndexStatusReporter.compute({
+            ...idle,
+            energySaver: true,
+        });
+        expect(report.energySaver).toBe(true);
+        expect(report.compact).toBe(INDEX_STATUS_COPY.ok.compact);
+        expect(report.label).toBe(INDEX_STATUS_COPY.ok.label);
+        expect(report.help).not.toMatch(/Energy saver/);
+    });
+
     it('stuck outranks restore counts', () => {
         const report = IndexStatusReporter.compute({
             ...idle,

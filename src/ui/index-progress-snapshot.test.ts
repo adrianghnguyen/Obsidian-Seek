@@ -28,6 +28,7 @@ function reportOf(
         help: resolveIndexStatusHelpForMode(mode),
         hydrateProgress: null,
         progress: { phase: 'ready', units: null },
+        energySaver: false,
         ...over,
     };
 }

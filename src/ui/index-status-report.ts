@@ -116,6 +116,8 @@ export interface IndexStatusReport {
     hydrateProgress: IndexHydrateProgress | null;
     /** Sole progress snapshot for status chrome. */
     progress: IndexProgressIndicator;
+    /** Per-device energy saver (localStorage) — chrome must show when it is on. */
+    energySaver: boolean;
 }
 
 export interface IndexStatusReporterInput extends IndexUiStatusInput {
@@ -134,6 +136,7 @@ export interface IndexStatusReporterInput extends IndexUiStatusInput {
     /** Dirty note paths waiting for incremental flush (may have no job). */
     dirtyQueueSize?: number;
     flushing?: boolean;
+    energySaver?: boolean;
 }
 
 export function normalizeHydrateProgress(
@@ -332,6 +335,7 @@ export class IndexStatusReporter {
             const suffix = ` (${skippedPartial} note${skippedPartial === 1 ? '' : 's'} awaiting sidecar bytes)`;
             copy = { ...copy, label: `${copy.label}${suffix}`, compact: `${copy.compact}${suffix}` };
         }
+        const energySaver = !!input.energySaver;
         const help = buildIndexStatusHelp(mode, quietCatchUp, progress, input.job ?? null);
         return {
             mode,
@@ -343,6 +347,7 @@ export class IndexStatusReporter {
             quietCatchUp,
             hydrateProgress: hydrateLegacyFromProgress({ ...progress, units }, !!input.hydrating, mode),
             progress: { phase: progress.phase, units: blocked ? null : progress.units },
+            energySaver,
         };
     }
 }

@@ -12,7 +12,7 @@
  * - **Exclusion Folder Watcher (`reconcileFolderExclusions`)**: Diffs active vault folders against
  *   settings exclusions, purging newly excluded folders or queueing newly included notes.
  * - **Mobile Memory Watchdog (`maybeUnloadEmbedder`)**: Unloads the ~240 MB embedder iframe after
- *   3 minutes of quiescence (`IDLE_UNLOAD_MS`) on mobile platforms to prevent OS memory kills.
+ *   3 minutes of quiescence (`IDLE_UNLOAD_MS`) on mobile, or on desktop when energy saver is on.
  *
  * ## Order Dependencies & Lifecycle
  * - **Dependency tier**: Host Integration & Lifecycle Scheduler Layer.
@@ -36,7 +36,7 @@ import type { LocalEmbedder } from '../embedding/embedder';
 import type { IndexStore } from '../index/index-store';
 import type { IndexStatusBar } from '../ui/index-status-bar';
 import type { SeekLogger } from '../diagnostics/logger';
-import { isMobilePlatform } from '../embedding/platform';
+import { getEnergySaver, isMobilePlatform, pauseBackgroundGpu } from '../embedding/platform';
 import { CompositorPacer } from '../index/pacer';
 import {
     diffExcludedPaths,
@@ -65,7 +65,13 @@ export function isIndexableFile(f: TFile, indexBases: boolean): boolean {
 // mid-thought); deletes/moves apply on a short window (they're model-free and a
 // dead search result is jarring). See wireIncrementalIndexing.
 export const IDLE_FLUSH_MS = 5 * 60 * 1000;
+/** Energy saver: keep structural deletes fast; stretch edit embeds well past 5 min. */
+export const ENERGY_SAVER_IDLE_FLUSH_MS = 30 * 60 * 1000;
 export const STRUCT_FLUSH_MS = 1500;
+
+export function idleFlushDelayMs(): number {
+    return getEnergySaver() ? ENERGY_SAVER_IDLE_FLUSH_MS : IDLE_FLUSH_MS;
+}
 
 // Mobile-only embedder unload (see maybeUnloadEmbedder). After this long with no
 // model use in a quiescent state, tear down the iframe to release its ~240 MB
@@ -211,14 +217,13 @@ export class PluginSchedulerManager {
         // poll its effective excluded live-path set every 5s.
         registerInterval(window.setInterval(() => this.pollExclusionChanges(), 5000));
 
-        // Mobile: reset the WASM heap during genuine idle.
-        if (isMobilePlatform()) {
-            registerInterval(window.setInterval(() => {
-                if (Date.now() - this.host.lastModelUseAt >= IDLE_UNLOAD_MS) {
-                    this.host.maybeUnloadEmbedder('idle');
-                }
-            }, UNLOAD_CHECK_MS));
-        }
+        // Mobile, or desktop energy saver: reset the WASM/GPU heap during idle.
+        registerInterval(window.setInterval(() => {
+            if (!pauseBackgroundGpu()) return;
+            if (Date.now() - this.host.lastModelUseAt >= IDLE_UNLOAD_MS) {
+                this.host.maybeUnloadEmbedder('idle');
+            }
+        }, UNLOAD_CHECK_MS));
     }
 
     // Enqueue a note for re-index only if it actually changed since we last
@@ -247,7 +252,7 @@ export class PluginSchedulerManager {
         this.idleTimer = window.setTimeout(() => {
             this.idleTimer = null;
             void this.flushDirty();
-        }, IDLE_FLUSH_MS);
+        }, idleFlushDelayMs());
     }
 
     // Short debounce for structural changes — model-free, so flush them soon
@@ -265,6 +270,13 @@ export class PluginSchedulerManager {
     // reclaim the WebView.
     flushOnBackground(): void {
         const active = this.host.app.workspace.getActiveFile();
+        // Energy saver: queue the note you were editing, but do not force-load the
+        // GPU on alt-tab. Idle flush (30 min) or the next search still embeds.
+        if (getEnergySaver()) {
+            if (active) void this.enqueueIfDirty(active);
+            if (!this.host.unloading) this.host.maybeUnloadEmbedder('background');
+            return;
+        }
         const flushed = active
             ? this.enqueueIfDirty(active).then(() => this.flushDirty())
             : this.flushDirty();
@@ -328,6 +340,7 @@ export class PluginSchedulerManager {
             // cold delta still loads, because the user is actively in that note.
             const coldMobile = isMobilePlatform() && !this.host.embedder.loaded;
             const coldDesktopBulk = !isMobilePlatform() && !this.host.embedder.loaded && bulk;
+            const energySaverCold = getEnergySaver() && !this.host.embedder.loaded;
             // Peer-ahead grind-stop (mobile): a newer-version peer index exists that this
             // build can't read, so any local embed now is throwaway work (discarded the
             // moment the user updates Seek and hydrates the peer's index). Defer instead —
@@ -335,7 +348,7 @@ export class PluginSchedulerManager {
             // tells the user to update. Mobile-only: desktop embedding isn't jetsam-bound
             // and a desktop is the fleet's heal path.
             const peerAheadDefer = isMobilePlatform() && (this.host.orchestrator?.peerAhead ?? false);
-            const deferEmbed = coldMobile || coldDesktopBulk || peerAheadDefer;
+            const deferEmbed = coldMobile || coldDesktopBulk || peerAheadDefer || energySaverCold;
             if (!deferEmbed) await this.host.ensureModelLoaded();
 
             if (bulk) {
@@ -465,7 +478,7 @@ export class PluginSchedulerManager {
             newlyIncludedFolders: diff.newlyIncludedFolders,
             newlyExcludedFolders: diff.newlyExcludedFolders,
         });
-        if (isMobilePlatform()) {
+        if (pauseBackgroundGpu()) {
             this.host.scheduleStartupCatchUp();
             return;
         }

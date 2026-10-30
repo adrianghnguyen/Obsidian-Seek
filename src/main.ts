@@ -127,7 +127,7 @@ import {
     type StoredStartupBoot,
 } from './diagnostics/session-telemetry';
 import { SeekSettingTab } from './settings/settings-tab';
-import { collectPlatformInfo, isMobilePlatform, resolveDevice, recordActiveBackend, maybeDemoteOnCrash, getStartupWarm, getSidecarIndexRole } from './embedding/platform';
+import { collectPlatformInfo, isMobilePlatform, resolveDevice, recordActiveBackend, maybeDemoteOnCrash, getStartupWarm, getSidecarIndexRole, getEnergySaver, pauseBackgroundGpu } from './embedding/platform';
 import { CompositorPacer, cheapYield } from './index/pacer';
 import { shouldUnloadEmbedder, type UnloadGateState } from './embedding/embedder-lifecycle';
 import { IndexDeltaTracker, type IndexDeltaSnapshot } from './index/index-delta-view';
@@ -559,6 +559,7 @@ export default class SeekPlugin extends Plugin {
             sidecarSkippedPartialNotes: this.sidecarSkippedPartialNotes,
             dirtyQueueSize: this.dirtyQueue.size,
             flushing: this.flushing,
+            energySaver: getEnergySaver(),
         });
     }
 
@@ -2546,7 +2547,7 @@ export default class SeekPlugin extends Plugin {
             // dead records (superseded re-appends + un-tombstoned orphans). Model-free
             // byte-copy, so mobile-safe; reclaims the disk a full reindex would otherwise
             // be the only thing to free — and the only GC reaching an off-grid device.
-            if (!this.sidecarCompactDone && !this.sidecarCompactRunning) {
+            if (!getEnergySaver() && !this.sidecarCompactDone && !this.sidecarCompactRunning) {
                 this.sidecarCompactRunning = true;
                 try {
                     const r = await this.orchestrator.compactOwnSidecar();
@@ -2593,7 +2594,7 @@ export default class SeekPlugin extends Plugin {
             // no model — and below its count gate it costs one directory listing,
             // so a heavy editing session gets folded down the same day instead of
             // waiting weeks for compaction's byte floor.
-            if (!this.sidecarCoalesceFailed && !this.sidecarCoalesceRunning) {
+            if (!getEnergySaver() && !this.sidecarCoalesceFailed && !this.sidecarCoalesceRunning) {
                 this.sidecarCoalesceRunning = true;
                 try {
                     const c = await this.orchestrator.coalesceOwnSidecar();
@@ -3443,12 +3444,13 @@ export default class SeekPlugin extends Plugin {
             mobile: isMobilePlatform(),
         }) === 'embed';
         if (!this.embedder.loaded && allowEmbed) {
+            if (getEnergySaver()) return;
             this.scheduleStartupCatchUp();
             return;
         }
         // Desktop drains in background (headless CLI, minimized window). Mobile
-        // stays lazy while hidden — main-thread embed jank (G_catchup_ux probe).
-        if ((isMobilePlatform() && activeDocument.hidden) || this.indexingBlocked) return;
+        // and energy saver stay lazy while hidden — no GPU catch-up off-screen.
+        if ((pauseBackgroundGpu() && activeDocument.hidden) || this.indexingBlocked) return;
         // Peer-ahead grind-stop: while a newer-version peer index exists, draining the
         // deferred backlog would re-embed (on the iOS main thread) chunks this build will
         // discard the moment it updates. Leave catchUpPending set so the drain resumes
@@ -3461,6 +3463,7 @@ export default class SeekPlugin extends Plugin {
         this.bumpIndexingProgressHeartbeat();
         const orchestrator = this.orchestrator;
         const mobile = isMobilePlatform();
+        const savePower = pauseBackgroundGpu();
         const pacer = new CompositorPacer();
         const workGen = this.loadGeneration;
         void (async () => {
@@ -3492,7 +3495,7 @@ export default class SeekPlugin extends Plugin {
                 // Desktop catch-up is allowed to drain while the window is hidden;
                 // only mobile pauses for backgrounding (the WebContent/jetsam path).
                 // Keep this predicate aligned with runCatchUp's entry guard above.
-                const shouldPauseForHidden = () => mobile && activeDocument.hidden;
+                const shouldPauseForHidden = () => savePower && activeDocument.hidden;
                 // Drain first — never block on warm/restore (G_catchup_ux). Search
                 // serves stale frame / persisted BM25 during bursts; warm runs after
                 // idle or on the search hot path.
@@ -3623,6 +3626,7 @@ export default class SeekPlugin extends Plugin {
         } else if (shouldAutoDrainStartupCatchUp({
             mobile: isMobilePlatform(),
             catchUpPending: this.catchUpPending,
+            energySaver: getEnergySaver(),
         }) && this.catchUpPending) {
             this.scheduleIndexBuild('catchup');
         } else {
@@ -3702,6 +3706,7 @@ export default class SeekPlugin extends Plugin {
         if (!shouldAutoDrainStartupCatchUp({
             mobile: isMobilePlatform(),
             catchUpPending: this.catchUpPending,
+            energySaver: getEnergySaver(),
         })) return;
         const workGen = this.loadGeneration;
         void (async () => {

@@ -5,9 +5,11 @@ import {
     type PluginSchedulerHost,
     isIndexableFile,
     IDLE_FLUSH_MS,
+    ENERGY_SAVER_IDLE_FLUSH_MS,
     STRUCT_FLUSH_MS,
     BULK_DELTA_THRESHOLD,
 } from './plugin-schedulers';
+import { setEnergySaver } from '../embedding/platform';
 
 describe('isIndexableFile', () => {
     it('indexes .md files regardless of indexBases', () => {
@@ -38,6 +40,13 @@ describe('PluginSchedulerManager', () => {
     beforeEach(() => {
         vi.useFakeTimers();
         storedFiles = new Map();
+        let ls: Record<string, string> = {};
+        vi.stubGlobal('localStorage', {
+            getItem: (k: string) => (k in ls ? ls[k] : null),
+            setItem: (k: string, v: string) => { ls[k] = String(v); },
+            removeItem: (k: string) => { delete ls[k]; },
+            clear: () => { ls = {}; },
+        });
 
         host = {
             app: {
@@ -190,6 +199,26 @@ describe('PluginSchedulerManager', () => {
             expect(schedulers.idleTimer).toBeNull();
         });
 
+        it('scheduleFlush stretches past 5 min when energy saver is on', () => {
+            setEnergySaver(true);
+            const flushSpy = vi.spyOn(schedulers, 'flushDirty').mockResolvedValue();
+            schedulers.scheduleFlush();
+            vi.advanceTimersByTime(IDLE_FLUSH_MS);
+            expect(flushSpy).not.toHaveBeenCalled();
+            vi.advanceTimersByTime(ENERGY_SAVER_IDLE_FLUSH_MS - IDLE_FLUSH_MS);
+            expect(flushSpy).toHaveBeenCalled();
+            setEnergySaver(false);
+        });
+
+        it('flushOnBackground does not drain GPU when energy saver is on', () => {
+            setEnergySaver(true);
+            const flushSpy = vi.spyOn(schedulers, 'flushDirty').mockResolvedValue();
+            schedulers.flushOnBackground();
+            expect(flushSpy).not.toHaveBeenCalled();
+            expect(host.maybeUnloadEmbedder).toHaveBeenCalledWith('background');
+            setEnergySaver(false);
+        });
+
         it('flushStructuralSoon debounces with STRUCT_FLUSH_MS', () => {
             schedulers.flushStructuralSoon();
             expect(schedulers.structTimer).not.toBeNull();
@@ -235,6 +264,16 @@ describe('PluginSchedulerManager', () => {
 
             expect(host.beginIndexJob).toHaveBeenCalledWith('catchup', BULK_DELTA_THRESHOLD + 5, expect.any(String));
             expect(host.indexProgress.hide).toHaveBeenCalledWith(42);
+        });
+
+        it('defers embed on a cold model when energy saver is on', async () => {
+            setEnergySaver(true);
+            (host.embedder as { loaded: boolean }).loaded = false;
+            schedulers.dirtyQueue.add('note1.md');
+            await schedulers.flushDirty();
+            expect(host.ensureModelLoaded).not.toHaveBeenCalled();
+            expect(host.orchestrator?.reindexDelta).toHaveBeenCalled();
+            setEnergySaver(false);
         });
 
         it('re-arms flush if new edits arrive while already flushing', async () => {

@@ -24,6 +24,12 @@ describe('shouldAutoDrainStartupCatchUp', () => {
         expect(shouldAutoDrainStartupCatchUp({ mobile: true, catchUpPending: true })).toBe(false);
     });
 
+    it('keeps energy saver lazy like mobile', () => {
+        expect(shouldAutoDrainStartupCatchUp({
+            mobile: false, catchUpPending: true, energySaver: true,
+        })).toBe(false);
+    });
+
     it('drains an empty desktop index when the vault has notes', () => {
         expect(shouldAutoDrainStartupCatchUp({
             mobile: false, catchUpPending: false, emptyIndexWithNotes: true,

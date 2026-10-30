@@ -11,6 +11,7 @@ import {
     formatIndexCountPlain,
 } from './index-progress-format';
 import { INDEX_STATUS_COPY, normalizeHydrateProgress, type IndexHydrateProgress, type IndexStatusHealth, type IndexStatusMode } from './index-status-report';
+import { ENERGY_SAVER_ON_LABEL } from './index-notice';
 import type { IndexProgressIndicator } from './index-progress-indicator';
 
 export type { IndexStatusHealth, IndexStatusMode };
@@ -242,6 +243,7 @@ export function renderIndexStatusCard(
         quietCatchUp?: boolean;
         statusHelp?: string;
         contextHint?: string;
+        energySaver?: boolean;
     },
 ): HTMLElement {
     const model = indexWaitCardModel(opts);
@@ -263,6 +265,11 @@ export function renderIndexStatusCard(
         cls: 'seek-status-label',
         text: aligning ? INDEX_ALIGNING_EXCLUSIONS_LABEL : st.label,
     });
+    if (opts.energySaver) {
+        const glyph = labelRow.createSpan({ cls: 'seek-energy-saver-glyph' });
+        setIcon(glyph, 'battery');
+        glyph.setAttr('aria-label', ENERGY_SAVER_ON_LABEL);
+    }
     if (opts.statusHelp) {
         const info = labelRow.createSpan({ cls: 'seek-status-info' });
         setIcon(info, 'info');
