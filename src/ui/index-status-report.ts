@@ -340,13 +340,10 @@ export class IndexStatusReporter {
         }
         const energySaver = !!input.energySaver;
         const help = buildIndexStatusHelp(mode, quietCatchUp, progress, input.job ?? null, energySaver);
-        if (energySaver && (mode === 'ok' || mode === 'updating' || mode === 'none')) {
-            copy = { ...copy, compact: `${copy.compact} · Saver` };
-        }
         return {
             mode,
             health,
-            label: energySaver && mode === 'ok' ? `${copy.label} · Energy saver` : copy.label,
+            label: copy.label,
             compact: copy.compact,
             tone: copy.tone,
             help,

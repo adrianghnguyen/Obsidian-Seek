@@ -368,7 +368,7 @@ export class IndexStatusBar {
         this.paintedChunks = -1;
         this.paintedPercent = -1;
         this.labelEl?.removeClass('is-hidden');
-        this.filesEl?.setText(snap.report.energySaver ? 'Seek · Saver' : 'Seek');
+        this.filesEl?.setText('Seek');
         this.chunksEl?.addClass('is-hidden');
         this.paintMeter({ hidden: true, determinate: true, percent: 0 });
         this.paintChrome(snap.health, null, opts?.quietCatchUp);
@@ -508,6 +508,7 @@ export class IndexStatusBar {
             remaining: snap.remaining,
             eta: snap.eta,
             statusHelp: snap.report.help,
+            energySaver: snap.report.energySaver,
         });
         const health = snap.health;
         // One-click recovery lives on the hover card so a wedged startup is fixable
