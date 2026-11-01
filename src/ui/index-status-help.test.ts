@@ -121,6 +121,45 @@ describe('index status help / tooltips', () => {
         expect(report.compact).not.toBe(INDEX_STATUS_COPY['catch-up-paused'].compact);
     });
 
+    it('running tiny leftover with energy saver stays quiet-icon, not Catching up 4', () => {
+        const report = IndexStatusReporter.compute({
+            ...baseInput,
+            inventoryFiles: 3000,
+            searchableChunks: 800,
+            energySaver: true,
+            catchUpPending: true,
+            catchUpRunning: true,
+            indexing: true,
+            jobKind: 'catchup',
+            job: { done: 0, total: 4 },
+        });
+        expect(report.quietCatchUp).toBe(true);
+        expect(report.mode).toBe('ok');
+        expect(report.health).toBe('ok');
+        expect(report.compact).toBe(INDEX_STATUS_COPY.ok.compact);
+        expect(report.progress.units).toBeNull();
+        expect(report.mode).not.toBe('catching-up');
+    });
+
+    it('held 4-file leftover with energy saver is muted pause, not an orange remaining badge', () => {
+        const report = IndexStatusReporter.compute({
+            ...baseInput,
+            inventoryFiles: 3000,
+            searchableChunks: 800,
+            energySaver: true,
+            catchUpPending: true,
+            catchUpRunning: false,
+            indexing: false,
+            jobKind: 'catchup',
+            job: { done: 0, total: 4 },
+        });
+        expect(report.mode).toBe('catch-up-paused');
+        expect(report.quietCatchUp).toBeFalsy();
+        expect(report.progress.units).toBeNull();
+        expect(report.compact).toBe(INDEX_STATUS_COPY['catch-up-paused'].compact);
+        expect(report.help).toMatch(/4 notes waiting/);
+    });
+
     it('queued 1-file catch-up keeps reporter mode Ready (compact chrome), not Catching up', () => {
         const report = IndexStatusReporter.compute({
             ...baseInput,

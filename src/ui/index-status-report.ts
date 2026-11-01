@@ -343,6 +343,9 @@ export class IndexStatusReporter {
             dropRecovering: !!input.dropRecovering,
         });
         let quietCatchUpOut = quietCatchUp;
+        /* Held leftover (including sub-1%): muted pause, still no remaining on the
+         * chip. A running tiny pass never reaches here (held is false) and keeps
+         * quietCatchUp glow. */
         if (held && (mode === 'ok' || mode === 'starting' || mode === 'catching-up' || mode === 'updating' || mode === 'indexing')) {
             mode = 'catch-up-paused';
             quietCatchUpOut = false;

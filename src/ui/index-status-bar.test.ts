@@ -264,6 +264,45 @@ describe('IndexStatusBar', () => {
         expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)).toBeNull();
     });
 
+    it('running 4-file leftover with energy saver paints quiet glow, not orange 4 / 0/4', () => {
+        const report = IndexStatusReporter.compute({
+            booting: false,
+            hydrating: false,
+            goodEnough: true,
+            waitingForSidecar: false,
+            peerSyncPending: false,
+            health: 'healthy',
+            reason: null,
+            indexing: true,
+            catchUpPending: true,
+            catchUpRunning: true,
+            searchableChunks: 900,
+            inventoryFiles: 3000,
+            jobKind: 'catchup',
+            job: { done: 0, total: 4 },
+            energySaver: true,
+        });
+        const snap = buildIndexProgressSnapshot({
+            report,
+            job: { done: 0, total: 4, kind: 'catchup' },
+            speed: { done: 0, total: 4, chunksDone: 0, tokensDone: 0, elapsedMs: 0, paused: false, kind: 'catchup' },
+            inventoryFiles: 3000,
+            coverage: { covered: 3000, total: 3000 },
+        });
+        const root = stubEl();
+        const bar = new IndexStatusBar();
+        bar.mount(root as unknown as HTMLElement, { ...hooks, getSnapshot: () => snap, getReport: () => report });
+        bar.show(4, 'Seek: indexing…', { id: 1, kind: 'catchup' });
+        bar.update(0, 4, undefined, 1);
+        expect(report.quietCatchUp).toBe(true);
+        expect(snap.phase).toBe('idle');
+        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe('Seek');
+        expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)).toBeNull();
+        expect(root.querySelector('progress')?.className).toContain('is-hidden');
+        expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-glow');
+        expect(root.querySelector('.seek-dot')?.className).not.toContain('seek-dot-paused');
+    });
+
     it('energy-saver held catch-up paints a paused dot, not an orange remaining badge', () => {
         const report = IndexStatusReporter.compute({
             booting: false,
