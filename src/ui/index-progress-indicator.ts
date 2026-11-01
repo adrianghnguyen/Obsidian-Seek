@@ -20,6 +20,7 @@ export type IndexProgressWorkPhase =
     | 'verifying'
     | 'indexing'
     | 'catching-up'
+    | 'catch-up-paused'
     | 'recovering'
     | 'stuck'
     | 'locked'

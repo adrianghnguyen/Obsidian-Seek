@@ -442,6 +442,38 @@ describe('indexFooterStatus', () => {
         }).showInfo).toBe(true);
     });
 
+    it('energy-saver held catch-up is compact Paused with (i), not an indexing badge', () => {
+        expect(indexFooterStatus({
+            ...idle,
+            statusReport: {
+                mode: 'catch-up-paused',
+                compact: 'Paused',
+                tone: 'mid',
+                health: 'ok',
+                help: INDEX_STATUS_HELP['catch-up-paused'],
+            },
+            job: { done: 0, total: 4, kind: 'catchup' },
+            remaining: 4,
+        })).toMatchObject({
+            label: 'Paused',
+            icon: 'pause',
+            tone: 'mid',
+            showInfo: true,
+            help: INDEX_STATUS_HELP['catch-up-paused'],
+        });
+        expect(indexFooterStatus({
+            ...idle,
+            statusReport: {
+                mode: 'catch-up-paused',
+                compact: 'Paused',
+                tone: 'mid',
+                health: 'ok',
+                help: INDEX_STATUS_HELP['catch-up-paused'],
+            },
+            job: { done: 0, total: 4, kind: 'catchup' },
+        }).badgeCount).toBeUndefined();
+    });
+
     it('puts extra copy on a hoverable (i) for every footer kind', () => {
         const cases: IndexFooterInput[] = [
             idle,

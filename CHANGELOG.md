@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Fixed
+
+- **Catch-up paused under energy saver.** When energy saver holds background catch-up, the status bar no longer shows Catching up with an orange leftover count. Chrome is **Paused** (muted pause mark); Settings Index explains that queued notes wait until energy saver is off, you search, or Obsidian is in the foreground. A live embed pass is unchanged.
+
 ## 1.16.0
 
 Stable 1.16: telescope preview, modal/preview width presets, quieter catch-up chrome, and per-machine energy saver. Covers `1.16.0-beta.1`–`beta.9` plus energy saver.

@@ -139,6 +139,7 @@ export function resolveIndexProgressPhase(input: {
 }): IndexProgressPhase {
     const { health, hydrate, job, indicator, quietCatchUp } = input;
     if (quietCatchUp && health === 'ok') return 'idle';
+    if (indicator?.phase === 'catch-up-paused') return 'idle';
     if (health === 'error' || indicator?.phase === 'error') return 'error';
     if (health === 'locked' || indicator?.phase === 'locked') return 'locked';
     if (health === 'stuck' || indicator?.phase === 'stuck') return 'stuck';

@@ -355,6 +355,7 @@ export function renderSettingsIndexStatusCard(
         stats: IndexStatusCardStats | null;
         job?: IndexStatusJob | null;
         quietCatchUp?: boolean;
+        energySaver?: boolean;
         /** When set, overrides mode-based help (reporter snapshot). */
         help?: string;
         coverage?: CoverageDiagView | null;
@@ -378,8 +379,10 @@ export function renderSettingsIndexStatusCard(
         remaining: opts.remaining,
         eta: opts.eta,
         stats: opts.stats,
-        job: opts.job,
+        job: opts.mode === 'catch-up-paused' ? null : opts.job,
         quietCatchUp: opts.quietCatchUp,
+        pausedCatchUp: opts.mode === 'catch-up-paused',
+        energySaver: opts.energySaver,
         statusHelp,
         contextHint,
     });

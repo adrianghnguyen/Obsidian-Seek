@@ -264,6 +264,47 @@ describe('IndexStatusBar', () => {
         expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)).toBeNull();
     });
 
+    it('energy-saver held catch-up paints a paused dot, not an orange remaining badge', () => {
+        const report = IndexStatusReporter.compute({
+            booting: false,
+            hydrating: false,
+            goodEnough: true,
+            waitingForSidecar: false,
+            peerSyncPending: false,
+            health: 'healthy',
+            reason: null,
+            indexing: false,
+            catchUpPending: true,
+            catchUpRunning: false,
+            searchableChunks: 900,
+            inventoryFiles: 244,
+            dirtyQueueSize: 4,
+            energySaver: true,
+        });
+        const snap = buildIndexProgressSnapshot({
+            report,
+            job: { done: 0, total: 4, kind: 'catchup' },
+            speed: null,
+            inventoryFiles: 244,
+            coverage: { covered: 244, total: 244 },
+            dirtyQueueSize: 4,
+        });
+        const root = stubEl();
+        const labels: string[] = [];
+        root.setAttr = (key, value) => { if (key === 'aria-label') labels.push(value); };
+        const bar = new IndexStatusBar();
+        bar.mount(root as unknown as HTMLElement, { ...hooks, getSnapshot: () => snap, getReport: () => report });
+        bar.hide();
+        expect(report.mode).toBe('catch-up-paused');
+        expect(snap.phase).toBe('idle');
+        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe('Seek');
+        expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)).toBeNull();
+        expect(root.querySelector('progress')?.className).toContain('is-hidden');
+        expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-paused');
+        expect(labels.join(' ')).toMatch(/Energy saver is holding background catch-up/);
+        expect(labels.join(' ')).not.toMatch(/embedding queued/);
+    });
+
     it('does not put an energy-saver glyph on the always-visible chip', () => {
         const snap = buildIndexProgressSnapshot({
             report: { ...reportOf('ok'), energySaver: true },

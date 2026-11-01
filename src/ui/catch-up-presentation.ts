@@ -73,6 +73,28 @@ export function honestIndexingRemaining(input: {
     return input.remaining;
 }
 
+/**
+ * Energy saver is holding background catch-up: queued notes exist, but no
+ * embed pass is running. Chrome must not look like Catching up / Indexing.
+ */
+export function isCatchUpHeldByEnergySaver(input: {
+    energySaver?: boolean;
+    catchUpRunning?: boolean;
+    catchUpPending?: boolean;
+    dirtyQueueSize?: number;
+    jobKind?: CatchUpJobKind | null;
+    hydrating?: boolean;
+    waitingForSidecar?: boolean;
+    dropRecovering?: boolean;
+}): boolean {
+    if (!input.energySaver) return false;
+    if (input.catchUpRunning) return false;
+    if (input.hydrating || input.waitingForSidecar || input.dropRecovering) return false;
+    if (input.jobKind === 'full') return false;
+    const dirty = Math.max(0, Math.floor(input.dirtyQueueSize ?? 0) || 0);
+    return !!input.catchUpPending || dirty > 0 || isCatchUpEmbedKind(input.jobKind ?? null);
+}
+
 export function shouldPreferPassCountsOverCoverage(input: {
     jobKind?: CatchUpJobKind | null;
     quietCatchUp?: boolean;

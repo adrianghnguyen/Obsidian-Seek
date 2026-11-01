@@ -362,7 +362,7 @@ export class IndexStatusBar {
         this.setStatusLabel(label, tip);
     }
 
-    private paintBare(snap: IndexProgressSnapshot, opts?: { quietCatchUp?: boolean }): void {
+    private paintBare(snap: IndexProgressSnapshot, opts?: { quietCatchUp?: boolean; pausedCatchUp?: boolean }): void {
         this.paintedDone = -1;
         this.paintedTotal = -1;
         this.paintedChunks = -1;
@@ -371,7 +371,7 @@ export class IndexStatusBar {
         this.filesEl?.setText('Seek');
         this.chunksEl?.addClass('is-hidden');
         this.paintMeter({ hidden: true, determinate: true, percent: 0 });
-        this.paintChrome(snap.health, null, opts?.quietCatchUp);
+        this.paintChrome(snap.health, null, opts?.quietCatchUp, opts?.pausedCatchUp);
         const label = `Seek: ${snap.report.compact}`;
         this.setStatusLabel(label, this.statusTooltip(snap, label));
     }
@@ -410,6 +410,10 @@ export class IndexStatusBar {
     private paintFromSnapshot(snap: IndexProgressSnapshot, force: boolean): void {
         if (snap.quietCatchUp) {
             this.paintBare(snap, { quietCatchUp: true });
+            return;
+        }
+        if (snap.mode === 'catch-up-paused') {
+            this.paintBare(snap, { pausedCatchUp: true });
             return;
         }
         if (snap.health === 'updating') {
@@ -472,10 +476,10 @@ export class IndexStatusBar {
         this.paintFromSnapshot(this.progressSnapshot(), true);
     }
 
-    private paintChrome(health: IndexStatusHealth, remaining: number | null, quietCatchUp = false): void {
+    private paintChrome(health: IndexStatusHealth, remaining: number | null, quietCatchUp = false, pausedCatchUp = false): void {
         if (!this.chromeEl) return;
         this.chromeEl.empty();
-        renderIndexStatusBadge(this.chromeEl, { health, remaining, quietCatchUp });
+        renderIndexStatusBadge(this.chromeEl, { health, remaining, quietCatchUp, pausedCatchUp });
     }
 
     private setStatusLabel(text: string, tooltip?: string): void {
@@ -509,6 +513,7 @@ export class IndexStatusBar {
             eta: snap.eta,
             statusHelp: snap.report.help,
             energySaver: snap.report.energySaver,
+            pausedCatchUp: snap.mode === 'catch-up-paused',
         });
         const health = snap.health;
         // One-click recovery lives on the hover card so a wedged startup is fixable
