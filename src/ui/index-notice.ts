@@ -40,6 +40,7 @@ import {
 export {
     MINOR_CATCHUP_FRACTION,
     classifyCatchUpPresentation,
+    isCatchUpHeldByEnergySaver,
     type CatchUpPresentation,
     type CatchUpPresentationInput,
 } from './catch-up-presentation';
@@ -157,6 +158,7 @@ export type IndexStatusHelpKey =
     | IndexUiStatus
     | 'quiet-catchup'
     | 'catching-up'
+    | 'catch-up-paused'
     | 'full-reindex'
     | 'verifying'
     | 'recovering';
@@ -169,6 +171,7 @@ export const INDEX_STATUS_HELP: Record<IndexStatusHelpKey, string> = {
     'quiet-catchup': 'Search is up to date. Seek is updating embeddings for a small number of edited notes in the background.',
     updating: 'Seek is catching up on a larger batch of edited notes. Search stays available; the yellow dot means a bigger background pass.',
     'catching-up': 'Seek is embedding queued edits so search stays current. The orange badge shows files left in this pass.',
+    'catch-up-paused': 'Energy saver is holding background catch-up. Queued notes wait until you turn energy saver off, search, or bring Obsidian to the foreground.',
     'full-reindex': 'Seek is rebuilding the whole vault index. Progress counts are for this full pass.',
     verifying: 'Seek is walking the vault to verify sidecar index files — no re-embedding unless a mismatch is found.',
     recovering: 'Seek is recovering index files after a failed drop or reset — restoring from disk before search catches up.',
@@ -262,13 +265,15 @@ export interface IndexFooterInput {
     uiHealth?: IndexUiStatus;
     /** Authoritative snapshot — footer labels must match status bar + Settings. */
     statusReport?: {
-        mode: IndexUiStatus | 'full-reindex' | 'catching-up' | 'recovering' | 'verifying';
+        mode: IndexUiStatus | 'full-reindex' | 'catching-up' | 'catch-up-paused' | 'recovering' | 'verifying';
         compact: string;
         tone: string;
         health: IndexUiStatus;
         label?: string;
         /** Longer hover / aria copy — same producer as status bar tooltips. */
         help?: string;
+        /** Same flag as IndexStatusReport.energySaver — footer must not call getEnergySaver. */
+        energySaver?: boolean;
         quietCatchUp?: boolean;
         hydrateProgress?: { done: number; total: number; percent?: number } | null;
         progress?: { phase: string; units: { done: number; total: number; percent: number; determinate: boolean } | null };
@@ -670,6 +675,16 @@ function indexFooterStatusCore(input: IndexFooterInput): IndexFooterStatus {
         }
         if (report.mode === 'error' || report.health === 'error') {
             return { kind: 'error', label: report.compact, icon: 'alert-triangle', tone: 'bad', help: footHelp };
+        }
+        if (report.mode === 'catch-up-paused') {
+            return {
+                kind: 'up-to-date',
+                label: report.compact,
+                icon: 'pause',
+                tone: 'mid',
+                help: footHelp,
+                showInfo: true,
+            };
         }
         const catchUpChrome = applyFooterCatchUp(input);
         if (catchUpChrome) return catchUpChrome;

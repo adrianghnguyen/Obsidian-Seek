@@ -50,6 +50,7 @@ import {
     isIndexWaitKind,
     type IndexFooterInput,
 } from './index-notice';
+import { IndexStatusReporter } from './index-status-report';
 
 describe('indexBannerSpec', () => {
     it('returns null for a healthy index', () => {
@@ -442,6 +443,38 @@ describe('indexFooterStatus', () => {
         }).showInfo).toBe(true);
     });
 
+    it('energy-saver held catch-up is compact Paused with (i), not an indexing badge', () => {
+        expect(indexFooterStatus({
+            ...idle,
+            statusReport: {
+                mode: 'catch-up-paused',
+                compact: 'Paused',
+                tone: 'mid',
+                health: 'ok',
+                help: INDEX_STATUS_HELP['catch-up-paused'],
+            },
+            job: { done: 0, total: 4, kind: 'catchup' },
+            remaining: 4,
+        })).toMatchObject({
+            label: 'Paused',
+            icon: 'pause',
+            tone: 'mid',
+            showInfo: true,
+            help: INDEX_STATUS_HELP['catch-up-paused'],
+        });
+        expect(indexFooterStatus({
+            ...idle,
+            statusReport: {
+                mode: 'catch-up-paused',
+                compact: 'Paused',
+                tone: 'mid',
+                health: 'ok',
+                help: INDEX_STATUS_HELP['catch-up-paused'],
+            },
+            job: { done: 0, total: 4, kind: 'catchup' },
+        }).badgeCount).toBeUndefined();
+    });
+
     it('puts extra copy on a hoverable (i) for every footer kind', () => {
         const cases: IndexFooterInput[] = [
             idle,
@@ -723,6 +756,49 @@ describe('resolveIndexUiStatus', () => {
             label: INDEX_UPDATING_LABEL,
         });
         expect(moderate.badgeCount).toBeUndefined();
+        const tinyRunning = IndexStatusReporter.compute({
+            booting: false,
+            bootDecisionPending: false,
+            hydrating: false,
+            goodEnough: true,
+            waitingForSidecar: false,
+            peerSyncPending: false,
+            health: 'healthy',
+            reason: null,
+            indexing: true,
+            catchUpPending: true,
+            catchUpRunning: true,
+            searchableChunks: 800,
+            inventoryFiles: 3000,
+            stuck: false,
+            energySaver: true,
+            jobKind: 'catchup',
+            job: { done: 0, total: 4 },
+        });
+        expect(indexFooterStatus({
+            kind: 'indexing',
+            modelReady: true,
+            phase: 'indexing',
+            goodEnough: true,
+            inventoryFiles: 3000,
+            job: { done: 0, total: 4, kind: 'catchup' },
+            remaining: 4,
+            statusReport: tinyRunning,
+        })).toMatchObject({
+            kind: 'up-to-date',
+            label: INDEX_UP_TO_DATE_LABEL,
+            tone: 'good',
+        });
+        expect(indexFooterStatus({
+            kind: 'indexing',
+            modelReady: true,
+            phase: 'indexing',
+            goodEnough: true,
+            inventoryFiles: 3000,
+            job: { done: 0, total: 4, kind: 'catchup' },
+            remaining: 4,
+            statusReport: tinyRunning,
+        }).badgeCount).toBeUndefined();
     });
 
     it('quiet catch-up on a hydrated vault is Ready, not Updating or Indexing', () => {

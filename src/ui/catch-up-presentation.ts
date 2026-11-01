@@ -1,6 +1,11 @@
 /**
  * Single source of truth for minor/small catch-up: quiet green-dot chrome,
  * pass-scoped file counts vs vault coverage overlay, and the 1% inventory threshold.
+ *
+ * Energy saver does not own this threshold. Compact chrome never puts remaining
+ * numbers on a sub-1% leftover (no orange 4). When saver *holds* that leftover,
+ * the reporter uses muted pause instead of glow — same “no remaining on chip”
+ * contract. A *running* tiny leftover stays quiet-icon even if energySaver is on.
  */
 
 /** Pass size below this fraction of indexed files → quiet (green glow) not Updating. */
@@ -71,6 +76,28 @@ export function honestIndexingRemaining(input: {
     const noJob = !input.job || input.job.total <= 0;
     if (input.flushing && noJob) return null;
     return input.remaining;
+}
+
+/**
+ * Energy saver is holding background catch-up: queued notes exist, but no
+ * embed pass is running. Chrome must not look like Catching up / Indexing.
+ */
+export function isCatchUpHeldByEnergySaver(input: {
+    energySaver?: boolean;
+    catchUpRunning?: boolean;
+    catchUpPending?: boolean;
+    dirtyQueueSize?: number;
+    jobKind?: CatchUpJobKind | null;
+    hydrating?: boolean;
+    waitingForSidecar?: boolean;
+    dropRecovering?: boolean;
+}): boolean {
+    if (!input.energySaver) return false;
+    if (input.catchUpRunning) return false;
+    if (input.hydrating || input.waitingForSidecar || input.dropRecovering) return false;
+    if (input.jobKind === 'full') return false;
+    const dirty = Math.max(0, Math.floor(input.dirtyQueueSize ?? 0) || 0);
+    return !!input.catchUpPending || dirty > 0 || isCatchUpEmbedKind(input.jobKind ?? null);
 }
 
 export function shouldPreferPassCountsOverCoverage(input: {

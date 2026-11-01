@@ -797,6 +797,7 @@ export class SeekSettingTab extends PluginSettingTab implements SettingsTelemetr
             health: snap.health,
             mode: snap.mode,
             quietCatchUp: snap.quietCatchUp,
+            energySaver: report.energySaver,
             label: report.label,
             help: report.help,
             hydrateProgress: snap.hydrate,

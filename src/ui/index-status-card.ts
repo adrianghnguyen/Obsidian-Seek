@@ -114,8 +114,13 @@ export function indexWaitCardModel(input: {
  */
 export function renderIndexStatusBadge(
     parent: HTMLElement,
-    opts: { health: IndexStatusHealth; remaining?: number | null; quietCatchUp?: boolean },
+    opts: { health: IndexStatusHealth; remaining?: number | null; quietCatchUp?: boolean; pausedCatchUp?: boolean },
 ): HTMLElement {
+    if (opts.pausedCatchUp) {
+        const pause = parent.createSpan({ cls: `${INDEX_STATUS_DOT_CLS} seek-dot-mid seek-dot-paused` });
+        pause.setAttr('aria-label', 'Seek: Catch-up paused');
+        return pause;
+    }
     if (opts.health === 'indexing') {
         const remaining = opts.remaining;
         const text = remaining != null ? fmtCount(remaining) : '…';
@@ -241,6 +246,7 @@ export function renderIndexStatusCard(
         percent?: number;
         remaining?: number | null;
         quietCatchUp?: boolean;
+        pausedCatchUp?: boolean;
         statusHelp?: string;
         contextHint?: string;
         energySaver?: boolean;
@@ -257,8 +263,9 @@ export function renderIndexStatusCard(
     const remaining = opts.remaining ?? null;
     renderIndexStatusBadge(health, {
         health: model.health,
-        remaining,
+        remaining: opts.pausedCatchUp ? null : remaining,
         quietCatchUp: opts.quietCatchUp,
+        pausedCatchUp: opts.pausedCatchUp,
     });
     const labelRow = health.createDiv({ cls: 'seek-status-label-row' });
     labelRow.createSpan({
@@ -304,7 +311,8 @@ export function renderIndexStatusCard(
         && opts.progress.phase !== 'none'
         && opts.progress.phase !== 'stuck'
         && opts.progress.phase !== 'locked'
-        && opts.progress.phase !== 'error';
+        && opts.progress.phase !== 'error'
+        && opts.progress.phase !== 'catch-up-paused';
     if (!working && !model.hydrate && !model.job) {
         meter.addClass('is-idle');
     } else if (units && units.determinate) {

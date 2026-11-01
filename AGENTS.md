@@ -29,6 +29,10 @@ Every visible number, mode, or progress string has **one producer** and **N cons
 - **Desync is a bug:** if coverage-by-folder disagrees with the status bar or Settings Index, the consumers diverged — fix by deleting the extra source, not by copying numbers around.
 - **Resume after unload:** the producer’s durable job state is what boot restores; UI must not invent a second “looks idle / looks stuck” path.
 
+### Status chip: small leftover catch-up (repeating mistake)
+
+New status-chip / footer chrome (energy saver, paused, Updating, Catching up, badges) **must reuse** `classifyCatchUpPresentation` in `src/ui/catch-up-presentation.ts` (`MINOR_CATCHUP_FRACTION` / quiet icon). Do **not** paint remaining numbers on the chip or footer for a minor leftover catch-up (e.g. orange `4` / `0/4` on a 4-file pass). Compact stays Ready + quiet glow (or muted pause if energy saver is *holding* that leftover). **Settings Index keeps the counts.** Do not fork a second size check in the bar or modal.
+
 ### Commands
 
 Seek is an **Obsidian plugin** (TypeScript, bundled with esbuild). There is no standalone server or web app — the plugin runs inside the Obsidian desktop/mobile app. Dependencies are managed with npm (`package-lock.json`); the startup update script already runs `npm ci`.

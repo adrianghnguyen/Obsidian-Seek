@@ -1516,6 +1516,14 @@
     background: var(--color-red);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-red) 22%, transparent);
 }
+.seek-dot-paused {
+    animation: none;
+    background: var(--text-muted);
+    box-shadow: none;
+    border-radius: 2px;
+    width: 7px;
+    height: 7px;
+}
 
 /* ---- Index: status card (settings + status-bar hover) ---- */
 .seek-status-card {

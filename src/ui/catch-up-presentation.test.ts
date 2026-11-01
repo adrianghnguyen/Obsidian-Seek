@@ -3,6 +3,7 @@ import {
     MINOR_CATCHUP_FRACTION,
     classifyCatchUpPresentation,
     honestIndexingRemaining,
+    isCatchUpHeldByEnergySaver,
     isSmallCatchUpPass,
     shouldPreferPassCountsOverCoverage,
 } from './catch-up-presentation';
@@ -41,6 +42,32 @@ describe('shouldPreferPassCountsOverCoverage', () => {
             jobKind: null,
             passTotal: 500,
             inventoryFiles: 244,
+        })).toBe(false);
+    });
+});
+
+describe('isCatchUpHeldByEnergySaver', () => {
+    it('holds pending catch-up when saver is on and the drain is not running', () => {
+        expect(isCatchUpHeldByEnergySaver({
+            energySaver: true,
+            catchUpPending: true,
+            catchUpRunning: false,
+        })).toBe(true);
+    });
+
+    it('does not hold a live catch-up embed', () => {
+        expect(isCatchUpHeldByEnergySaver({
+            energySaver: true,
+            catchUpPending: true,
+            catchUpRunning: true,
+            jobKind: 'catchup',
+        })).toBe(false);
+    });
+
+    it('ignores saver when nothing is queued', () => {
+        expect(isCatchUpHeldByEnergySaver({
+            energySaver: true,
+            catchUpPending: false,
         })).toBe(false);
     });
 });

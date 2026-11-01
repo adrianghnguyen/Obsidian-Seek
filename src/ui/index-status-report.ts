@@ -6,6 +6,7 @@
 
 import {
     classifyCatchUpPresentation,
+    isCatchUpHeldByEnergySaver,
     resolveIndexUiStatus,
     INDEX_STATUS_HELP,
     type IndexStatusHelpKey,
@@ -36,6 +37,8 @@ type ReporterJobKind = 'full' | 'delta' | 'catchup';
 
 export const INDEX_FULL_REINDEX_LABEL = 'Reindexing';
 export const INDEX_CATCHING_UP_LABEL = 'Catching up';
+export const INDEX_CATCH_UP_PAUSED_LABEL = 'Paused';
+export const INDEX_CATCH_UP_PAUSED_HEADING = 'Catch-up paused (energy saver)';
 export const INDEX_VERIFYING_LABEL = 'Verifying';
 export const INDEX_RECOVERING_LABEL = 'Recovering';
 
@@ -44,6 +47,7 @@ export type IndexStatusMode =
     | IndexUiStatus
     | 'full-reindex'
     | 'catching-up'
+    | 'catch-up-paused'
     | 'recovering'
     | 'verifying';
 
@@ -63,6 +67,7 @@ export const INDEX_STATUS_COPY: Record<IndexStatusMode, IndexStatusCopy> = {
     recovering: { tone: 'info', label: 'Recovering…', compact: INDEX_RECOVERING_LABEL },
     'full-reindex': { tone: 'accent', label: 'Reindexing…', compact: INDEX_FULL_REINDEX_LABEL },
     'catching-up': { tone: 'accent', label: 'Catching up…', compact: INDEX_CATCHING_UP_LABEL },
+    'catch-up-paused': { tone: 'mid', label: INDEX_CATCH_UP_PAUSED_HEADING, compact: INDEX_CATCH_UP_PAUSED_LABEL },
     indexing: { tone: 'accent', label: 'Indexing…', compact: INDEX_INDEXING_LABEL },
     updating: { tone: 'warn', label: 'Updating…', compact: INDEX_UPDATING_LABEL },
     ok: { tone: 'good', label: 'Up to date', compact: INDEX_UP_TO_DATE_LABEL },
@@ -75,6 +80,7 @@ export const INDEX_STATUS_COPY: Record<IndexStatusMode, IndexStatusCopy> = {
 export function indexStatusHealth(mode: IndexStatusMode): IndexStatusHealth {
     if (mode === 'updating') return 'updating';
     if (mode === 'full-reindex' || mode === 'catching-up') return 'indexing';
+    if (mode === 'catch-up-paused') return 'ok';
     if (mode === 'recovering') return 'restoring';
     if (mode === 'verifying') return 'starting';
     return mode;
@@ -116,7 +122,12 @@ export interface IndexStatusReport {
     hydrateProgress: IndexHydrateProgress | null;
     /** Sole progress snapshot for status chrome. */
     progress: IndexProgressIndicator;
-    /** Per-device energy saver (localStorage) — chrome must show when it is on. */
+    /**
+     * Sole energy-saver flag for chrome. Injected once from getEnergySaver() in
+     * getIndexStatusReport. Status chip, hover, search footer, and Settings Index
+     * must read this — they must not call getEnergySaver(). Catch-up paused is one
+     * consumer of this flag (mode catch-up-paused), not its owner.
+     */
     energySaver: boolean;
 }
 
@@ -176,6 +187,7 @@ export function withIndicatorCopy(copy: IndexStatusCopy, units: IndexProgressUni
 const MODE_HELP_KEY: Partial<Record<IndexStatusMode, IndexStatusHelpKey>> = {
     'full-reindex': 'full-reindex',
     'catching-up': 'catching-up',
+    'catch-up-paused': 'catch-up-paused',
     verifying: 'verifying',
     recovering: 'recovering',
 };
@@ -220,7 +232,7 @@ function buildIndexStatusHelp(
     }
     const units = progress.units;
     if (!units || units.total <= 0) return help;
-    const skipProgress = mode === 'ok' || mode === 'none' || mode === 'stuck' || mode === 'locked' || mode === 'error';
+        const skipProgress = mode === 'ok' || mode === 'none' || mode === 'stuck' || mode === 'locked' || mode === 'error' || mode === 'catch-up-paused';
     if (skipProgress) return help;
     const determinateOnly = mode !== 'verifying' && progress.phase !== 'verifying';
     return appendProgressToHelp(help, progressFragmentFromUnits(units, determinateOnly));
@@ -319,12 +331,31 @@ export class IndexStatusReporter {
         ) {
             mode = 'updating';
         }
+        const energySaver = !!input.energySaver;
+        const held = isCatchUpHeldByEnergySaver({
+            energySaver,
+            catchUpRunning: !!input.catchUpRunning,
+            catchUpPending: !!input.catchUpPending,
+            dirtyQueueSize: input.dirtyQueueSize,
+            jobKind: input.jobKind ?? null,
+            hydrating: !!input.hydrating,
+            waitingForSidecar: !!input.waitingForSidecar,
+            dropRecovering: !!input.dropRecovering,
+        });
+        let quietCatchUpOut = quietCatchUp;
+        /* Held leftover (including sub-1%): muted pause, still no remaining on the
+         * chip. A running tiny pass never reaches here (held is false) and keeps
+         * quietCatchUp glow. */
+        if (held && (mode === 'ok' || mode === 'starting' || mode === 'catching-up' || mode === 'updating' || mode === 'indexing')) {
+            mode = 'catch-up-paused';
+            quietCatchUpOut = false;
+        }
         const health = indexStatusHealth(mode);
         let copy = INDEX_STATUS_COPY[mode];
         if (mode === 'stuck' && input.stuckWhy === 'indexing') {
             copy = { ...copy, label: 'Indexing stuck' };
         }
-        const blocked = mode === 'stuck' || mode === 'locked' || mode === 'error' || mode === 'ok' || mode === 'updating' || mode === 'none';
+        const blocked = mode === 'stuck' || mode === 'locked' || mode === 'error' || mode === 'ok' || mode === 'updating' || mode === 'none' || mode === 'catch-up-paused';
         const units = blocked ? null : progress.units;
         if (units) copy = withIndicatorCopy(copy, units);
         const skippedPartial = Math.max(0, Math.floor(input.sidecarSkippedPartialNotes ?? 0) || 0);
@@ -335,8 +366,16 @@ export class IndexStatusReporter {
             const suffix = ` (${skippedPartial} note${skippedPartial === 1 ? '' : 's'} awaiting sidecar bytes)`;
             copy = { ...copy, label: `${copy.label}${suffix}`, compact: `${copy.compact}${suffix}` };
         }
-        const energySaver = !!input.energySaver;
-        const help = buildIndexStatusHelp(mode, quietCatchUp, progress, input.job ?? null);
+        let help = buildIndexStatusHelp(mode, quietCatchUpOut, progress, input.job ?? null);
+        if (mode === 'catch-up-paused') {
+            const queued = Math.max(
+                Math.floor(input.dirtyQueueSize ?? 0) || 0,
+                input.job && input.job.total > 0 ? Math.max(0, input.job.total - input.job.done) : 0,
+            );
+            if (queued > 0) {
+                help = `${INDEX_STATUS_HELP['catch-up-paused']} ${queued} note${queued === 1 ? '' : 's'} waiting.`;
+            }
+        }
         return {
             mode,
             health,
@@ -344,9 +383,12 @@ export class IndexStatusReporter {
             compact: copy.compact,
             tone: copy.tone,
             help,
-            quietCatchUp,
+            quietCatchUp: quietCatchUpOut,
             hydrateProgress: hydrateLegacyFromProgress({ ...progress, units }, !!input.hydrating, mode),
-            progress: { phase: progress.phase, units: blocked ? null : progress.units },
+            progress: {
+                phase: mode === 'catch-up-paused' ? 'catch-up-paused' : progress.phase,
+                units: blocked ? null : progress.units,
+            },
             energySaver,
         };
     }
