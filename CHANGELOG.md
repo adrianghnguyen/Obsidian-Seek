@@ -4,9 +4,14 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.16.1-beta.1
+
+Patch train after stable 1.16.0. Catch-up chrome while energy saver holds embeds, and a quiet leftover chip.
+
 ### Fixed
 
 - **Catch-up paused under energy saver.** When energy saver holds background catch-up, the status bar no longer shows Catching up with an orange leftover count. Chrome is **Paused** (muted pause mark); Settings Index explains that queued notes wait until energy saver is off, you search, or Obsidian is in the foreground. A live embed pass is unchanged.
+- **Quiet leftover chip.** A tiny leftover catch-up (for example a few files on a large vault) stays a quiet glow on the status chip — no orange remaining count. If energy saver is holding that leftover, the chip is a muted pause and still has no remaining number. Settings Index keeps the counts.
 
 ## 1.16.0
 
