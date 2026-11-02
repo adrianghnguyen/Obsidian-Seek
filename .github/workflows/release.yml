@@ -48,13 +48,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="${GITHUB_REF#refs/tags/}"
-          # Pre-releases: GitHub --prerelease AND --latest (project preference).
+          # Pre-releases: --prerelease only. GitHub 422s --latest on a
+          # prerelease, so Latest stays on the last stable (e.g. 1.16.0).
           # BRAT "track Latest" (docs): highest semver among releases AND
           # prereleases — not GitHub's Latest pointer. See
           # https://tfthacker.com/brat-developers
           extra_flags=""
           case "$tag" in
-            *-beta.*|*-rc.*|*-alpha.*) extra_flags="--prerelease --latest" ;;
+            *-beta.*|*-rc.*|*-alpha.*) extra_flags="--prerelease" ;;
           esac
           gh release create "$tag" \
             --title "$tag" \
