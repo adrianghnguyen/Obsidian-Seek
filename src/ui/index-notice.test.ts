@@ -748,7 +748,7 @@ describe('resolveIndexUiStatus', () => {
         expect(indexFooterStatus(idleFooter).badgeCount).toBeUndefined();
         const moderate = indexFooterStatus({
             ...idleFooter,
-            job: { done: 0, total: 30, kind: 'catchup' },
+            job: { done: 0, total: 60, kind: 'catchup' },
             inventoryFiles: 3000,
         });
         expect(moderate).toMatchObject({
@@ -804,11 +804,11 @@ describe('resolveIndexUiStatus', () => {
     it('quiet catch-up on a hydrated vault is Ready, not Updating or Indexing', () => {
         expect(resolveIndexUiStatus({
             ...idle, goodEnough: true, indexing: true,
-            inventoryFiles: 3000, job: { done: 0, total: 29, kind: 'catchup' },
+            inventoryFiles: 3000, job: { done: 0, total: 59, kind: 'catchup' },
         })).toBe('ok');
         expect(resolveIndexUiStatus({
             ...idle, goodEnough: true, indexing: true,
-            inventoryFiles: 3000, job: { done: 0, total: 30, kind: 'catchup' },
+            inventoryFiles: 3000, job: { done: 0, total: 60, kind: 'catchup' },
         })).toBe('updating');
     });
 
@@ -882,10 +882,10 @@ describe('classifyCatchUpPresentation', () => {
             goodEnough: true,
             inventoryFiles: 3000,
             indexingActive: true,
-            job: { done: 0, total: 29, kind: 'catchup' as const },
+            job: { done: 0, total: 59, kind: 'catchup' as const },
         };
         expect(classifyCatchUpPresentation(base)).toBe('quiet');
-        expect(classifyCatchUpPresentation({ ...base, job: { ...base.job!, total: 30 } })).toBe('moderate');
+        expect(classifyCatchUpPresentation({ ...base, job: { ...base.job!, total: 60 } })).toBe('moderate');
         expect(classifyCatchUpPresentation({ ...base, goodEnough: false })).toBeNull();
         expect(classifyCatchUpPresentation({ ...base, job: { ...base.job!, kind: 'full' } })).toBeNull();
     });

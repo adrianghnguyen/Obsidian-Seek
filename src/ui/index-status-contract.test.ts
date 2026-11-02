@@ -312,7 +312,7 @@ describe('Ready means searchable (status contract)', () => {
         expect(r.footer.label).not.toMatch(/Indexing|Updating|\d/);
     });
 
-    it('catch-up at or above 1% of indexed files uses yellow Updating chrome', () => {
+    it('catch-up at or above 2% of indexed files uses yellow Updating chrome', () => {
         const snap: BootSnapshot = {
             label: 'large catch-up pass',
             inventoryChunks: 5000,
@@ -320,7 +320,7 @@ describe('Ready means searchable (status contract)', () => {
             warmPhase: null,
             goodEnough: true,
             catchUpRunning: true,
-            job: { done: 0, total: 30, kind: 'catchup' },
+            job: { done: 0, total: 60, kind: 'catchup' },
         };
         const r = evaluateSnapshot(snap);
         expect(r.uiHealth).toBe('updating');

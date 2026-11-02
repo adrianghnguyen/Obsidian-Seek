@@ -1,15 +1,15 @@
 /**
  * Single source of truth for minor/small catch-up: quiet green-dot chrome,
- * pass-scoped file counts vs vault coverage overlay, and the 1% inventory threshold.
+ * pass-scoped file counts vs vault coverage overlay, and the 2% inventory threshold.
  *
  * Energy saver does not own this threshold. Compact chrome never puts remaining
- * numbers on a sub-1% leftover (no orange 4). When saver *holds* that leftover,
+ * numbers on a sub-2% leftover (no orange 4). When saver *holds* that leftover,
  * the reporter uses muted pause instead of glow — same “no remaining on chip”
  * contract. A *running* tiny leftover stays quiet-icon even if energySaver is on.
  */
 
 /** Pass size below this fraction of indexed files → quiet (green glow) not Updating. */
-export const MINOR_CATCHUP_FRACTION = 0.01;
+export const MINOR_CATCHUP_FRACTION = 0.02;
 
 export type CatchUpJobKind = 'full' | 'delta' | 'catchup';
 
