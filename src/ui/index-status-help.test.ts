@@ -29,7 +29,7 @@ describe('index status help / tooltips', () => {
             { ...baseInput, booting: true, bootDecisionPending: true },
             { ...baseInput, hydrating: true, goodEnough: false },
             { ...baseInput, indexing: true, jobKind: 'catchup', job: { done: 2, total: 15 } },
-            { ...baseInput, indexing: true, jobKind: 'catchup', job: { done: 0, total: 30 } },
+            { ...baseInput, indexing: true, jobKind: 'catchup', job: { done: 0, total: 60 } },
             { ...baseInput, indexing: true, jobKind: 'full', job: { done: 10, total: 300 } },
             { ...baseInput, stuck: true },
             { ...baseInput, health: 'degraded', reason: 'peer-ahead' },
@@ -46,11 +46,11 @@ describe('index status help / tooltips', () => {
             ...baseInput,
             indexing: true,
             jobKind: 'catchup',
-            job: { done: 4, total: 30 },
+            job: { done: 4, total: 60 },
         });
         expect(report.mode).toBe('updating');
         expect(report.help).toContain(INDEX_STATUS_HELP.updating.slice(0, 24));
-        expect(report.help).toMatch(/4.*30/);
+        expect(report.help).toMatch(/4.*60/);
     });
 
     it('resolveIndexStatusHelpForMode covers extended modes', () => {
@@ -114,7 +114,7 @@ describe('index status help / tooltips', () => {
             catchUpRunning: true,
             indexing: true,
             jobKind: 'catchup',
-            job: { done: 1, total: 40 },
+            job: { done: 1, total: 60 },
         });
         expect(report.mode).not.toBe('catch-up-paused');
         expect(['catching-up', 'updating', 'indexing']).toContain(report.mode);

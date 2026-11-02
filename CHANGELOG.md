@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Changed
+
+- **Quiet leftover chip threshold.** Catch-up below **2%** of indexed files (`MINOR_CATCHUP_FRACTION`) stays a quiet status-bar chip (icon/dot only, no remaining/total). At or above 2% the chip may show numbers. Settings Index and hover (i) still show counts. Same `classifyCatchUpPresentation` boundary as the search footer.
+
 ## 1.16.1-beta.1
 
 Patch train after stable 1.16.0. Catch-up chrome while energy saver holds embeds, and a quiet leftover chip.

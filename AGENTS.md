@@ -31,7 +31,7 @@ Every visible number, mode, or progress string has **one producer** and **N cons
 
 ### Status chip: small leftover catch-up (repeating mistake)
 
-New status-chip / footer chrome (energy saver, paused, Updating, Catching up, badges) **must reuse** `classifyCatchUpPresentation` in `src/ui/catch-up-presentation.ts` (`MINOR_CATCHUP_FRACTION` / quiet icon). Do **not** paint remaining numbers on the chip or footer for a minor leftover catch-up (e.g. orange `4` / `0/4` on a 4-file pass). Compact stays Ready + quiet glow (or muted pause if energy saver is *holding* that leftover). **Settings Index keeps the counts.** Do not fork a second size check in the bar or modal.
+New status-chip / footer chrome (energy saver, paused, Updating, Catching up, badges) **must reuse** `classifyCatchUpPresentation` in `src/ui/catch-up-presentation.ts` (`MINOR_CATCHUP_FRACTION` = **0.02** / quiet icon). Do **not** paint remaining numbers on the chip or footer for a minor leftover catch-up (`job.total / inventory < 0.02`, e.g. orange `4` / `0/4` on a 4-file pass). Compact stays Ready + quiet glow (or muted pause if energy saver is *holding* that leftover). Moderate (≥2%) may show numbers. **Settings Index and hover (i) keep the counts.** Do not fork a second size check in the bar or modal.
 
 ### Commands
 

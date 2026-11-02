@@ -11,8 +11,8 @@ import {
 describe('isSmallCatchUpPass', () => {
     it(`uses ${MINOR_CATCHUP_FRACTION} of inventory as the boundary`, () => {
         expect(isSmallCatchUpPass(1, 244)).toBe(true);
-        expect(isSmallCatchUpPass(29, 3000)).toBe(true);
-        expect(isSmallCatchUpPass(30, 3000)).toBe(false);
+        expect(isSmallCatchUpPass(59, 3000)).toBe(true);
+        expect(isSmallCatchUpPass(60, 3000)).toBe(false);
         expect(isSmallCatchUpPass(0, 100)).toBe(false);
     });
 });
