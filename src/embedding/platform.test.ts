@@ -10,6 +10,7 @@ import { Platform } from 'obsidian';
 
 import {
     resolveDevice,
+    deviceSatisfiesRequest,
     getBackendOverride,
     setBackendOverride,
     isWebgpuDemoted,
@@ -265,5 +266,17 @@ describe('sidecar fleet role (per-device)', () => {
         expect(getPendingEmbeddingModel()).toBeNull();
         setSidecarIndexRole('auto');
         expect(getSidecarIndexRole()).toBe('auto');
+    });
+});
+
+describe('deviceSatisfiesRequest', () => {
+    it('wgsl request is satisfied by a webgpu EP (Seek engine or ORT WebGPU)', () => {
+        expect(deviceSatisfiesRequest('wgsl', 'webgpu')).toBe(true);
+        expect(deviceSatisfiesRequest('wgsl', 'wasm')).toBe(false);
+    });
+
+    it('wgsl-wasm accepts webgpu or wasm', () => {
+        expect(deviceSatisfiesRequest('wgsl-wasm', 'webgpu')).toBe(true);
+        expect(deviceSatisfiesRequest('wgsl-wasm', 'wasm')).toBe(true);
     });
 });

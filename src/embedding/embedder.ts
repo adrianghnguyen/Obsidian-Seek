@@ -17,7 +17,7 @@
 
 import type { Device, RequestedDevice, Dtype, LoadEntry, InitEntry } from '../types/types';
 import { snapshotMemory, memoryDelta, LOG_SCHEMA_VERSION } from '../types/types';
-import { getWorkerEmbedRoute } from './platform';
+import { deviceSatisfiesRequest, getWorkerEmbedRoute } from './platform';
 import { ACTIVE_MODEL_SPEC, currentModelSpec, formatDocumentText, formatQueryText } from './model-registry';
 import {
     IframeRunner,
@@ -380,11 +380,12 @@ export class LocalEmbedder {
             writeWarmupFingerprint(expectedFp);
         }
 
-        if (result.device !== requested && requested !== 'auto') {
+        if (!deviceSatisfiesRequest(requested, result.device)) {
             pass = false;
             checks.push(`❌ requested ${requested} but used ${result.device}`);
         } else {
-            checks.push(`✅ running on ${result.device} (dtype=${result.dtype})`);
+            const engineTag = result.engine ? ` engine=${result.engine}` : '';
+            checks.push(`✅ running on ${result.device}${engineTag} (dtype=${result.dtype})`);
         }
 
         const delta = memoryDelta(memBefore, memAfter);
@@ -397,6 +398,8 @@ export class LocalEmbedder {
             timestamp: new Date().toISOString(),
             requestedDevice: requested,
             actualDevice: result.device,
+            engine: result.engine,
+            wgslError: result.wgslError ?? null,
             dtype: result.dtype,
             embeddingDim: currentModelSpec().dim,
             coldStartMs,

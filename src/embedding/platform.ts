@@ -2,7 +2,7 @@
 // always knows what surface generated each run. Mirrors the iOS spike.
 
 import { Platform } from 'obsidian';
-import type { PlatformEntry, AdapterLimits } from '../types/types';
+import type { Device, PlatformEntry, AdapterLimits, RequestedDevice } from '../types/types';
 
 // Single source of truth for the mobile-platform test. Used by the platform
 // probe and every other site that must agree on what "mobile" means.
@@ -198,6 +198,14 @@ export function resolveDevice(): 'wgsl' | 'wgsl-wasm' | 'wasm' {
     if (base === 'wasm') return 'wasm';
     if (Platform.isMobile && isWebgpuDemoted()) return 'wasm';
     return base === 'auto' ? 'wgsl' : 'wgsl-wasm';
+}
+
+/** True when the iframe's actual EP satisfies what resolveDevice() asked for. */
+export function deviceSatisfiesRequest(requested: RequestedDevice, actual: Device): boolean {
+    if (requested === 'auto' || requested === actual) return true;
+    if (requested === 'wgsl') return actual === 'webgpu';
+    if (requested === 'wgsl-wasm') return actual === 'webgpu' || actual === 'wasm';
+    return false;
 }
 
 // Boot-time tripwire. Demote (sticky, per-device) only when a MOBILE device was
