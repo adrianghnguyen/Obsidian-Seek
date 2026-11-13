@@ -57,6 +57,10 @@ export function getBackendOverride(): BackendChoice {
     try {
         const v = window.localStorage.getItem(OVERRIDE_KEY);
         if (v === 'webgpu' || v === 'wasm' || v === 'auto') return v;
+        if (v === 'webgpu-query' || v === 'wgsl') {
+            window.localStorage.setItem(OVERRIDE_KEY, 'webgpu');
+            return 'webgpu';
+        }
     } catch { /* localStorage unavailable — treat as auto */ }
     return 'auto';
 }
@@ -176,23 +180,24 @@ export function setPendingEmbeddingModel(pending: PendingEmbeddingModel | null):
 //   - iPad: WebGPU — ml97 GBQ4 reindexes desktop-class on WKWebView (2026-06-10),
 //     ~4 GB WebContent budget.
 //   - iPhone + ALL Android: WASM — jetsam at ~1.5 GB / immature WebView WebGPU.
-function capabilityDefault(): 'auto' | 'wasm' {
-    if (!Platform.isMobile) return 'auto';                       // desktop
-    if (Platform.isIosApp && Platform.isTablet) return 'auto';   // iPad
-    return 'wasm';                                               // iPhone + all Android
+function capabilityDefault(): 'auto' | 'wasm' | 'gpu-cpu-fallback' {
+    if (!Platform.isMobile) return 'auto';
+    if (Platform.isIosApp && Platform.isTablet) return 'auto';
+    return 'gpu-cpu-fallback';
 }
 
 // The device string to hand the embedder ('auto' = WebGPU-then-WASM ladder;
 // 'wasm' = skip WebGPU). Override wins; else the allowlist; with a sticky
 // mobile demote forcing WASM on the auto path. A 'webgpu' override maps to
 // 'auto' — the iframe ladder still WASM-falls-back if the GPU can't load.
-export function resolveDevice(): 'auto' | 'wasm' {
+export function resolveDevice(): 'wgsl' | 'wgsl-wasm' | 'wasm' {
     const override = getBackendOverride();
     if (override === 'wasm') return 'wasm';
-    if (override === 'webgpu') return 'auto';
+    if (override === 'webgpu') return 'wgsl';
     const base = capabilityDefault();
-    if (base === 'auto' && Platform.isMobile && isWebgpuDemoted()) return 'wasm';
-    return base;
+    if (base === 'wasm') return 'wasm';
+    if (Platform.isMobile && isWebgpuDemoted()) return 'wasm';
+    return base === 'auto' ? 'wgsl' : 'wgsl-wasm';
 }
 
 // Boot-time tripwire. Demote (sticky, per-device) only when a MOBILE device was
@@ -200,6 +205,10 @@ export function resolveDevice(): 'auto' | 'wasm' {
 // signature) WHILE WebGPU was the active backend. Never on desktop, and never
 // when the kill happened on WASM (demoting WebGPU there is a no-op that would
 // falsely read as a fix). Returns true if it tripped.
+export function isUnexpectedGpuLoss(event: { kind?: unknown; reason?: unknown }): boolean {
+    return event.kind === 'webgpu-device-lost' && event.reason !== 'destroyed';
+}
+
 export function maybeDemoteOnCrash(verdict: string): boolean {
     if (verdict !== 'crash-while-indexing-foreground') return false;
     if (!Platform.isMobile) return false;

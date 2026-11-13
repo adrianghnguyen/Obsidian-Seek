@@ -53,30 +53,29 @@ beforeEach(() => {
 });
 
 describe('capability allowlist (no override, no demote)', () => {
-    it('desktop → auto (WebGPU)', () => {
+    it('desktop → Seek engine, ORT ladder fallback', () => {
         setDevice('desktop');
-        expect(resolveDevice()).toBe('auto');
+        expect(resolveDevice()).toBe('wgsl');
     });
 
-    it('iPad → auto (WebGPU)', () => {
+    it('iPad → Seek engine, ORT ladder fallback', () => {
         setDevice('ipad');
-        expect(resolveDevice()).toBe('auto');
+        expect(resolveDevice()).toBe('wgsl');
     });
 
-    it('iPhone → wasm', () => {
+    it('iPhone → Seek engine, CPU-only fallback', () => {
         setDevice('iphone');
-        expect(resolveDevice()).toBe('wasm');
+        expect(resolveDevice()).toBe('wgsl-wasm');
     });
 
-    it('Android phone → wasm', () => {
+    it('Android phone → Seek engine, CPU-only fallback', () => {
         setDevice('android-phone');
-        expect(resolveDevice()).toBe('wasm');
+        expect(resolveDevice()).toBe('wgsl-wasm');
     });
 
-    it('Android tablet → wasm (allowlist, NOT mobile-minus-iPhone)', () => {
-        // The whole point of an allowlist: an untested tablet stays safe.
+    it('Android tablet → Seek engine, CPU-only fallback', () => {
         setDevice('android-tablet');
-        expect(resolveDevice()).toBe('wasm');
+        expect(resolveDevice()).toBe('wgsl-wasm');
     });
 });
 
@@ -87,16 +86,16 @@ describe('manual override precedence', () => {
         expect(resolveDevice()).toBe('wasm');
     });
 
-    it('force webgpu maps to auto even on iPhone', () => {
+    it('force webgpu → Seek engine with the full ORT fallback, even on iPhone', () => {
         setDevice('iphone');
         setBackendOverride('webgpu');
-        expect(resolveDevice()).toBe('auto');
+        expect(resolveDevice()).toBe('wgsl');
     });
 
     it('explicit auto falls back to the allowlist', () => {
         setDevice('android-tablet');
         setBackendOverride('auto');
-        expect(resolveDevice()).toBe('wasm');
+        expect(resolveDevice()).toBe('wgsl-wasm');
     });
 
     it('override round-trips through localStorage', () => {
@@ -125,7 +124,7 @@ describe('demote tripwire', () => {
         recordActiveBackend('webgpu');
         maybeDemoteOnCrash('crash-while-indexing-foreground');
         setDevice('desktop');
-        expect(resolveDevice()).toBe('auto');
+        expect(resolveDevice()).toBe('wgsl');
     });
 
     it('forcing WebGPU clears a sticky demote', () => {
@@ -142,7 +141,7 @@ describe('demote tripwire', () => {
         recordActiveBackend('webgpu');
         maybeDemoteOnCrash('crash-while-indexing-foreground');
         clearWebgpuDemoted();
-        expect(resolveDevice()).toBe('auto');
+        expect(resolveDevice()).toBe('wgsl');
     });
 });
 

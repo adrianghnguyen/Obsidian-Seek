@@ -2,7 +2,7 @@
 // so the same generator/reader code can be reused with minimal changes.
 
 export type Device = 'webgpu' | 'wasm';
-export type RequestedDevice = Device | 'auto';
+export type RequestedDevice = Device | 'auto' | 'wgsl' | 'wgsl-wasm';
 export type Dtype = 'q4f16' | 'q4' | 'q8' | 'fp32';
 
 // Bumped whenever any LogEntry shape changes incompatibly. The report
@@ -64,7 +64,7 @@ export type Dtype = 'q4f16' | 'q4' | 'q8' | 'fp32';
 // v19: IndexCompleteEntry pipeline occupancy — gpuBusyMs, persistWaitMs,
 // inflightHighWater, embedInFlightMax, rollingBatchMax, effectiveBatch,
 // longTaskCount, longTaskMs (renderer stalls during the pass).
-export const LOG_SCHEMA_VERSION = 19;
+export const LOG_SCHEMA_VERSION = 20;
 
 // ---- chunk model ----
 
@@ -423,6 +423,9 @@ export interface SeekSettings {
     // for new tuning; this key is kept for persisted installs.
     boostedBm25: boolean;
 
+    // BM25F lexical model (bm25f.ts) — ON by default. Score-time only; no reindex.
+    bm25f: boolean;
+
     // BM25 coverage weighting — the SOFT-AND fix for OR's looseness. MiniSearch
     // combines query terms with OR, so a doc that saturates ONE query term (a
     // short hub/entity page whose title IS that term — the "Switzerland" country
@@ -702,6 +705,7 @@ export const DEFAULT_SETTINGS: SeekSettings = {
     searchableProperties: true, // frontmatter values as a BM25 field; ON as of 2026-06-25 — My-Vault channel eval measured +0.05 nDCG@10 (place-note recall: austin 22→3, zurich 33→7; combo_eval). Migrated on via rev 7; see field comment
     headingsField: true,       // ON (hidden) per the 2026-06-19 ratification; heading path as a BM25 field; BM25 refit, no reindex — see field comment
     boostedBm25: false,        // "Boosted BM25" preset (aliases 9 / tags 2 / headings 4); OFF — superseded by bm25FieldBoostOverrides when set; see field comment
+    bm25f: true,               // BM25F lexical model; OFF = legacy per-field sum for A/B
     // bm25FieldBoostOverrides omitted — absent ⇒ DEFAULT_FIELD_BOOSTS (bm25-boosts.ts)
     bm25Coverage: true,        // soft-AND: scale BM25 by matched-query-term fraction (multi-term only); see field comment
     honorIgnoredFolders: true, // Archive et al. are soft-deletes by default

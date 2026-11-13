@@ -87,6 +87,7 @@ export const SEQ_BUCKETS = [32, 48, 64, 96, 128, 192, 256, 384, 512];
 // dispatch overhead is seq-INDEPENDENT, so the floor win must be MEASURED from
 // live iframeEmbedMs, not assumed.
 export const QUERY_SEQ_BUCKETS = [8, 16, 32, 48, 64, 96, 128];
+export const WGSL_MAX_ROWS = 1024;
 
 // Parent-side CHAR-ESTIMATE bucket selector — legacy fallback only. The
 // ceil(chars/4.5) estimate under-buckets dense text (URLs, paths, numbers,
@@ -194,6 +195,8 @@ export interface LoadResult {
     proxy: boolean;
     proxyAttempted: boolean;
     proxyError: string | null;
+    engine?: 'ort' | 'wgsl';
+    wgslError?: string | null;
 }
 
 // Unsolicited iframe→parent push (not an RPC reply): WebGPU device lifecycle

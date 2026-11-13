@@ -45,7 +45,8 @@ import type { Forensics } from '../diagnostics/forensics';
 import type { SeekSettings, Chunk, ChunkMeta } from '../types/types';
 import { chunkMetaEqual, pushDeltaAdds, type DeltaAdd } from '../search/frame-utils';
 import { frameBm25Coherent } from '../search/coherence';
-import { enforceTokenBudget, createBatchedTokenCounter, TOKEN_COUNTS_BATCH } from '../index/token-budget';
+import { createBatchedTokenCounter, TOKEN_COUNTS_BATCH } from '../index/token-budget';
+import { packChunks } from '../index/small-note';
 import { cheapYield } from '../index/pacer';
 import { MultiFieldBM25 } from '../search/bm25';
 import { isMobilePlatform } from '../embedding/platform';
@@ -634,7 +635,7 @@ export class SidecarCoordinator {
         let chunks = this.chunksFor(content, f.path, new Date(f.stat.mtime).toISOString());
         if (chunks.length === 0) return { note: null, skipped: false, abortWalk: false };
         try {
-            chunks = (await enforceTokenBudget(chunks, countTokens)).chunks;
+            chunks = (await packChunks(chunks, countTokens)).chunks;
         } catch (e) {
             await this.logger.appendError(`${logLabel}-tokenBudget:${f.path}`, e);
             const abortWalk = e instanceof Error && /Neither model nor tokenizer loaded/i.test(e.message);
@@ -793,7 +794,7 @@ export class SidecarCoordinator {
             let chunks = this.chunksFor(content, f.path, new Date(f.stat.mtime).toISOString());
             if (chunks.length === 0) continue;
             try {
-                chunks = (await enforceTokenBudget(chunks, ts => this.embedder.tokenCounts(ts))).chunks;
+                chunks = (await packChunks(chunks, ts => this.embedder.tokenCounts(ts))).chunks;
             } catch (e) {
                 complete = false;
                 await this.logger.appendError(`collectLiveIds-tokenBudget:${f.path}`, e);
@@ -960,7 +961,7 @@ export class SidecarCoordinator {
             if (chunks.length === 0) continue;
             if (tokenizerReady) {
                 try {
-                    chunks = (await enforceTokenBudget(chunks, ts => this.embedder.tokenCounts(ts))).chunks;
+                    chunks = (await packChunks(chunks, ts => this.embedder.tokenCounts(ts))).chunks;
                 } catch (e) {
                     await this.logger.appendError(`dedupViaSidecar-tokenBudget:${f.path}`, e);
                     continue;

@@ -58,6 +58,7 @@ import {
     BM25_COVERAGE_POW,
 } from './bm25';
 import { resolveBm25FieldBoosts } from './bm25-boosts';
+import { bm25fParamsFrom } from './bm25f';
 import { SYNONYM_WEIGHT } from './synonyms';
 import { rank, cosineScores, DEFAULT_RANKING_CONFIG } from './ranker';
 import { browseOrder, recencyDate } from './fusion';
@@ -361,6 +362,7 @@ export class SearchQuery {
         if (lex) {
             const { scores: bm25Scores, bound: bm25Bound } = lex.bm25.getScoresWithCoverage(cleanedQuery, {
                 boosts: this.bm25FieldBoosts(),
+                ...this.bm25fOpts(),
                 fuzzy: this.settings.fuzzyEnabled ? FUZZY_BY_LENGTH : false,
                 prefix: this.settings.prefixLastToken ? PREFIX_LAST_TOKEN : false,
             });
@@ -518,6 +520,10 @@ export class SearchQuery {
 
     bm25FieldBoosts(): Record<string, number> {
         return resolveBm25FieldBoosts(this.settings);
+    }
+
+    private bm25fOpts(): { bm25f?: ReturnType<typeof bm25fParamsFrom> } {
+        return this.settings.bm25f ? { bm25f: bm25fParamsFrom({}) } : {};
     }
 
     private async runExactTextSearch(
@@ -925,6 +931,7 @@ export class SearchQuery {
         const synEnabled = this.settings.synonymExpansion;
         const { scores: bm25Scores, coverage: bm25Coverage, bound: bm25Bound } = this.cacheManager.bm25Cache!.getScoresWithCoverage(cleanedQuery, {
             boosts: this.bm25FieldBoosts(),
+            ...this.bm25fOpts(),
             fuzzy: this.settings.fuzzyEnabled ? FUZZY_BY_LENGTH : false,
             prefix: this.settings.prefixLastToken ? PREFIX_LAST_TOKEN : false,
             ...(synEnabled && this.cacheManager.synonymCache && this.cacheManager.synonymCache.mates.size > 0 && {

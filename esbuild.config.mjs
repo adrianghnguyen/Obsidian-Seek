@@ -44,6 +44,20 @@ const workerBuild = await esbuild.build({
 });
 const binaryWorkerSrc = workerBuild.outputFiles[0].text;
 
+const wgslEngineBuild = await esbuild.build({
+    entryPoints: ['src/embedding/wgsl-engine/runtime-entry.js'],
+    bundle: true,
+    format: 'iife',
+    target: 'es2022',
+    platform: 'browser',
+    write: false,
+    minify: prod,
+    sourcemap: false,
+    logLevel: 'silent',
+});
+const wgslEngineSrc = wgslEngineBuild.outputFiles[0].text;
+if (wgslEngineSrc.includes('</script')) throw new Error('WGSL engine bundle contains </script');
+
 const context = await esbuild.context({
     entryPoints: ['src/main.ts'],
     bundle: true,
@@ -61,6 +75,7 @@ const context = await esbuild.context({
         '__PLUGIN_VERSION__': JSON.stringify(pluginVersion),
         '__SEEK_ANALYZER_VERSION__': JSON.stringify(analyzerVersion),
         '__BINARY_WORKER_SRC__': JSON.stringify(binaryWorkerSrc),
+        '__WGSL_ENGINE_SRC__': JSON.stringify(wgslEngineSrc),
     },
 });
 
