@@ -28,6 +28,7 @@ import { matchStrength } from '../search/dense-stats';
 import { SuggestEngine } from '../search/suggest';
 import { PillQueryField } from './query-field';
 import { openBaseAtTarget, openFileAtTarget, resolveOpenTarget, shouldKeepModalOpen, type OpenTarget } from '../app/open-target';
+import { scrollEditorToLine } from '../render/chunk-scroll';
 import {
     buildNoteLink,
     insertLinkInEditor,
@@ -79,7 +80,7 @@ import {
 // render thread (iframe = same event loop) and on iOS the stage-1 binary scan is
 // synchronous too, so every fired search is costly. A wider debounce drops the
 // count of wasted in-flight embeds while the user is still typing.
-const DEBOUNCE_MS = Platform.isMobile ? 400 : 200;
+const DEBOUNCE_MS = Platform.isMobile ? 400 : 150;
 const INDEX_LOAD_POLL_MS = 750;
 
 // How long after the last keystroke (with results showing) we consider the query
@@ -2203,10 +2204,7 @@ export class SeekSearchModal extends Modal {
         if (view instanceof MarkdownView && r.start_line > 0) {
             const editor = view.editor;
             editor.setCursor({ line: Math.max(0, r.start_line - 1), ch: 0 });
-            editor.scrollIntoView({
-                from: { line: r.start_line - 1, ch: 0 },
-                to: { line: r.end_line, ch: 0 },
-            }, true);
+            scrollEditorToLine(editor, r.start_line);
         }
     }
 

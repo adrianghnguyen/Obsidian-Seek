@@ -58,7 +58,8 @@ import { SeekLogger } from '../diagnostics/logger';
 import { seekPerf } from '../diagnostics/perf-console';
 import { Forensics } from '../diagnostics/forensics';
 import { selectIndexBucket } from '../embedding/iframe-runner';
-import { enforceTokenBudget, embedInput, createBatchedTokenCounter, TOKEN_COUNTS_BATCH, type TokenBudgetResult } from '../index/token-budget';
+import { embedInput, createBatchedTokenCounter, TOKEN_COUNTS_BATCH, type TokenBudgetResult } from '../index/token-budget';
+import { packChunks } from '../index/small-note';
 import { packSignBits } from '../embedding/binary';
 import { BinaryScorerWorker } from '../embedding/binary-scorer';
 import { quantizeInt8, dequantizeInt8, type QuantVec } from '../embedding/quant';
@@ -1275,7 +1276,7 @@ export class SearchOrchestrator {
             let budgeted: TokenBudgetResult;
             try {
                 const tbStart = performance.now();
-                budgeted = await enforceTokenBudget(fileChunks, ts => this.embedder.tokenCounts(ts));
+                budgeted = await packChunks(fileChunks, ts => this.embedder.tokenCounts(ts));
                 chunkMs += performance.now() - tbStart;
             } catch (e) {
                 filesSkippedError++;
@@ -2726,7 +2727,7 @@ export class SearchOrchestrator {
             let chunks = this.chunksFor(content, f.path, new Date(f.stat.mtime).toISOString());
             if (chunks.length === 0) continue;
             try {
-                chunks = (await enforceTokenBudget(chunks, ts => this.embedder.tokenCounts(ts))).chunks;
+                chunks = (await packChunks(chunks, ts => this.embedder.tokenCounts(ts))).chunks;
             } catch (e) {
                 await this.logger.appendError(`carryOver-tokenBudget:${f.path}`, e);
                 continue;

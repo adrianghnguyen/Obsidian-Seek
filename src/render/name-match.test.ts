@@ -29,7 +29,9 @@ describe('matchNamePrefix', () => {
 
     it('last-token prefix hits an alias that exact coverage misses', () => {
         expect(matchTitleAlias('alex che', 'Alex Chen', ['Alex C']).aliasCoverage).toBe(0);
-        expect(titleMatchBoost('alex che', [{ note_path: 'People/Alex Chen.md', metadata: { aliases: ['Alex C'] } }])[0]).toBe(0);
+        // Exact-only title boost still misses; production titleMatchBoost prefixes the last token (1.3).
+        expect(titleMatchBoost('alex che', [{ note_path: 'People/Alex Chen.md', metadata: { aliases: ['Alex C'] } }], 0.8, false)[0]).toBe(0);
+        expect(titleMatchBoost('alex che', [{ note_path: 'People/Alex Chen.md', metadata: { aliases: ['Alex C'] } }])[0]).toBeGreaterThan(0);
 
         const m = matchNamePrefix('alex che', 'Alex Chen', ['Alex C']);
         expect(m.score).toBeGreaterThan(0.4);

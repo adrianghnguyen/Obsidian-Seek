@@ -37,6 +37,7 @@ import type { IndexStore } from '../index/index-store';
 import type { IndexStatusBar } from '../ui/index-status-bar';
 import type { SeekLogger } from '../diagnostics/logger';
 import { getEnergySaver, isMobilePlatform, pauseBackgroundGpu } from '../embedding/platform';
+import { nextFlushDelay } from '../index/flush-schedule';
 import { CompositorPacer } from '../index/pacer';
 import {
     diffExcludedPaths,
@@ -134,6 +135,7 @@ export class PluginSchedulerManager {
     readonly dirtyQueue = new Set<string>();
     readonly deletedQueue = new Set<string>();
     idleTimer: number | null = null;
+    firstDirtyAt: number | null = null;
     structTimer: number | null = null;
     flushing = false;
     lastActiveFile: TFile | null = null;
@@ -248,11 +250,15 @@ export class PluginSchedulerManager {
     // 5-min idle debounce for edits: resets on every enqueue, so flipping back to
     // keep writing pushes the flush out rather than firing mid-thought.
     scheduleFlush(): void {
+        const now = Date.now();
+        if (this.firstDirtyAt == null) this.firstDirtyAt = now;
         if (this.idleTimer != null) window.clearTimeout(this.idleTimer);
+        const delay = nextFlushDelay(now, this.firstDirtyAt, idleFlushDelayMs());
         this.idleTimer = window.setTimeout(() => {
             this.idleTimer = null;
+            this.firstDirtyAt = null;
             void this.flushDirty();
-        }, idleFlushDelayMs());
+        }, delay);
     }
 
     // Short debounce for structural changes — model-free, so flush them soon

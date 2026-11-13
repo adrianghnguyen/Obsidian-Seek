@@ -4,7 +4,7 @@ import * as queryParser from './query-parser';
 import * as pool from './pool';
 import * as ranker from './ranker';
 import * as binary from '../embedding/binary';
-import MiniSearch from 'minisearch';
+import { MultiFieldBM25 } from './bm25';
 import type { ChunkMeta, ScoredChunk, SearchEntry } from '../types/types';
 
 describe('Search Pipeline Stage Sequencing', () => {
@@ -96,10 +96,10 @@ describe('Search Pipeline Stage Sequencing', () => {
             return origTopNIndices(...args);
         });
 
-        const origMiniSearch = MiniSearch.prototype.search;
-        const spyMiniSearch = vi.spyOn(MiniSearch.prototype, 'search').mockImplementation(function (this: any, ...args) {
+        const origBm25Scores = MultiFieldBM25.prototype.getScoresWithCoverage;
+        const spyMiniSearch = vi.spyOn(MultiFieldBM25.prototype, 'getScoresWithCoverage').mockImplementation(function (this: MultiFieldBM25, ...args) {
             sequence.push('step4:S1b:MiniSearch.search');
-            return origMiniSearch.apply(this, args);
+            return origBm25Scores.apply(this, args);
         });
 
         const origTopByRecency = (s.orch as any).topByRecency.bind(s.orch);
@@ -250,10 +250,10 @@ describe('Search Pipeline Stage Sequencing', () => {
             return out;
         });
 
-        const origMiniSearch = MiniSearch.prototype.search;
-        vi.spyOn(MiniSearch.prototype, 'search').mockImplementation(function (this: any, ...args) {
+        const origBm25Scores = MultiFieldBM25.prototype.getScoresWithCoverage;
+        vi.spyOn(MultiFieldBM25.prototype, 'getScoresWithCoverage').mockImplementation(function (this: MultiFieldBM25, ...args) {
             events.push({ name: 'bm25-search', timestamp: performance.now() - t0 });
-            return origMiniSearch.apply(this, args);
+            return origBm25Scores.apply(this, args);
         });
 
         const origTopByRecency = (s.orch as any).topByRecency.bind(s.orch);

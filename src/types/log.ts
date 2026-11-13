@@ -55,6 +55,8 @@ export interface LoadEntry {
     timestamp: string;
     requestedDevice: RequestedDevice;
     actualDevice: Device;
+    engine?: 'ort' | 'wgsl';
+    wgslError?: string | null;
     dtype: Dtype;
     // Output vector dimension AFTER MRL slicing (the on-the-wire / on-disk
     // shape). EmbeddingGemma's native output is 768; we slice + L2-renormalize
@@ -356,6 +358,8 @@ export interface SearchEntry {
     /** Exact / regex text lane (vNext): hybrid = default BM25+semantic. */
     textSearchKind?: 'hybrid' | 'exact' | 'regex';
     textSearchRegexInvalid?: boolean;
+    lexicalModel?: 'bm25f' | 'sum';
+    bm25fKnobs?: { title: number; aliases: number; properties: number; body: number; k1: number };
 }
 
 // First-page callback from search() — name hits only, before embed/binary finish.

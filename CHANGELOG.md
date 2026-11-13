@@ -4,6 +4,18 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Changed
+
+- **Seek 1.3 search/index/embed engine.** Granite can use the Seek WebGPU (WGSL) encoder instead of ONNX Runtime WebGPU; Gemma still uses ORT. Keyword ranking uses BM25F by default (no reindex). Tiny multi-heading notes collapse to one chunk (chunker v12). Last typed word can still title-boost while you type. Fork UX is unchanged: quiet leftover catch-up chip, telescope preview, energy saver, and Settings stage copy.
+
+### Fixed
+
+- Load telemetry records whether Granite used the Seek WGSL engine or ORT (`engine` / `wgslError` on the load entry).
+
+### Added
+
+- Settings → Search stages notes that lexical BM25 is BM25F (field-aware) by default.
+
 ## 1.16.1-beta.2
 
 Quiet leftover catch-up chip uses a 2% indexed-file threshold.
