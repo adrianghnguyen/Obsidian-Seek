@@ -1222,6 +1222,22 @@ function withTokenizer(fn) {
 }
 function runEmbedBatch(texts, bucket) {
     const t0 = performance.now();
+    // WGSL shim (loadWgsl) is a callable that already pools + L2-normalizes and
+    // sets pipeline.model = null. The ORT path below needs FeatureExtractionPipeline.model.
+    if (typeof pipeline.model !== 'function') {
+        return Promise.resolve(pipeline(texts)).then(function (output) {
+            const outDim = output.dims[output.dims.length - 1];
+            if (outDim < OUTPUT_DIM) throw new Error('embedBatch: model output dim ' + outDim + ' < OUTPUT_DIM ' + OUTPUT_DIM + ' - model/dim misconfig');
+            const batch = output.dims[0];
+            const vectors = [];
+            for (let i = 0; i < batch; i++) {
+                const row = output.data.subarray(i * outDim, (i + 1) * outDim);
+                vectors.push(sliceAndRenormalize(row, OUTPUT_DIM));
+            }
+            if (typeof output.dispose === 'function') output.dispose();
+            return { vectors: vectors, latencyMs: performance.now() - t0 };
+        });
+    }
     const prepared = withTokenizer(function () { return tokenizeEmbedBatch(texts, bucket); });
     let releaseGpu = function () {};
     const gpuDone = new Promise(function (r) { releaseGpu = r; });

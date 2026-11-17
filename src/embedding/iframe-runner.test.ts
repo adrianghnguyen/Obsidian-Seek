@@ -442,6 +442,7 @@ describe('iframe child message handler — source check', () => {
         expect(script).toContain('function poolEmbedBatch');
         expect(script).toContain("padding: 'max_length'");
         expect(script).toContain('pipeline.model(p.enc)');
+        expect(script).toContain("typeof pipeline.model !== 'function'");
         const runIdx = script.indexOf('function runEmbedBatch');
         expect(runIdx).toBeGreaterThan(-1);
         expect(script.indexOf('withTokenizer(function () { return tokenizeEmbedBatch', runIdx)).toBeGreaterThan(runIdx);
