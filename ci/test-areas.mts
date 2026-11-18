@@ -35,6 +35,7 @@ export const CI_TEST_AREAS = {
         'src/index/chunk-diff.test.ts',
         'src/index/chunker-idpin.test.ts',
         'src/index/chunker.test.ts',
+        'src/index/small-note.test.ts',
         'src/index/db-upgrade.test.ts',
         'src/index/embed-pipeline.test.ts',
         'src/index/embed-auto-caps.test.ts',

@@ -5,7 +5,7 @@
 
 import type { App, TFile } from 'obsidian';
 import type { Chunk, SeekSettings } from '../types/types';
-import { MarkdownChunker, cyrb53Hex } from '../index/chunker';
+import { MarkdownChunker, cyrb53Hex, CHUNKER_VERSION } from '../index/chunker';
 import { extractBaseDocs } from '../index/base-extractor';
 import { classifyFileDelta, type FileRecord, type IndexStore } from '../index/index-store';
 import { PLUGIN_VERSION } from '../embedding/embedder';
@@ -141,10 +141,10 @@ export interface IndexFilesContext {
             // the quarantine field comment), wedging every computeDelta caller.
             if (ctx.isQuarantined(f.path)) continue;
             const prev = stored.get(f.path);
-            let decision = classifyFileDelta(prev, f.stat.mtime, undefined, PLUGIN_VERSION);
+            let decision = classifyFileDelta(prev, f.stat.mtime, undefined, PLUGIN_VERSION, CHUNKER_VERSION);
             if (decision === 'check-bytes') {
                 try {
-                    decision = classifyFileDelta(prev, f.stat.mtime, cyrb53Hex(await ctx.app.vault.cachedRead(f)), PLUGIN_VERSION);
+                    decision = classifyFileDelta(prev, f.stat.mtime, cyrb53Hex(await ctx.app.vault.cachedRead(f)), PLUGIN_VERSION, CHUNKER_VERSION);
                 } catch {
                     decision = 'dirty';   // unreadable → let the embed path decide
                     ctx.quarantineUnreadable(f.path); // give it this one attempt, then back off

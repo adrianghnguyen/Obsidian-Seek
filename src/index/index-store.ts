@@ -29,6 +29,7 @@ import { packSignBits } from '../embedding/binary';
 import { quantizeInt8, dequantizeInt8, type QuantVec } from '../embedding/quant';
 import { sizeOfRow, type SizingRule, type StoreSizeRow } from './index-size';
 import { ACTIVE_MODEL_SPEC } from '../embedding/model-registry';
+import { CHUNKER_VERSION } from './chunker';
 
 // Base IDB name. IndexedDB is ORIGIN-scoped and every Obsidian vault window
 // shares the app://obsidian.md origin, so a bare constant name is ONE database
@@ -275,6 +276,17 @@ export interface FileRecord {
     // embed-path fix un-quarantines the fleet automatically).
     embedFailedChunks?: number;      // how many chunks are missing from chunk_ids
     embedFailPluginVersion?: string; // build that recorded the failure
+    // CHUNKER_VERSION that produced this record's chunk_ids. Absent on records
+    // written before v11. classifyFileDelta treats a lag vs the live version as
+    // dirty so a chunker bump catch-up rebuilds ids/vectors without a user
+    // full reindex. Stamped on every putFileRecord / putBatchQuantized write.
+    packedChunkerVersion?: number;
+}
+
+function stampPackedChunker(rec: FileRecord): FileRecord {
+    return rec.packedChunkerVersion === undefined
+        ? { ...rec, packedChunkerVersion: CHUNKER_VERSION }
+        : rec;
 }
 
 // Referential-integrity orphan finder: chunk_ids present in the index but
@@ -301,10 +313,11 @@ export function findOrphanChunkIds(allChunkIds: string[], referenced: ReadonlySe
 //                   the bytes, hash them, and re-call with `liveHash`.
 export type DeltaDecision = 'dirty' | 'clean' | 'check-bytes';
 export function classifyFileDelta(
-    prev: Pick<FileRecord, 'mtimeMs' | 'contentHash' | 'embedFailPluginVersion'> | undefined,
+    prev: Pick<FileRecord, 'mtimeMs' | 'contentHash' | 'embedFailPluginVersion' | 'packedChunkerVersion'> | undefined,
     liveMtime: number,
     liveHash?: string,
     livePluginVersion?: string,
+    liveChunkerVersion?: number,
 ): DeltaDecision {
     if (prev === undefined) return 'dirty';            // never indexed
     // Embed-failure quarantine, retry-per-release: a record quarantined by a
@@ -314,6 +327,14 @@ export function classifyFileDelta(
     // mtime/hash reads 'clean' (that IS the quarantine: no retry churn).
     if (prev.embedFailPluginVersion !== undefined && livePluginVersion !== undefined
         && prev.embedFailPluginVersion !== livePluginVersion) return 'dirty';
+    // Chunker bump: records packed under an older CHUNKER_VERSION are dirty even
+    // when mtime/bytes match, so incremental catch-up rebuilds ids/vectors.
+    // Missing packedChunkerVersion is older than live (pre-field indexes).
+    // When liveChunkerVersion is omitted (mtime/hash unit tests), skip this.
+    if (liveChunkerVersion !== undefined) {
+        const packed = prev.packedChunkerVersion ?? -1;
+        if (packed !== liveChunkerVersion) return 'dirty';
+    }
     // Strict equality, not <=: an mtime REGRESSION (file restored from backup /
     // iCloud conflict resolved to the older copy) carries different bytes behind
     // an older stamp — '<=' classified it clean and the index served the phantom
@@ -338,11 +359,10 @@ export interface MetaConfig {
     // The build fingerprint the stored vectors + chunk_ids were produced under.
     // Optional — indexes written before this date lack them, so identityMatches
     // (identity.ts) reads them as a version mismatch and routes the index through
-    // a one-time rebuild. Stamped ONLY by a full reindex / rebuild-from-sidecar;
-    // a delta carries the prior values forward, because only a full rebuild may
-    // honestly claim a new identity (mirrors how modelId/bgMean are preserved on
-    // an incremental). See identity.ts for which fields gate a rebuild and why
-    // analyzerVersion + dbVersion are deliberately excluded from that gate.
+    // a one-time rebuild. Stamped by a full reindex / rebuild-from-sidecar, or
+    // (chunker-only bump) by stampChunkerIfCaughtUp after incremental catch-up
+    // of every FileRecord whose packedChunkerVersion lagged. An ordinary delta
+    // still carries the prior identity forward. See identity.ts.
     chunkerVersion?: number;
     analyzerVersion?: string;
     revision?: string | null;
@@ -1077,7 +1097,7 @@ export class IndexStore {
         }
         if (records.length > 0) {
             const files = tx.objectStore(STORE_FILES);
-            for (const rec of records) files.put(rec);
+            for (const rec of records) files.put(stampPackedChunker(rec));
         }
         await awaitTx(tx);
     }
@@ -1085,7 +1105,7 @@ export class IndexStore {
     async putFileRecord(rec: FileRecord): Promise<void> {
         const db = this.requireDb();
         const tx = db.transaction(STORE_FILES, 'readwrite');
-        tx.objectStore(STORE_FILES).put(rec);
+        tx.objectStore(STORE_FILES).put(stampPackedChunker(rec));
         await awaitTx(tx);
     }
 

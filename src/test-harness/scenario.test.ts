@@ -4,7 +4,7 @@
 // scenario.ts and [[Seek Testing Strategy]].
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { drainCatchUp } from '../index/catchup';
-import { cyrb53Hex } from '../index/chunker';
+import { cyrb53Hex, CHUNKER_VERSION } from '../index/chunker';
 import { Scenario } from './scenario';
 
 describe('Tier-2 scenario harness', () => {
@@ -298,5 +298,36 @@ describe('Tier-2 scenario harness', () => {
         expect((await s.orch.computeDelta()).dirty).toEqual([]);
         const rec = (await s.store.listFileRecords()).find(r => r.note_path === 'note.md');
         expect(rec?.contentHash).toBe(cyrb53Hex('edited body about basalt while the last pass is gone'));
+    });
+
+    // CHUNKER_VERSION bump: records packed under the previous version are dirty
+    // even with unchanged bytes. Incremental reconcile rebuilds them; stamp
+    // happens only after the dirty set is empty (no user full reindex).
+    it('a chunker bump dirties all notes for catch-up, then stamps without a full reindex', async () => {
+        const s = await boot();
+        s.vault.write('tiny.md', '## Yesterday\nShipped the tokenizer fix.\n\n## Today\nPairing on sidecar compaction.\n', 1000);
+        s.vault.write('long.md', `## Only\n\n${'word '.repeat(80)}`, 1000);
+        await s.coldStart();
+
+        const prevMeta = await s.store.getMeta();
+        expect(prevMeta.chunkerVersion).toBe(CHUNKER_VERSION);
+        await s.store.setMeta({ ...prevMeta, chunkerVersion: CHUNKER_VERSION - 1 });
+        for (const rec of await s.store.listFileRecords()) {
+            await s.store.putFileRecord({ ...rec, packedChunkerVersion: CHUNKER_VERSION - 1 });
+        }
+
+        const delta = await s.orch.computeDelta();
+        expect(delta.dirty.sort()).toEqual(['long.md', 'tiny.md']);
+        expect(await s.orch.stampChunkerIfCaughtUp()).toBe(false);
+
+        await s.reconcile();
+        expect((await s.orch.computeDelta()).dirty).toEqual([]);
+        expect(await s.orch.stampChunkerIfCaughtUp()).toBe(true);
+        expect((await s.store.getMeta()).chunkerVersion).toBe(CHUNKER_VERSION);
+        expect(await s.orch.stampChunkerIfCaughtUp()).toBe(false);
+
+        for (const rec of await s.store.listFileRecords()) {
+            expect(rec.packedChunkerVersion).toBe(CHUNKER_VERSION);
+        }
     });
 });

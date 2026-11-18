@@ -4,7 +4,7 @@
 // expectationFor() slices the narrower cross-device sidecar expectation.
 
 import { describe, it, expect } from 'vitest';
-import { pluginIdentity, identityMatches, identityFromMeta, shouldStampLiveIdentity, identityHealEligibility, type IndexIdentity } from './identity';
+import { pluginIdentity, identityMatches, identityFromMeta, shouldStampLiveIdentity, identityHealEligibility, isChunkerOnlyMismatch, type IndexIdentity } from './identity';
 import type { MetaConfig } from './index-store';
 import { DB_VERSION } from './index-store';
 import { LEGACY_ENGLISH_MODEL_ID } from '../embedding/embedder';
@@ -56,6 +56,19 @@ describe('identityMatches (local dense-index gate)', () => {
             mutate(b);
             expect(identityMatches(base(), b)).toBe(false);
         }
+    });
+
+    it('isChunkerOnlyMismatch is true only for a stamped chunker bump with the same model', () => {
+        const a = base();
+        const b = base();
+        b.chunkerVersion = 6;
+        expect(isChunkerOnlyMismatch(a, b)).toBe(true);
+        b.modelId = 'repo/other';
+        expect(isChunkerOnlyMismatch(a, b)).toBe(false);
+        const unstamped = base();
+        unstamped.chunkerVersion = -1;
+        expect(isChunkerOnlyMismatch(unstamped, base())).toBe(false);
+        expect(isChunkerOnlyMismatch(base(), base())).toBe(false);
     });
 
     it('IGNORES analyzerVersion / dbVersion / sidecarFormat — none is a re-embed trigger', () => {

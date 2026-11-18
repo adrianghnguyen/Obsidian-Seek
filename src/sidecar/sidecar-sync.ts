@@ -34,9 +34,10 @@
 // note is left for a model-backed embed (computeDelta will flag it) rather than
 // writing a file record that would make computeDelta think it's fully indexed.
 //
-// chunk_id reproduction (FIXED 2026-06-14): the oracle (reChunkLive /
-// dedupViaSidecar in search.ts) runs the FULL producer pipeline — chunkContent
-// THEN enforceTokenBudget — so split chunk_ids match exactly. The earlier v1
+// chunk_id reproduction (FIXED 2026-06-14, packChunks 2026-11): the oracle
+// (reChunkLive / dedupViaSidecar in search.ts) runs the FULL producer pipeline
+// — chunkContent THEN packChunks (small-note collapse + token budget) — so
+// collapsed/split chunk_ids match exactly. The earlier v1
 // omitted the token-budget re-split (it needs the tokenizer), which silently
 // missed every note long enough to be split: on a long-note vault that was
 // ~the whole corpus → hydrated:0 → full on-device re-embed → iPhone jetsam.

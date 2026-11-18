@@ -77,6 +77,19 @@ export function identityMatches(a: IndexIdentity, b: IndexIdentity): boolean {
     );
 }
 
+// A stamped index whose only dense-invalidating drift is CHUNKER_VERSION.
+// Same model/revision/dim → vectors are still in the live space; catch-up can
+// re-pack dirty files (chunk-diff keeps unchanged ids). Unstamped indexes
+// (chunkerVersion mapped to -1) are NOT this case — they keep the in-place
+// stamp path. Model/dim/revision drift still needs a full rebuild.
+export function isChunkerOnlyMismatch(stored: IndexIdentity, live: IndexIdentity): boolean {
+    return stored.chunkerVersion >= 0
+        && stored.chunkerVersion !== live.chunkerVersion
+        && stored.modelId === live.modelId
+        && stored.revision === live.revision
+        && stored.dim === live.dim;
+}
+
 // The identity a STORED index reports, for comparison against pluginIdentity() via
 // identityMatches. Legacy / torn metas (written before the identity fields existed)
 // map every missing field to a value that GUARANTEES a mismatch — an unstamped index

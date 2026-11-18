@@ -291,6 +291,29 @@ describe('classifyFileDelta', () => {
             expect(classifyFileDelta(rec(1000, 'aaa'), 2000, 'bbb', '1.0.6')).toBe('dirty');
         });
     });
+
+    describe('packedChunkerVersion (chunker-bump catch-up)', () => {
+        it('lags vs live CHUNKER_VERSION is dirty even when mtime/bytes match', () => {
+            const old = { mtimeMs: 1000, contentHash: 'aaa', packedChunkerVersion: 10 };
+            expect(classifyFileDelta(old, 1000, undefined, '1.0.6', 11)).toBe('dirty');
+            expect(classifyFileDelta(old, 1000, 'aaa', '1.0.6', 11)).toBe('dirty');
+        });
+
+        it('missing packedChunkerVersion is treated as older than live', () => {
+            expect(classifyFileDelta(rec(1000, 'aaa'), 1000, undefined, '1.0.6', 11)).toBe('dirty');
+        });
+
+        it('matching packedChunkerVersion falls through to mtime/hash rules', () => {
+            const cur = { mtimeMs: 1000, contentHash: 'aaa', packedChunkerVersion: 11 };
+            expect(classifyFileDelta(cur, 1000, undefined, '1.0.6', 11)).toBe('clean');
+            expect(classifyFileDelta(cur, 2000, 'aaa', '1.0.6', 11)).toBe('clean');
+            expect(classifyFileDelta(cur, 2000, 'bbb', '1.0.6', 11)).toBe('dirty');
+        });
+
+        it('omitting liveChunkerVersion keeps the pre-v11 mtime/hash contract', () => {
+            expect(classifyFileDelta(rec(1000, 'aaa'), 1000)).toBe('clean');
+        });
+    });
 });
 
 // planRestoreOps is the one subtle bit of embed-free compaction: in-line-keyed
