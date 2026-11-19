@@ -8,6 +8,19 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 - **Small-note packing.** Tiny multi-heading notes collapse to one chunk (`packChunks`) before the 512-token budget. Index, sidecar hydrate, and live re-chunk share those ids. `CHUNKER_VERSION` 11 dirties notes so incremental catch-up rebuilds chunk ids/vectors (chunk-diff keeps unchanged long notes). No user-triggered full reindex. Until catch-up finishes, old split chunks for unvisited small notes can still rank. Embed model unchanged. No WGSL / BM25F.
 
+## 1.16.1
+
+Stable 1.16.1: catch-up chrome while energy saver holds embeds, and a quiet leftover chip below 2%. Covers `1.16.1-beta.1`–`beta.2`.
+
+### Changed
+
+- **Quiet leftover chip threshold.** Catch-up below **2%** of indexed files (`MINOR_CATCHUP_FRACTION`) stays a quiet status-bar chip (icon/dot only, no remaining/total). At or above 2% the chip may show numbers. Settings Index and hover (i) still show counts. Same `classifyCatchUpPresentation` boundary as the search footer.
+
+### Fixed
+
+- **Catch-up paused under energy saver.** When energy saver holds background catch-up, the status bar no longer shows Catching up with an orange leftover count. Chrome is **Paused** (muted pause mark); Settings Index explains that queued notes wait until energy saver is off, you search, or Obsidian is in the foreground. A live embed pass is unchanged.
+- **Quiet leftover chip.** A tiny leftover catch-up (for example a few files on a large vault) stays a quiet glow on the status chip — no orange remaining count. If energy saver is holding that leftover, the chip is a muted pause and still has no remaining number. Settings Index keeps the counts.
+
 ## 1.16.1-beta.2
 
 Quiet leftover catch-up chip uses a 2% indexed-file threshold.
