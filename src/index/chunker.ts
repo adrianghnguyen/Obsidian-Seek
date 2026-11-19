@@ -15,7 +15,7 @@
 //
 // WS3 change (2026-06-10): sections emit WHOLE — the char-based
 // splitOversized / overlap / hardSplit path is deleted. Every production
-// chunk passes through enforceTokenBudget (token-budget.ts), which re-splits
+// chunk passes through packChunks (small-note.ts → enforceTokenBudget), which re-splits
 // to the 512-token embed window at ATOM boundaries (atoms.ts: fences, tables
 // and callouts never split internally except at the token hard ceiling, with
 // structure-aware re-wrapping). Two splitters in series meant the char
@@ -133,29 +133,29 @@ export function chunkIdFor(notePath: string, title: string, content: string, den
 // sidecar's VECTORS would technically still be reproducible here, but the
 // conservative reject costs only one desktop re-seed.
 //
-// PENDING (would be 11, NOT bumped yet): three fixes landed after v10 shipped
-// that also move buildDenseSuffix's output or the parsed frontmatter/body —
-// and thus chunkIdFor's tail or content — for affected notes: (a)
-// INERT_VALUE_RE narrowed to stop swallowing free text trailing a date
-// property value (audit R2 batch2 #3, chunker.ts); (b) SUFFIX_ASSET_RE
-// unified onto dense-clean.ts's $-anchored ASSET_EXT_RE instead of its own
-// drifted \b-bounded copy, so a property value that merely CONTAINS an asset
-// extension (e.g. "trip.pdf notes") no longer gets misclassified as
-// shape-junk and dropped (audit R2 batch2 #5, chunker.ts + dense-clean.ts);
-// and (c) a leading BOM (U+FEFF) is now stripped before frontmatter parsing
-// (audit R2 batch2 #4, chunkContent) — previously FRONTMATTER_RE's `^---`
-// anchor never matched a BOM-prefixed file, so metadata stayed `{}` and body
-// was the whole raw file including the frontmatter block text; for any
-// BOM-prefixed note this changes metadata, body, denseSuffix, and hence
-// chunk_id. All three are eval-gate-before-ship the same way v10 itself was —
-// DELIBERATELY left off the live CHUNKER_VERSION until that eval runs, not an
-// oversight. In the meantime this means a producer and consumer can each
-// self-report chunkerVersion=10 while actually running different
-// id-affecting code (a staggered-rollout risk on IDENTITY, not data safety —
-// hydrateFromSidecar's id-lookup path just falls through to a normal local
-// re-embed on a miss, same as any other unmatched id). Fold all three into
-// this comment block when the eval runs and the version finally bumps to 11.
-export const CHUNKER_VERSION = 10;
+// v11 (2026-11): small-note collapse (small-note.ts packChunks, floor 64). A
+// note the chunker split into 2+ heading sections whose WHOLE body is <= 64
+// tokens is emitted as one chunk (note title, empty heading_path, headings
+// inlined into the body) BEFORE the 512-token budget. Index, sidecar hydrate,
+// and live re-chunk all go through packChunks so those ids match. Long notes
+// still split at the token budget; small sections inside larger notes are
+// untouched. The boundaries, titles and ids of collapsed notes change, so a
+// v10 sidecar's vectors for them are unreproducible here. Catch-up dirties
+// every FileRecord whose packedChunkerVersion lags (all notes, because the
+// bump cannot cheaply know which packing would change without the tokenizer);
+// chunk-diff keeps vectors for notes whose ids stay the same. Do not require
+// a user-triggered full reindex. Upstream 1.3.0 shipped this as part of
+// CHUNKER_VERSION 12; our sequential bump is 11 (we did not take WGSL / BM25F
+// / keyed-dense v11).
+//
+// This bump ALSO absorbs three id-affecting fixes that had been held off
+// v10's version pending an eval — their id/content deltas ride the same
+// catch-up: (a) INERT_VALUE_RE narrowed to stop swallowing free text trailing
+// a date property value (audit R2 batch2 #3); (b) SUFFIX_ASSET_RE unified
+// onto dense-clean.ts's $-anchored ASSET_EXT_RE (audit R2 batch2 #5); (c) a
+// leading BOM (U+FEFF) is stripped before frontmatter parsing (audit R2
+// batch2 #4).
+export const CHUNKER_VERSION = 11;
 
 export interface ChunkerOptions {
     minChunkChars?: number;

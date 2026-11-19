@@ -43,7 +43,7 @@ import { awaitCatchUpQuiescence } from './app/index-work-quiescence';
 import { LocalEmbedder, LOCAL_MODEL, LEGACY_ENGLISH_MODEL_ID } from './embedding/embedder';
 import type { WorkerProbeResult, WorkerEmbedTestResult } from './embedding/iframe-runner';
 import { activeModelSpec, bindLiveModel, currentModelSpec, resolveOverrideSpec, evictStaleModelCaches, deleteModelCaches, probeModelDownloaded } from './embedding/model-registry';
-import { pluginIdentity, identityMatches, identityFromMeta } from './index/identity';
+import { pluginIdentity, identityMatches, identityFromMeta, isChunkerOnlyMismatch } from './index/identity';
 import { isLoadGenerationCurrent, isSessionWorkCurrent } from './app/boot-session';
 import {
     indexingProgressKey,
@@ -2434,6 +2434,20 @@ export default class SeekPlugin extends Plugin {
                 return true;
             }
 
+            // Chunker-only bump: same model/dim/revision, new packing. Do not
+            // demand a user full reindex — incremental catch-up dirties every
+            // FileRecord whose packedChunkerVersion lags and rebuilds ids/vectors
+            // (chunk-diff keeps unchanged long notes). Old small-note split
+            // vectors stay mixed until that pass finishes. Returning false lets
+            // reconcileOnLoad / drainCatchUp walk the dirty set.
+            if (isChunkerOnlyMismatch(identityFromMeta(meta), pluginIdentity())) {
+                if (firstReport) {
+                    await this.logger.appendError('index-chunker-bump-catchup', new Error(
+                        `chunker ${meta.chunkerVersion} → ${pluginIdentity().chunkerVersion}; incremental catch-up`)).catch(() => {});
+                }
+                return false;
+            }
+
             // 2. No matching peer and a genuinely old index. CONSENT-GATED (2026-06-23):
             //    NEITHER platform auto-reindexes here anymore. We only mark the index
             //    version-stale, fire a one-time warning toast, and let the search-modal
@@ -2746,7 +2760,10 @@ export default class SeekPlugin extends Plugin {
             await this.whenLayoutReady();
             if (!this.isSessionWorkCurrent(workGen)) return false;
             const { dirty, deleted } = await this.orchestrator.computeDelta();
-            if (dirty.length === 0 && deleted.length === 0) return false;
+            if (dirty.length === 0 && deleted.length === 0) {
+                await this.orchestrator.stampChunkerIfCaughtUp().catch(() => {});
+                return false;
+            }
             if (!this.isSessionWorkCurrent(workGen)) return false;
             let storedFiles = 0;
             try {
@@ -3586,6 +3603,13 @@ export default class SeekPlugin extends Plugin {
                     // The drain reached an empty delta — any exclusion change it was
                     // backfilling is now reflected in the index. Clear the banner.
                     this.clearExclusionChange();
+                    void this.orchestrator.stampChunkerIfCaughtUp().then(stamped => {
+                        if (stamped && this.degradedReason === 'version') {
+                            this.indexHealth = 'healthy';
+                            this.degradedReason = null;
+                            this.identityHealNotified = false;
+                        }
+                    }).catch(() => {});
                     void this.runStartupWarm('post-catchup');
                 }
             }

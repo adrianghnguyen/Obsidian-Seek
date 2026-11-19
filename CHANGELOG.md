@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Changed
+
+- **Small-note packing.** Tiny multi-heading notes collapse to one chunk (`packChunks`) before the 512-token budget. Index, sidecar hydrate, and live re-chunk share those ids. `CHUNKER_VERSION` 11 dirties notes so incremental catch-up rebuilds chunk ids/vectors (chunk-diff keeps unchanged long notes). No user-triggered full reindex. Until catch-up finishes, old split chunks for unvisited small notes can still rank. Embed model unchanged. No WGSL / BM25F.
+
 ## 1.16.1
 
 Stable 1.16.1: catch-up chrome while energy saver holds embeds, and a quiet leftover chip below 2%. Covers `1.16.1-beta.1`–`beta.2`.

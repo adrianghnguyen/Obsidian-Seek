@@ -58,7 +58,8 @@ import { SeekLogger } from '../diagnostics/logger';
 import { seekPerf } from '../diagnostics/perf-console';
 import { Forensics } from '../diagnostics/forensics';
 import { selectIndexBucket } from '../embedding/iframe-runner';
-import { enforceTokenBudget, embedInput, createBatchedTokenCounter, TOKEN_COUNTS_BATCH, type TokenBudgetResult } from '../index/token-budget';
+import { embedInput, type TokenBudgetResult } from '../index/token-budget';
+import { packChunks } from '../index/small-note';
 import { packSignBits } from '../embedding/binary';
 import { BinaryScorerWorker } from '../embedding/binary-scorer';
 import { quantizeInt8, dequantizeInt8, type QuantVec } from '../embedding/quant';
@@ -66,7 +67,7 @@ import { VecReservoir, denseBgStats, BG_RESERVOIR, MIN_BG_SAMPLE } from './dense
 import { bulkAppend, clearDevice, sidecarDirSignature, shouldReconcileSidecar, staleSidecarFormat, SIDECAR_FORMAT, bm25PathFor, writeBytesAtomic, ensureDir, listSidecarDeviceIds, listDeviceShards, compactDevice, coalesceSmallShards, type CompactResult, type CoalesceResult, type TierBytes } from '../sidecar/sidecar';
 import { writeDeviceMeta, readDeviceMeta, metaAccepts, expectationFor, type SidecarMeta, type MetaExpectation } from '../sidecar/sidecar-meta';
 import { hydrateFromSidecar, rankAcceptedProducers, probePeerAhead, type ReChunkedNote, type HydrateResult, type HydrateDeps, type HydrateProgressDetail } from '../sidecar/sidecar-sync';
-import { pluginIdentity, shouldStampLiveIdentity, identityHealEligibility, type IndexIdentity } from '../index/identity';
+import { pluginIdentity, shouldStampLiveIdentity, identityHealEligibility, identityFromMeta, isChunkerOnlyMismatch, type IndexIdentity } from '../index/identity';
 import { gzipString, gunzipToString, gzipAvailable } from '../sidecar/gzip';
 import { IndexCoordinator } from '../index/index-coordinator';
 import { CompositorPacer, yieldAfterEmbedDispatch } from '../index/pacer';
@@ -845,7 +846,7 @@ export class SearchOrchestrator {
             keepIds?: Set<string>;
         }
         // A chunk waiting in a bucket buffer: where to write its vector back.
-        // tokens = the chunk's exact token count (from enforceTokenBudget) —
+                // tokens = the chunk's exact token count (from packChunks) —
         // on wasm the dispatch pads to the batch max, so the honest
         // paddedTokens forensics counter needs the real lengths.
         interface Pending { fs: FileState; slot: number; input: string; tokens: number; }
@@ -1267,15 +1268,14 @@ export class SearchOrchestrator {
                 break;
             }
 
-            // WS2.3 token-budget enforcement: re-pack any chunk whose embed
-            // input exceeds the 512-token window (counted by the model's own
-            // tokenizer — token-counts RPC) and capture the EXACT count of
-            // every final input for bucket routing below. The count RPC is
-            // tokenizer-only (~ms per file) — folded into chunk time.
+            // packChunks: small-note collapse then the 512-token budget, counted
+            // by the model's own tokenizer (token-counts RPC). Every producer
+            // path uses this so collapsed/split chunk_ids match. The count RPC
+            // is tokenizer-only (~ms per file) — folded into chunk time.
             let budgeted: TokenBudgetResult;
             try {
                 const tbStart = performance.now();
-                budgeted = await enforceTokenBudget(fileChunks, ts => this.embedder.tokenCounts(ts));
+                budgeted = await packChunks(fileChunks, ts => this.embedder.tokenCounts(ts));
                 chunkMs += performance.now() - tbStart;
             } catch (e) {
                 filesSkippedError++;
@@ -1379,7 +1379,7 @@ export class SearchOrchestrator {
                 const input = embedInput(c);
                 // Token-exact routing: the bucket is the smallest warmed rung
                 // ≥ the input's REAL token count, so truncation cannot fire
-                // (enforceTokenBudget guarantees count ≤ 512 except for the
+                // (packChunks / enforceTokenBudget guarantees count ≤ 512 except for the
                 // counted-and-logged oversize-title pathology).
                 const bucket = selectIndexBucket(embedCounts[slot]);
                 let buf = buffers.get(bucket);
@@ -1720,6 +1720,25 @@ export class SearchOrchestrator {
 
     async computeDelta(): Promise<{ dirty: string[]; deleted: string[] }> {
         return computeDelta(this.indexFilesCtx());
+    }
+
+    // After a CHUNKER_VERSION bump, catch-up dirties every file whose
+    // packedChunkerVersion lags. Once that set is empty, stamp the live
+    // chunkerVersion so identityMatches and sidecar metaAccepts agree. Does
+    // not stamp model/dim/revision drift (those still need a full rebuild).
+    async stampChunkerIfCaughtUp(): Promise<boolean> {
+        const meta = await this.store.getMeta().catch(() => null);
+        if (!meta) return false;
+        const stored = identityFromMeta(meta);
+        const live = pluginIdentity();
+        if (stored.chunkerVersion === live.chunkerVersion) return false;
+        // Model id on the store follows the embedder (tests use 'test-model');
+        // a real model/revision/dim switch still fails this and needs a rebuild.
+        if (!isChunkerOnlyMismatch(stored, { ...live, modelId: stored.modelId })) return false;
+        const { dirty, deleted } = await this.computeDelta();
+        if (dirty.length > 0 || deleted.length > 0) return false;
+        await this.store.setMeta({ ...meta, chunkerVersion: live.chunkerVersion });
+        return true;
     }
 
     // Per-folder embedder coverage for the settings surface. `allPaths` = every
@@ -2726,7 +2745,7 @@ export class SearchOrchestrator {
             let chunks = this.chunksFor(content, f.path, new Date(f.stat.mtime).toISOString());
             if (chunks.length === 0) continue;
             try {
-                chunks = (await enforceTokenBudget(chunks, ts => this.embedder.tokenCounts(ts))).chunks;
+                chunks = (await packChunks(chunks, ts => this.embedder.tokenCounts(ts))).chunks;
             } catch (e) {
                 await this.logger.appendError(`carryOver-tokenBudget:${f.path}`, e);
                 continue;
