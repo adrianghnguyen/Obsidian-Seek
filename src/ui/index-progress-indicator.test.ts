@@ -150,6 +150,46 @@ describe('IndexStatusReporter acceptance', () => {
         expect(indicator.units).toBeNull();
     });
 
+    it('updating mode with a catch-up job exposes pass units, not a hidden null', () => {
+        const indicator = computeIndexProgressIndicator({
+            mode: 'updating',
+            hydrating: false,
+            waitingForSidecar: false,
+            dropRecovering: false,
+            booting: false,
+            goodEnough: true,
+            walk: null,
+            job: { done: 27, total: 127 },
+            jobKind: 'catchup',
+            inventoryFiles: 3887,
+            indexableNotes: 3984,
+            coverage: { covered: 3887, total: 3984 },
+        });
+        expect(indicator.phase).toBe('catching-up');
+        expect(indicator.units?.done).toBe(27);
+        expect(indicator.units?.total).toBe(127);
+    });
+
+    it('updating hydrate walk uses sidecar inventory units, not a hidden null or frozen job', () => {
+        const indicator = computeIndexProgressIndicator({
+            mode: 'updating',
+            hydrating: true,
+            waitingForSidecar: false,
+            dropRecovering: false,
+            booting: false,
+            goodEnough: true,
+            walk: { done: 40, total: 200, needed: 12 },
+            job: { done: 0, total: 12 },
+            jobKind: 'catchup',
+            inventoryFiles: 3800,
+            indexableNotes: 3984,
+        });
+        expect(indicator.phase).toBe('hydrating');
+        expect(indicator.units?.done).toBe(3800);
+        expect(indicator.units?.total).toBe(3984);
+        expect(indicator.units?.total).not.toBe(12);
+    });
+
     it('catchup job with coverage overlay uses pass counts, not vault coverage', () => {
         const indicator = computeIndexProgressIndicator({
             mode: 'catching-up',

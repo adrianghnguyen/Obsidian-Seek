@@ -325,7 +325,7 @@ describe('Ready means searchable (status contract)', () => {
         const r = evaluateSnapshot(snap);
         expect(r.uiHealth).toBe('updating');
         expect(r.footer.kind).toBe('updating');
-        expect(r.footer.badgeCount).toBeUndefined();
+        expect(r.footer.badgeCount).toBe(60);
     });
 
     it('full rebuild: never Ready; modal wait and CLI blocked', () => {

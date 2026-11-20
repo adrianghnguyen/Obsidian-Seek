@@ -188,7 +188,7 @@ export function computeIndexProgressIndicator(input: IndexProgressIndicatorInput
         }
     }
 
-    if (input.mode === 'stuck' || input.mode === 'locked' || input.mode === 'error' || input.mode === 'none' || input.mode === 'updating') {
+    if (input.mode === 'stuck' || input.mode === 'locked' || input.mode === 'error' || input.mode === 'none') {
         return { phase: workPhaseFromMode(input.mode), units: null };
     }
 
@@ -237,8 +237,8 @@ export function computeIndexProgressIndicator(input: IndexProgressIndicatorInput
         return { phase, units };
     }
 
-    if (input.mode === 'full-reindex' || input.mode === 'indexing' || input.mode === 'catching-up') {
-        const phase: IndexProgressWorkPhase = input.mode === 'catching-up'
+    if (input.mode === 'full-reindex' || input.mode === 'indexing' || input.mode === 'catching-up' || input.mode === 'updating') {
+        const phase: IndexProgressWorkPhase = input.mode === 'catching-up' || input.mode === 'updating'
             ? 'catching-up'
             : (input.mode === 'full-reindex' ? 'indexing' : (input.jobKind === 'catchup' ? 'catching-up' : 'indexing'));
         return { phase, units: embedUnits(input) };

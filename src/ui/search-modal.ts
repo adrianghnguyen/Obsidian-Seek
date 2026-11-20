@@ -891,9 +891,9 @@ export class SeekSearchModal extends Modal {
         this.footStatusEl.setAttr('aria-label', spec.label);
         setTooltip(this.footStatusEl, spec.label, { delay: 300 });
         this.footStatusIconEl.empty();
-        if (spec.kind === 'indexing' && spec.badgeCount != null && spec.badgeCount > 0) {
+        if ((spec.kind === 'indexing' || spec.kind === 'updating') && spec.badgeCount != null && spec.badgeCount > 0) {
             renderIndexStatusBadge(this.footStatusIconEl, {
-                health: 'indexing',
+                health: spec.kind === 'updating' ? 'updating' : 'indexing',
                 remaining: spec.badgeCount,
             });
         } else {

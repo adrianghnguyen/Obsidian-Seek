@@ -49,8 +49,10 @@ describe('index status help / tooltips', () => {
             job: { done: 4, total: 60 },
         });
         expect(report.mode).toBe('updating');
+        expect(report.compact).toMatch(/4.*60/);
         expect(report.help).toContain(INDEX_STATUS_HELP.updating.slice(0, 24));
         expect(report.help).toMatch(/4.*60/);
+        expect(report.help).not.toBe(report.compact);
     });
 
     it('resolveIndexStatusHelpForMode covers extended modes', () => {

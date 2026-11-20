@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Fixed
+
+- **Updating chip counts.** Catch-up at or above 2% of indexed files keeps the yellow Updating chrome, but the status chip and search footer now show remaining/total (and a remaining badge) as the pass or sidecar walk moves. Quiet leftover below 2% is still a glow with no numbers. Inventory-complete flush with remaining 0 stays a bare Updating chip.
+
 ## 1.16.2-beta.2
 
 Hydrate v10 sidecars after packChunks v11.

@@ -355,7 +355,7 @@ export class IndexStatusReporter {
         if (mode === 'stuck' && input.stuckWhy === 'indexing') {
             copy = { ...copy, label: 'Indexing stuck' };
         }
-        const blocked = mode === 'stuck' || mode === 'locked' || mode === 'error' || mode === 'ok' || mode === 'updating' || mode === 'none' || mode === 'catch-up-paused';
+        const blocked = mode === 'stuck' || mode === 'locked' || mode === 'error' || mode === 'ok' || mode === 'none' || mode === 'catch-up-paused';
         const units = blocked ? null : progress.units;
         if (units) copy = withIndicatorCopy(copy, units);
         const skippedPartial = Math.max(0, Math.floor(input.sidecarSkippedPartialNotes ?? 0) || 0);

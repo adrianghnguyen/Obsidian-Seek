@@ -121,12 +121,15 @@ export function renderIndexStatusBadge(
         pause.setAttr('aria-label', 'Seek: Catch-up paused');
         return pause;
     }
-    if (opts.health === 'indexing') {
+    if (opts.health === 'indexing' || (opts.health === 'updating' && opts.remaining != null && opts.remaining > 0)) {
         const remaining = opts.remaining;
+        const updating = opts.health === 'updating';
         const text = remaining != null ? fmtCount(remaining) : '…';
-        const badge = parent.createSpan({ cls: INDEX_STATUS_BADGE_CLS, text });
+        const cls = updating ? `${INDEX_STATUS_BADGE_CLS} seek-index-badge-updating` : INDEX_STATUS_BADGE_CLS;
+        const badge = parent.createSpan({ cls, text });
         badge.setAttr('data-seek-index-badge', remaining != null ? String(remaining) : '');
-        badge.setAttr('aria-label', remaining != null ? `Seek: Indexing ${fmtCount(remaining)} remaining` : 'Seek: Indexing');
+        const verb = updating ? 'Updating' : 'Indexing';
+        badge.setAttr('aria-label', remaining != null ? `Seek: ${verb} ${fmtCount(remaining)} remaining` : `Seek: ${verb}`);
         return badge;
     }
     const st = INDEX_STATUS_HEALTH[opts.health];
