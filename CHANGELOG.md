@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Fixed
+
+- **v10 sidecar recovery on v11.** `packChunks` (`CHUNKER_VERSION` 11) no longer refuses v10 sidecar producers at `metaAccepts`. Hydrate takes the id intersection (long notes keep their vectors); catch-up re-embeds collapsed small notes. A Recover/reset on a v10 disk index no longer sits on Restoring waiting for a v11 producer that does not exist.
+
 ## 1.16.2-beta.1
 
 Patch-line beta after stable 1.16.1. Small-note `packChunks`.

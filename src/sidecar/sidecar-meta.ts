@@ -3,7 +3,9 @@
 // hydrate from any producer whose format, model, chunker version, or dimension
 // differs — because a chunker mismatch means the consumer's local re-chunk won't
 // reproduce the producer's ids, so it would silently load nothing and present as
-// a relevance regression. Refuse loudly instead.
+// a relevance regression. Refuse loudly instead. Exception: a documented
+// mostly-stable bump (see chunkerSidecarCompatible) may hydrate the id
+// intersection and let catch-up re-embed the rest.
 
 import type { DataAdapter } from 'obsidian';
 import { metaPathFor, SIDECAR_FORMAT, withDirLock, writeTextAtomic } from './sidecar';
@@ -100,6 +102,18 @@ export async function writeDeviceMeta(adapter: DataAdapter, indexDir: string, me
     });
 }
 
+// Producer chunker versions this consumer can still reproduce enough ids to
+// hydrate. Exact match always. Allowlisted older versions are the packChunks
+// v11 case: v10 ids stay for notes that do not collapse, so greedy hydrate
+// takes the intersection and catch-up re-embeds collapsed small notes. Do not
+// treat every N-1 bump as compatible — v8/v9 (and earlier) change ids for
+// most notes; accepting them would stamp an empty index as healed.
+export function chunkerSidecarCompatible(producer: number, consumer: number): boolean {
+    if (producer === consumer) return true;
+    if (consumer === 11 && producer === 10) return true;
+    return false;
+}
+
 // A null/missing meta is a refusal — compatibility can't be proven without it.
 export function metaAccepts(meta: SidecarMeta | null, expect: MetaExpectation): boolean {
     if (!meta) return false;
@@ -107,7 +121,7 @@ export function metaAccepts(meta: SidecarMeta | null, expect: MetaExpectation): 
         meta.format === SIDECAR_FORMAT &&
         meta.modelId === expect.modelId &&
         meta.revision === expect.revision &&
-        meta.chunkerVersion === expect.chunkerVersion &&
+        chunkerSidecarCompatible(meta.chunkerVersion, expect.chunkerVersion) &&
         meta.dim === expect.dim
     );
 }

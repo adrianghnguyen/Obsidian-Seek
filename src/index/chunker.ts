@@ -140,11 +140,12 @@ export function chunkIdFor(notePath: string, title: string, content: string, den
 // and live re-chunk all go through packChunks so those ids match. Long notes
 // still split at the token budget; small sections inside larger notes are
 // untouched. The boundaries, titles and ids of collapsed notes change, so a
-// v10 sidecar's vectors for them are unreproducible here. Catch-up dirties
-// every FileRecord whose packedChunkerVersion lags (all notes, because the
-// bump cannot cheaply know which packing would change without the tokenizer);
-// chunk-diff keeps vectors for notes whose ids stay the same. Do not require
-// a user-triggered full reindex. Upstream 1.3.0 shipped this as part of
+// v10 sidecar's vectors for them are unreproducible here. Sidecar hydrate
+// still accepts v10 producers (`chunkerSidecarCompatible`) and keeps the id
+// intersection. Catch-up dirties every FileRecord whose packedChunkerVersion
+// lags (all notes, because the bump cannot cheaply know which packing would
+// change without the tokenizer); chunk-diff keeps vectors for notes whose ids
+// stay the same. Do not require a user-triggered full reindex. Upstream 1.3.0 shipped this as part of
 // CHUNKER_VERSION 12; our sequential bump is 11 (we did not take WGSL / BM25F
 // / keyed-dense v11).
 //

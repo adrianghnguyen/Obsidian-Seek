@@ -12,7 +12,7 @@ import { CHUNKER_VERSION } from './chunker';
 import { ANALYZER_VERSION } from '../search/bm25';
 import { SIDECAR_FORMAT } from '../sidecar/sidecar';
 import { MODEL_ID, MODEL_REVISION, EMBEDDING_DIM } from '../embedding/embedder';
-import { expectationFor, metaAccepts, type SidecarMeta } from '../sidecar/sidecar-meta';
+import { expectationFor, metaAccepts, chunkerSidecarCompatible, type SidecarMeta } from '../sidecar/sidecar-meta';
 
 describe('pluginIdentity', () => {
     it('gathers every compiled version constant verbatim', () => {
@@ -114,15 +114,32 @@ describe('expectationFor (cross-device sidecar slice)', () => {
         expect(metaAccepts(meta, expectationFor(id))).toBe(true);
     });
 
-    it('refuses a producer one chunker version behind', () => {
+    it('accepts a v10 producer on v11 so packChunks hydrate can use the id intersection', () => {
+        const id = pluginIdentity();
+        expect(id.chunkerVersion).toBe(11);
+        const meta: SidecarMeta = {
+            format: id.sidecarFormat,
+            modelId: id.modelId,
+            revision: id.revision,
+            chunkerVersion: 10,
+            dim: id.dim,
+            deviceId: 'devB',
+            lastFullReindex: null,
+        };
+        expect(metaAccepts(meta, expectationFor(id))).toBe(true);
+        expect(chunkerSidecarCompatible(10, 11)).toBe(true);
+        expect(chunkerSidecarCompatible(9, 11)).toBe(false);
+    });
+
+    it('refuses a producer two chunker versions behind', () => {
         const id = pluginIdentity();
         const meta: SidecarMeta = {
             format: id.sidecarFormat,
             modelId: id.modelId,
             revision: id.revision,
-            chunkerVersion: id.chunkerVersion - 1,
+            chunkerVersion: id.chunkerVersion - 2,
             dim: id.dim,
-            deviceId: 'devB',
+            deviceId: 'devC',
             lastFullReindex: null,
         };
         expect(metaAccepts(meta, expectationFor(id))).toBe(false);
