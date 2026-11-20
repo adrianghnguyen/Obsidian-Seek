@@ -492,7 +492,7 @@ Written to `.obsidian/plugins/seek/index/` (default) or vault-root `Seek Index/`
 
 **Hydration** (`sidecar-sync.ts`): re-chunk live vault files, intersect chunk ids with sidecar records, decode vectors into IndexedDB — no re-embed if identity matches. `onHydrateProgress` emits files walked / files in the current greedy tier (or notes hydrated / candidates on the non-greedy path) so `IndexStatusReporter` can show live restore counts.
 
-**Identity gates** (`identity.ts`, `sidecar-meta.ts`): model repo, chunker version, embedding dim, analyzer stamp must match before accepting a sidecar producer.
+**Identity gates** (`identity.ts`, `sidecar-meta.ts`): model repo, chunker version, embedding dim, analyzer stamp must match before accepting a sidecar producer. `chunkerSidecarCompatible` allowlists v10→v11 so `packChunks` hydrate can use the id intersection instead of refusing the whole sidecar.
 
 **Fleet roles** (`sidecar-fleet.ts`): one producer writes sidecar files; consumers hydrate only. A consumer never full-reindexes, reaps, or compact-deletes another device’s shards. Dual-open: a hidden window with a peer present skips sidecar writes and compaction. Model/dim changes on a consumer stamp `pendingModel` in localStorage and keep hydrating the old identity. Hydrate preflight (`sidecar-preflight.ts`) refuses to start until jsonl offsets resolve to local non-empty shards (0-byte / dataless files count as incomplete); CRC failures skip that record, never wipe the peer.
 

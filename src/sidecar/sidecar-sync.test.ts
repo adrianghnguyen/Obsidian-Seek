@@ -252,6 +252,35 @@ describe('hydrateFromSidecar', () => {
         expect(r.peerAhead).toBe(false);
     });
 
+    it('accepts a v10 producer on a v11 consumer and hydrates matching ids', async () => {
+        const a = new FakeAdapter();
+        const notes: NoteSpec[] = [
+            { path: 'long.md', mtime: 100, ids: ['long-1', 'long-2'] },
+            { path: 'small.md', mtime: 200, ids: ['small-old'] },
+        ];
+        await seedSidecar(a, 'desktop-aaa', notes);
+        await writeDeviceMeta(a as unknown as DataAdapter, DIR, {
+            format: SIDECAR_FORMAT, modelId: 'ml97', revision: null, chunkerVersion: 10, dim: 384,
+            deviceId: 'desktop-aaa', lastFullReindex: null,
+        });
+        const live: NoteSpec[] = [
+            { path: 'long.md', mtime: 100, ids: ['long-1', 'long-2'] },
+            { path: 'small.md', mtime: 200, ids: ['small-packed'] },
+        ];
+        const { deps, store, fileRecs } = makeDeps(a, live, {
+            expect: { modelId: 'ml97', revision: null, chunkerVersion: 11, dim: 384 },
+        });
+        const r = await hydrateFromSidecar(deps);
+        expect(r.acceptedProducers).toBe(1);
+        expect(r.refusedProducers).toBe(0);
+        expect(r.hydrated).toBe(2);
+        expect(store.has('long-1')).toBe(true);
+        expect(store.has('long-2')).toBe(true);
+        expect(store.has('small-old')).toBe(false);
+        expect(fileRecs.has('long.md')).toBe(true);
+        expect(fileRecs.has('small.md')).toBe(false);
+    });
+
     it('flags peerAhead when a refused producer is NEWER than this build (the v8≠v7 bog-down)', async () => {
         const a = new FakeAdapter();
         const notes: NoteSpec[] = [{ path: 'a.md', mtime: 100, ids: ['a1'] }];

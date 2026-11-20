@@ -773,6 +773,14 @@ describe('device meta', () => {
         expect(metaAccepts(m, { modelId: 'ml97', revision: 'deadbeefsha', chunkerVersion: 3, dim: 384 })).toBe(false);   // F10: revision mismatch refuses
         expect(metaAccepts(null, { modelId: 'ml97', revision: null, chunkerVersion: 3, dim: 384 })).toBe(false);
     });
+
+    it('metaAccepts hydrates v10 sidecars on a v11 consumer', () => {
+        const v10: SidecarMeta = { ...META, chunkerVersion: 10 };
+        const expectV11 = { modelId: 'ml97', revision: null, chunkerVersion: 11, dim: 384 };
+        expect(metaAccepts(v10, expectV11)).toBe(true);
+        expect(metaAccepts({ ...META, chunkerVersion: 9 }, expectV11)).toBe(false);
+        expect(metaAccepts(v10, { ...expectV11, modelId: 'other' })).toBe(false);
+    });
 });
 
 // shouldReconcileSidecar gates the whole-vault hydrate sweep. The expensive case

@@ -124,6 +124,19 @@ describe('preflightSidecar', () => {
         expect(r.incomplete).toBe(false);
     });
 
+    it('counts a v10 producer as matching for a v11 consumer', async () => {
+        const a = new FakeAdapter();
+        await seed(a, 'desktop-win');
+        await writeDeviceMeta(a as unknown as DataAdapter, DIR, {
+            format: SIDECAR_FORMAT, modelId: 'ml97', revision: null, chunkerVersion: 10, dim: 384,
+            deviceId: 'desktop-win', lastFullReindex: '2026-10-17T00:00:00Z',
+        });
+        const r = await preflightSidecar(a as unknown as DataAdapter, DIR, { ...EXPECT, chunkerVersion: 11 });
+        expect(r.matchingProducers).toBe(1);
+        expect(r.staleProducers).toBe(0);
+        expect(r.ready).toBe(true);
+    });
+
     it('ignores a stale-model peer instead of counting it as matching', async () => {
         const a = new FakeAdapter();
         await seed(a, 'desktop-win');
