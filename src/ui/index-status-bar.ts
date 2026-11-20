@@ -355,7 +355,9 @@ export class IndexStatusBar {
         }
         this.chunksEl?.addClass('is-hidden');
         this.paintMeter({ hidden: false, determinate, percent: pct });
-        const chromeHealth = snap.phase === 'embed' ? 'indexing' : snap.health;
+        const chromeHealth = snap.health === 'updating'
+            ? 'updating'
+            : (snap.phase === 'embed' ? 'indexing' : snap.health);
         this.paintChrome(chromeHealth, remaining);
         const compactLabel = `Seek: ${snap.report.compact}`;
         const tip = tooltip ?? (label !== compactLabel ? label : this.statusTooltip(snap, label));
@@ -417,6 +419,15 @@ export class IndexStatusBar {
             return;
         }
         if (snap.health === 'updating') {
+            const remaining = snap.remaining;
+            const showCounts = snap.filesTotal > 0
+                && (snap.phase === 'embed' || snap.phase === 'hydrate' || (remaining != null && remaining > 0));
+            if (showCounts) {
+                if (!force && snap.filesDone === this.paintedDone && snap.filesTotal === this.paintedTotal
+                    && snap.chunksDone === this.paintedChunks && snap.percent === this.paintedPercent) return;
+                this.paintCounts(snap, remaining, `Seek: ${snap.report.compact}`);
+                return;
+            }
             this.paintBare(snap);
             return;
         }

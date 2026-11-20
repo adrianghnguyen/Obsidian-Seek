@@ -755,7 +755,7 @@ describe('resolveIndexUiStatus', () => {
             kind: 'updating',
             label: INDEX_UPDATING_LABEL,
         });
-        expect(moderate.badgeCount).toBeUndefined();
+        expect(moderate.badgeCount).toBe(60);
         const tinyRunning = IndexStatusReporter.compute({
             booting: false,
             bootDecisionPending: false,

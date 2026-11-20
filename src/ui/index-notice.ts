@@ -292,7 +292,7 @@ export interface IndexFooterStatus {
     badgeCount?: number | null;
     /** Descriptive tooltip — matches status bar / Settings (i) help. */
     help?: string;
-    /** Hoverable (i) next to the label — used for Updating instead of a count badge. */
+    /** Hoverable (i) next to the label — used for Updating plus remaining counts. */
     showInfo?: boolean;
 }
 
@@ -639,6 +639,7 @@ function applyFooterCatchUp(input: IndexFooterInput): IndexFooterStatus | null {
     const catchUp = footerCatchUpPresentation(input);
     if (catchUp === 'quiet') return quietFooterReady(input);
     if (catchUp === 'moderate') {
+        const remaining = footerIndexingRemaining(input, 'updating');
         return {
             kind: 'updating',
             label: INDEX_UPDATING_LABEL,
@@ -646,6 +647,7 @@ function applyFooterCatchUp(input: IndexFooterInput): IndexFooterStatus | null {
             tone: 'warn',
             help: INDEX_FLUSH_UPDATING_HELP,
             showInfo: true,
+            badgeCount: remaining != null && remaining > 0 ? remaining : undefined,
         };
     }
     return null;

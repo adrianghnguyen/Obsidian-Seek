@@ -2438,6 +2438,10 @@
     color: var(--text-on-accent, #fff);
     background: var(--interactive-accent);
 }
+.seek-index-badge.seek-index-badge-updating {
+    background: var(--color-yellow, #e6b325);
+    color: var(--text-on-accent, #fff);
+}
 .seek-energy-saver-glyph {
     display: inline-flex;
     align-items: center;

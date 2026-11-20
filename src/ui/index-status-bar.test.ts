@@ -511,7 +511,7 @@ describe('IndexStatusBar', () => {
         expect(labels.at(-1)).toMatch(/0.*60/);
     });
 
-    it('paints yellow Updating dot without badge or progress for moderate catch-up', () => {
+    it('paints remaining/total on yellow Updating chrome for moderate catch-up', () => {
         const snap = buildIndexProgressSnapshot({
             report: reportOf('updating', 'updating'),
             job: { done: 0, total: 60, kind: 'catchup' },
@@ -524,10 +524,11 @@ describe('IndexStatusBar', () => {
         bar.mount(root as unknown as HTMLElement, { ...hooks, getSnapshot: () => snap });
         bar.show(60, 'Seek: indexing 60 notes…', { id: 1, kind: 'catchup' });
         bar.update(0, 60, undefined, 1);
-        expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)).toBeNull();
-        expect(root.querySelector('progress')?.className).toContain('is-hidden');
-        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe('Seek');
-        expect(root.querySelector('.seek-dot')?.className).toContain('seek-dot-warn');
+        expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)?.textContent).toBe('60');
+        expect(root.querySelector(`.${INDEX_STATUS_BADGE_CLS}`)?.className).toContain('seek-index-badge-updating');
+        expect(root.querySelector('progress')?.className).not.toContain('is-hidden');
+        expect(root.querySelector('.seek-status-bar-files')?.textContent).toBe(formatStableFileFraction(0, 60));
+        expect(root.querySelector('.seek-dot')).toBeNull();
     });
 
     it('paints the orange pending dot while canonical health is Starting', () => {
