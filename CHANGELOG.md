@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.16.2-beta.4
+
+Catch-up GPU scaling, warm-deferral fixes, and scaling diagnostics (#110).
+
 ### Fixed
 
 - **Catch-up `warmCaches` IDB contention spiral.** Background `'delta'`, `'model-load'`, `'hydrate'`, and `'orphan-sweep'` cache warms now respect `warmDeferred` while catch-up is active, preventing full-corpus IndexedDB reads from competing with incremental `diffFileAgainstStore` and `putBatchQuantized` commits. Once catch-up finishes, `post-catchup` warms cold caches once.
