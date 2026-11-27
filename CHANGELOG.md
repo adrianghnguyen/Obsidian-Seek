@@ -4,6 +4,10 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+## 1.16.2-beta.5
+
+Clear stale `peerSyncPending` on contributor nodes and avoid `warmDeferred` lock under Energy Saver (#111).
+
 ### Fixed
 
 - **Contributor devices stuck on "Restoring".** Non-lead desktops (`contributor` role) no longer latch `peerSyncPending` permanently when the producer sidecar is already ready. Sidecar fleet refreshes, completed hydrates, refused full-reindex guards, and Settings **Recover** now clear stale wait flags cleanly (while preserving version-mismatch sync banners) so search and `seek:search` leave the restoring state once the index is healthy.
