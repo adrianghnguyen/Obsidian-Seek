@@ -24,6 +24,18 @@ export function isConsumerHydrateReady(
     return !fleet.waitingForProducer;
 }
 
+/**
+ * Non-lead device (consumer or contributor) whose producer sidecar is ready
+ * and no longer waiting — safe to release sidecar/peer-sync wait latches.
+ */
+export function isNonLeadSidecarReady(
+    fleet: ConsumerFleetReadyInput | null | undefined,
+): boolean {
+    if (!fleet) return false;
+    if (fleet.mayFullReindex) return false;
+    return !fleet.waitingForProducer && fleet.matchingReady;
+}
+
 export interface ConsumerHydrateCompletePlan {
     markGoodEnough: boolean;
     clearBootPending: boolean;

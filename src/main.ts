@@ -137,12 +137,14 @@ import {
 import {
     isKnownEmptyIndexWithNotes,
     shouldAutoDrainStartupCatchUp,
+    shouldDeferCacheWarm,
     resolveIndexBuildMode,
     catchUpBurstLimits,
     type IndexBuildMode,
 } from './index/startup-drain';
 import { planFailedDropRecovery } from './index/failed-drop-recovery';
 import {
+    isNonLeadSidecarReady,
     planConsumerHydrateComplete,
     resolveConsumerCatchUpKind,
     resolveMayEmbedCatchUp,
@@ -1856,12 +1858,15 @@ export default class SeekPlugin extends Plugin {
         const prior = this.fullReindexRun;
         if (prior) await prior.catch(() => false);
         this.clearIndexingStalled();
+        this.waitingForSidecar = false;
+        this.peerSyncPending = false;
         if (!this.store.isOpen()) await this.store.open().catch(() => {});
         this.attachOrchestrator(this.resolveSidecarIndexDir());
         await this.retryIndexStoreOpen();
         this.maybeResumeIncompleteCoverage();
         if (this.catchUpPending) this.scheduleStartupCatchUp();
         this.indexDropRecovering = false;
+        this.syncWarmDeferred();
         this.refreshIndexStatusBar();
         this.notifyIndexActivityChanged();
         new Notice('Seek: resumed indexing.', 4000);
@@ -2918,7 +2923,12 @@ export default class SeekPlugin extends Plugin {
         if (!result) return;
         this.sidecarSkippedPartialNotes = Math.max(0, result.skippedPartialNotes ?? 0);
         this.waitingForSidecar = resolveSidecarWait(result, this.indexInventoryChunks);
-        if (this.waitingForSidecar) this.peerSyncPending = true;
+        if (this.waitingForSidecar) {
+            this.peerSyncPending = true;
+        } else if (this.peerSyncPending && this.degradedReason !== 'version') {
+            this.peerSyncPending = false;
+        }
+        this.syncWarmDeferred();
         if (result.hydrated > 0) void this.touchIndexInventory();
         else this.refreshIndexStatusBar();
     }
@@ -2947,10 +2957,19 @@ export default class SeekPlugin extends Plugin {
             if (this.indexHealth === 'degraded' && this.degradedReason === 'version') {
                 this.indexHealth = 'recovering';
             }
+            this.syncWarmDeferred();
             this.refreshIndexStatusBar();
-        } else if (this.waitingForSidecar && fleet.matchingReady) {
-            this.waitingForSidecar = false;
-            this.refreshIndexStatusBar();
+        } else {
+            const clearWait = this.waitingForSidecar && fleet.matchingReady;
+            const clearPeerSync = this.peerSyncPending
+                && this.degradedReason !== 'version'
+                && (fleet.matchingReady || !this.waitingForSidecar);
+            if (clearWait || clearPeerSync) {
+                if (clearWait) this.waitingForSidecar = false;
+                if (clearPeerSync) this.peerSyncPending = false;
+                this.syncWarmDeferred();
+                this.refreshIndexStatusBar();
+            }
         }
     }
 
@@ -3071,8 +3090,8 @@ export default class SeekPlugin extends Plugin {
     }
 
     private async runStartupWarm(trigger: 'startup-good-enough' | 'post-catchup' = 'startup-good-enough'): Promise<void> {
-        // Catch-up owns IDB — warm after the drain finishes (post-catchup).
-        if (this.catchUpPending || this.catchUpRunning) return;
+        // Catch-up owns IDB while actively running or auto-draining — warm after it finishes.
+        if (this.shouldDeferWarmForCatchUp()) return;
         if (this.startupTelemetry.view().bootComplete) {
             // Post-boot catch-up defers 'delta' warms while draining; warm once caches went cold.
             if (trigger === 'post-catchup' && this.orchestrator
@@ -3100,9 +3119,9 @@ export default class SeekPlugin extends Plugin {
     private finalizeStartupTelemetryIfNeeded(): void {
         if (this.startupTelemetry.view().bootComplete) return;
         if (this.startupTelemetry.view().searchableMs == null) return;
-        // Warm still owed after catch-up — leave the timeline open.
-        if (getStartupWarm() && (this.catchUpPending || this.catchUpRunning)) return;
-        if (getStartupWarm() && this.orchestrator && !this.catchUpPending && !this.catchUpRunning) {
+        // Warm still owed after an active/auto-draining catch-up — leave the timeline open.
+        if (getStartupWarm() && this.shouldDeferWarmForCatchUp()) return;
+        if (getStartupWarm() && this.orchestrator && !this.shouldDeferWarmForCatchUp()) {
             void this.runStartupWarm('startup-good-enough');
             return;
         }
@@ -3176,9 +3195,19 @@ export default class SeekPlugin extends Plugin {
         }, delayMs);
     }
 
-    /** Tell the orchestrator to defer background warm while catch-up holds IDB. */
+    private shouldDeferWarmForCatchUp(): boolean {
+        return shouldDeferCacheWarm({
+            catchUpRunning: this.catchUpRunning,
+            catchUpPending: this.catchUpPending,
+            waitingForSidecar: !!this.waitingForSidecar,
+            mobile: isMobilePlatform(),
+            energySaver: getEnergySaver(),
+        });
+    }
+
+    /** Tell the orchestrator to defer background warm while catch-up owns IDB. */
     private syncWarmDeferred(): void {
-        this.orchestrator?.setWarmDeferred(this.catchUpPending || this.catchUpRunning);
+        this.orchestrator?.setWarmDeferred?.(this.shouldDeferWarmForCatchUp());
     }
 
     private async withSidecarHydrate<T>(fn: () => Promise<T>): Promise<T> {
@@ -3249,7 +3278,19 @@ export default class SeekPlugin extends Plugin {
             hydrateReleasedGate: !this.sidecarHydrating,
             inventoryFiles: this.indexInventoryFiles,
         });
-        if (!plan.markGoodEnough && !plan.clearBootStuck && !plan.clearIndexingStalled) return;
+        if (!plan.markGoodEnough && !plan.clearBootStuck && !plan.clearIndexingStalled) {
+            if (!this.sidecarHydrating && isNonLeadSidecarReady(fleet)) {
+                const clearedWait = this.waitingForSidecar;
+                const clearedPeerSync = this.peerSyncPending && this.degradedReason !== 'version';
+                if (clearedWait || clearedPeerSync) {
+                    this.waitingForSidecar = false;
+                    if (this.degradedReason !== 'version') this.peerSyncPending = false;
+                    this.syncWarmDeferred();
+                    this.refreshIndexStatusBar();
+                }
+            }
+            return;
+        }
         if (plan.clearIndexingStalled) this.clearIndexingStalled();
         if (plan.markGoodEnough) {
             this.waitingForSidecar = false;
@@ -3698,8 +3739,14 @@ export default class SeekPlugin extends Plugin {
         this.noteSidecarFleetFlags(fleet);
         if (fleet && !fleet.mayFullReindex) {
             this.coldBuildScheduled = false;
-            this.waitingForSidecar = fleet.waitingForProducer || this.waitingForSidecar;
-            this.peerSyncPending = true;
+            if (fleet.waitingForProducer) {
+                this.waitingForSidecar = true;
+                this.peerSyncPending = true;
+            } else if (fleet.matchingReady && this.degradedReason !== 'version') {
+                this.waitingForSidecar = false;
+                this.peerSyncPending = false;
+            }
+            this.syncWarmDeferred();
             this.refreshIndexStatusBar();
             return;
         }
@@ -3927,8 +3974,14 @@ export default class SeekPlugin extends Plugin {
             if (!stillCurrent()) return false;
             this.noteSidecarFleetFlags(fleet);
             if (fleet && !fleet.mayFullReindex) {
-                this.waitingForSidecar = fleet.waitingForProducer || this.waitingForSidecar;
-                this.peerSyncPending = true;
+                if (fleet.waitingForProducer) {
+                    this.waitingForSidecar = true;
+                    this.peerSyncPending = true;
+                } else if (fleet.matchingReady && this.degradedReason !== 'version') {
+                    this.waitingForSidecar = false;
+                    this.peerSyncPending = false;
+                }
+                this.syncWarmDeferred();
                 new Notice(fleet.copy, 8000);
                 this.refreshIndexStatusBar();
                 return false;

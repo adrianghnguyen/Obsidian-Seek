@@ -19,6 +19,27 @@ export function shouldAutoDrainStartupCatchUp(opts: {
     return opts.catchUpPending || !!opts.emptyIndexWithNotes;
 }
 
+/**
+ * Defer background cache warms (delta/hydrate/model-load/startup) only while
+ * catch-up is actively running or will auto-drain. When catchUpPending is
+ * parked by energy saver, mobile, or sidecar wait, do not leave caches cold.
+ */
+export function shouldDeferCacheWarm(opts: {
+    catchUpRunning: boolean;
+    catchUpPending: boolean;
+    waitingForSidecar: boolean;
+    mobile: boolean;
+    energySaver: boolean;
+}): boolean {
+    if (opts.catchUpRunning) return true;
+    if (!opts.catchUpPending || opts.waitingForSidecar) return false;
+    return shouldAutoDrainStartupCatchUp({
+        mobile: opts.mobile,
+        catchUpPending: opts.catchUpPending,
+        energySaver: opts.energySaver,
+    });
+}
+
 /** True only for a probed-empty store. `null` inventory is unknown — never treat as empty. */
 export function isKnownEmptyIndexWithNotes(inventoryChunks: number | null, noteCount: number): boolean {
     return inventoryChunks === 0 && noteCount > 0;
