@@ -11,11 +11,25 @@ vi.mock('obsidian', async () => {
 
 import { Platform } from 'obsidian';
 import SeekPlugin from '../main';
+import { setEnergySaver } from '../embedding/platform';
 
 type PluginHarness = Record<string, unknown> & {
     maybeCompleteConsumerHydrateBoot(): Promise<void>;
     recoverAfterFailedDrop(reason: string, opts?: { allowColdBuild?: boolean }): Promise<void>;
     applyPostBootIndexScheduling(): void;
+    applySidecarWait(result: {
+        hydrated: number;
+        skippedPartialNotes: number;
+        acceptedProducers: number;
+        waitingForProducer?: boolean;
+        incompleteFolder?: boolean;
+        datalessShards?: number;
+    } | null): void;
+    refreshSidecarFleet(): Promise<void>;
+    scheduleColdBuild(): Promise<void>;
+    executeFullReindexBody(gen: number, opts?: { skipConfirm?: boolean }): Promise<boolean>;
+    executeRecoverFromSettings(): Promise<void>;
+    syncWarmDeferred(): void;
     scheduleStartupCatchUp(): void;
     runCatchUp(): void;
     clearBootWatchdog?(): void;
@@ -29,6 +43,17 @@ const consumerFleet = {
     mayFullReindex: false,
     mayEmbedCatchUp: false,
     copy: 'Hydrating from the producer index.',
+};
+
+const contributorFleet = {
+    role: 'contributor' as const,
+    waitingForProducer: false,
+    matchingReady: true,
+    mayFullReindex: false,
+    mayEmbedCatchUp: true,
+    localFileCount: 4005,
+    indexableNotes: 4005,
+    copy: 'This computer adds new and changed notes to the shared index. A full rebuild stays on the lead computer.',
 };
 
 async function flushMicrotasks(): Promise<void> {
@@ -223,5 +248,190 @@ describe('SeekPlugin consumer hydrate boot wiring', () => {
         plugin.applyPostBootIndexScheduling();
 
         expect(recoverAfterFailedDrop).not.toHaveBeenCalled();
+    });
+
+    it('refreshSidecarFleet clears stale peerSyncPending on a ready contributor without version mismatch', async () => {
+        const setWarmDeferred = vi.fn();
+        const refreshIndexStatusBar = vi.fn();
+        const plugin = Object.create(SeekPlugin.prototype) as PluginHarness;
+        Object.assign(plugin, {
+            settings: { sidecarEnabled: true },
+            orchestrator: {
+                inspectSidecarFleet: async () => contributorFleet,
+                setWarmDeferred,
+            },
+            indexableNoteCount: () => 4005,
+            indexProgressWalk: { publish: vi.fn() },
+            waitingForSidecar: false,
+            peerSyncPending: true,
+            degradedReason: null,
+            catchUpPending: false,
+            catchUpRunning: false,
+            refreshIndexStatusBar,
+        });
+
+        await plugin.refreshSidecarFleet();
+
+        expect(plugin.waitingForSidecar).toBe(false);
+        expect(plugin.peerSyncPending).toBe(false);
+        expect(refreshIndexStatusBar).toHaveBeenCalledTimes(1);
+    });
+
+    it('refreshSidecarFleet preserves peerSyncPending when degradedReason is version', async () => {
+        const plugin = Object.create(SeekPlugin.prototype) as PluginHarness;
+        Object.assign(plugin, {
+            settings: { sidecarEnabled: true },
+            orchestrator: {
+                inspectSidecarFleet: async () => contributorFleet,
+                setWarmDeferred: vi.fn(),
+            },
+            indexableNoteCount: () => 4005,
+            indexProgressWalk: { publish: vi.fn() },
+            waitingForSidecar: true,
+            peerSyncPending: true,
+            degradedReason: 'version',
+            catchUpPending: false,
+            catchUpRunning: false,
+            refreshIndexStatusBar: vi.fn(),
+        });
+
+        await plugin.refreshSidecarFleet();
+
+        expect(plugin.waitingForSidecar).toBe(false);
+        expect(plugin.peerSyncPending).toBe(true);
+    });
+
+    it('applySidecarWait clears peerSyncPending when hydrate no longer waits on sidecar', () => {
+        const plugin = Object.create(SeekPlugin.prototype) as PluginHarness;
+        Object.assign(plugin, {
+            indexInventoryChunks: 16114,
+            sidecarSkippedPartialNotes: 0,
+            waitingForSidecar: true,
+            peerSyncPending: true,
+            degradedReason: null,
+            catchUpPending: false,
+            catchUpRunning: false,
+            orchestrator: { setWarmDeferred: vi.fn() },
+            touchIndexInventory: vi.fn(async () => {}),
+            refreshIndexStatusBar: vi.fn(),
+        });
+
+        plugin.applySidecarWait({ hydrated: 0, skippedPartialNotes: 0, acceptedProducers: 1 });
+
+        expect(plugin.waitingForSidecar).toBe(false);
+        expect(plugin.peerSyncPending).toBe(false);
+    });
+
+    it('maybeCompleteConsumerHydrateBoot clears peerSyncPending on a ready contributor after hydrate ends', async () => {
+        const plugin = Object.create(SeekPlugin.prototype) as PluginHarness;
+        Object.assign(plugin, {
+            unloading: false,
+            sidecarHydrating: false,
+            settings: { sidecarEnabled: true },
+            orchestrator: {
+                inspectSidecarFleet: async () => contributorFleet,
+                setWarmDeferred: vi.fn(),
+            },
+            indexInventoryFiles: 4005,
+            waitingForSidecar: false,
+            peerSyncPending: true,
+            degradedReason: null,
+            catchUpPending: false,
+            catchUpRunning: false,
+            refreshIndexStatusBar: vi.fn(),
+        });
+
+        await plugin.maybeCompleteConsumerHydrateBoot();
+
+        expect(plugin.waitingForSidecar).toBe(false);
+        expect(plugin.peerSyncPending).toBe(false);
+    });
+
+    it('scheduleColdBuild and executeFullReindexBody do not latch peerSyncPending on a ready contributor', async () => {
+        const plugin = Object.create(SeekPlugin.prototype) as PluginHarness;
+        Object.assign(plugin, {
+            unloading: false,
+            loadGeneration: 1,
+            fullReindexGen: 1,
+            coldBuildScheduled: true,
+            orchestrator: {
+                inspectSidecarFleet: async () => contributorFleet,
+                setWarmDeferred: vi.fn(),
+            },
+            waitingForSidecar: false,
+            peerSyncPending: false,
+            degradedReason: null,
+            catchUpPending: false,
+            catchUpRunning: false,
+            refreshIndexStatusBar: vi.fn(),
+        });
+
+        await plugin.scheduleColdBuild();
+        expect(plugin.peerSyncPending).toBe(false);
+        expect(plugin.waitingForSidecar).toBe(false);
+
+        const ran = await plugin.executeFullReindexBody(1, { skipConfirm: true });
+        expect(ran).toBe(false);
+        expect(plugin.peerSyncPending).toBe(false);
+        expect(plugin.waitingForSidecar).toBe(false);
+    });
+
+    it('executeRecoverFromSettings resets stale peerSyncPending before resuming boot', async () => {
+        const plugin = Object.create(SeekPlugin.prototype) as PluginHarness;
+        Object.assign(plugin, {
+            catchUpRunning: false,
+            catchUpPending: false,
+            fullReindexRun: null,
+            indexDropRecovering: false,
+            waitingForSidecar: true,
+            peerSyncPending: true,
+            store: { isOpen: () => true, open: vi.fn(async () => {}) },
+            orchestrator: { setWarmDeferred: vi.fn() },
+            abortInflightSessionWork: vi.fn(),
+            clearIndexingStalled: vi.fn(),
+            attachOrchestrator: vi.fn(),
+            resolveSidecarIndexDir: () => 'index',
+            retryIndexStoreOpen: vi.fn(async () => {}),
+            maybeResumeIncompleteCoverage: vi.fn(),
+            scheduleStartupCatchUp: vi.fn(),
+            refreshIndexStatusBar: vi.fn(),
+            notifyIndexActivityChanged: vi.fn(),
+        });
+
+        await plugin.executeRecoverFromSettings();
+
+        expect(plugin.waitingForSidecar).toBe(false);
+        expect(plugin.peerSyncPending).toBe(false);
+    });
+
+    it('syncWarmDeferred does not defer cache warm when catchUpPending is parked by energy saver', () => {
+        let ls: Record<string, string> = {};
+        vi.stubGlobal('localStorage', {
+            getItem: (k: string) => (k in ls ? ls[k] : null),
+            setItem: (k: string, v: string) => { ls[k] = String(v); },
+            removeItem: (k: string) => { delete ls[k]; },
+            clear: () => { ls = {}; },
+        });
+        setEnergySaver(true);
+        try {
+            const setWarmDeferred = vi.fn();
+            const plugin = Object.create(SeekPlugin.prototype) as PluginHarness;
+            Object.assign(plugin, {
+                catchUpRunning: false,
+                catchUpPending: true,
+                waitingForSidecar: false,
+                orchestrator: { setWarmDeferred },
+            });
+
+            plugin.syncWarmDeferred();
+            expect(setWarmDeferred).toHaveBeenLastCalledWith(false);
+
+            plugin.catchUpRunning = true;
+            plugin.syncWarmDeferred();
+            expect(setWarmDeferred).toHaveBeenLastCalledWith(true);
+        } finally {
+            setEnergySaver(false);
+            vi.unstubAllGlobals();
+        }
     });
 });

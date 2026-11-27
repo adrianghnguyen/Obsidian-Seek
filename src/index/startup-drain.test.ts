@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
     isKnownEmptyIndexWithNotes,
     shouldAutoDrainStartupCatchUp,
+    shouldDeferCacheWarm,
     resolveIndexBuildMode,
     clampCatchUpBurstMaxFiles,
     catchUpBurstLimits,
@@ -36,6 +37,59 @@ describe('shouldAutoDrainStartupCatchUp', () => {
         })).toBe(true);
         expect(shouldAutoDrainStartupCatchUp({
             mobile: true, catchUpPending: false, emptyIndexWithNotes: true,
+        })).toBe(false);
+    });
+});
+
+describe('shouldDeferCacheWarm', () => {
+    it('defers while catch-up is actively running even under energy saver or mobile', () => {
+        expect(shouldDeferCacheWarm({
+            catchUpRunning: true,
+            catchUpPending: false,
+            waitingForSidecar: false,
+            mobile: false,
+            energySaver: true,
+        })).toBe(true);
+        expect(shouldDeferCacheWarm({
+            catchUpRunning: true,
+            catchUpPending: true,
+            waitingForSidecar: false,
+            mobile: true,
+            energySaver: false,
+        })).toBe(true);
+    });
+
+    it('defers on desktop when catchUpPending will auto-drain', () => {
+        expect(shouldDeferCacheWarm({
+            catchUpRunning: false,
+            catchUpPending: true,
+            waitingForSidecar: false,
+            mobile: false,
+            energySaver: false,
+        })).toBe(true);
+    });
+
+    it('does not defer when catchUpPending is parked by energy saver, mobile, or sidecar wait', () => {
+        expect(shouldDeferCacheWarm({
+            catchUpRunning: false,
+            catchUpPending: true,
+            waitingForSidecar: false,
+            mobile: false,
+            energySaver: true,
+        })).toBe(false);
+        expect(shouldDeferCacheWarm({
+            catchUpRunning: false,
+            catchUpPending: true,
+            waitingForSidecar: false,
+            mobile: true,
+            energySaver: false,
+        })).toBe(false);
+        expect(shouldDeferCacheWarm({
+            catchUpRunning: false,
+            catchUpPending: true,
+            waitingForSidecar: true,
+            mobile: false,
+            energySaver: false,
         })).toBe(false);
     });
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
     isConsumerHydrateReady,
+    isNonLeadSidecarReady,
     planConsumerHydrateComplete,
     resolveConsumerCatchUpKind,
     resolveMayEmbedCatchUp,
@@ -73,6 +74,28 @@ describe('consumer hydrate completing → good-enough / not stuck', () => {
             role: 'producer',
             waitingForProducer: false,
             matchingReady: false,
+            mayFullReindex: true,
+        })).toBe(false);
+    });
+
+    it('treats ready non-lead contributor and consumer fleets as cleared for sidecar wait', () => {
+        expect(isNonLeadSidecarReady({
+            role: 'contributor',
+            waitingForProducer: false,
+            matchingReady: true,
+            mayFullReindex: false,
+        })).toBe(true);
+        expect(isNonLeadSidecarReady(consumerReady)).toBe(true);
+        expect(isNonLeadSidecarReady({
+            role: 'contributor',
+            waitingForProducer: true,
+            matchingReady: false,
+            mayFullReindex: false,
+        })).toBe(false);
+        expect(isNonLeadSidecarReady({
+            role: 'producer',
+            waitingForProducer: false,
+            matchingReady: true,
             mayFullReindex: true,
         })).toBe(false);
     });

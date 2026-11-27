@@ -4,6 +4,11 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Fixed
+
+- **Contributor devices stuck on "Restoring".** Non-lead desktops (`contributor` role) no longer latch `peerSyncPending` permanently when the producer sidecar is already ready. Sidecar fleet refreshes, completed hydrates, refused full-reindex guards, and Settings **Recover** now clear stale wait flags cleanly (while preserving version-mismatch sync banners) so search and `seek:search` leave the restoring state once the index is healthy.
+- **Cold caches under Energy Saver with pending catch-up.** Background cache warming is no longer deferred indefinitely while `catchUpPending` is parked by Energy Saver, mobile mode, or a sidecar wait — `warmDeferred` only holds while catch-up is actively running or scheduled to auto-drain.
+
 ## 1.16.2-beta.4
 
 Catch-up GPU scaling, warm-deferral fixes, and scaling diagnostics (#110).
