@@ -11,6 +11,7 @@ import {
     indexTokensPerSec,
 } from './index-eta';
 import { effectiveBatchSize, gpuOccupancyPct } from '../index/embed-pipeline';
+import { assessIndexScaling, type ScalingAssessment } from '../diagnostics/scaling-health';
 import type {
     IndexJobKind,
     IndexJobSpeedView,
@@ -69,10 +70,22 @@ export interface IndexProgressEmbedDerived {
     lastRates: IndexProgressRates | null;
     gpuOccupancyPct: number | null;
     effectiveBatch: number | null;
+    scaling: ScalingAssessment | null;
 }
 
 /** Logger fields the snapshot needs to precompute embed-diag rates / occupancy. */
 export interface IndexProgressLastComplete {
+    mode?: 'full' | 'incremental';
+    filesIndexed?: number;
+    filesDeferred?: number;
+    chunksIndexed?: number;
+    chunkDurationMs?: number;
+    diffDurationMs?: number;
+    embedDurationMs?: number;
+    commitDurationMs?: number;
+    paceWaitMs?: number;
+    persistWaitMs?: number;
+    embedInFlightMax?: number;
     chunksPerSec: number;
     filesPerSec: number;
     tokensPerSec?: number;
@@ -125,6 +138,8 @@ export interface IndexProgressSnapshotInput {
     indexableNotes?: number | null;
     coverage?: IndexProgressCoverageOverlay | null;
     lastComplete?: IndexProgressLastComplete | null;
+    /** Configured manual/auto ceiling so scaling diagnostics can flag clamped caps. */
+    configuredInFlightCap?: number;
     /** Live dirty-queue size while flush/catch-up may have no coordinator job. */
     dirtyQueueSize?: number;
     flushing?: boolean;
@@ -306,7 +321,9 @@ export function buildIndexProgressSnapshot(input: IndexProgressSnapshotInput): I
         flushing: input.flushing,
     });
     const eta = formatRoughEta(filesDone, filesTotal, elapsedMs);
-    const embed = embedDerivedFromInputs(speedOut, input.lastComplete ?? null);
+    const embed = embedDerivedFromInputs(speedOut, input.lastComplete ?? null, {
+        configuredInFlightCap: input.configuredInFlightCap,
+    });
     const liveRates = embed.liveRates;
     const coverageHeadline = buildCoverageHeadline({
         phase,
@@ -346,6 +363,7 @@ export function buildIndexProgressSnapshot(input: IndexProgressSnapshotInput): I
 export function embedDerivedFromInputs(
     speed: IndexJobSpeedView | null,
     lastComplete: IndexProgressLastComplete | null,
+    opts?: { configuredInFlightCap?: number },
 ): IndexProgressEmbedDerived {
     const liveRates = speed
         ? {
@@ -365,6 +383,9 @@ export function embedDerivedFromInputs(
             : null,
         effectiveBatch: lastComplete && dispatches > 0
             ? effectiveBatchSize(lastComplete.vectorsWritten, dispatches)
+            : null,
+        scaling: lastComplete
+            ? assessIndexScaling(lastComplete, { configuredInFlightCap: opts?.configuredInFlightCap })
             : null,
     };
 }

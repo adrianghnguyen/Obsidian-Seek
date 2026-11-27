@@ -452,6 +452,14 @@ describe('iframe child message handler — source check', () => {
         expect(script).not.toContain('async function embedBatch');
         expect(script).not.toContain('function forwardEmbedBatch');
     });
+
+    it('batches multi-text tokenCounts with a per-text fallback', () => {
+        const script = buildChildScript('https://example.com/cdn', 384);
+        const fnIdx = script.indexOf('async function tokenCounts(texts)');
+        expect(fnIdx).toBeGreaterThan(-1);
+        expect(script.indexOf('return_tensor: false', fnIdx)).toBeGreaterThan(fnIdx);
+        expect(script.indexOf('for (const t of texts)', fnIdx)).toBeGreaterThan(fnIdx);
+    });
 });
 
 describe('TRANSFORMERS_VERSION pin', () => {

@@ -604,6 +604,7 @@ export default class SeekPlugin extends Plugin {
             indexableNotes: Math.max(this.lastIndexableNotes, this.indexableNoteCount()),
             coverage: coverage ?? this.indexCoverageOverlay,
             lastComplete: this.getLastIndexComplete(),
+            configuredInFlightCap: this.settings.embedInFlightMax,
             dirtyQueueSize: this.dirtyQueue.size,
             flushing: this.flushing,
         });
@@ -3070,15 +3071,22 @@ export default class SeekPlugin extends Plugin {
     }
 
     private async runStartupWarm(trigger: 'startup-good-enough' | 'post-catchup' = 'startup-good-enough'): Promise<void> {
-        if (this.startupTelemetry.view().bootComplete) return;
+        // Catch-up owns IDB — warm after the drain finishes (post-catchup).
+        if (this.catchUpPending || this.catchUpRunning) return;
+        if (this.startupTelemetry.view().bootComplete) {
+            // Post-boot catch-up defers 'delta' warms while draining; warm once caches went cold.
+            if (trigger === 'post-catchup' && this.orchestrator
+                && (!this.orchestrator.hasBm25Cache() || !this.orchestrator.hasSearchableFrame())) {
+                void this.orchestrator.warmCaches('post-catchup');
+            }
+            return;
+        }
         if (!getStartupWarm() || !this.orchestrator) {
             this.startupTelemetry.markWarmSkipped();
             this.recordStartupBoot();
             this.notifySessionTelemetryChanged();
             return;
         }
-        // Catch-up owns IDB — warm after the drain finishes (post-catchup).
-        if (this.catchUpPending || this.catchUpRunning) return;
         this.startupTelemetry.beginWarm();
         try {
             await this.orchestrator.warmCaches(trigger);

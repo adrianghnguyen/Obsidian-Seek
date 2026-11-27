@@ -91,6 +91,7 @@ export class SeekPerfConsole {
             filesIndexed: entry.filesIndexed,
             chunksIndexed: entry.chunksIndexed,
             chunkDurationMs: entry.chunkDurationMs,
+            ...(entry.diffDurationMs != null ? { diffDurationMs: entry.diffDurationMs } : {}),
             embedDurationMs: entry.embedDurationMs,
             bm25DurationMs: entry.bm25DurationMs,
             commitDurationMs: entry.commitDurationMs,

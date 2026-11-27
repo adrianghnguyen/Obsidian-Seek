@@ -158,6 +158,25 @@ describe('diagnostic-report module', () => {
                 { type: 'init', pluginVersion: '1.4.0', iframeReady: true, timestamp: '2026-09-04T03:00:00.000Z' } as LogEntry,
                 { type: 'platform', isMobile: false, gpuAvailable: true, storageUsedMB: 50, storageQuotaMB: 500, timestamp: '2026-09-04T03:00:01.000Z' } as LogEntry,
                 { type: 'load', actualDevice: 'webgpu', dtype: 'fp32', timestamp: '2026-09-04T03:00:02.000Z' } as LogEntry,
+                {
+                    type: 'index-complete',
+                    mode: 'incremental',
+                    filesIndexed: 1,
+                    filesDeferred: 29,
+                    chunksIndexed: 4,
+                    vectorsWritten: 4,
+                    chunkDurationMs: 50,
+                    diffDurationMs: 85_000,
+                    embedDurationMs: 300,
+                    bm25DurationMs: 0,
+                    commitDurationMs: 92_000,
+                    totalDurationMs: 178_000,
+                    gpuBusyMs: 280,
+                    filesPerSec: 0.1,
+                    chunksPerSec: 0.02,
+                    pass: true,
+                    timestamp: '2026-09-04T03:04:00.000Z',
+                } as LogEntry,
                 { type: 'search', timestamp: '2026-09-04T03:05:00.000Z', query: 'notes' } as LogEntry,
                 { type: 'error', context: 'worker', message: 'test failure', timestamp: '2026-09-04T03:10:00.000Z' } as LogEntry,
             ],
@@ -170,6 +189,8 @@ describe('diagnostic-report module', () => {
         expect(md).toContain('v1.4.0');
         expect(md).toContain('desktop · GPU yes');
         expect(md).toContain('webgpu (dtype=fp32)');
+        expect(md).toContain('Scaling & Pipeline Health');
+        expect(md).toContain('IDB contention');
         expect(md).toContain('Searches 1');
         expect(md).toContain('Recent Errors');
         expect(md).toContain('`worker` — test failure');

@@ -56,9 +56,10 @@ import { INDEX_QUOTA_MSG } from '../ui/index-notice';
 import { LocalEmbedder, LEGACY_ENGLISH_MODEL_ID, PLUGIN_VERSION } from '../embedding/embedder';
 import { SeekLogger } from '../diagnostics/logger';
 import { seekPerf } from '../diagnostics/perf-console';
+import { assessIndexScaling } from '../diagnostics/scaling-health';
 import { Forensics } from '../diagnostics/forensics';
 import { selectIndexBucket } from '../embedding/iframe-runner';
-import { embedInput, type TokenBudgetResult } from '../index/token-budget';
+import { embedInput, createBatchedTokenCounter, type TokenBudgetResult } from '../index/token-budget';
 import { packChunks } from '../index/small-note';
 import { packSignBits } from '../embedding/binary';
 import { BinaryScorerWorker } from '../embedding/binary-scorer';
@@ -696,6 +697,7 @@ export class SearchOrchestrator {
         let chunksReconciled = 0;
         let totalVectors = 0;
         let chunkMs = 0;
+        let diffMs = 0;
         let embedMs = 0;
         let paceWaitMs = 0;   // cumulative pacer waits between dispatches (v16, issue #5)
         let commitMs = 0;
@@ -1145,10 +1147,17 @@ export class SearchOrchestrator {
             await flushPrepared(batch, bucket);
         };
 
-        // Full reindex: splice a batch now, then post up to 3 embed-batch RPCs so
-        // the iframe has a tokenized N+1 waiting while N runs. Catch-up still
-        // awaits each flush (token budget / typing).
-        const aheadCap = mode === 'full' ? gpuAheadCap(inflightCap) : 1;
+        // Full reindex: splice a batch now, then post up to aheadCap embed-batch RPCs
+        // so the iframe has a tokenized N+1 waiting while N runs. Desktop incremental
+        // catch-up overlaps 2 batches when no search query is in flight (preempts back
+        // to serial the moment a query starts). Mobile stays serial for memory safety.
+        const desktopPipelinedIncremental = mode === 'incremental'
+            && !isMobilePlatform()
+            && !(budget.isQueryInFlight?.());
+        const usePipelinedFlush = mode === 'full' || desktopPipelinedIncremental;
+        const aheadCap = mode === 'full'
+            ? gpuAheadCap(inflightCap)
+            : (desktopPipelinedIncremental ? Math.min(2, gpuAheadCap(inflightCap)) : 1);
         const embedSlots = new InFlightSemaphore(3);
         let pendingFlushes = 0;
         const inflightFlushes: Promise<void>[] = [];
@@ -1174,7 +1183,7 @@ export class SearchOrchestrator {
             return p;
         };
         const flushWhenReady = async (bucket: number): Promise<void> => {
-            if (mode === 'full') {
+            if (usePipelinedFlush && !(budget.isQueryInFlight?.())) {
                 enqueueFlush(bucket);
                 while (pendingFlushes >= aheadCap) {
                     const oldest = inflightFlushes.shift();
@@ -1183,220 +1192,212 @@ export class SearchOrchestrator {
                 }
                 return;
             }
+            while (inflightFlushes.length > 0) {
+                const oldest = inflightFlushes.shift();
+                if (oldest) await oldest;
+            }
             await flushBucket(bucket);
         };
 
-        for (const file of files) {
-            // Plugin unloaded mid-pass (disable / reload): stop now rather than keep
-            // embedding + committing against the store onunload is about to close.
-            // Applies to BOTH modes — a full reindex and the incremental cold build.
-            // Any meta stamped for the partial index is still CORRECT (Fix A: current
-            // identity, merely incomplete), and the next load's catch-up finishes it.
+        const TOKEN_PREP_WINDOW = 6;
+        const batchTokenCounter = createBatchedTokenCounter(ts => this.embedder.tokenCounts(ts));
+        const shouldStopIncremental = (): boolean => mode === 'incremental'
+            && ((budget.budgetMs !== undefined && performance.now() - overallStart > budget.budgetMs)
+                || (budget.shouldContinue !== undefined && !budget.shouldContinue()));
+
+        interface PreparedFile {
+            file: (typeof files)[number];
+            fileStart: number;
+            mtimeMs: number;
+            contentHash: string;
+            chunks: Chunk[];
+            budgeted?: TokenBudgetResult;
+            readError?: unknown;
+            chunkError?: unknown;
+            tokenError?: unknown;
+        }
+
+        let stopPass = false;
+        let fileCursor = 0;
+        while (fileCursor < files.length && !stopPass) {
             if (this.disposed) break;
             if (persistFatal) { longTaskPass.stop(); throw persistFatal; }
-            // Per-burst budget (incremental catch-up only): stop STARTING new files
-            // once the wall-clock ceiling is spent or the app went hidden / search
-            // resumed (shouldContinue→false). (The file-count cap is upstream — the
-            // caller slices the dirty list.) Break at loop-top, BEFORE this file's
-            // chunks enter the rolling buffers — so the unconditional bucket-drain
-            // below commits exactly the files already started, and un-started files
-            // stay dirty (their watermark never advanced) for the drain loop to
-            // re-fire. A file already in flight is never interrupted mid-commit.
-            if (mode === 'incremental'
-                && ((budget.budgetMs !== undefined && performance.now() - overallStart > budget.budgetMs)
-                    || (budget.shouldContinue !== undefined && !budget.shouldContinue()))) {
-                break;
-            }
-            processedFiles++;
-            if (mode === 'full') emitLiveProgress();
-            const fileStart = performance.now();
-            // Snapshot mtime BEFORE the read so the committed file-record reflects
-            // the version we actually index, even if the file is edited mid-pass
-            // (TOCTOU between this read and the much-later commit).
-            const mtimeMs = file.stat.mtime;
-            let fileChunks: Chunk[];
-            let contentHash = '';
-            let content: string;
-            try {
-                content = await this.app.vault.cachedRead(file);
-            } catch (e) {
-                // Read error (e.g. an undownloaded iCloud placeholder that throws
-                // on every attempt) — skip this file (it never entered a buffer).
-                // Its previous record and rows SURVIVE (the delta's wholesale
-                // pre-delete is gone — chunk-diff, issue #5), so the last-indexed
-                // version stays searchable; the stale-mtime record would still
-                // re-report it dirty on every computeDelta, so quarantine it —
-                // see the quarantine field comment for why that loop would
-                // otherwise wedge reconcileIdentityInPlace.
-                filesSkippedError++;
-                await this.logger.appendError(`indexFile:${file.path}`, e);
-                this.quarantineUnreadable(file.path);
-                continue;
-            }
-            try {
-                contentHash = cyrb53Hex(content);
-                const modifiedIso = new Date(mtimeMs).toISOString();
-                const chunkStart = performance.now();
-                fileChunks = this.chunksFor(content, file.path, modifiedIso);
-                chunkMs += performance.now() - chunkStart;
-            } catch (e) {
-                // Chunk error — skip this file (it never entered a buffer). Not
-                // quarantined: this is a content/chunker problem, not a read
-                // failure, so there is no reason to suppress future re-attempts.
-                filesSkippedError++;
-                await this.logger.appendError(`indexFile:${file.path}`, e);
-                continue;
-            }
+            if (shouldStopIncremental()) break;
 
-            if (fileChunks.length === 0) {
-                chunksPerFile.push(0); // empty / all below min_chunk_chars
-                // Chunk-diff commit (issue #5): the delta's wholesale pre-delete is
-                // gone, so an edit that EMPTIED the note must drop its stale rows +
-                // record here or the pre-edit content ghosts in the index and the
-                // stale-mtime record re-flags the file dirty forever. Bodies are
-                // captured first so applyDelta can remove the rows exactly.
-                if (mode === 'incremental' && budget.removedSink) {
-                    if (budget.removedBodiesSink) await this.captureRemovalBodies(file.path, budget.removedBodiesSink);
-                    budget.removedSink.push(...await this.store.deleteFile(file.path));
+            const prepWindow = (!isMobilePlatform() && !(budget.isQueryInFlight?.())) ? TOKEN_PREP_WINDOW : 1;
+            const slice = files.slice(fileCursor, fileCursor + prepWindow);
+            fileCursor += slice.length;
+
+            const prepared: PreparedFile[] = [];
+            for (const file of slice) {
+                if (this.disposed || shouldStopIncremental()) break;
+                const fileStart = performance.now();
+                // Snapshot mtime BEFORE the read so the committed file-record reflects
+                // the version we actually index, even if the file is edited mid-pass
+                // (TOCTOU between this read and the much-later commit).
+                const mtimeMs = file.stat.mtime;
+                let content: string;
+                try {
+                    content = await this.app.vault.cachedRead(file);
+                } catch (e) {
+                    prepared.push({ file, fileStart, mtimeMs, contentHash: '', chunks: [], readError: e });
+                    continue;
                 }
-                continue;
+                try {
+                    const contentHash = cyrb53Hex(content);
+                    const modifiedIso = new Date(mtimeMs).toISOString();
+                    const chunkStart = performance.now();
+                    const fileChunks = this.chunksFor(content, file.path, modifiedIso);
+                    chunkMs += performance.now() - chunkStart;
+                    prepared.push({ file, fileStart, mtimeMs, contentHash, chunks: fileChunks });
+                } catch (e) {
+                    prepared.push({ file, fileStart, mtimeMs, contentHash: '', chunks: [], chunkError: e });
+                }
             }
 
-            // Yield to a live query before the tokenizer/embed RPCs for this file
-            // (G_catchup_ux: seek:search shares the iframe with catch-up).
-            if (mode === 'incremental' && budget.shouldContinue !== undefined && !budget.shouldContinue()) {
-                break;
-            }
-
-            // packChunks: small-note collapse then the 512-token budget, counted
-            // by the model's own tokenizer (token-counts RPC). Every producer
-            // path uses this so collapsed/split chunk_ids match. The count RPC
-            // is tokenizer-only (~ms per file) — folded into chunk time.
-            let budgeted: TokenBudgetResult;
-            try {
+            const toPack = prepared.filter(p => !p.readError && !p.chunkError && p.chunks.length > 0);
+            if (toPack.length > 0) {
                 const tbStart = performance.now();
-                budgeted = await packChunks(fileChunks, ts => this.embedder.tokenCounts(ts));
-                chunkMs += performance.now() - tbStart;
-            } catch (e) {
-                filesSkippedError++;
-                await this.logger.appendError(`tokenBudget:${file.path}`, e);
-                continue;
-            }
-            fileChunks = budgeted.chunks;
-            tokenBudgetSplits += budgeted.splits;
-            tokenBudgetOverBudget += budgeted.overBudget;
-            chunksPerFile.push(fileChunks.length);
-
-            // Chunk-diff commit (issue #5): content-hash ids make "what actually
-            // changed" computable — diff the post-budget ids against the stored
-            // file record instead of the old delete-all + re-embed-all. Unchanged
-            // chunks keep their IDB rows AND their vectors (a stable id pins the
-            // embed text by construction); a one-paragraph edit of a 91-chunk
-            // note embeds ~3 chunks, and the untouched chunks stay searchable
-            // through the whole pass (the pre-delete made the file vanish until
-            // its re-commit). Incremental-only: a full reindex nuked the DB, so
-            // there is no record to diff against.
-            let embedChunks = fileChunks;
-            let embedCounts = budgeted.counts;
-            let keepIds: Set<string> | undefined;
-            const allChunkIds = fileChunks.map(c => c.chunk_id);
-            // All THREE sinks gate the diff — a partially-wired caller would
-            // refresh IDB meta while silently dropping the frame-row patches,
-            // the exact frame↔IDB divergence the lanes exist to prevent.
-            if (mode === 'incremental' && budget.removedSink && budget.removedBodiesSink && budget.metaPatchSink) {
-                try {
-                    const plan = await this.diffFileAgainstStore(file.path, fileChunks, {
-                        addsSink: budget.addsSink,
-                        removedSink: budget.removedSink,
-                        removedBodiesSink: budget.removedBodiesSink,
-                        metaPatchSink: budget.metaPatchSink,
-                    });
-                    if (plan) {
-                        keepIds = plan.keepIds;
-                        chunksReconciled += plan.keepIds.size;
-                        const nextChunks: Chunk[] = [];
-                        const nextCounts: number[] = [];
-                        for (let i = 0; i < fileChunks.length; i++) {
-                            if (plan.embedIds.has(fileChunks[i].chunk_id)) {
-                                nextChunks.push(fileChunks[i]);
-                                nextCounts.push(budgeted.counts[i]);
-                            }
-                        }
-                        embedChunks = nextChunks;
-                        embedCounts = nextCounts;
+                await Promise.all(toPack.map(async (item) => {
+                    try {
+                        item.budgeted = await packChunks(item.chunks, batchTokenCounter.countTokens);
+                    } catch (e) {
+                        item.tokenError = e;
                     }
-                } catch (e) {
-                    // The diff is an optimization; on failure restore the pre-diff
-                    // contract exactly: drop the file's old rows wholesale (or its
-                    // un-diffed stale ids would orphan into ghost results) and
-                    // re-embed everything. Bodies were possibly not captured →
-                    // applyDelta declines into the full rebuild. Slow, never wrong.
-                    // Dedup against what the diff applied before it threw: its
-                    // deleteChunksByIds ids are already in the sink, and the
-                    // still-unrewritten record deleteFile reads lists them too —
-                    // double entries would inflate DeltaApplyEntry.removed.
-                    await this.logger.appendError(`chunkDiff:${file.path}`, e);
-                    if (budget.removedBodiesSink) await this.captureRemovalBodies(file.path, budget.removedBodiesSink);
-                    const alreadyRemoved = new Set(budget.removedSink);
-                    const dropped = await this.store.deleteFile(file.path).catch(() => [] as string[]);
-                    budget.removedSink.push(...dropped.filter(id => !alreadyRemoved.has(id)));
-                    embedChunks = fileChunks;
-                    embedCounts = budgeted.counts;
-                    keepIds = undefined;
+                }));
+                chunkMs += performance.now() - tbStart;
+            }
+
+            for (const item of prepared) {
+                if (this.disposed) { stopPass = true; break; }
+                if (persistFatal) { longTaskPass.stop(); throw persistFatal; }
+                if (shouldStopIncremental()) { stopPass = true; break; }
+
+                processedFiles++;
+                if (mode === 'full') emitLiveProgress();
+                const { file, fileStart, mtimeMs, contentHash } = item;
+
+                if (item.readError !== undefined) {
+                    filesSkippedError++;
+                    await this.logger.appendError(`indexFile:${file.path}`, item.readError);
+                    this.quarantineUnreadable(file.path);
+                    continue;
                 }
-            }
-
-            // Everything id-stable: the whole edit was metadata/line drift (or a
-            // no-op). commitFile only runs when a buffered chunk resolves, so the
-            // record must be written here or the file re-flags dirty forever.
-            if (keepIds && embedChunks.length === 0) {
-                try {
-                    await this.store.putBatchQuantized([], [], {
-                        note_path: file.path, mtimeMs,
-                        chunk_ids: allChunkIds.filter(id => keepIds.has(id)),
-                        contentHash,
-                    });
-                    filesCommitted++;
-                    committedFilePaths.push(file.path);
-                    perFileWallMs.push(performance.now() - fileStart);
-                } catch (e) {
-                    // No record advance → the file stays dirty and retries next
-                    // pass (same self-healing contract as a failed commitFile).
-                    await this.logger.appendError(`recordOnlyCommit:${file.path}`, e);
+                if (item.chunkError !== undefined) {
+                    filesSkippedError++;
+                    await this.logger.appendError(`indexFile:${file.path}`, item.chunkError);
+                    continue;
                 }
-                continue;
-            }
 
-            const fs: FileState = {
-                file, chunks: embedChunks,
-                vectors: new Array<Float32Array | null>(embedChunks.length).fill(null),
-                remaining: embedChunks.length, hadError: false, fileStart,
-                mtimeMs, contentHash,
-                ...(keepIds ? { allChunkIds, keepIds } : {}),
-            };
-            for (let slot = 0; slot < embedChunks.length; slot++) {
-                const c = embedChunks[slot];
-                const input = embedInput(c);
-                // Token-exact routing: the bucket is the smallest warmed rung
-                // ≥ the input's REAL token count, so truncation cannot fire
-                // (packChunks / enforceTokenBudget guarantees count ≤ 512 except for the
-                // counted-and-logged oversize-title pathology).
-                const bucket = selectIndexBucket(embedCounts[slot]);
-                let buf = buffers.get(bucket);
-                if (!buf) { buf = []; buffers.set(bucket, buf); }
-                buf.push({ fs, slot, input, tokens: embedCounts[slot] });
-                if (buf.length >= rollingBatchFor(bucket, mode, rollingOpts)) await flushWhenReady(bucket);
-            }
+                let fileChunks = item.chunks;
+                if (fileChunks.length === 0) {
+                    chunksPerFile.push(0); // empty / all below min_chunk_chars
+                    if (mode === 'incremental' && budget.removedSink) {
+                        if (budget.removedBodiesSink) await this.captureRemovalBodies(file.path, budget.removedBodiesSink);
+                        budget.removedSink.push(...await this.store.deleteFile(file.path));
+                    }
+                    continue;
+                }
 
-            // UI progress: full reindex paints files as they start + GPU chunks as
-            // they return; catch-up still reports committed files for drain math.
-            emitLiveProgress();
-            const progressOverdue = performance.now() - lastProgressAt >= PROGRESS_MAX_SILENCE_MS;
-            if (filesCommitted > lastProgress && (filesCommitted - lastProgress >= PROGRESS_EVERY || progressOverdue)) {
-                lastProgress = filesCommitted;
-                lastProgressAt = performance.now();
-                this.forensics?.beat('index-progress', { filesCommitted, filesTotal: files.length, chunks: totalChunks });
-                await this.emitProgress('embed', filesCommitted, files.length, totalChunks, performance.now() - overallStart);
+                if (item.tokenError !== undefined || !item.budgeted) {
+                    filesSkippedError++;
+                    await this.logger.appendError(`tokenBudget:${file.path}`, item.tokenError);
+                    continue;
+                }
+
+                fileChunks = item.budgeted.chunks;
+                tokenBudgetSplits += item.budgeted.splits;
+                tokenBudgetOverBudget += item.budgeted.overBudget;
+                chunksPerFile.push(fileChunks.length);
+
+                // Chunk-diff commit (issue #5): content-hash ids make "what actually
+                // changed" computable — diff the post-budget ids against the stored
+                // file record instead of the old delete-all + re-embed-all.
+                let embedChunks = fileChunks;
+                let embedCounts = item.budgeted.counts;
+                let keepIds: Set<string> | undefined;
+                const allChunkIds = fileChunks.map(c => c.chunk_id);
+                if (mode === 'incremental' && budget.removedSink && budget.removedBodiesSink && budget.metaPatchSink) {
+                    const diffStart = performance.now();
+                    try {
+                        const plan = await this.diffFileAgainstStore(file.path, fileChunks, {
+                            addsSink: budget.addsSink,
+                            removedSink: budget.removedSink,
+                            removedBodiesSink: budget.removedBodiesSink,
+                            metaPatchSink: budget.metaPatchSink,
+                        });
+                        if (plan) {
+                            keepIds = plan.keepIds;
+                            chunksReconciled += plan.keepIds.size;
+                            const nextChunks: Chunk[] = [];
+                            const nextCounts: number[] = [];
+                            for (let i = 0; i < fileChunks.length; i++) {
+                                if (plan.embedIds.has(fileChunks[i].chunk_id)) {
+                                    nextChunks.push(fileChunks[i]);
+                                    nextCounts.push(item.budgeted.counts[i]);
+                                }
+                            }
+                            embedChunks = nextChunks;
+                            embedCounts = nextCounts;
+                        }
+                    } catch (e) {
+                        await this.logger.appendError(`chunkDiff:${file.path}`, e);
+                        if (budget.removedBodiesSink) await this.captureRemovalBodies(file.path, budget.removedBodiesSink);
+                        const alreadyRemoved = new Set(budget.removedSink);
+                        const dropped = await this.store.deleteFile(file.path).catch(() => [] as string[]);
+                        budget.removedSink.push(...dropped.filter(id => !alreadyRemoved.has(id)));
+                        embedChunks = fileChunks;
+                        embedCounts = item.budgeted.counts;
+                        keepIds = undefined;
+                    } finally {
+                        diffMs += performance.now() - diffStart;
+                    }
+                }
+
+                // Everything id-stable: the whole edit was metadata/line drift (or a
+                // no-op). commitFile only runs when a buffered chunk resolves, so the
+                // record must be written here or the file re-flags dirty forever.
+                if (keepIds && embedChunks.length === 0) {
+                    try {
+                        await this.store.putBatchQuantized([], [], {
+                            note_path: file.path, mtimeMs,
+                            chunk_ids: allChunkIds.filter(id => keepIds.has(id)),
+                            contentHash,
+                        });
+                        filesCommitted++;
+                        committedFilePaths.push(file.path);
+                        perFileWallMs.push(performance.now() - fileStart);
+                    } catch (e) {
+                        await this.logger.appendError(`recordOnlyCommit:${file.path}`, e);
+                    }
+                    continue;
+                }
+
+                const fs: FileState = {
+                    file, chunks: embedChunks,
+                    vectors: new Array<Float32Array | null>(embedChunks.length).fill(null),
+                    remaining: embedChunks.length, hadError: false, fileStart,
+                    mtimeMs, contentHash,
+                    ...(keepIds ? { allChunkIds, keepIds } : {}),
+                };
+                for (let slot = 0; slot < embedChunks.length; slot++) {
+                    const c = embedChunks[slot];
+                    const input = embedInput(c);
+                    const bucket = selectIndexBucket(embedCounts[slot]);
+                    let buf = buffers.get(bucket);
+                    if (!buf) { buf = []; buffers.set(bucket, buf); }
+                    buf.push({ fs, slot, input, tokens: embedCounts[slot] });
+                    if (buf.length >= rollingBatchFor(bucket, mode, rollingOpts)) await flushWhenReady(bucket);
+                }
+
+                emitLiveProgress();
+                const progressOverdue = performance.now() - lastProgressAt >= PROGRESS_MAX_SILENCE_MS;
+                if (filesCommitted > lastProgress && (filesCommitted - lastProgress >= PROGRESS_EVERY || progressOverdue)) {
+                    lastProgress = filesCommitted;
+                    lastProgressAt = performance.now();
+                    this.forensics?.beat('index-progress', { filesCommitted, filesTotal: files.length, chunks: totalChunks });
+                    await this.emitProgress('embed', filesCommitted, files.length, totalChunks, performance.now() - overallStart);
+                }
             }
         }
 
@@ -1547,7 +1548,7 @@ export class SearchOrchestrator {
 
         const checks: string[] = [
             `✅ indexed ${files.length} files → ${totalChunks} chunks → ${totalVectors} vectors`,
-            `ℹ️ embed: ${embedMs.toFixed(0)} ms, chunk: ${chunkMs.toFixed(0)} ms, commit: ${commitMs.toFixed(0)} ms`,
+            `ℹ️ embed: ${embedMs.toFixed(0)} ms, chunk: ${chunkMs.toFixed(0)} ms${diffMs > 0 ? `, diff: ${diffMs.toFixed(0)} ms` : ''}, commit: ${commitMs.toFixed(0)} ms`,
             `ℹ️ total wall time: ${totalMs.toFixed(0)} ms`,
             `ℹ️ throughput: ${chunksPerSec.toFixed(1)} chunks/s, ${filesPerSec.toFixed(1)} files/s, ${tokensPerSec.toFixed(0)} tok/s`,
         ];
@@ -1645,6 +1646,7 @@ export class SearchOrchestrator {
             tokenBudgetSplits,
             tokenBudgetOverBudget,
             chunkDurationMs: parseFloat(chunkMs.toFixed(2)),
+            ...(diffMs > 0 ? { diffDurationMs: parseFloat(diffMs.toFixed(2)) } : {}),
             embedDurationMs: parseFloat(embedMs.toFixed(2)),
             bm25DurationMs: parseFloat(bm25Ms.toFixed(2)),
             commitDurationMs: parseFloat(commitMs.toFixed(2)),
@@ -1670,6 +1672,10 @@ export class SearchOrchestrator {
             pass: (totalChunks > 0 || chunksReconciled > 0) && skipRate <= SKIP_RATE_FAIL,
             checks,
         };
+        const scaling = assessIndexScaling(entry, { configuredInFlightCap: this.settings.embedInFlightMax });
+        if (scaling.regime !== 'healthy' && scaling.regime !== 'idle') {
+            entry.checks.push(`⚠️ scaling (${scaling.label}): ${scaling.detail}`);
+        }
         recordEmbedPipelineTelemetry(entry);
         // Completion beat closes the indexing window: a death AFTER this reads
         // as idle/background eviction, not crash-while-indexing.

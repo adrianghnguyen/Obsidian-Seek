@@ -15,6 +15,10 @@ import { clampRollingBatchMax, ROLLING_MAX } from './rolling-batch';
 /** First pass (no telemetry yet) when auto in-flight is on — lab ~highWater 3 + 1. */
 export const EMBED_IN_FLIGHT_COLD_SUGGEST = 4;
 
+/** Minimum incremental pass volume allowed to update device-local auto cap telemetry. */
+export const AUTO_CAP_MIN_INCREMENTAL_DISPATCHES = 4;
+export const AUTO_CAP_MIN_INCREMENTAL_CHUNKS = 16;
+
 const TELEMETRY_KEY = 'seek:embed-pipeline-telemetry:v1';
 
 export interface EmbedPipelineTelemetry {
@@ -53,7 +57,8 @@ export function suggestEmbedInFlightMax(input: EmbedInFlightSuggestInput): numbe
     const gpuBusy = Math.max(0, input.gpuBusyMs);
     const persistWait = Math.max(0, input.persistWaitMs);
 
-    const slack = clampEmbedInFlightMax(Math.max(EMBED_IN_FLIGHT_MIN, highWater + 1));
+    const floor = Math.min(configured, EMBED_IN_FLIGHT_COLD_SUGGEST);
+    const slack = clampEmbedInFlightMax(Math.max(EMBED_IN_FLIGHT_MIN, floor, highWater + 1));
 
     const persistNegligible = persistWait < PERSIST_NEGLIGIBLE_MS
         && (gpuBusy === 0 || persistWait / gpuBusy < PERSIST_GPU_RATIO_HEAVY);
@@ -150,12 +155,18 @@ export function telemetryFromIndexComplete(entry: IndexCompleteEntry): EmbedPipe
     };
 }
 
-export function suggestEmbedInFlightFromTelemetry(t: EmbedPipelineTelemetry): number {
+export function suggestEmbedInFlightFromTelemetry(
+    t: EmbedPipelineTelemetry,
+    configuredCap?: number,
+): number {
+    const cap = configuredCap != null
+        ? Math.max(t.embedInFlightMax, clampEmbedInFlightMax(configuredCap))
+        : t.embedInFlightMax;
     return suggestEmbedInFlightMax({
         gpuBusyMs: t.gpuBusyMs,
         persistWaitMs: t.persistWaitMs,
         inflightHighWater: t.inflightHighWater,
-        configuredCap: t.embedInFlightMax,
+        configuredCap: cap,
         longTaskMs: t.longTaskMs,
     });
 }
@@ -164,13 +175,14 @@ export function resolveEmbedInFlightMax(
     settings: Pick<SeekSettings, 'embedInFlightMax' | 'embedInFlightAuto'>,
     telemetry: EmbedPipelineTelemetry | null = readEmbedPipelineTelemetry(),
 ): number {
+    const configuredCap = clampEmbedInFlightMax(settings.embedInFlightMax);
     if (settings.embedInFlightAuto === false) {
-        return clampEmbedInFlightMax(settings.embedInFlightMax);
+        return configuredCap;
     }
     if (telemetry) {
-        return suggestEmbedInFlightFromTelemetry(telemetry);
+        return suggestEmbedInFlightFromTelemetry(telemetry, configuredCap);
     }
-    return clampEmbedInFlightMax(EMBED_IN_FLIGHT_COLD_SUGGEST);
+    return clampEmbedInFlightMax(Math.min(configuredCap, EMBED_IN_FLIGHT_COLD_SUGGEST));
 }
 
 export function readEmbedPipelineTelemetry(): EmbedPipelineTelemetry | null {
@@ -185,7 +197,15 @@ export function readEmbedPipelineTelemetry(): EmbedPipelineTelemetry | null {
     }
 }
 
+export function shouldRecordEmbedPipelineTelemetry(entry: IndexCompleteEntry): boolean {
+    if (entry.mode === 'full') return true;
+    const dispatches = entry.embedBatchLatencyMs?.n ?? 0;
+    return dispatches >= AUTO_CAP_MIN_INCREMENTAL_DISPATCHES
+        && entry.chunksIndexed >= AUTO_CAP_MIN_INCREMENTAL_CHUNKS;
+}
+
 export function recordEmbedPipelineTelemetry(entry: IndexCompleteEntry): void {
+    if (!shouldRecordEmbedPipelineTelemetry(entry)) return;
     try {
         writeRawTelemetry(JSON.stringify(telemetryFromIndexComplete(entry)));
     } catch { /* private mode / CSP — auto cap falls back to cold suggest */ }

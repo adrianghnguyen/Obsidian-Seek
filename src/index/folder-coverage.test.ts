@@ -1005,6 +1005,7 @@ describe('createLiveCoverageSnapshot and flattenCoverageTree', () => {
                     lastRates: null,
                     gpuOccupancyPct: null,
                     effectiveBatch: null,
+                    scaling: null,
                 },
                 coverageHeadline: {
                     done: 1,

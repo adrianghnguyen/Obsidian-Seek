@@ -1123,6 +1123,17 @@ async function tokenCounts(texts) {
     const tokenizer = (pipeline && pipeline.tokenizer) || standaloneTokenizer;
     if (!tokenizer) throw new Error('no tokenizer available — load the model or call load-tokenizer first');
     return withTokenizer(async function () {
+        if (texts.length > 1) {
+            try {
+                const enc = await tokenizer(texts, { padding: false, truncation: false, return_tensor: false });
+                if (enc && Array.isArray(enc.input_ids) && enc.input_ids.length === texts.length
+                    && enc.input_ids.every(function (row) { return Array.isArray(row); })) {
+                    return enc.input_ids.map(function (row) { return row.length; });
+                }
+            } catch (_) {
+                // Fall back to per-text tokenization when batching without padding isn't supported.
+            }
+        }
         const counts = [];
         for (const t of texts) {
             const enc = await tokenizer(t);

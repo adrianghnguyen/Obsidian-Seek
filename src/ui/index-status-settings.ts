@@ -52,6 +52,7 @@ export const EMBED_METRIC_HELP: Record<string, string> = {
     tokens: 'Padded tokens sent to the encoder this pass (batch size × sequence length).',
     phases: 'Where time went in the last finished run. These freeze until a run completes.',
     chunk: 'Reading notes and splitting them into slices. Usually the cheap part.',
+    diff: 'Comparing changed notes against saved chunks in IndexedDB before embedding.',
     embed: 'The model turning those slices into vectors. Usually most of the time.',
     commit: 'Saving the new vectors into the local index.',
     pace: 'Time Seek waited so the rest of Obsidian stayed responsive. A large number here means the computer was busy, not that the model is slow.',
@@ -63,6 +64,7 @@ export const EMBED_METRIC_HELP: Record<string, string> = {
     'GPU busy': 'Share of the run the encoder reported it was working. Higher means the GPU was fed. This is not nvidia-smi — that still needs an OS sampler.',
     'persist wait': 'Time the encoder sat idle because disk had not caught up. Near zero means the pipeline is doing its job.',
     'queue peak': 'How many finished batches were waiting to be saved at the high point. Hitting the prepared-batches cap means disk is the limit.',
+    scaling: 'Whether the last pass was GPU-fed or stalled on IndexedDB, tokenization, cold caches, or a low in-flight cap.',
     stalls: 'Times the vault window froze for 250 ms or more during this run. The encoder lives in a child frame; these stalls are the Obsidian window itself (typing, scrolling).',
     p50: 'Typical time for one model batch. Half of batches were faster than this.',
     p95: 'A slow batch. Most batches were faster than this. Spikes mean hitching.',
@@ -132,11 +134,11 @@ function sectionHead(parent: HTMLElement, key: string, text: string): void {
     helpLabel(parent.createDiv({ cls: 'seek-status-embed-sec-head' }), key, text);
 }
 
-function kvGrid(parent: HTMLElement, rows: Array<{ key: string; value: string; label?: string }>): void {
+function kvGrid(parent: HTMLElement, rows: Array<{ key: string; value: string; label?: string; help?: string }>): void {
     const grid = parent.createDiv({ cls: 'seek-status-embed-grid' });
     for (const row of rows) {
         const k = grid.createSpan({ cls: 'seek-status-embed-k', text: row.label ?? row.key });
-        const tip = EMBED_METRIC_HELP[row.key] ?? row.key;
+        const tip = row.help ?? EMBED_METRIC_HELP[row.key] ?? row.key;
         k.setAttr('aria-label', tip);
         setTooltip(k, tip, { delay: 400 });
         grid.createSpan({ cls: 'seek-status-embed-v', text: row.value });
@@ -263,13 +265,19 @@ export function renderEmbedDiagnostic(card: HTMLElement, view: EmbedDiagView): v
     if (complete && !jobActive) {
         const phases = body.createDiv({ cls: 'seek-status-embed-section' });
         sectionHead(phases, 'phases', 'Phases');
-        kvGrid(phases, [
+        const phaseRows: Array<{ key: string; value: string; label?: string }> = [
             { key: 'chunk', value: fmtPhaseDuration(complete.chunkDurationMs), label: 'Chunk' },
+        ];
+        if ((complete.diffDurationMs ?? 0) > 0) {
+            phaseRows.push({ key: 'diff', value: fmtPhaseDuration(complete.diffDurationMs!), label: 'Diff' });
+        }
+        phaseRows.push(
             { key: 'embed', value: fmtPhaseDuration(complete.embedDurationMs), label: 'Embed' },
             { key: 'commit', value: fmtPhaseDuration(complete.commitDurationMs), label: 'Commit' },
             { key: 'pace', value: fmtPhaseDuration(complete.paceWaitMs ?? 0), label: 'Pace' },
             { key: 'total', value: fmtPhaseDuration(complete.totalDurationMs), label: 'Total' },
-        ]);
+        );
+        kvGrid(phases, phaseRows);
 
         const batch = body.createDiv({ cls: 'seek-status-embed-section' });
         sectionHead(batch, 'batch', 'Batch');
@@ -294,7 +302,7 @@ export function renderEmbedDiagnostic(card: HTMLElement, view: EmbedDiagView): v
             const occ = derived?.gpuOccupancyPct;
             const peak = complete.inflightHighWater;
             const cap = complete.embedInFlightMax;
-            kvGrid(feed, [
+            const feedRows: Array<{ key: string; value: string; label?: string; help?: string }> = [
                 { key: 'GPU busy', value: occ != null ? `${occ.toFixed(0)}%` : '—', label: 'GPU busy' },
                 { key: 'persist wait', value: fmtPhaseDuration(complete.persistWaitMs ?? 0), label: 'Persist wait' },
                 {
@@ -309,7 +317,16 @@ export function renderEmbedDiagnostic(card: HTMLElement, view: EmbedDiagView): v
                         : '—',
                     label: 'Window stalls',
                 },
-            ]);
+            ];
+            if (derived?.scaling) {
+                feedRows.push({
+                    key: 'scaling',
+                    value: derived.scaling.label,
+                    label: 'Scaling',
+                    help: `${EMBED_METRIC_HELP.scaling} (${derived.scaling.detail})`,
+                });
+            }
+            kvGrid(feed, feedRows);
         }
 
         const health = body.createDiv({ cls: 'seek-status-embed-section' });

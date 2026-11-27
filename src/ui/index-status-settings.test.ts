@@ -260,6 +260,7 @@ describe('renderEmbedDiagnostic', () => {
     it('unrolled shows encoder-feed occupancy when pipeline fields are present', () => {
         const card = stubEl();
         const complete = sampleComplete({
+            diffDurationMs: 4_200,
             gpuBusyMs: 129_000,
             persistWaitMs: 800,
             inflightHighWater: 8,
@@ -278,6 +279,10 @@ describe('renderEmbedDiagnostic', () => {
         expect(blob).toContain('Encoder feed');
         expect(blob).toContain('50%');
         expect(blob).toContain('8 / 10');
+        expect(blob).toContain('Diff');
+        expect(blob).toContain('4.2s');
+        expect(blob).toContain('Scaling');
+        expect(blob).toContain('Healthy');
     });
 
     it('renderSettingsIndexStatusCard appends embed block after startup', () => {

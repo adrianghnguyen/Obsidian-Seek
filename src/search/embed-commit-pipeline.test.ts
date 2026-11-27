@@ -162,4 +162,47 @@ describe('embed vs IndexedDB pipeline', () => {
         expect(rec?.chunk_ids.length).toBeGreaterThanOrEqual(9);
         expect((await s.orch.computeDelta()).dirty).toEqual([]);
     });
+
+    it('desktop incremental pipelines embedBatch and coalesces tokenCounts across files', async () => {
+        const s = await boot();
+        s.vault.write('seed.md', `${BODY} seed`, 1);
+        await s.orch.reindexAll();
+
+        let tokenRpcCalls = 0;
+        let inflight = 0;
+        let maxInflight = 0;
+        s.embedder.tokenCounts = async (texts: string[]) => {
+            tokenRpcCalls++;
+            return texts.map(() => LONG_BUCKET);
+        };
+        const realEmbed = s.embedder.embedBatch.bind(s.embedder);
+        s.embedder.embedBatch = async (texts, bucket) => {
+            inflight++;
+            maxInflight = Math.max(maxInflight, inflight);
+            await new Promise(r => setTimeout(r, 20));
+            try {
+                return await realEmbed(texts, bucket);
+            } finally {
+                inflight--;
+            }
+        };
+
+        for (let i = 0; i < 9; i++) s.vault.write(`inc${i}.md`, `${BODY} inc ${i}`, 2000 + i);
+        await s.reconcile();
+        expect(maxInflight).toBeGreaterThanOrEqual(2);
+        // 9 files across prep windows should take far fewer than 9 serial RPCs.
+        expect(tokenRpcCalls).toBeLessThan(9);
+    });
+
+    it('records diffDurationMs when incremental catch-up diffs existing files', async () => {
+        const s = await boot();
+        s.vault.write('edit.md', `${BODY} initial`, 1000);
+        await s.orch.reindexAll();
+
+        s.vault.write('edit.md', `${BODY} updated content`, 2000);
+        const r = await s.orch.reindexDelta(['edit.md'], [], {
+            embed: true,
+        });
+        expect(r.embedded?.diffDurationMs).toBeGreaterThanOrEqual(0);
+    });
 });

@@ -158,6 +158,8 @@ export interface IndexCompleteEntry {
     tokenBudgetOverBudget?: number;
     embedDurationMs: number;
     chunkDurationMs: number;
+    /** Time spent in diffFileAgainstStore reading/updating IDB before embed (incremental passes). */
+    diffDurationMs?: number;
     bm25DurationMs: number;
     commitDurationMs: number;
     totalDurationMs: number;

@@ -33,6 +33,7 @@ import type {
 } from '../types/types';
 import { LOG_SCHEMA_VERSION } from '../types/types';
 import { redactEntries } from './redact';
+import { summarizeScalingHistory } from './scaling-health';
 import { detectPeriodicStalls, describePeriodicStalls } from './stall-pattern';
 
 // The report is the only shared (single-writer-at-a-time, full-overwrite) file,
@@ -277,6 +278,20 @@ export function summarizeReport(d: ReportData): string {
         const extra = [occ, persist, batch, stalls].filter(Boolean).join(' · ');
         lines.push(`- Last ${lastFull.mode} index: ${lastFull.filesIndexed} files in ${(lastFull.totalDurationMs / 1000).toFixed(1)} s (${lastFull.filesPerSec.toFixed(1)} files/s)${extra ? ` · ${extra}` : ''}`);
     }
+    const deltas = filterByType<DeltaApplyEntry>(d.entries, 'delta-apply');
+    if (indexes.length > 0) {
+        const scaling = summarizeScalingHistory(indexes, deltas);
+        lines.push('\n## Scaling & Pipeline Health');
+        if (scaling.latest) {
+            lines.push(`- Latest pass: **${scaling.latest.label}** — ${scaling.latest.detail}`);
+        }
+        const regimeParts = Object.entries(scaling.regimeCounts)
+            .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
+            .map(([k, n]) => `\`${k}\` ${n}×`)
+            .join(', ');
+        const medOcc = scaling.medianGpuOccupancyPct != null ? `${scaling.medianGpuOccupancyPct.toFixed(0)}% median GPU busy` : 'GPU busy n/a';
+        lines.push(`- Across ${scaling.assessedPasses} pass(es): ${regimeParts} · ${medOcc} · worst IDB share ${scaling.worstIdbSharePct.toFixed(0)}%${scaling.coldFallbackStreak > 0 ? ` · cold-cache streak ${scaling.coldFallbackStreak}` : ''}`);
+    }
     // Main-thread stall rollup by phase (issue #5): the question every jank
     // triage starts with — WHAT was Seek doing during the stalls — answered
     // in the summary instead of via hand-grepping the JSON. 'idle' here
@@ -322,7 +337,6 @@ export function summarizeReport(d: ReportData): string {
     // is a full O(corpus) cache rebuild), and how long the write mutex was
     // held — the wait a search issued mid-commit sits behind. This was the
     // triage question the wlo2 reports could not answer without live probes.
-    const deltas = filterByType<DeltaApplyEntry>(d.entries, 'delta-apply');
     if (deltas.length > 0) {
         const applied = deltas.filter(x => x.appliedIncrementally).length;
         const byReason = new Map<string, number>();
