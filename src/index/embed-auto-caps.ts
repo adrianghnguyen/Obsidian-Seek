@@ -155,12 +155,18 @@ export function telemetryFromIndexComplete(entry: IndexCompleteEntry): EmbedPipe
     };
 }
 
-export function suggestEmbedInFlightFromTelemetry(t: EmbedPipelineTelemetry): number {
+export function suggestEmbedInFlightFromTelemetry(
+    t: EmbedPipelineTelemetry,
+    configuredCap?: number,
+): number {
+    const cap = configuredCap != null
+        ? Math.max(t.embedInFlightMax, clampEmbedInFlightMax(configuredCap))
+        : t.embedInFlightMax;
     return suggestEmbedInFlightMax({
         gpuBusyMs: t.gpuBusyMs,
         persistWaitMs: t.persistWaitMs,
         inflightHighWater: t.inflightHighWater,
-        configuredCap: t.embedInFlightMax,
+        configuredCap: cap,
         longTaskMs: t.longTaskMs,
     });
 }
@@ -169,13 +175,14 @@ export function resolveEmbedInFlightMax(
     settings: Pick<SeekSettings, 'embedInFlightMax' | 'embedInFlightAuto'>,
     telemetry: EmbedPipelineTelemetry | null = readEmbedPipelineTelemetry(),
 ): number {
+    const configuredCap = clampEmbedInFlightMax(settings.embedInFlightMax);
     if (settings.embedInFlightAuto === false) {
-        return clampEmbedInFlightMax(settings.embedInFlightMax);
+        return configuredCap;
     }
     if (telemetry) {
-        return suggestEmbedInFlightFromTelemetry(telemetry);
+        return suggestEmbedInFlightFromTelemetry(telemetry, configuredCap);
     }
-    return clampEmbedInFlightMax(EMBED_IN_FLIGHT_COLD_SUGGEST);
+    return clampEmbedInFlightMax(Math.min(configuredCap, EMBED_IN_FLIGHT_COLD_SUGGEST));
 }
 
 export function readEmbedPipelineTelemetry(): EmbedPipelineTelemetry | null {

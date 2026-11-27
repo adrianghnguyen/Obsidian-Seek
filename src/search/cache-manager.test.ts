@@ -22,6 +22,9 @@ describe('CacheManager warmDeferred', () => {
 
         s.orch.setWarmDeferred(true);
         await s.orch.warmCaches('delta');
+        await s.orch.warmCaches('model-load');
+        await s.orch.warmCaches('hydrate');
+        await s.orch.warmCaches('orphan-sweep');
         expect(runWarmSpy).not.toHaveBeenCalled();
 
         s.orch.setWarmDeferred(false);

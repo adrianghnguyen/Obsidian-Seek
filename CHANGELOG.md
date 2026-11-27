@@ -6,8 +6,8 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ### Fixed
 
-- **Catch-up `warmCaches('delta')` IDB contention spiral.** Background `'delta'` cache warms now respect `warmDeferred` while catch-up is active, preventing full-corpus IndexedDB reads from competing with incremental `diffFileAgainstStore` and `putBatchQuantized` commits. Once catch-up finishes, `post-catchup` warms cold caches once.
-- **Auto `embedInFlightMax` cap ratcheting.** Tiny or metadata-only incremental passes no longer overwrite device-local pipeline telemetry, and `suggestEmbedInFlightMax` keeps a floor of 4 (or the configured cap when lower) so `embedInFlightMax` stays ready for larger batches.
+- **Catch-up `warmCaches` IDB contention spiral.** Background `'delta'`, `'model-load'`, `'hydrate'`, and `'orphan-sweep'` cache warms now respect `warmDeferred` while catch-up is active, preventing full-corpus IndexedDB reads from competing with incremental `diffFileAgainstStore` and `putBatchQuantized` commits. Once catch-up finishes, `post-catchup` warms cold caches once.
+- **Auto `embedInFlightMax` cap ratcheting.** Tiny or metadata-only incremental passes no longer overwrite device-local pipeline telemetry, and `resolveEmbedInFlightMax` uses the configured settings cap as the floor ceiling (min 4) so stale low `localStorage` telemetry cannot pin `embedInFlightMax` at 1–2.
 - **Desktop incremental pipelining & batched tokenization.** Desktop catch-up bursts now batch `tokenCounts` RPCs across lookahead file slices, coalesce multi-text `tokenCounts` inside the iframe, and pipeline up to 2 GPU batches ahead when no search query is active.
 
 ### Added

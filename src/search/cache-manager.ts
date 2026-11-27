@@ -571,7 +571,8 @@ export class CacheManager {
 
     async warmCaches(trigger: string = 'boot'): Promise<void> {
         const bgWarm = trigger === 'startup' || trigger === 'startup-good-enough'
-            || trigger === 'pre-catchup' || trigger === 'modal-open' || trigger === 'delta';
+            || trigger === 'pre-catchup' || trigger === 'modal-open' || trigger === 'delta'
+            || trigger === 'model-load' || trigger === 'hydrate' || trigger === 'orphan-sweep';
         if (this.warmDeferred && bgWarm) return;
         if (this.warmPromise) return this.warmPromise;
         if (isMobilePlatform() && !this.embedder.loaded) {

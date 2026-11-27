@@ -203,4 +203,30 @@ describe('resolveEmbedInFlightMax + telemetry', () => {
         recordEmbedPipelineTelemetry(sizable);
         expect(readEmbedPipelineTelemetry()?.inflightHighWater).toBe(4);
     });
+
+    it('ignores stale low embedInFlightMax in localStorage when settings ceiling is higher', () => {
+        recordEmbedPipelineTelemetry(minimalComplete({
+            mode: 'full',
+            gpuBusyMs: 300,
+            persistWaitMs: 0,
+            inflightHighWater: 1,
+            embedInFlightMax: 2,
+        }));
+        expect(resolveEmbedInFlightMax({
+            embedInFlightAuto: true,
+            embedInFlightMax: 10,
+        })).toBe(EMBED_IN_FLIGHT_COLD_SUGGEST);
+
+        recordEmbedPipelineTelemetry(minimalComplete({
+            mode: 'full',
+            gpuBusyMs: 640_000,
+            persistWaitMs: 128_000,
+            inflightHighWater: 2,
+            embedInFlightMax: 2,
+        }));
+        expect(resolveEmbedInFlightMax({
+            embedInFlightAuto: true,
+            embedInFlightMax: 10,
+        })).toBeGreaterThan(4);
+    });
 });
