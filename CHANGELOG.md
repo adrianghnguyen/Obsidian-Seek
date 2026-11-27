@@ -4,6 +4,16 @@ All notable changes to Seek are documented here. This project adheres to [Semant
 
 ## [Unreleased]
 
+### Fixed
+
+- **Catch-up `warmCaches('delta')` IDB contention spiral.** Background `'delta'` cache warms now respect `warmDeferred` while catch-up is active, preventing full-corpus IndexedDB reads from competing with incremental `diffFileAgainstStore` and `putBatchQuantized` commits. Once catch-up finishes, `post-catchup` warms cold caches once.
+- **Auto `embedInFlightMax` cap ratcheting.** Tiny or metadata-only incremental passes no longer overwrite device-local pipeline telemetry, and `suggestEmbedInFlightMax` keeps a floor of 4 (or the configured cap when lower) so `embedInFlightMax` stays ready for larger batches.
+- **Desktop incremental pipelining & batched tokenization.** Desktop catch-up bursts now batch `tokenCounts` RPCs across lookahead file slices, coalesce multi-text `tokenCounts` inside the iframe, and pipeline up to 2 GPU batches ahead when no search query is active.
+
+### Added
+
+- **Scaling bottleneck detection (`diffDurationMs` + `scaling-health`).** Records `diffDurationMs` on `index-complete` telemetry and classifies passes (`Healthy`, `IDB contention`, `Cold-cache thrash`, `Tokenization-bound`, `Cap clamped`) across `IndexCompleteEntry.checks`, `seek-report.md`, and Settings → Seek → Index.
+
 ## 1.16.2-beta.3
 
 Updating chip remaining/total on moderate catch-up.

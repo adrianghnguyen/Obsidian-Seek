@@ -5,6 +5,7 @@ import {
     resolveEmbedInFlightMax,
     recordEmbedPipelineTelemetry,
     readEmbedPipelineTelemetry,
+    shouldRecordEmbedPipelineTelemetry,
     EMBED_IN_FLIGHT_COLD_SUGGEST,
     _setEmbedTelemetryStorageForTests,
 } from './embed-auto-caps';
@@ -74,6 +75,21 @@ describe('suggestEmbedInFlightMax', () => {
             configuredCap: 10,
         })).toBe(7);
     });
+
+    it('keeps cold-suggest floor when idle high-water is 0 or 1 and configured cap is higher', () => {
+        expect(suggestEmbedInFlightMax({
+            gpuBusyMs: 300,
+            persistWaitMs: 0,
+            inflightHighWater: 1,
+            configuredCap: 10,
+        })).toBe(EMBED_IN_FLIGHT_COLD_SUGGEST);
+        expect(suggestEmbedInFlightMax({
+            gpuBusyMs: 300,
+            persistWaitMs: 0,
+            inflightHighWater: 0,
+            configuredCap: 2,
+        })).toBe(2);
+    });
 });
 
 describe('pickRollingBatchMaxFromWarmup', () => {
@@ -142,5 +158,49 @@ describe('resolveEmbedInFlightMax + telemetry', () => {
             embedInFlightAuto: true,
             embedInFlightMax: 10,
         })).toBe(4);
+    });
+
+    it('skips recording tiny or metadata-only incremental passes so cap does not ratchet down', () => {
+        recordEmbedPipelineTelemetry(minimalComplete({
+            mode: 'full',
+            gpuBusyMs: 120_000,
+            persistWaitMs: 5_000,
+            inflightHighWater: 6,
+            embedInFlightMax: 10,
+        }));
+        expect(readEmbedPipelineTelemetry()?.inflightHighWater).toBe(6);
+
+        const tiny = minimalComplete({
+            mode: 'incremental',
+            chunksIndexed: 4,
+            embedBatchLatencyMs: { n: 2, min: 50, max: 90, mean: 70, p50: 70, p95: 90 },
+            inflightHighWater: 1,
+            embedInFlightMax: 10,
+        });
+        expect(shouldRecordEmbedPipelineTelemetry(tiny)).toBe(false);
+        recordEmbedPipelineTelemetry(tiny);
+
+        const metaOnly = minimalComplete({
+            mode: 'incremental',
+            chunksIndexed: 0,
+            embedBatchLatencyMs: null,
+            inflightHighWater: 0,
+            embedInFlightMax: 10,
+        });
+        expect(shouldRecordEmbedPipelineTelemetry(metaOnly)).toBe(false);
+        recordEmbedPipelineTelemetry(metaOnly);
+
+        expect(readEmbedPipelineTelemetry()?.inflightHighWater).toBe(6);
+
+        const sizable = minimalComplete({
+            mode: 'incremental',
+            chunksIndexed: 32,
+            embedBatchLatencyMs: { n: 6, min: 80, max: 180, mean: 120, p50: 115, p95: 170 },
+            inflightHighWater: 4,
+            embedInFlightMax: 10,
+        });
+        expect(shouldRecordEmbedPipelineTelemetry(sizable)).toBe(true);
+        recordEmbedPipelineTelemetry(sizable);
+        expect(readEmbedPipelineTelemetry()?.inflightHighWater).toBe(4);
     });
 });
